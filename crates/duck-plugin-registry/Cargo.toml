@@ -1,0 +1,20 @@
+[package]
+name = "duck-plugin-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 插件市场：远端索引解析、拉取、SHA-256 校验与插件包安装/卸载（不依赖 gpui）。"
+
+[dependencies]
+duck-plugin.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+semver.workspace = true
+ureq.workspace = true
+flate2.workspace = true
+tar.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

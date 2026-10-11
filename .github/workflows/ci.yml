@@ -1,0 +1,318 @@
+name: ci
+
+# 持续集成门禁。触发：推 `main`、任何 PR、手动。
+#
+# # 与既有两条流水线的分工
+#
+#   ci.yml            ← 本文件。**门禁**：格式 / 锁文件 / 脚本 / 许可 / clippy / 测试 / 编译。
+#   release.yml         发版：推 `v*` 标签 → 三平台打包 → 生成 update.json → 发布 Release。
+#   plugin-index.yml    插件上架：`plugins/**` 变更 → 重打包 → 推 `plugin-index` 分支。
+#
+# 门禁与发布刻意分开：门禁要**每次改动**都跑（便宜、快、必须过），发布只在**决定发版**时
+# 跑（贵，还要签名与密钥）。本文件因此不依赖任何 Secret，fork 出来的 PR 也能完整跑通。
+#
+# # 各腿为什么这么分
+#
+#   ubuntu-latest  →  `static`：只读文本，一行 Rust 都不编译，却是最便宜的一道网。
+#   macos-14       →  `test`：唯一能编译并运行**全部**测试的地方。30 条 GPUI 无头 UI
+#                     测试（`palette_click_repro` / `notify_sticky` / `logs_scroll_repro`
+#                     / `licenses_view` / `palette_filtering`）只在这里跑得起来。
+#   windows-latest →  `windows-check`：只做编译检查。Windows 专属代码（winresource 图标
+#                     嵌入、windows-registry 自启、`keyring` 的 windows-native 后端、
+#                     `install/windows.rs` 就地安装器）在 macOS 上**根本不参与编译**——
+#                     不在这条腿上过一遍，破坏要等到发版当天才现形。
+#
+# ⚠️ macOS runner 按 ubuntu 的 10 倍计费。`test` 腿是唯一的重腿，这是「把 UI 测试
+#    也纳入门禁」换来的代价：问题在 PR 阶段暴露，而不是在发版阶段。
+#
+# # 自动发版链路（main 上的 `tag` 作业）
+#
+# 规则只有一条：**想发版，就改根 `Cargo.toml` 的 `[workspace.package].version` 并合入
+# main。** 三腿全绿后，`tag` 作业比对「Cargo.toml 的版本」与「最新 `v*` 标签」——
+# 版本更大且该标签尚不存在时，才创建标签并发起 `release.yml`。
+# 也就是说：不升版本号的提交一律不发版（判定为 same），重跑 CI 也不会重复发版
+# （标签已存在）。手动触发默认只演练（见 `dry_run`）。
+#
+# # 起手：第一个版本必须手工发
+#
+# 仓库里**一个 `v*` 标签都没有**时，本作业什么都不做（只打印提示）。理由是这个
+# 判断的语义——「比最新标签更大」——在没有基准时是退化的，会把「首次推 main」
+# 直接变成一个三平台正式发布：副作用式的发版，谁都没要求过。
+# 所以先手工踢一脚，之后全自动：
+#
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# 这一步也顺带充当 release.yml 的首次实跑验收（它的三条腿此前从未在 runner 上跑过）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只演练：跑完所有检查，但不创建标签、不发起发版"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# 同一个 ref 上的旧运行让位给新的：PR 连续推提交时不必排队等上一次跑完。
+# main 上的运行**不取消**——`tag` 作业可能正在推标签，被拦腰掐掉会留下半个状态。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  static:
+    name: 静态检查（格式 / 锁文件 / 脚本 / 许可）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # 这一腿不编译，只要 rustfmt；clippy 与交叉 target 留给下面两条腿。
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: static
+
+      # 一次把网走完，后面的检查就都是本地行为。
+      #
+      # 不带 `--target` 时 `cargo fetch` 会取**所有平台**的依赖——包括那些在当前平台
+      # 永不编译的包（如 macOS 的 `security-framework 2.11.1`）。而
+      # `THIRD_PARTY_LICENSES.md` 是按 `Cargo.lock` **全量**收录的，两边正好对上；
+      # 少取一个平台，下面的许可校验就会报「缓存里没有源码」。
+      - name: 取全部依赖（含永不编译的平台）
+        run: cargo fetch --locked
+
+      - name: 格式
+        run: cargo fmt --all --check
+
+      # 锁文件必须与清单一致。本仓的 GPUI 内核经 `[patch.crates-io]` 换成 gpui-fast 的
+      # git rev——改了 rev 却没提交 `Cargo.lock`，在这里就被拦下，而不是等发版时
+      # 两条腿各自编出内核不同的产物。
+      - name: 锁文件与清单一致
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      # 只查语法。ubuntu 的 bash 是 5.x，查不出 bash 3.2 在 UTF-8 locale 下把多字节
+      # 字符并进变量名那类坑（AGENTS §3.4，靠本地 macOS 复核）；这里挡的是括号、
+      # 引号、`fi` 配对这类硬语法错。
+      - name: Shell 与 Python 脚本语法
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/pycache
+        run: |
+          set -euo pipefail
+          for script in sbin/*.sh; do
+            bash -n "${script}"
+            echo "bash -n OK: ${script}"
+          done
+          python3 -m py_compile sbin/*.py
+          echo "py_compile OK"
+
+      # 发行合规门禁：依赖一变，`assets/licenses/THIRD_PARTY_LICENSES.md` 就陈旧，
+      # 而这份文件既随产物分发、也被内嵌进应用（设置 → 关于 → 查看开源许可）。
+      # `sbin/package.sh` 打包前也会拦一道，但那时已经是发版当天了。
+      #
+      # 退出码三态：0 一致 / 1 已过期 / 2 本机查不了。这里**一律失败**——
+      # 前面刚跑过 `cargo fetch`，出现 2 说明这条腿的环境假设不成立，属于要修的问题，
+      # 不该悄悄放过。
+      - name: 第三方许可汇总是最新的
+        run: python3 sbin/licenses.py --check
+
+  test:
+    name: 测试（macOS，含无头 UI 测试）
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-arm64
+
+      # clippy 与测试刻意同处一个作业：两者共用同一份编译缓存。拆成两个作业的话，
+      # 同一个 key 并发写缓存会互相冲掉，各自还得从头编一遍（GPUI 全量编译并不便宜）。
+      #
+      # 只报告告警、不拦 PR：本仓现有约 19 条存量告警（collapsible_if ×6、
+      # assign_op ×8、type_complexity ×3、redundant_closure 等）。clippy 只在
+      # **error** 级才非零退出，所以这里不加 `-D warnings`。等存量清零再收紧。
+      - name: clippy（告警只报告，error 仍失败）
+        run: |
+          set -uo pipefail
+          status=0
+          cargo clippy --locked --workspace --all-targets > clippy.log 2>&1 || status=$?
+          cat clippy.log
+          {
+            echo "### clippy 告警（只报告，不阻塞）"
+            echo
+            echo '```'
+            grep -E "^warning: " clippy.log | sort | uniq -c | sort -rn || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${status}" -ne 0 ]; then
+            echo "clippy 出现 error 级问题，判为失败" >&2
+            exit "${status}"
+          fi
+
+      # 全量：单元测试 + 集成测试 + doctest。含 `duck-theme` 的 i18n 覆盖率守卫
+      # （新增中文文案漏了 `EN` 表就会在这里红）与 `duck-update` 的发布链路端到端测试。
+      - name: 全量测试
+        run: cargo test --locked --workspace
+
+  windows-check:
+    name: 编译检查（Windows）
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x64
+
+      # `--all-targets` 把测试目标也一起编译，Windows 专属的那批（`install/windows.rs`
+      # 的 6 项、`package.ps1` 的形状契约、注册表项）因此也过一遍编译器。
+      # 只 check 不 test：测试是否**通过**由 macOS 腿负责；这条腿要买的是
+      # 「Windows 上编得过」这个更便宜也更关键的结论——它是发版矩阵里的一腿，
+      # 编不过就意味着发版当天必然断在这里。
+      - name: 编译检查（含测试目标）
+        run: cargo check --locked --workspace --all-targets
+
+  tag:
+    name: 打标签并发起发版
+    # 三腿全绿才有资格打标签。
+    needs: [static, test, windows-check]
+    # 只在 main 上，且绝不来自 PR。
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # 推标签要写 contents；调 `gh workflow run` 要写 actions。
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要读全部标签来判断「这一版发过没有」。
+          fetch-depth: 0
+
+      - name: 判定该不该发
+        id: decide
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          # 版本号的唯一来源是根 Cargo.toml，且用与 release.yml **完全相同**的提取
+          # 命令，保证这里打出的标签一定过得了那边的 `tag == v<version>` 关卡。
+          version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+          tag="v${version}"
+          latest="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
+
+          verdict="$(
+            python3 - "${latest}" "${version}" <<'PY'
+          import sys
+
+          def parts(raw):
+              raw = (raw or "0.0.0").lstrip("v").split("-")[0]
+              nums = [int(p) if p.isdigit() else 0 for p in raw.split(".")]
+              return tuple((nums + [0, 0, 0])[:3])
+
+          old, new = parts(sys.argv[1]), parts(sys.argv[2])
+          print("newer" if new > old else ("same" if new == old else "older"))
+          PY
+          )"
+
+          release=false
+          reason=""
+          if [ -z "${latest}" ]; then
+            # 没有基准可比：「更大」这个判断在空集上是退化的，见文件头「起手」一节。
+            reason="仓库里还没有任何 v* 标签，本次不动标签；第一个版本请手工发：git tag v${version} && git push origin v${version}"
+          elif [ "${verdict}" = "same" ]; then
+            reason="Cargo.toml 的版本与最新标签一致，没有新版本要发"
+          elif [ "${verdict}" = "older" ]; then
+            # 刻意**不失败**：合并顺序偶尔会让版本号短暂落后，把 main 判成红
+            # 只会逼人绕过门禁。这里只记账、不动标签，也绝不做任何回退。
+            reason="Cargo.toml 的版本低于最新标签（${version} < ${latest#v}），跳过"
+          elif git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            reason="标签 ${tag} 已存在（大概是重跑 CI），跳过"
+          elif [ "${DRY_RUN:-}" = "true" ]; then
+            reason="演练模式（dry_run），本可发布 ${tag} 但不落标签"
+          else
+            release=true
+            reason="版本 ${version} 高于最新标签 ${latest:-（无）}，且 ${tag} 尚不存在"
+          fi
+
+          echo "Cargo.toml=${version}　最新标签=${latest:-（无）}　判定=${verdict}　发布=${release}"
+          echo "理由：${reason}"
+          {
+            echo "tag=${tag}"
+            echo "release=${release}"
+            echo "reason=${reason}"
+          } >> "${GITHUB_OUTPUT}"
+
+      # 标签指向**本次 CI 刚验过**的那个提交（`GITHUB_SHA`），这正是把打标签放进
+      # 本工作流的价值：标签与被验证的字节之间不存在任何时间窗。
+      - name: 创建并推送标签
+        if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag "${TAG}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${TAG}"
+          echo "已推送标签 ${TAG} → ${GITHUB_SHA}"
+
+      # 为什么不靠「推标签」直接唤醒 release.yml：
+      #
+      # 用仓库自带的 GITHUB_TOKEN 完成的操作，其产生的事件**不会**创建新的工作流
+      # 运行——这是 GitHub 的防递归规则（否则工作流推代码就会自己触发自己）。
+      # `push` 正在这条规则里：标签推上去了，release.yml 却根本不会醒。
+      # 官方给出的例外恰是 `workflow_dispatch` 与 `repository_dispatch`：它们表达的是
+      # 「有人明确要跑一次」，不存在成环风险。所以这里显式补一次 dispatch。
+      #
+      # ⚠️ 将来若改成用 PAT / GitHub App token 推标签，那次 push 就会自己触发
+      # release.yml——**必须删掉这一步**，否则同一次发版会跑两遍（第二遍会因为
+      # Release 已存在而报重复资产）。
+      - name: 发起发版流水线
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${GITHUB_REF_NAME}" \
+            -f "tag=${TAG}"
+          echo "已发起 release.yml（tag=${TAG}）"
+
+      - name: 汇总
+        if: always()
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+          RELEASE: ${{ steps.decide.outputs.release }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### 自动发版判定"
+            echo
+            echo "- 目标标签：\`${TAG:-（未判定）}\`"
+            echo "- 是否发起发版：\`${RELEASE:-false}\`"
+            echo "- 理由：${REASON:-（判定步骤未产出结果）}"
+          } >> "${GITHUB_STEP_SUMMARY}"

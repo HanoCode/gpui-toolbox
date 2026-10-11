@@ -1,0 +1,49 @@
+[package]
+name = "duck-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 桌面应用装配与示例页面。"
+
+[[bin]]
+name = "duck"
+path = "src/main.rs"
+
+[dependencies]
+duck-components.workspace = true
+duck-shell.workspace = true
+duck-theme.workspace = true
+duck-command.workspace = true
+duck-platform.workspace = true
+duck-store.workspace = true
+duck-tools.workspace = true
+duck-update.workspace = true
+duck-plugin.workspace = true
+duck-plugin-js.workspace = true
+duck-plugin-registry.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+gpui_platform.workspace = true
+futures-channel.workspace = true
+futures-util.workspace = true
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tray-icon.workspace = true
+
+# 构建脚本依赖：winresource 本体跨平台可编译；非 Windows 目标由 build.rs 里的
+# `CARGO_CFG_WINDOWS` 运行期短路。不能按 target 门控——build.rs 在所有宿主上
+# 都要能编译，门控会让 macOS 构建直接失败。
+[build-dependencies]
+winresource.workspace = true
+
+# 无头 UI 测试（`tests/` 下的 `#[gpui::test]`）需要 test-support 打开的
+# `TestAppContext` / `VisualTestContext` / 事件模拟。只给测试目标开，
+# 不影响二进制构建。
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

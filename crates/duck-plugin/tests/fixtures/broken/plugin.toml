@@ -1,0 +1,6 @@
+# 发现测试用：清单无效的插件（api_version 不受支持）。
+id = "dev.duck.broken"
+name = "坏清单插件"
+version = "0.1.0"
+api_version = 99
+execution_model = "js"

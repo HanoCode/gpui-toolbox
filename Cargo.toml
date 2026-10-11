@@ -1,0 +1,153 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Duck Toolbox — a GPUI desktop UI shell built on gpui-kit (gpui-component)."
+
+# 依赖版本与 gpui-kit 发布时锁定的快照严格对应（gpui-component 0.7.1 → gpui-pre 0.3.8）。
+# 升级任一 crate 时必须同步 gpui-component 的 `=` 约束，否则 GPUI 核心与组件层 API 会错配。
+[workspace.dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = [
+    "font-kit",
+    "x11",
+    "wayland",
+    "runtime_shaders",
+] }
+gpui-base = "0.7.1"
+gpui-component = "0.7.1"
+gpui-component-assets = { package = "gpui-kit-assets", version = "0.7.1" }
+
+duck-theme = { path = "crates/duck-theme" }
+duck-components = { path = "crates/duck-components" }
+duck-shell = { path = "crates/duck-shell" }
+duck-platform = { path = "crates/duck-platform" }
+duck-store = { path = "crates/duck-store" }
+duck-command = { path = "crates/duck-command" }
+duck-tools = { path = "crates/duck-tools" }
+duck-update = { path = "crates/duck-update" }
+duck-plugin = { path = "crates/duck-plugin" }
+duck-plugin-js = { path = "crates/duck-plugin-js" }
+duck-plugin-registry = { path = "crates/duck-plugin-registry" }
+
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1"
+
+# 更新器三件：语义化版本比较、流式 SHA-256、阻塞式 HTTPS（三者均为 MIT OR Apache-2.0）。
+# `ureq` 关掉默认再显式开 `rustls` + `gzip`：TLS 走 rustls（`ring` 提供者），
+# 不依赖系统 OpenSSL；`gzip` 是 manifest 常见的传输压缩。
+semver = "1"
+sha2 = "0.10"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"] }
+
+# 更新源签名校验（duck-update::signature）：minisign 格式（Ed25519 + BLAKE2b 预哈希）。
+# - `minisign-verify` 0.3.0：MIT，**零传递依赖**，只做验签不做签名——正合客户端需要，
+#   私钥永远不进二进制。同一套格式被 Tauri 的更新器采用，发布侧也能用 `minisign`
+#   或 `rsign` 直接签，不必依赖我们自己的工具链。
+minisign-verify = "0.3"
+
+# 插件市场：解包插件包用 tar.gz。
+# - `tar` 0.4.46：MIT OR Apache-2.0，MSRV 1.63；`unpack_in` 原生拒绝绝对路径与 `..` 逃逸。
+# - `flate2` 1.1.10：MIT OR Apache-2.0。它已经在依赖图里（ureq 的 `gzip` 特性），
+#   这里只是把它提成直接依赖，**不引入新的传递依赖**。
+# 不用 zip：`zip` 8.x/9.x 的 MSRV 是 1.88，会顶破本仓 `rust-version = "1.85"`；
+# 钉到 6.0.0 虽可用，但为同一个归档格式退两个大版本不划算。
+tar = "0.4.46"
+flate2 = "1.1"
+
+# 托盘与事件通道。`gpui` 本来就传递依赖 futures 0.3（`AsyncApp` 自己用 `oneshot`），
+# 这里只是把它提成直接依赖；`tray-icon` 关掉默认特性，默认的 gtk / libxdo 只对 Linux 有意义。
+tray-icon = { version = "0.24", default-features = false }
+futures-channel = "0.3"
+futures-util = "0.3"
+
+# 平台能力层。SQLite 用 `bundled` 内嵌编译，终端用户零系统依赖。
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+dirs = "6"
+rfd = "0.16"
+arboard = "3.6"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+toml = "0.8"
+
+# 插件 JS 执行轨：QuickJS 高层绑定。钉 `=0.11.0`——0.12 起上游 MSRV 抬到 1.87，
+# 会顶破本仓 `rust-version = "1.85"`；升级必须同步核对 MSRV。MIT（QuickJS-NG 同 MIT）。
+rquickjs = { version = "=0.11.0", default-features = false, features = ["std", "loader", "macro"] }
+
+# 开机自启（duck-platform::autostart，按 target 平台分别取用）：
+# - macOS 走 SMAppService（登录项，macOS 13+）：objc2 官方绑定，配对图中已有的 objc2 0.6；
+#   许可证 Zlib OR Apache-2.0 OR MIT，MSRV 1.71。
+# - Windows 写 HKCU\...\Run 注册表：Microsoft 官方 crate（cargo 同款），MIT OR Apache-2.0；
+#   仅 windows target 参与编译，声明见 duck-platform 的 target 依赖表。
+objc2-service-management = "0.3.2"
+windows-registry = "0.6"
+
+# objc2 本体与 AppKit 绑定（duck-platform::foreground，macOS only）：
+# 只为了补上 gpui 没暴露的两条反向消息 —— `App::hide` 有、`unhide` 没有；
+# `Window::minimize_window` 有、还原没有。版本与 gpui-fast 锁定的快照逐字一致
+# （见下方 [patch.crates-io] 引用的那份工作区 `Cargo.toml`），
+# **不新增下载**：0.6.5 / 0.3.2 本来就由 gpui_macos 带进依赖图，`NSResponder` 与
+# `NSWindow` 两个特性它也已经开着。省掉 `default-features` 里用不到的类，
+# 免得编译期多出几十个用不上的绑定。
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSResponder", "NSWindow"] }
+
+# 全局唤起快捷键（duck-platform::hotkey）：
+# gpui（gpui-fast）**完全没有**系统级热键能力，所以这一条是纯粹的从零补齐。
+# - `global-hotkey` 0.8.0：Apache-2.0 OR MIT，MSRV 1.77（低于本仓的 1.85）。
+#   Windows 走 `RegisterHotKey`、macOS 走 Carbon `RegisterEventHotKey`，
+#   两条路都**不需要**辅助功能授权（媒体键那条路才需要，我们已明确不支持）。
+# - 传递依赖几乎零新增：`keyboard-types 0.7.0` / `crossbeam-channel 0.5.17` /
+#   `once_cell 1.21.4` / `thiserror 2.0.21` / `objc2 0.6.5` / `objc2-app-kit 0.3.2` /
+#   `x11rb 0.13.2` / `xkeysym 0.2.1` 均已在图内且版本相容。
+#   唯一的例外是 Windows 上的 `windows-sys 0.59`（本仓现有 0.52 / 0.60 / 0.61 三条，
+#   会多出第四条），只影响 Windows 的编译时间，不动运行时。
+global-hotkey = "0.8.0"
+
+# 安全凭据存储（duck-platform::secret）：系统钥匙串 / 凭据管理器。
+# - `keyring` 3.6.3：MIT OR Apache-2.0，MSRV 1.75，edition 2021。**不用 4.x**——
+#   4.x 全系 MSRV 1.88，会顶破本仓 `rust-version = "1.85"`。
+# - **默认无特性**（`default-features = false`）：不选后端时 `keyring` 不会报错，
+#   而是把默认 store 静默换成进程内的内存 mock，表现是「写入成功、重启全丢」。
+#   所以后端特性必须按 target 显式开，声明见 duck-platform 的 target 依赖表；
+#   `secret.rs` 末尾有两条编译期断言把这件事钉死。
+# - 传递依赖零新增：`security-framework 3.7.0` / `security-framework-sys 2.17.0` /
+#   `core-foundation-sys 0.8.7` / `windows-sys 0.60.2` / `windows-targets 0.53.5` /
+#   `zeroize 1.9.1` / `log 0.4.34` 均已在依赖图内且版本一致。
+keyring = { version = "3.6.3", default-features = false }
+
+# Windows 资源编译（duck-app 的 build.rs）：把 assets/duck.ico 嵌入 .exe，
+# 文件管理器 / 任务栏 / 快捷方式即显示应用图标。MIT OR Apache-2.0。
+# 作为 build-dependency 无条件声明（见 duck-app Cargo.toml 注释），构建脚本内按
+# CARGO_CFG_WINDOWS 跳过非 Windows 目标。crates.io 最新为 0.1.31（无 0.4 线）。
+winresource = "0.1"
+
+# 工具注册表：中文名 → 拼音全拼 / 首字母（零传递依赖，MIT）。
+# 只要 `plain`：全拼与首字母都需要它，其余（声调 / 多音字 / compat）用不到。
+pinyin = { version = "0.11", default-features = false, features = ["plain"] }
+
+# 全员共享的 lint 基线。各 crate 通过 `[lints] workspace = true` 显式启用。
+# 仅对明确有害的写法设 deny，其余保持默认，避免阻塞日常构建。
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+
+# GPUI 核心性能分叉 gpui-fast（longbridge/gpui-fast，基于 zed upstream a1b71072e5）。
+# 通过 compat/ 提供的同名同版本替身替换 crates.io 快照：retained mode 增量渲染与
+# scroll layers（Windows D3D11 / macOS Metal）默认开启，可用环境变量
+# GPUI_VIEW_RETENTION=0 / GPUI_SCROLL_LAYERS=0 随时降级回逐帧全量绘制。
+# rev 锁定在与 gpui_perf --headless 实测一致的提交（v0.1.6+1，2026-10-09）。
+[patch.crates-io]
+gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "b8f0c026553711c1e049fee501932d3801f23567" }
+gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "b8f0c026553711c1e049fee501932d3801f23567" }
+gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "b8f0c026553711c1e049fee501932d3801f23567" }
+gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast", rev = "b8f0c026553711c1e049fee501932d3801f23567" }
+# 注：compat/ 还提供 gpui-pre-web 与 gpui-pre-reqwest-client 替身，但本项目的
+# HTTP 客户端（gpui-pre-reqwest 0.12.15）在 patch 后随旧依赖图整体退出，二者无需声明。

@@ -1,0 +1,26 @@
+[package]
+name = "duck-components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 视觉组件库：按钮 / 导航 / 卡片 / 表单原语 / 侧栏面板。"
+
+[dependencies]
+duck-theme.workspace = true
+gpui.workspace = true
+gpui-base.workspace = true
+gpui-component.workspace = true
+
+# 无头键盘可达性测试（`tests/accessibility.rs`）：`gpui` 开 `test-support` 才有
+# `TestAppContext` / `VisualTestContext` 与键位模拟。
+#
+# ⚠️ **不要**在这里加 `gpui-base = { features = ["test-support"] }`：
+# 开它会把 `.test_support()` 的返回类型换成 `Observed<E>`，而 `gpui-component 0.7.1`
+# 自己调了 `.test_support()` 之后还继续链式调用 `ScrollableElement::vertical_scrollbar`
+# （`gpui-component/src/menu/popup_menu.rs:1469 → 1508`），于是**整条依赖链编不过**
+# （E0599）。`gpui-component` 没有开这个 feature，所以上游从未走过这条路径。
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

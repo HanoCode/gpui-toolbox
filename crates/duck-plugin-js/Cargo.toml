@@ -1,0 +1,19 @@
+[package]
+name = "duck-plugin-js"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 插件 JS 执行轨：QuickJS 沙箱求值 + 能力仲裁的宿主函数桥（不依赖 gpui）。"
+
+[dependencies]
+duck-plugin.workspace = true
+duck-platform.workspace = true
+rquickjs.workspace = true
+tracing.workspace = true
+# 插件出网（`net.rs`）。**零新下载**：`ureq` 已在依赖图里（duck-update /
+# duck-plugin-registry 同款配置），这里只是把它提成直接依赖。刻意不引第二个
+# HTTP 客户端——出网策略要能一眼看全，两个客户端就是两套超时 / 重定向语义。
+ureq.workspace = true
+
+[lints]
+workspace = true

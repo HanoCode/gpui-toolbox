@@ -1,0 +1,14 @@
+[package]
+name = "duck-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 插件框架：plugin.toml 清单解析、能力网关与贡献发现（不依赖 gpui）。"
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

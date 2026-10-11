@@ -1,0 +1,18 @@
+[package]
+name = "duck-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 更新器：静态 JSON manifest + SHA-256 校验 + 就地替换 .app。"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+tracing.workspace = true
+minisign-verify.workspace = true
+
+[lints]
+workspace = true

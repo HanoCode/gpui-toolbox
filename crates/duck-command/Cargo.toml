@@ -1,0 +1,23 @@
+[package]
+name = "duck-command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 交互骨架：动作注册表 / 键位 / 菜单 / 命令面板索引。"
+
+[dependencies]
+duck-theme.workspace = true
+duck-platform.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+# 编辑菜单要复用上游的编辑动作（`gpui_base::input::{Copy, Cut, Paste, SelectAll, Undo, Redo}`）：
+# **只有**用同一批动作类型，`Window::is_action_available` 才会在文本框聚焦时把这些菜单项点亮，
+# 系统选择器（`copy:` / `paste:` …）也才会落到真正处理它们的元素上。自造同名动作办不到这件事。
+gpui-base.workspace = true
+tracing.workspace = true
+toml.workspace = true
+
+# 无头派发测试（`tests/` 下的 `#[gpui::test]`）需要 test-support 打开的
+# `TestAppContext`。只给测试目标开，不影响库构建。
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

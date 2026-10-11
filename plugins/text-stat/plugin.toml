@@ -1,0 +1,35 @@
+# Duck Toolbox 开发示例插件（dev 调试用）。
+#
+# 本目录（仓库根 plugins/）只在 debug 构建（sbin/run.sh 默认）下被加载，
+# release 打包后只认安装目录 app_data_dir()/plugins。
+# 改完 main.js 重启应用即生效（每次执行独立沙箱，无跨调用状态）。
+#
+# 字段说明：
+#   id              插件唯一 id（小写字母/数字/./-），工具 id 必须以「<id>.」开头
+#   api_version     清单 API 版本，当前必须为 1
+#   execution_model 执行轨道：js / wasm / process（当前 js 已接入）
+#   capabilities    能力声明（声明 ≠ 授予，宿主默认拒绝未声明的能力）：
+#                     filesystem_read / filesystem_write 相对插件数据目录的 glob
+#                     network_hosts 可访问主机；notifications 系统通知；
+#                     process_exec 允许的外部命令
+
+id = "dev.duck.textstat"
+name = "文本统计"
+version = "0.1.0"
+description = "读取剪贴板文本，统计字符、单词与行数，报告写入插件数据目录。"
+category = "development"
+tags = ["文本", "统计", "utils"]
+api_version = 1
+execution_model = "js"
+
+[capabilities]
+filesystem_write = ["last-report.txt"]
+notifications = true
+
+[[tools]]
+id = "dev.duck.textstat.stats"
+name = "剪贴板统计"
+description = "统计剪贴板文本的字符、单词与行数"
+category = "development"
+icon = "code"
+keywords = ["统计", "字数", "word count", "text stat"]

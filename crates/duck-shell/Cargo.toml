@@ -1,0 +1,19 @@
+[package]
+name = "duck-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 窗口外壳：自绘标题栏、活动栏、路由与内容槽位。"
+
+[dependencies]
+duck-components.workspace = true
+duck-theme.workspace = true
+duck-command.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

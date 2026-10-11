@@ -1,0 +1,49 @@
+[package]
+name = "duck-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 平台能力层：路径 / 日志 / 原生对话框 / 剪贴板 / 系统外壳 / 单实例锁。"
+
+[dependencies]
+dirs.workspace = true
+rfd.workspace = true
+arboard.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# 数据备份归档（`archive`）。两者都已在依赖图里（插件市场先引入的），
+# 这里只是把 `duck-platform` 也接上，**不新增任何传递依赖**。
+# 选 `tar.gz` 而不是 `zip` 的原因见 `src/archive.rs` 的模块注释。
+tar.workspace = true
+flate2.workspace = true
+# 单实例锁用 `flock`（stdlib 到 1.89 才有 `File::try_lock`，本工程 MSRV 1.85）。
+# 版本与 `duck-app` 保持一致；它早已在依赖图里（同版本，不新增下载）。
+libc = "0.2"
+# 全局唤起快捷键（`hotkey`）。gpui 本身**完全没有**这个能力（全仓 grep 零命中），
+# 所以只能引第三方；`global-hotkey` 是 Tauri 生态里维护得最好的那个
+# （MSRV 1.77 / `Apache-2.0 OR MIT`）。它的平台后端各自按 target 编译：
+# macOS 走 Carbon `RegisterEventHotKey`，Windows 走 `RegisterHotKey`，Linux 只有 X11。
+# 详见 `src/hotkey.rs` 的模块注释。
+global-hotkey.workspace = true
+
+# 开机自启的平台后端，各自只在对应平台参与编译。
+#
+# `keyring` 的后端特性**只能**在这里按 target 开：它默认无特性，而不开特性时
+# 不会报错，会把默认 store 静默换成进程内的内存 mock（「写入成功、重启全丢」）。
+# 这里的 `#[cfg]` 谓词必须与 `src/secret.rs::system_store` 的谓词逐字一致；
+# 漏开的后果不是运行时出错，而是**编译失败**（`secret.rs` 末尾引用了被同一特性
+# 门控的 `keyring::macos` / `keyring::windows` 模块做编译期断言）。这是刻意的：
+# 编译不过比悄悄丢数据好。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-service-management.workspace = true
+keyring = { workspace = true, features = ["apple-native"] }
+# `foreground`（解除隐藏 + 还原最小化的窗口）：gpui 只暴露了 `hide` 与
+# `minimize_window`，没有反向的那两条。版本与 gpui-fast 锁定的快照一致，
+# 且 `NSResponder` / `NSWindow` 两个特性 gpui_macos 本来就开着 ——
+# **不新增下载**，只是把已经在图里的两个 crate 提成直依赖。
+objc2.workspace = true
+objc2-app-kit.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-registry.workspace = true
+keyring = { workspace = true, features = ["windows-native"] }

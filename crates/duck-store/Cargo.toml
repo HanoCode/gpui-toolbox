@@ -1,0 +1,17 @@
+[package]
+name = "duck-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 持久化层：SQLite（内嵌）+ 版本化迁移 + 去抖写入。"
+
+[dependencies]
+duck-platform.workspace = true
+gpui.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

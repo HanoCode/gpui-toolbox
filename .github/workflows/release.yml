@@ -1,0 +1,289 @@
+name: release
+
+# 发版：推一个 `v*` 标签 → 三个平台各自打包 → 汇总生成 update.json → 发布 Release。
+#
+# 版本号的唯一来源是根 Cargo.toml 的 `[workspace.package].version`；标签必须与它一致
+# （下面的「校验 tag 与 Cargo.toml 版本一致」会拦下不一致的发版）。
+#
+# # 加速通道
+#
+# 客户端读的是 manifest 里每个平台的 `url`。默认它指向 GitHub Release 资产——国内偏慢。
+# 配好仓库变量与密钥后，`url` 会改指**镜像**、GitHub 原址退成 `mirrors` 备用：
+#
+#   变量  MIRROR_BASE_URL        CDN 的公开前缀，必须**对应 bucket 的根**
+#                                （如 https://cdn.example.com/duck）
+#   密钥  MIRROR_ENDPOINT        S3 兼容端点（Cloudflare R2 / 阿里云 OSS 均可）
+#         MIRROR_BUCKET          目标 bucket
+#         MIRROR_ACCESS_KEY_ID / MIRROR_SECRET_ACCESS_KEY
+#
+# 不配这些就只走 GitHub，客户端照常工作。换通道因此是一次只动 CI 配置的操作，
+# 已发布的客户端一个字节都不用改。
+#
+# # 签名
+#
+# 客户端会用**编译期内建**的公钥校验 `update.json`（见 `duck-update::signature`）。
+# 两个位置要配，缺一不可——只配一半会让客户端拒绝一切更新，或者让签名形同虚设：
+#
+#   变量  DUCK_UPDATE_PUBKEY        公钥文件的第二行（`sbin/minisign_sign.py
+#                                   --generate-key` 会把这一行打出来）。**不是**密钥。
+#   密钥  DUCK_UPDATE_SIGNING_KEY   私钥文件的**完整内容**（那个 JSON）。
+#
+# 另可选 `MIN_APP_VERSION`：立一道门槛，比它老的客户端会被明确拒绝升级。
+# 什么都没配也能发版：客户端不内建公钥时整套校验是关的，manifest 不签名也照收。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的标签（形如 v0.2.0）；用于重跑一次发布"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 打包 ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台挂了也要看到其余平台的结果——排查时「还有哪些是好的」比早停有用。
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos-arm64
+            target: aarch64-apple-darwin
+          # x64 在 Apple Silicon 的 runner 上交叉编译（`cc` 会带上正确的 SDK 与 -arch），
+          # 这样就不依赖 Intel runner 是否还在。
+          - os: macos-14
+            platform: macos-x64
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            platform: windows-x64
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # 只在 arm64 这一腿上跑一次：只要它挂了，整个 build 就挂，publish 也就不会跑，
+      # 没必要让另外两条腿重复同样的检查。刻意不跑全量 `cargo test --workspace`——
+      # 那包含 UI 测试，属于开发者在本地把关的范围（见 AGENTS §5）。
+      #
+      # `duck-theme` 的 i18n 覆盖率守卫在内：新增文案漏了英译，这里会拦下来。
+      - name: 校验（格式与更新器 / 主题测试）
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo test -p duck-theme -p duck-update
+
+      - name: 打包（macOS）
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          # 配了这个 secret 才做正式签名；没有就 ad-hoc（自更新路径不受影响，
+          # 因为安装器会清掉 quarantine 属性）。
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          # 公钥在**编译期**嵌进二进制，所以它必须出现在跑 cargo build 的这一步。
+          # 用 vars 而不是 secret：公钥本来就是要公开的东西。
+          DUCK_UPDATE_PUBKEY: ${{ vars.DUCK_UPDATE_PUBKEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MACOS_SIGN_IDENTITY}" ]; then
+            sbin/package.sh --target "${{ matrix.target }}" --app-archive \
+              --sign "${MACOS_SIGN_IDENTITY}"
+          else
+            sbin/package.sh --target "${{ matrix.target }}" --app-archive --no-sign
+          fi
+
+      - name: 打包（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          # 同 macOS 那条腿：内建公钥在编译期生效。
+          DUCK_UPDATE_PUBKEY: ${{ vars.DUCK_UPDATE_PUBKEY }}
+        run: ./sbin/package.ps1 -Target ${{ matrix.target }} -UpdateArchive
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          # 只收**更新归档**：分发用的 dmg / 便携目录 zip 是另一回事，
+          # 需要时在本地用 `sbin/package.sh --dmg --zip` 生成。
+          #
+          # 注意末尾**没有**连字符：macOS 是 `…-macos-arm64-app.tar.gz`，而 Windows 是
+          # `…-windows-x64.zip`——多一个 `-` 就会把 Windows 那条整个漏掉。
+          path: dist/duck-*-${{ matrix.platform }}*
+          if-no-files-found: error
+
+  publish:
+    name: 生成 manifest 并发布
+    needs: build
+    # 跑在 ubuntu 上只为了 python3 与 aws CLI 都在场：这一作业不编译 Rust。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `workflow_dispatch` 时 `github.ref` 是分支，得显式切到输入的标签。
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          # 生成发布说明要能拿到上一个标签，必须完整历史。
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 校验 tag 与 Cargo.toml 版本一致
+        id: meta
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${INPUT_TAG}"
+          else
+            tag="${REF_NAME}"
+          fi
+          if [ "${tag}" != "v${version}" ]; then
+            echo "标签 ${tag} 与 Cargo.toml 里的版本 ${version} 对不上；发版前先把版本号改成 ${tag#v}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: 生成发布说明
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          prev="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          if [ -n "${prev}" ]; then
+            range="${prev}..${TAG}"
+          else
+            # 第一个标签：没有可比较的上一个，整段历史都算这次的说明。
+            range="${TAG}"
+          fi
+          git log --no-merges --pretty=format:'- %s' "${range}" > notes.md
+          printf '\n' >> notes.md
+          if [ ! -s notes.md ]; then
+            printf 'Duck Toolbox %s\n' "${TAG}" > notes.md
+          fi
+          cat notes.md
+
+      - name: 准备签名密钥
+        id: signkey
+        shell: bash
+        env:
+          PUBKEY: ${{ vars.DUCK_UPDATE_PUBKEY }}
+          SIGNING_KEY: ${{ secrets.DUCK_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PUBKEY}" ]; then
+            # 没内建公钥的构建不校验签名，所以不签也一致。明说一句，免得有人以为签了。
+            echo "没有 DUCK_UPDATE_PUBKEY；本次不签 manifest" >&2
+            echo "path=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [ -z "${SIGNING_KEY}" ]; then
+            # 这一半配了、另一半没配：宁可失败，也不要发出一个「客户端必然拒绝」的版本。
+            echo "配了 DUCK_UPDATE_PUBKEY 但缺 DUCK_UPDATE_SIGNING_KEY，无法签名" >&2
+            exit 1
+          fi
+          key="${RUNNER_TEMP}/duck-update.key"
+          printf '%s\n' "${SIGNING_KEY}" > "${key}"
+          chmod 600 "${key}"
+          echo "path=${key}" >> "${GITHUB_OUTPUT}"
+
+      - name: 生成 update.json
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          MIRROR_BASE_URL: ${{ vars.MIRROR_BASE_URL }}
+          MIN_APP_VERSION: ${{ vars.MIN_APP_VERSION }}
+          SIGNING_KEY_PATH: ${{ steps.signkey.outputs.path }}
+        run: |
+          set -euo pipefail
+          args=(
+            --version "${VERSION}"
+            --tag "${TAG}"
+            --repo "${GITHUB_REPOSITORY}"
+            --asset-dir dist
+            --notes-file notes.md
+            --out dist/update.json
+          )
+          if [ -n "${MIRROR_BASE_URL}" ]; then
+            args+=(--mirror-base "${MIRROR_BASE_URL}")
+          fi
+          if [ -n "${MIN_APP_VERSION}" ]; then
+            # 立了门槛就写进文档：更老的客户端会被明确拒绝，而不是半懂地装上新格式。
+            args+=(--min-app-version "${MIN_APP_VERSION}")
+          fi
+          if [ -n "${SIGNING_KEY_PATH}" ]; then
+            args+=(--sign-key "${SIGNING_KEY_PATH}")
+          fi
+          python3 sbin/manifest.py "${args[@]}"
+          cat dist/update.json
+
+      # 镜像同步：先传产物，再传一份 **bucket 根**上的 update.json。
+      # 想用它当更新源的客户端把「更新源」指到 ${MIRROR_BASE_URL}/update.json 即可；
+      # 不配也能用——manifest 里的下载地址已经是镜像了，那才是慢的那一段。
+      - name: 同步到镜像（可选）
+        if: vars.MIRROR_BASE_URL != ''
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MIRROR_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MIRROR_SECRET_ACCESS_KEY }}
+          MIRROR_ENDPOINT: ${{ secrets.MIRROR_ENDPOINT }}
+          MIRROR_BUCKET: ${{ secrets.MIRROR_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MIRROR_ENDPOINT}" ] || [ -z "${MIRROR_BUCKET}" ]; then
+            echo "配了 MIRROR_BASE_URL 但缺 MIRROR_ENDPOINT / MIRROR_BUCKET，跳过同步" >&2
+            exit 0
+          fi
+          for file in dist/duck-*; do
+            aws s3 cp "${file}" \
+              "s3://${MIRROR_BUCKET}/${TAG}/$(basename "${file}")" \
+              --endpoint-url "${MIRROR_ENDPOINT}"
+          done
+          aws s3 cp dist/update.json "s3://${MIRROR_BUCKET}/update.json" \
+            --endpoint-url "${MIRROR_ENDPOINT}"
+          # 签名必须跟着 manifest 一起走：镜像当主地址时，客户端在同一个前缀下取
+          # `update.json.sig`，缺了它等于「签名校验失败」而不是「回落到 GitHub」。
+          if [ -f dist/update.json.sig ]; then
+            aws s3 cp dist/update.json.sig "s3://${MIRROR_BUCKET}/update.json.sig" \
+              --endpoint-url "${MIRROR_ENDPOINT}"
+          fi
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          body_path: notes.md
+          draft: false
+          files: |
+            dist/duck-*
+            # 尾随的 `*` 让这一条在**签了名**时捎上 `update.json.sig`，没签名时照旧只匹配
+            # `update.json`——两者都算匹配成功，所以 `fail_on_unmatched_files` 不会误伤。
+            dist/update.json*
+          fail_on_unmatched_files: true

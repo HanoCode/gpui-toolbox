@@ -1,0 +1,10 @@
+# JS 执行轨测试夹具：声明 data/* 读 + 通知能力的插件。
+id = "dev.duck.sample"
+name = "示例插件"
+version = "0.1.0"
+api_version = 1
+execution_model = "js"
+
+[capabilities]
+filesystem_read = ["data/*"]
+notifications = true

@@ -1,0 +1,17 @@
+[package]
+name = "duck-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 主题层：token 快照与运行时装配。"
+
+[dependencies]
+gpui.workspace = true
+gpui-base.workspace = true
+gpui-component.workspace = true
+
+[dependencies.serde]
+workspace = true
+
+[lints]
+workspace = true

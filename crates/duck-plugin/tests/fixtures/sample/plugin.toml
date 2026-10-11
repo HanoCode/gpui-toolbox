@@ -1,0 +1,24 @@
+# 发现测试用：清单有效的插件（两个工具贡献）。
+id = "dev.duck.sample"
+name = "示例插件"
+version = "0.1.0"
+description = "插件框架的示例插件"
+api_version = 1
+execution_model = "js"
+
+[capabilities]
+filesystem_read = ["data/*"]
+notifications = true
+
+[[tools]]
+id = "dev.duck.sample.hash"
+name = "示例计算"
+description = "演示插件工具如何进入工具箱"
+category = "development"
+icon = "code"
+keywords = ["sample", "示例"]
+
+[[tools]]
+id = "dev.duck.sample.notes"
+name = "示例便签"
+category = "document"
