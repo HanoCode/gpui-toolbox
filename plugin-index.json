@@ -1,0 +1,37 @@
+{
+  "index_version": 1,
+  "generated_at": "2026-10-11T15:30:02Z",
+  "plugins": [
+    {
+      "id": "dev.duck.textstat",
+      "name": "文本统计",
+      "version": "0.1.0",
+      "description": "读取剪贴板文本，统计字符、单词与行数，报告写入插件数据目录。",
+      "category": "development",
+      "tags": [
+        "文本",
+        "统计",
+        "utils"
+      ],
+      "api_version": 1,
+      "execution_model": "js",
+      "author": "",
+      "homepage": "",
+      "capabilities": {
+        "filesystem_read": [],
+        "filesystem_write": [
+          "last-report.txt"
+        ],
+        "network_hosts": [],
+        "process_exec": [],
+        "notifications": true
+      },
+      "archive": {
+        "url": "https://raw.githubusercontent.com/HanoCode/gpui-toolbox/plugin-index/packages/dev.duck.textstat-0.1.0.tar.gz",
+        "mirrors": [],
+        "sha256": "425eb1387b093dc3f610d73d59ca7832fa7b42f3e0aa7e24917ef65336012876",
+        "size": 1828
+      }
+    }
+  ]
+}
