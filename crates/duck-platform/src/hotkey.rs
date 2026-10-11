@@ -36,6 +36,10 @@ use std::str::FromStr as _;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 
+// Windows 侧的管理器槽位是线程局部的 `RefCell`（原因见 `MANAGER` 上的说明）。
+#[cfg(target_os = "windows")]
+use std::cell::RefCell;
+
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
@@ -374,82 +378,85 @@ pub fn start(on_press: impl Fn() + Send + Sync + 'static) -> bool {
 ///
 /// 只在主线程调（macOS 的 Carbon 事件处理器要挂在主线程的 run loop 上）。
 pub fn bind(hotkey: Option<&Hotkey>) -> Result<(), HotkeyError> {
-    let mut manager = lock(&MANAGER);
-    if manager.is_none() {
-        match GlobalHotKeyManager::new() {
-            Ok(created) => {
-                *manager = Some(Manager {
-                    manager: created,
-                    active: None,
-                });
-            }
-            Err(error) => {
-                let reason = HotkeyError::Rejected(error.to_string());
-                tracing::warn!(%error, "failed to create the global hotkey manager");
-                *lock(&LAST_ERROR) = Some(reason.clone());
-                return Err(reason);
-            }
-        }
-    }
-    // 上面「空则建」的分支不是建好了就是已经 `return Err`，所以这里逻辑上必然有值。
-    // 但仍然不用 `expect`：生产代码不许 panic —— 真撞上（比如将来有人改了上面的控制流）
-    // 也只是「这一次没登记上」，不该把整个应用带走。
-    let Some(state) = manager.as_mut() else {
-        let reason = HotkeyError::Rejected("hotkey manager unavailable".to_owned());
-        tracing::warn!("hotkey manager missing right after initialization");
-        *lock(&LAST_ERROR) = Some(reason.clone());
-        return Err(reason);
-    };
-
-    let Some(wanted) = hotkey else {
-        if let Some((_, old)) = state.active.take() {
-            // 注销失败不该拦住「关掉这个功能」：登记表已经在上面清空了，
-            // 最坏的结果是系统里残留一个按不响的登记。
-            if let Err(error) = state.manager.unregister(old) {
-                tracing::warn!(%error, "failed to unregister the global hotkey");
+    with_manager(|manager| {
+        if manager.is_none() {
+            match GlobalHotKeyManager::new() {
+                Ok(created) => {
+                    *manager = Some(Manager {
+                        manager: created,
+                        active: None,
+                    });
+                }
+                Err(error) => {
+                    let reason = HotkeyError::Rejected(error.to_string());
+                    tracing::warn!(%error, "failed to create the global hotkey manager");
+                    *lock(&LAST_ERROR) = Some(reason.clone());
+                    return Err(reason);
+                }
             }
         }
-        publish(None);
-        *lock(&LAST_ERROR) = None;
-        return Ok(());
-    };
+        // 上面「空则建」的分支不是建好了就是已经 `return Err`，所以这里逻辑上必然有值。
+        // 但仍然不用 `expect`：生产代码不许 panic —— 真撞上（比如将来有人改了上面的控制流）
+        // 也只是「这一次没登记上」，不该把整个应用带走。
+        let Some(state) = manager.as_mut() else {
+            let reason = HotkeyError::Rejected("hotkey manager unavailable".to_owned());
+            tracing::warn!("hotkey manager missing right after initialization");
+            *lock(&LAST_ERROR) = Some(reason.clone());
+            return Err(reason);
+        };
 
-    if state
-        .active
-        .as_ref()
-        .is_some_and(|(spec, _)| spec == wanted.spec())
-    {
-        // 同一个组合：不重复登记。macOS 上再登记一次会留下一个野 `EventHotKeyRef`
-        // （库内部按 id 存表，第二次会覆盖掉第一次的句柄，注销不掉）。
-        // 仍然要 `publish`：`bind` 可能先于 `start` 被调到，那时投递侧还没有 `active_id`。
+        let Some(wanted) = hotkey else {
+            if let Some((_, old)) = state.active.take() {
+                // 注销失败不该拦住「关掉这个功能」：登记表已经在上面清空了，
+                // 最坏的结果是系统里残留一个按不响的登记。
+                if let Err(error) = state.manager.unregister(old) {
+                    tracing::warn!(%error, "failed to unregister the global hotkey");
+                }
+            }
+            publish(None);
+            *lock(&LAST_ERROR) = None;
+            return Ok(());
+        };
+
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|(spec, _)| spec == wanted.spec())
+        {
+            // 同一个组合：不重复登记。macOS 上再登记一次会留下一个野 `EventHotKeyRef`
+            // （库内部按 id 存表，第二次会覆盖掉第一次的句柄，注销不掉）。
+            // 仍然要 `publish`：`bind` 可能先于 `start` 被调到，那时投递侧还没有 `active_id`。
+            publish(Some(wanted.inner.id()));
+            *lock(&LAST_ERROR) = None;
+            return Ok(());
+        }
+
+        if let Err(error) = state.manager.register(wanted.inner) {
+            let reason = HotkeyError::Rejected(error.to_string());
+            tracing::warn!(%error, spec = wanted.spec(), "the system refused the global hotkey");
+            *lock(&LAST_ERROR) = Some(reason.clone());
+            return Err(reason);
+        }
+        if let Some((_, old)) = state.active.take()
+            && let Err(error) = state.manager.unregister(old)
+        {
+            tracing::warn!(%error, "failed to unregister the previous global hotkey");
+        }
+        state.active = Some((wanted.spec.clone(), wanted.inner));
         publish(Some(wanted.inner.id()));
         *lock(&LAST_ERROR) = None;
-        return Ok(());
-    }
-
-    if let Err(error) = state.manager.register(wanted.inner) {
-        let reason = HotkeyError::Rejected(error.to_string());
-        tracing::warn!(%error, spec = wanted.spec(), "the system refused the global hotkey");
-        *lock(&LAST_ERROR) = Some(reason.clone());
-        return Err(reason);
-    }
-    if let Some((_, old)) = state.active.take()
-        && let Err(error) = state.manager.unregister(old)
-    {
-        tracing::warn!(%error, "failed to unregister the previous global hotkey");
-    }
-    state.active = Some((wanted.spec.clone(), wanted.inner));
-    publish(Some(wanted.inner.id()));
-    *lock(&LAST_ERROR) = None;
-    tracing::info!(spec = wanted.spec(), "global hotkey registered");
-    Ok(())
+        tracing::info!(spec = wanted.spec(), "global hotkey registered");
+        Ok(())
+    })
 }
 
 /// 当前登记成功的热键 id；没登记时为 `None`。
 fn active_spec_id() -> Option<u32> {
-    lock(&MANAGER)
-        .as_ref()
-        .and_then(|state| state.active.as_ref().map(|(_, hotkey)| hotkey.id()))
+    with_manager(|manager| {
+        manager
+            .as_ref()
+            .and_then(|state| state.active.as_ref().map(|(_, hotkey)| hotkey.id()))
+    })
 }
 
 /// 把「当前该听哪个 id」告知投递线程。服务没起来时是空操作（`start` 会补一次）。
@@ -462,9 +469,11 @@ fn publish(id: Option<u32>) {
 /// 当前**登记成功**的键位规范串；没登记（关着 / 注册失败 / 平台不支持）时为 `None`。
 #[must_use]
 pub fn active_spec() -> Option<String> {
-    lock(&MANAGER)
-        .as_ref()
-        .and_then(|state| state.active.as_ref().map(|(spec, _)| spec.clone()))
+    with_manager(|manager| {
+        manager
+            .as_ref()
+            .and_then(|state| state.active.as_ref().map(|(spec, _)| spec.clone()))
+    })
 }
 
 /// 上一次登记失败的原因；成功一次之后清空。
@@ -491,7 +500,46 @@ struct Shared {
 
 /// 管理器。建过之后常驻——`Drop for GlobalHotKeyManager` 会注销并摘掉事件处理器，
 /// 而「进程活着但热键没了」比多留一个管理器糟得多。
+///
+/// # 为什么 Windows 上是线程局部而不是 `static`
+///
+/// `global-hotkey` 的 **Windows 实现持有窗口句柄（`*mut c_void`），因此
+/// `GlobalHotKeyManager` 不是 `Send`**（macOS 实现是）。`static Mutex<Option<Manager>>`
+/// 要求 `Manager: Send`，于是在 Windows 上直接编译不过：
+///
+/// ```text
+/// error[E0277]: `*mut c_void` cannot be sent between threads safely
+/// ```
+///
+/// 这里退回线程局部承接同一个契约，而不是 `unsafe impl Send` 去对编译器说谎 —— 管理器
+/// 本来就**只在主线程访问**（[`bind`] 的文档已写明这条），线程局部既满足类型系统，
+/// 又不需要任何 `unsafe`。非 Windows 平台维持 `static Mutex`：那边是 `Send`，
+/// 还能跨线程读。
+#[cfg(not(target_os = "windows"))]
 static MANAGER: Mutex<Option<Manager>> = Mutex::new(None);
+// Windows 侧的管理器槽位（原因见上一条）。`RefCell` 而非 `Mutex`：它只在本线程被借出。
+// 这里用行注释而不是文档注释：`thread_local!` 是宏调用，rustdoc 不为它生成文档，
+// 挂 `///` 只会得到一条 `unused_doc_comments` 告警。
+#[cfg(target_os = "windows")]
+thread_local! {
+    static MANAGER: RefCell<Option<Manager>> = RefCell::new(None);
+}
+
+/// 以统一方式访问管理器槽位；两条后端见 [`MANAGER`]。
+///
+/// ⚠️ 回调内**不得**再次进入本函数：Windows 那一侧是 `RefCell::borrow_mut`，二次借出会
+/// panic。现有调用点（`bind` / `active_spec` / `active_spec_id`）都不递归。
+fn with_manager<T>(f: impl FnOnce(&mut Option<Manager>) -> T) -> T {
+    #[cfg(not(target_os = "windows"))]
+    {
+        f(&mut lock(&MANAGER))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        MANAGER.with(|slot| f(&mut slot.borrow_mut()))
+    }
+}
+
 /// 上一次登记失败的原因。
 static LAST_ERROR: Mutex<Option<HotkeyError>> = Mutex::new(None);
 /// 投递侧的那一半。`OnceLock` 保证「落点只有一处」。
