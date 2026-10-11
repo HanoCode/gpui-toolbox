@@ -319,7 +319,7 @@ fn standalone_log_window_body_scrolls_vertically(cx: &mut TestAppContext) {
 
     impl Render for StandaloneLogReplica {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            // 对照 `aux.rs` chrome：窗口根是 flex **列**（标题条 + 内容壳），
+            // 对照 `auxiliary.rs` chrome：窗口根是 flex **列**（标题条 + 内容壳），
             // 内容壳 `flex_1().min_h_0()` 才能从列布局里分到窗口高度——外壳若是
             // Block 布局，`flex_1` 失效，查看器会撑成内容高度而失去可滚的约束。
             v_flex()

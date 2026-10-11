@@ -3,12 +3,17 @@
 //! 本 crate 只提供窗口 chrome、活动栏、路由和内容槽位；业务页面由 app 创建后以
 //! [`ShellRoute`] 注入。结构对应 FluxDown `fluxdown_ui_shell`。
 
-mod aux;
+// 模块名刻意不叫 `aux`：`aux` 是 Windows 保留设备名（与 `CON` / `NUL` / `COM1` 同类），
+// 文件一旦叫 `aux.rs`，Windows 上 `git checkout` 直接报
+// `error: invalid path 'crates/duck-shell/src/aux.rs'`，CI 的 Windows 腿在**检出阶段**
+// 就红，而本地 macOS 全程无感。现在文件名与对外 API 名（`auxiliary_window_options` /
+// `AuxiliaryWindowView`）也对齐了。守卫见 `duck-platform/tests/windows_safe_paths.rs`。
+mod auxiliary;
 mod notifications;
 mod palette_window;
 mod view;
 
-pub use aux::*;
+pub use auxiliary::*;
 pub use palette_window::*;
 
 use duck_theme::active_theme;

@@ -569,7 +569,7 @@ style mask 里仍有 `NSTitledWindowMask`（它把 `None` 与 `appears_transpare
 
 **涉及文件**：`duck-shell/src/view.rs`（`RouteId::as_str` / `with_initial_route` /
 `active_route_id` / 两个钩子 / `set_active_right_sidebar_collapsed`）、
-`duck-shell/src/aux.rs`（几何钩子）、`duck-app/src/settings.rs`（会话读写 + 夹取，纯几何核心
+`duck-shell/src/auxiliary.rs`（几何钩子）、`duck-app/src/settings.rs`（会话读写 + 夹取，纯几何核心
 可单测）、`duck-app/src/app.rs`、`main.rs`、四个辅助窗口开窗点、`pages/settings.rs`（开关）、`i18n.rs`。
 
 **验收标准（实测结果）**
