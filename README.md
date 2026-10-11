@@ -22,19 +22,32 @@ Duck Toolbox 是一个 Rust 桌面应用的起点工程：在 `gpui-component` /
 
 ## 目录结构
 
+分层是**单向**的：下面的层不知道上面的层存在，`duck-platform` 及插件三件套刻意不依赖 gpui，
+因此可以脱离 UI 单独测试。
+
 ```
 gpui-toolbox/
 ├── crates/
-│   ├── duck-app/         # 二进制入口（bin = duck）：窗口装配、页面
-│   ├── duck-shell/       # 窗口外壳：自绘标题栏、活动栏、路由与内容槽位
-│   ├── duck-components/  # 视觉组件库：按钮 / 导航 / 卡片 / 表单原语 / 侧栏面板
-│   └── duck-theme/       # 主题层：token 快照、内置预设、国际化（i18n）
-├── sbin/                 # 构建脚本：run.sh / package.sh / _common.sh
-├── .skills/              # GPUI Kit 编码与设计指南（供 AI 助手与开发者查阅）
-├── .workbuddy/memory/    # 项目约定与工作日志
-├── assets/               # 应用图标等资源（AppIcon.icns）
-├── dist/                 # 打包产物（已 gitignore）
-└── temp/                 # 上游参考源码（已 gitignore）
+│   ├── duck-app/             # 二进制入口（bin = duck）：窗口装配、页面
+│   ├── duck-shell/           # 窗口外壳：自绘标题栏、活动栏、路由与内容槽位
+│   ├── duck-components/      # 视觉组件库：按钮 / 导航 / 卡片 / 表单原语 / 侧栏面板
+│   ├── duck-theme/           # 主题层：token 快照、内置预设、国际化（i18n）
+│   ├── duck-command/         # 交互骨架：动作注册表 / 键位 / 菜单 / 命令面板索引
+│   ├── duck-tools/           # 工具注册表：元数据、分类、拼音索引、工具级设置
+│   ├── duck-platform/        # 平台能力：路径 / 日志 / 原生对话框 / 剪贴板 / 系统外壳 / 单实例锁
+│   ├── duck-store/           # 持久化：SQLite（内嵌）+ 版本化迁移 + 去抖写入
+│   ├── duck-plugin/          # 插件框架：plugin.toml 清单解析、能力网关、贡献发现
+│   ├── duck-plugin-js/       # 插件 JS 执行轨：QuickJS 沙箱 + 能力仲裁的宿主函数桥
+│   ├── duck-plugin-registry/ # 插件市场：远端索引、拉取、SHA-256 校验、安装/卸载
+│   └── duck-update/          # 更新器：JSON manifest + SHA-256 校验 + 就地替换 .app
+├── sbin/                     # 构建脚本：run.sh / package.sh / package.ps1 / licenses.py 等
+├── plugins/                  # 随仓库分发的插件（text-stat 等）
+├── docs/                     # 架构与设计文档（含架构差距分析）
+├── .skills/                  # GPUI Kit 编码与设计指南（供 AI 助手与开发者查阅）
+├── assets/                   # 应用图标等资源（AppIcon.icns）
+├── .github/workflows/        # CI 门禁（ci.yml）与发版（release.yml）
+├── dist/                     # 打包产物（已 gitignore）
+└── temp/                     # 上游参考源码（已 gitignore）
 ```
 
 ## 快速开始
@@ -61,9 +74,10 @@ cargo run -p duck-app
 
 ## 主题与国际化
 
-- **主题**：`Appearance { preference, accent, ui_scale, font_size, font_family, language, theme }`
-  统一经 `duck_theme::update_appearance(cx, |a| ...)` 修改。内置 5 套预设：
-  DefaultDark / DefaultLight / MidnightBlue / Nord / WarmLight。
+- **主题**：内置 **42 套预设**（明暗两个槽位各选一套，默认 `Default Dark` / `Default Light`）。
+  外观统一经 `duck_theme::update_appearance(cx, |a| ...)` 修改，落在一个 `Appearance`
+  结构体里（主题槽位、强调色、界面缩放、界面密度、字号/字体、语言、活动栏与右栏开关等），
+  再整体序列化进单个持久化键。字段清单以 `duck-theme/src/manager.rs` 为准。
 - **国际化**：层位于 `duck-theme::i18n`，支持 `System` / `ZhHans` / `En`。
   采用「**源串即键**」策略 —— 代码中直接写中文，取词用 `tr(cx, "外观")`，
   英译表为 `i18n.rs` 的 `EN`。新增中文文案必须同步补 `EN`，否则测试守卫失败。
