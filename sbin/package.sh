@@ -77,6 +77,11 @@ version="$(duck_version)"
 # `assets/licenses/THIRD_PARTY_LICENSES.md` 既随产物分发，也被内嵌进应用
 # （设置 → 关于 → 查看开源许可）。依赖一变它就陈旧，所以在打包前先拦一道。
 # 退出码三态：0 一致 / 1 已过期（拦下）/ 2 本机查不了（只警告，不挡打包）。
+#
+# 注意「本机查不了」包括**缓存只缺一部分**的情形（`licenses.py` 自己判）：渲染结果
+# 依赖每个包的源码目录能否定位到，缺一个就与提交的文件必然不同，那是环境问题不是
+# 内容过期。所以这一道在 CI 上未必真的跑起来——**权威校验在 ci.yml 的 `static` 腿**，
+# 那条腿先 `cargo fetch --locked` 再 `licenses.py --check`，缓存完整，判得准。
 if command -v python3 >/dev/null 2>&1; then
     if python3 "${DUCK_ROOT}/sbin/licenses.py" --check; then
         :
