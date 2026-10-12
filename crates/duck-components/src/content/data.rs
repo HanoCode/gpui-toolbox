@@ -92,6 +92,7 @@ pub fn status_cell(color: Hsla, text: impl Into<SharedString>, cx: &App) -> Div 
         .flex()
         .items_center()
         .gap(tokens.spacing.xxs)
+        // 状态色点直径：视觉标记（不是间距步进），阶梯里没有对应档，保留裸值。
         .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
         .child(
             div()

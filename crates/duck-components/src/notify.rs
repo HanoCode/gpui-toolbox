@@ -108,7 +108,7 @@ fn in_app(
                 .child(
                     v_flex()
                         .min_w_0()
-                        .gap(px(2.))
+                        .gap(theme.tokens().spacing.xxs)
                         .when_some(title.clone(), |this, title| {
                             this.child(
                                 div()

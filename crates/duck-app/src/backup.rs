@@ -12,8 +12,9 @@
 //! 3. **破坏性操作前先留退路**：导入与重置都会先把现状导出到 `backups/`，报告里带上路径。
 //!    比「失败自动回滚」更可靠——回滚本身失败时，用户手上至少还有一个完整的包。
 //!
-//! 归档里**没有** keyring 凭据（那是系统钥匙串里的东西，不属于应用数据），
-//! 这一点会写进清单的 `excludes` 字段，让用户看到「包里明确没有什么」。
+//! 归档里**没有**凭据（`credentials.json` 与 `vault.key` 都是本机私有的东西，
+//! 不属于可以随手分享的应用数据），这一点会写进清单的 `excludes` 字段，
+//! 让用户看到「包里明确没有什么」。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,7 +45,7 @@ const INCLUDE_KEYBINDINGS: &str = "keybindings";
 const INCLUDE_PLUGINS: &str = "plugins";
 const INCLUDE_LOGS: &str = "logs";
 /// 明确排除项：写进清单，避免用户以为「导出 = 一切都在里面」。
-const EXCLUDE_KEYRING: &str = "keyring-credentials";
+const EXCLUDE_CREDENTIALS: &str = "credentials";
 
 /// 备份 / 恢复失败。
 #[derive(Debug)]
@@ -282,7 +283,7 @@ pub fn write_archive(
         app_version: app_version.to_owned(),
         created_at: duck_store::now_seconds(),
         includes,
-        excludes: vec![EXCLUDE_KEYRING.to_owned()],
+        excludes: vec![EXCLUDE_CREDENTIALS.to_owned()],
     };
     // 清单放第一个条目：`read_member` 顺序扫描，常见的「先读清单」路径少走几步。
     entries.insert(
@@ -694,7 +695,10 @@ mod tests {
             !report.manifest.includes.contains(&INCLUDE_LOGS.to_owned()),
             "没开日志就不该声明含日志"
         );
-        assert_eq!(report.manifest.excludes, vec![EXCLUDE_KEYRING.to_owned()]);
+        assert_eq!(
+            report.manifest.excludes,
+            vec![EXCLUDE_CREDENTIALS.to_owned()]
+        );
 
         let staging = dir.join("staging");
         let loaded = load_archive(&archive, &staging).expect("读包");

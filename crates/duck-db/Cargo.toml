@@ -1,0 +1,44 @@
+[package]
+name = "duck-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "数据库模块内核：连接档案、驱动分发、SQL 智能与统一结果模型（不依赖 gpui）。"
+
+# 依赖纪律（AGENTS.md §1）：本 crate 是内核层，**不得引入 gpui**；
+# 平台能力只取 duck-platform（凭据 / 路径 / 对话框）。四条驱动里三条是阻塞 API，
+# 由调用方（duck-app 页面）丢进 gpui 的 background_executor；SQL Server 那条是
+# async-only 的 `tiberius`，由驱动内部自管 current-thread runtime `block_on`
+# （docs/database-design.md §4.1）。**无论哪条，本 crate 都不向调用方暴露 tokio 类型。**
+[dependencies]
+duck-platform.workspace = true
+rusqlite.workspace = true
+postgres.workspace = true
+postgres_rustls.workspace = true
+mysql.workspace = true
+# SQL Server：async-only 驱动，tokio 只在这一条路径上用到。
+tiberius.workspace = true
+# MongoDB：同样 async-only，共用上面那条 current-thread runtime 的口径。
+mongodb.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+# `tokio::net::TcpStream` → `futures::io::AsyncWrite` 的桥（tiberius 要后者）；
+# `futures-util` 只为 `StreamExt::next()`（消费 `QueryStream`）。两者都已在图内。
+tokio-util.workspace = true
+futures-util.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+sqlparser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+# AI text-to-SQL 出网：ureq 已在依赖图内（duck-update / 插件出网），零新增下载。
+# ClickHouse 驱动（drivers/clickhouse.rs）走的也是它——HTTP 接口直连，零新协议依赖；
+# Elasticsearch 驱动（drivers/elasticsearch.rs）同理。
+ureq.workspace = true
+# Elasticsearch 的 Basic 认证头要 base64。**零新增包**：0.22.1 早就在本 crate 的依赖
+# 图里（`bson → base64`，随 mongodb 进来的），这里只是把传递依赖提成直接依赖。
+base64.workspace = true
+
+[lints]
+workspace = true

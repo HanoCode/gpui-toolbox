@@ -12,7 +12,6 @@
 //! - 没有任何打开路由时内容区给空状态引导。
 
 use std::collections::HashSet;
-use std::rc::Rc;
 
 use duck_components::content::{
     accordion, description_list, description_row, empty_state, neutral_tag, status_cell,
@@ -20,8 +19,7 @@ use duck_components::content::{
 use duck_components::{
     ButtonVariant, DuckIcon, SidebarPanel, SidebarState, beta_badge, body_text, button,
     caption_number, icon_button, meta_text, notify, option_row, settings_section,
-    sidebar_navigation_button, status_button, status_button_content, switch_control,
-    tabular_numbers, toolbar_action_button,
+    sidebar_navigation_button, switch_control, tabular_numbers,
 };
 use duck_shell::left_edge_probe;
 use duck_theme::{active_theme, t, tf, tr, trf};
@@ -32,23 +30,19 @@ use duck_tools::{
     HelpSection, PasteInbox, PendingPaste, RegisteredTool, ToolCategory, ToolQuery, ToolRegistry,
 };
 use gpui::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _,
+    AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement, Pixels, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     Icon, h_flex,
-    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
-    tooltip::Tooltip,
+    menu::{ContextMenuExt as _, PopupMenuItem},
     v_flex,
 };
 
 use crate::pages::open_settings_at;
 use crate::pages::settings::{CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT};
-use crate::pages::status_support::{disk_free_bytes, format_bytes, open_number_prompt};
-
-/// 完成后关机延迟预设（分钟），对齐 FluxDown `SHUTDOWN_PRESETS_MIN`。
-const SHUTDOWN_PRESETS_MIN: [i64; 3] = [1, 5, 30];
+use crate::pages::status_support::{disk_free_bytes, format_bytes};
 
 /// 工具箱侧栏默认宽度（px）。
 const SIDEBAR_DEFAULT_WIDTH: f32 = 230.;
@@ -504,6 +498,8 @@ impl ToolboxPage {
                             .left_0()
                             .right_0()
                             .bottom_0()
+                            // 选中标签的下缘指示条：2px 视觉标记（不是间距步进），
+                            // 全仓仅此一处、粗细应保持恒定，故不用 spacing 档。
                             .h(px(2.))
                             .rounded_full()
                             .bg(tokens.colors.primary),
@@ -942,100 +938,16 @@ impl ToolboxPage {
             .into_any_element()
     }
 
-    /// 状态栏里的小图标按钮（全部暂停 / 全部开始）。
-    fn render_status_action(
-        &self,
-        id: &'static str,
-        label: &'static str,
-        icon: DuckIcon,
-        message: &'static str,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let theme = active_theme(cx);
-        let icon_size = theme.extended().icon.sm;
-        let control_size = theme.density().status_control;
-        let tooltip_label = SharedString::from(label);
-        div()
-            .id(SharedString::from(format!("{id}-tooltip")))
-            .flex_none()
-            .tooltip(move |window, cx| Tooltip::new(tooltip_label.clone()).build(window, cx))
-            .child(
-                toolbar_action_button(id, label, Icon::new(icon).size(icon_size), false, false, cx)
-                    .size(control_size)
-                    .on_click(move |_, window, cx| {
-                        duck_components::notify::info(message, window, cx);
-                    }),
-            )
-    }
-
-    /// 完成后关机控件：电源图标 + 预设下拉；本工程无宿主电源能力，选择后仅提示。
-    fn render_shutdown_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let lang = active_theme(cx).lang();
-        let title = t(lang, "完成后关机");
-
-        status_button("shutdown-trigger", cx)
-            .min_w(active_theme(cx).density().status_control)
-            .child(status_button_content(Some(DuckIcon::Power), None, None, cx))
-            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
-                let mut menu = menu.item(PopupMenuItem::new(t(lang, "立即")).on_click(
-                    move |_, window, cx| {
-                        duck_components::notify::warning(
-                            t(lang, "演示：完成后关机 · 立即（未接入宿主电源能力）"),
-                            window,
-                            cx,
-                        );
-                    },
-                ));
-                for minutes in SHUTDOWN_PRESETS_MIN {
-                    menu = menu.item(
-                        PopupMenuItem::new(SharedString::from(tf(
-                            lang,
-                            "{} 分钟",
-                            &[&minutes.to_string()],
-                        )))
-                        .on_click(move |_, window, cx| {
-                            duck_components::notify::warning(
-                                tf(
-                                    lang,
-                                    "演示：完成后关机 · {} 分钟（未接入宿主电源能力）",
-                                    &[&minutes.to_string()],
-                                ),
-                                window,
-                                cx,
-                            );
-                        }),
-                    );
-                }
-                menu.separator()
-                    .item(PopupMenuItem::new(t(lang, "自定义...")).on_click(
-                        move |_, window, cx| {
-                            open_number_prompt(
-                                window,
-                                cx,
-                                title,
-                                t(lang, "自定义延迟"),
-                                t(lang, "分钟"),
-                                None,
-                                1,
-                                Rc::new(move |minutes, window, cx| {
-                                    duck_components::notify::warning(
-                                        tf(
-                                            lang,
-                                            "演示：完成后关机 · {} 分钟（未接入宿主电源能力）",
-                                            &[&minutes.to_string()],
-                                        ),
-                                        window,
-                                        cx,
-                                    );
-                                }),
-                            );
-                        },
-                    ))
-            })
-    }
-
-    /// 状态栏：左 = 全局速度 + 全部暂停 / 全部开始；右 = 限速、代理、完成后关机、剩余空间。
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// 状态栏：只放**有真实来源**的读数。
+    ///
+    /// 此前这里是一整套下载管理器风格的控件（上下行速率、全部暂停 / 全部开始、完成后
+    /// 关机），源码注释写着「对齐 FluxDown」。本应用没有下载引擎、没有全局任务队列、
+    /// 也没有宿主电源能力 —— 那几个控件点下去只能弹一句「演示：…」，而那两个速率读数
+    /// 更是恒为 `0 B/s` 的假数字。全部删除：一个**点下去不会有结果**的按钮比没有它更糟。
+    ///
+    /// 现在左边是插件与工具的**真实计数**（与侧栏读同一份注册表），右边是家目录所在卷
+    /// 的剩余空间。两样都拿不到时整条不渲染，不留一条空栏占位置。
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = active_theme(cx);
         let tokens = theme.tokens().clone();
         let extended = theme.extended().clone();
@@ -1048,21 +960,13 @@ impl ToolboxPage {
         let meta_line_height = tokens.typography.xs.line_height;
         let icon_size = extended.icon.sm;
 
-        let pause_all = self.render_status_action(
-            "status-pause-all",
-            tr(cx, "全部暂停"),
-            DuckIcon::Pause,
-            tr(cx, "演示：全部暂停（未接入任务后端）"),
-            cx,
-        );
-        let resume_all = self.render_status_action(
-            "status-resume-all",
-            tr(cx, "全部开始"),
-            DuckIcon::Play,
-            tr(cx, "演示：全部开始（未接入任务后端）"),
-            cx,
-        );
-        let shutdown_control = self.render_shutdown_control(cx);
+        let tools = ToolRegistry::listed(cx).len();
+        let plugins = crate::plugins::index(cx).map_or(0, |index| index.loaded_count());
+        let disk = disk_free_bytes();
+        if tools == 0 && plugins == 0 && disk.is_none() {
+            return None;
+        }
+
         let icon_cell = move |icon: DuckIcon, text: String| {
             h_flex()
                 .flex_none()
@@ -1072,59 +976,49 @@ impl ToolboxPage {
                 .child(text)
         };
 
-        h_flex()
-            .w_full()
-            .h(bar_height)
-            .flex_none()
-            .items_center()
-            .justify_between()
-            .gap(spacing.md)
-            .px(spacing.sm)
-            .bg(extended.colors.chrome)
-            .border_t(stroke)
-            .border_color(hairline)
-            .text_size(meta_size)
-            .line_height(meta_line_height)
-            .font_features(tabular_numbers())
-            .text_color(muted)
-            .child(
-                h_flex()
-                    .min_w_0()
-                    .items_center()
-                    .gap(spacing.md)
-                    .child(icon_cell(
-                        DuckIcon::ArrowDown,
-                        format!("{}/s", format_bytes(0)),
-                    ))
-                    .child(icon_cell(
-                        DuckIcon::ArrowUp,
-                        format!("{}/s", format_bytes(0)),
-                    ))
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap(spacing.xxs)
-                            .child(pause_all)
-                            .child(resume_all),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .min_w_0()
-                    .items_center()
-                    .gap(spacing.xs)
-                    .child(shutdown_control)
-                    .children(
-                        // 与左侧按钮内边距对齐，使右侧控件与磁盘信息的视觉间距一致。
-                        disk_free_bytes().map(|bytes| {
-                            icon_cell(
-                                DuckIcon::HardDrive,
-                                trf(cx, "剩余 {}", &[&format_bytes(bytes)]),
-                            )
-                            .px(spacing.xs)
-                        }),
-                    ),
-            )
+        Some(
+            h_flex()
+                .w_full()
+                .h(bar_height)
+                .flex_none()
+                .items_center()
+                .justify_between()
+                .gap(spacing.md)
+                .px(spacing.sm)
+                .bg(extended.colors.chrome)
+                .border_t(stroke)
+                .border_color(hairline)
+                .text_size(meta_size)
+                .line_height(meta_line_height)
+                .font_features(tabular_numbers())
+                .text_color(muted)
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .items_center()
+                        .gap(spacing.md)
+                        .child(icon_cell(
+                            DuckIcon::Plug,
+                            trf(
+                                cx,
+                                "{} 个插件 · {} 个工具",
+                                &[&plugins.to_string(), &tools.to_string()],
+                            ),
+                        )),
+                )
+                .children(disk.map(|bytes| {
+                    h_flex()
+                        .min_w_0()
+                        .items_center()
+                        .gap(spacing.xs)
+                        .child(icon_cell(
+                            DuckIcon::HardDrive,
+                            trf(cx, "剩余 {}", &[&format_bytes(bytes)]),
+                        ))
+                        .px(spacing.xs)
+                }))
+                .into_any_element(),
+        )
     }
 
     /// 智能粘贴横幅：顶栏搜索框粘进来一段可识别内容时出现，确认后交给对应工具。
@@ -1162,7 +1056,8 @@ impl ToolboxPage {
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .gap(px(2.))
+                        // 同一段文案的两行（主体 + 补充说明）：最紧一档间距。
+                        .gap(tokens.spacing.xxs)
                         .child(
                             div()
                                 .text_size(tokens.typography.sm.size)
@@ -1239,7 +1134,7 @@ impl Render for ToolboxPage {
                         |page, left| page.content_left = left,
                     )),
             )
-            .child(self.render_status_bar(cx))
+            .children(self.render_status_bar(cx))
     }
 }
 

@@ -23,7 +23,7 @@
 | `duck-shell` | 自绘标题栏、活动栏、6 条路由与内容槽位、右侧栏 shell 级统一区域 | 扎实 |
 | `duck-command` | 动作注册表派生**四输出面**（快捷键 / 菜单 / 命令面板 / 活动栏）、两档 handler（窗口级 + App 级） | 设计先进，覆盖面偏窄 |
 | `duck-store` | SQLite + `user_version` 只追加迁移 + 单写线程 400ms 去抖；表 kv / settings / windows / recent / tool_state | 底座好，**有死表** |
-| `duck-platform` | 路径、`RollingWriter` 日志（按天 + `prune_logs`）、rfd 模态框、剪贴板、flock 单实例锁、开机自启、crash 捕获、keyring 凭据、数据归档 | 已解决：外部唤起请求归一 + 单实例转发通道 + Windows 注册表注册 |
+| `duck-platform` | 路径、`RollingWriter` 日志（按天 + `prune_logs`）、rfd 模态框、剪贴板、flock 单实例锁、开机自启、crash 捕获、**加密凭据**（`vault`：AES-256-GCM；`secret`：`credentials.json`）、数据归档 | 已解决：外部唤起请求归一 + 单实例转发通道 + Windows 注册表注册；凭据已与系统钥匙串解绑（2026-10-12） |
 | `duck-tools` | 工具注册表、`invoke`（记使用 + 调 run）、`recent()`、dev 工具 `debug.registry` | 内置工具已下线，仅留骨架 |
 | `duck-plugin` | `plugin.toml` 契约、CapabilityGranter（默认拒绝 + glob）、PluginIndex 多目录合并 | **安装时子集授权未实现** |
 | `duck-plugin-js` | rquickjs 沙箱、每调用独立 Runtime、三重限制（内存 32 MiB / 栈 256 KiB / 墙钟 10 s） | **无网络 host 函数** |
@@ -45,7 +45,7 @@
 | ID | 缺口项 | 档位 | 估工 | 依赖 |
 | --- | --- | --- | --- | --- |
 | P0-1 | 崩溃捕获与诊断信息 | P0 | 1.5 | 无 |
-| P0-2 | 安全凭据存储（keyring） | P0 | 2.0 | 无 |
+| P0-2 | 安全凭据存储（**已与系统钥匙串解绑**） | P0 | 2.0 | 无 |
 | P0-3 | 数据导出 / 导入 / 重置 | P0 | 3.0 | P0-1（诊断归档） |
 | P0-4 | 首启引导 + 开源许可合规 | P0 | 2.5 | 无 |
 | P1-1 | ✅ 全局唤起快捷键（唤起时弹**独立命令面板浮窗**，可切回主窗） | P1 | 3.0 + 0.5 | 上游能力核实 + 引依赖 |
@@ -75,7 +75,7 @@ P1-3 · P1-4 · P1-5 · P2-1 · P2-2 · P2-3 · P2-4 · P2-5 · P2-6 · **P2-7**
 即**第一步全部收口**（9.0 / 9.0）、**第二步全部收口**（18.5 / 18.5）、
 **第三步全部收口（17.0 / 17.0）**（先止损三件 + P2-2 + P2-6 + P2-7 + P2-8 + P2-9；
 P2-1 的 2.0 是复核出来的虚账，实际由 P1-4 交付）。
-> P2-9 的第 3 条（凭据从 keyring 注入）**未随本项交付**，它要求先把 `secret.rs` 接上界面，
+> P2-9 的第 3 条（凭据注入）**未随本项交付**，它要求先把 `secret.rs` 接上界面，
 > 单列为后续项，不计入这里的 44.5。
 > P2-7 的焦点环对比度守卫实测不成立（80/420 组合 < 3:1），已 `#[ignore]` 存档；
 > 修 `ring` 的派生方式属产品取舍，单列为后续项，同样不计入 44.5。
@@ -139,9 +139,24 @@ P2-1 的 2.0 是复核出来的虚账，实际由 P1-4 交付）。
 
 ---
 
-### P0-2 安全凭据存储（keyring）
+### P0-2 安全凭据存储（keyring → 应用自有加密存储）
 
-**现状（证据）**
+> **2026-10-12 迁移（本节结论已被取代，勿按 keyring 口径实施）**
+> 用户实测「AI API key / SSH 口令写进 macOS 钥匙串」后定调：**凭据不许与系统绑定**，
+> 必须落在**程序自己的数据库或文件**里。当前口径：
+> - `duck-platform::vault`（新）—— AES-256-GCM（`ring`），密钥落 `app_data_dir()/vault.key`（0600），
+>   `seal` / `open` 两入口，密文格式 `hex(nonce(12B) ‖ ct+tag)`；
+> - `duck-platform::secret` —— 后端由「系统钥匙串」换成**应用自有文件** `app_data_dir()/credentials.json`
+>   （值 = vault 密文，键名仍明文），API 形态（`set` / `get` / `delete` / `exists` / `available` / `probe`）
+>   **刻意保持不变**，故 SSH / 数据库 / Redis 的既有调用点零改动即换落点；
+> - AI API key 不再走 `secret`，改为**密文进厂商档案**（`ProviderProfile::api_key`，随 `kv: ai_providers` 落 SQLite）；
+> - `keyring` 依赖已从根 `Cargo.toml` 与 `duck-platform/Cargo.toml` 删除，`Cargo.lock` 计数 **0**；
+>   下面第 2~6 条（依赖评审 / 后端特性 / 平台回落 / Linux 不编译后端）**全部随之失效**，仅作历史留档。
+>
+> 为什么当初就走错过：钥匙串条目 ACL 绑定**签名身份**，本仓 dev 是 ad-hoc 签名、每次重编译都变，
+> 读一次弹一次授权框；且「编辑回显」要求应用能无提示地读，与 ACL 模型根本相抵。详见 **P3-9**。
+
+**现状（证据，keyring 阶段）**
 - `crates/duck-platform/src/lib.rs` 当时只有一行注释 `//! - 凭据（keyring → 系统钥匙串）`，**无实现**
   （该行「尚未纳入」注释已在实施中删除）。
 - 全仓 grep `keyring|SecretService|CredentialStore` → 仅 `Cargo.lock` 中传递依赖 `security-framework`（非本仓直接使用）。
@@ -153,14 +168,17 @@ P2-1 的 2.0 是复核出来的虚账，实际由 P1-4 交付）。
 
 **改造方案（已实施，含实施中的设计修正）**
 1. `duck-platform/src/secret.rs`（新增，**模块公开** `pub mod secret`）。API：
-   `set` / `get` / `delete` / `exists` / `available` / `probe` / `backend`，
+   `set` / `get` / `delete` / `exists` / `available` / `probe`，
    `SecretStore` trait + `MemoryStore` 内存实现，`SecretError` 三档错误。
-   service 名 `com.duck.toolbox`。
+   ~~service 名 `com.duck.toolbox`~~（2026-10-12 随 keyring 一并删除；文件后端不需要服务名）。
    - 为什么 `pub mod` 而不是像 `crash` / `autostart` 那样扁平 re-export：那些模块的
      函数名（`read_text` / `set_launch_at_login`）本身表意完整，而 `set` / `get` / `delete`
      一旦提到 crate 根就必须加别名（`set_secret` / `get_secret`），反而把语义拆散了。
      先例是同样是多入口的 `archive`，它也是 `pub mod`。
-2. **依赖评审结论（AGENTS 3.5，2026-10-11）**：钉 `keyring = "3.6.3"`——
+2. ~~**依赖评审结论（AGENTS 3.5，2026-10-11）**：钉 `keyring = "3.6.3"`——~~
+   **【已作废，2026-10-12】** `keyring` 已整块移除（根 `Cargo.toml` + `duck-platform/Cargo.toml`），
+   `Cargo.lock` 里 `keyring` 计数为 0，当初净增的 2 个包（`keyring 3.6.3` /
+   `security-framework 2.11.1`）一并退回。以下为历史记录：
    MIT OR Apache-2.0、MSRV 1.75、edition 2021。**4.x 全系 MSRV 1.88 不可用**（顶破本仓 1.85）。
    实测依赖代价：`Cargo.lock` **净增 2 个包**——`keyring 3.6.3` 与
    `security-framework 2.11.1`。后者是 `keyring` 的 **iOS target** 声明，Cargo.lock 与 target
@@ -169,7 +187,9 @@ P2-1 的 2.0 是复核出来的虚账，实际由 P1-4 交付）。
    `security-framework 3.7.0`（`keyring` 在 macOS 要 `"3"`、在 iOS 要 `"2"`，各取所需）。
    因此原方案预期的「与 `security-framework 2.x` 并行存在 3.x」在**构建图内不成立**、
    只出现在 lock 里。
-3. **设计修正（实施中发现，原方案在此处会静默丢数据）**：`keyring` **默认无特性**
+3. ~~**设计修正（实施中发现，原方案在此处会静默丢数据）**：`keyring` **默认无特性**~~
+   **【已作废，2026-10-12】** 换文件后端后不存在「后端特性漏开静默回落内存 mock」这个问题
+   （文件后端只有一种实现，漏配即报错）。以下是 keyring 阶段踩过的坑，留作教训：
    （`default-features = false`），而不开后端特性时它**不报错**——`src/lib.rs` 里有
    `pub use mock as default;`，等于把默认后端静默换成**进程内的内存 mock**，
    表现是「写入成功、重启全丢」，且没有任何日志。所以：
@@ -179,15 +199,23 @@ P2-1 的 2.0 是复核出来的虚账，实际由 P1-4 交付）。
      `keyring::macos` / `keyring::windows` 模块：漏开特性时**编译失败**
      （错误信息直接指出 "gated behind the `apple-native` feature"），
      而不是跑起来悄悄丢数据。已实测：去掉 `apple-native` → 编译报 `E0433`。
-   - 「编译不过比悄悄丢数据好」是这条的取舍原则。
+   - 「编译不过比悄悄丢数据好」是这条的取舍原则（这条原则本身仍然成立，只是现在
+     由「文件只有一种后端」天然满足）。
 4. **错误归一**：`Error::NoEntry` 在 `get` 里归成 `Ok(None)`（读一个还没设过的键是
    正常路径）、在 `delete` 里归成 `Ok(())`（让 delete 幂等）；而
    `NoStorageAccess` / `PlatformFailure` **绝不**折叠成「当作没有值」——
    那会把「这台机器读不出来」伪装成「用户还没配」，是这类代码最难查的 bug。
-5. **平台回落策略**：`Backend::{Keychain, CredentialManager, None}`。
-   拿不到后端时**不降级为明文或内存**，`available()` 返回 `false`、
-   操作返回 `SecretError::UnsupportedPlatform`，由调用方禁用相关功能。
-6. **Linux 不编译后端**（实施决策，与原方案的「Linux Secret Service」不同）：
+   （`Error::NoEntry` 已随 keyring 消失，`secret.rs` 现在同义处理「键不存在 → `Ok(None)`」
+   与「密文解不开 → `Err`」，后者**绝不**折叠成空值。）
+5. **平台回落策略**：~~`Backend::{Keychain, CredentialManager, None}`~~。
+   **【已作废，2026-10-12】** `Backend` 枚举与 `backend()` 已删除。文件后端没有
+   「本平台没后端」这个状态，只有「目录建不出来 / 文件读不出来」这类**环境故障**，
+   报 `SecretError::Failed` 由调用方禁用相关功能。
+   ~~拿不到后端时**不降级为明文或内存**，`available()` 返回 `false`、操作返回
+   `SecretError::UnsupportedPlatform`~~ ——「绝不降级为明文」这条口径**保持**。
+6. **Linux 不编译后端**（~~实施决策~~ **【已作废，2026-10-12】**）：
+   文件后端与操作系统无关，三平台同一套路径，本条不再适用。以下是当初否掉
+   Linux Secret Service 的理由，留档：
    两条路都不成立——`linux-native` 用内核钥匙串，**会话级、重启即丢**（换个方式静默丢）；
    `sync-secret-service` 实测拖进 **44 个包**，其中 `libdbus-sys` 要求系统装
    `libdbus-1-dev`（pkg-config 探测），与本仓「终端用户零系统依赖」的取向
@@ -197,36 +225,46 @@ P2-1 的 2.0 是复核出来的虚账，实际由 P1-4 交付）。
    并给 `Backend` 加分支。
 7. **本模块不写任何日志**：运行日志会落盘、且会被 P0-3 的数据导出整包打走（`logs/` 可选），
    所以这里经手的值一行都不能进日志。失败原因只经 `SecretError` 交给调用方——
-   调用方可以记录「存储不可用」这个**事实**，不能记录值本身。
+   调用方可以记录「存储不可用」这个**事实**，不能记录值本身。（**仍然有效**）
 8. **键名校验收在写之前**：非空、≤ 128 字节、只含 `[A-Za-z0-9._:-]`。
-   收得紧的理由是钥匙串条目用户删不干净（macOS「钥匙串访问」里大量条目来源不明），
-   键名写歪就是永久垃圾；顺带挡掉「拼错键名导致读不到自己刚写的值」这个最常见的自伤。
+   ~~收得紧的理由是钥匙串条目用户删不干净~~（2026-10-12：理由改为「键名写歪就是
+   `credentials.json` 里的永久垃圾，且顺手挡掉『拼错键名读不到自己刚写的值』这个最常见的自伤」）。
 
 **涉及文件（实际）**
-- 新增：`crates/duck-platform/src/secret.rs`（含 17 条单测 + 1 条 `#[ignore]` 实机往返）
+- 新增：`crates/duck-platform/src/secret.rs`（**2026-10-12 重写为文件后端后为 25 条单测**；
+  keyring 阶段是 17 条单测 + 1 条 `#[ignore]` 实机往返，后者已随 keyring 删除）
 - 修改：`crates/duck-platform/src/lib.rs`（`pub mod secret`、模块文档去掉「尚未纳入」）、
-  `crates/duck-platform/Cargo.toml`（target 依赖表开后端特性）、
-  根 `Cargo.toml`（`[workspace.dependencies]` 新增 `keyring`）
-- 连带：`Cargo.lock`（+2 包）、`assets/licenses/THIRD_PARTY_LICENSES.md` 重生成
-  （849→851 组件、409→411 全文；汇总按 `Cargo.lock` 全量收录，所以那个永不编译的
-  `security-framework 2.11.1` 也会被署名——**宁可多署一处，也不少署**）
+  ~~`crates/duck-platform/Cargo.toml`（target 依赖表开后端特性）~~、
+  ~~根 `Cargo.toml`（`[workspace.dependencies]` 新增 `keyring`）~~
+  —— **两条已于 2026-10-12 反向回退**，根 `Cargo.toml` 与 `duck-platform/Cargo.toml` 中
+  `keyring` 相关行整块删除，改为记录新落点（`credentials.json` + `vault.key`）。
+- 新增（2026-10-12）：`crates/duck-platform/src/vault.rs`（AES-256-GCM 加解密原语）
+- 连带：`Cargo.lock`（+2 包 → **已回退为 0**）、`assets/licenses/THIRD_PARTY_LICENSES.md` 重生成
+  （keyring 阶段 849→851 组件、409→411 全文；2026-10-12 移除 keyring 后需再重生成一次）
 
 **验收标准（实测结果）**
 - 单测覆盖 set / get / delete / NotFound 四态 → 见 `secret.rs::tests`：
   缺失读为 `None`、写入往返、覆盖写、删除后消失、**删不存在的键仍成功**、
   双键不串门、空串 / 非 ASCII 值往返、键名五类非法输入被拒、长度按字节压线、
-  **被拒的键名不落存储**、后端判定与 store 存在性一致。
-- macOS 实机：跑 `cargo test -p duck-platform -- --ignored` 真实往返通过；
-  互操作取证——用 `security add-generic-password -A -s com.duck.toolbox …` 写入后，
-  **我们的代码读出了 CLI 写的值**（内存 mock 不可能看见 CLI 的条目，这是「后端不是 mock」的硬证据），
-  随后 `security delete-generic-password` 清理，`security find-generic-password -s com.duck.toolbox`
-  确认**无残留**。
-- 依赖评审记录：见上文第 2 条与根 `Cargo.toml` 的注释。
+  **被拒的键名不落存储**、store 存在性一致。
+  **2026-10-12 追加**（文件后端 + 密文）：`the_file_does_not_contain_the_plaintext`、
+  `a_broken_ciphertext_is_reported_rather_than_read_as_missing`、
+  `a_real_round_trip_lands_in_the_credential_file`、`writing_one_key_keeps_the_others`、
+  `the_file_is_stable_sorted_json`、`writing_the_same_value_does_not_touch_the_file`（mtime）、
+  `deleting_a_missing_key_does_not_create_the_file`、
+  `a_corrupt_file_is_an_error_rather_than_an_empty_store`、`an_empty_file_reads_as_no_credentials`、
+  `a_file_where_the_directory_belongs_is_reported`、`the_file_is_owner_only`（0600/0700）、
+  `the_default_file_lives_in_the_app_data_directory`、`a_rejected_key_never_touches_the_store`。
+- ~~macOS 实机：跑 `cargo test -p duck-platform -- --ignored` 真实往返通过；互操作取证……
+  `security add-generic-password` / `security delete-generic-password`~~
+  **【已作废，2026-10-12】** 不再与系统钥匙串互操作，该取证路径连同 `#[ignore]` 测试一并删除。
+- 依赖评审记录：见上文第 2 条与根 `Cargo.toml` 的注释（**结论已改为：不使用 `keyring`**）。
 
-**尚未接线（有意）**：本层目前**没有调用方**——`duck-app` 侧一行未改。它的定位是
-P2-9（插件网络能力）与代理认证 / 网盘账号的落点，先立地基。给用户看的
-「安全存储可用 / 不可用」展示位留给后续（`backend()` / `probe()` 已备好措辞区分
-「本平台没后端」与「有后端但此刻够不着」——前者是永久事实，后者可能锁一下钥匙串就好）。
+**尚未接线（有意）**：~~本层目前**没有调用方**——`duck-app` 侧一行未改。~~
+**2026-10-12 更新**：`secret.rs` 已有三个真实调用方（`duck-db` / `duck-redis` 的
+口令包装、`db` 页的 `ai:api_key`），终端 SSH 与 AI 已改走「密文进档案」不经本层。
+给用户看的「凭据存储可用 / 不可用」展示位由 `probe()` 支撑（措辞只剩
+「凭据存储不可用」一档——文件后端没有「本平台没后端」这个永久事实）。
 
 **估工**：2.0 人日（**已完成**）
 
@@ -260,7 +298,8 @@ P2-9（插件网络能力）与代理认证 / 网盘账号的落点，先立地�
    重置同流程，落 `pre-reset-*.tar.gz`。
 6. **归档布局**：`manifest.json`（`format_version` / `app_version` / `created_at` /
    `includes` / `excludes`）+ `settings/kv.json` + `settings/keybindings.toml`（有才写）+
-   `plugins/` + 可选 `logs/`。`excludes` 明确写 `keyring-credentials`——
+   `plugins/` + 可选 `logs/`。`excludes` 明确写 `credentials`（2026-10-12 由
+   `keyring-credentials` 改名，同时 `credentials.json` 与 `vault.key` 一并排除）——
    让用户看到「包里明确没有什么」。导入侧拒绝 `format_version` 比本程序新的包。
 7. 顺手修掉假入口：`pages/overview.rs` 的「导入配置」不再弹「尚未接入业务逻辑」，
    改为跳转「设置 → 数据」。
@@ -927,6 +966,8 @@ style mask 里仍有 `NSTitledWindowMask`（它把 `None` 与 `appears_transpare
    `apply_speed_limit` / `SPEED_PRESETS_MB` / `PROXY_MODES` 与状态栏里的两个调用点。
    状态栏保留的「全部暂停 / 全部开始 / 完成后关机」**都以「演示：…」自我标注**（点击即弹），
    属于诚实的演示项，与本次删除的沉默假控件不是一类，故保留。
+   ⚠️ **10-12 口径反转（见 P3-6）**：这三个控件**已整体删除** —— 用户明确「界面不应再有演示
+   文字、每个图标都要有真实功能」，「自我标注」不再构成保留理由。
 3. **`compact_rows`（列表紧凑行高）→ 删除**。它的说明写的是「任务列表的行高从 44 收到 30」，
    而本应用**没有任务列表**（工具箱是工具页签，不是下载任务队列），没有任何可消费方。
 4. **`confirm_uninstall`（原 `confirm_delete`）→ 接线**（本项唯一接线项）。文案是「删除工具前弹确认」，
@@ -1285,7 +1326,7 @@ i18n +11 条。`cargo check` / `clippy` 零新增告警。
 **方案**（安全敏感，须在 P2-8 之后做）
 1. 新增 `duck.fetch`：受能力网关（`network` 能力）+ 域名白名单（manifest 声明 + 用户授予）双重约束；
 2. 硬限制：超时、响应大小上限、**默认不跟随跨域重定向**、禁止访问非 http(s)；
-3. 敏感值（token）从 P0-2 的 keyring 注入，**不允许脚本自行持久化密钥**；
+3. 敏感值（token）从 P0-2 的加密凭据注入，**不允许脚本自行持久化密钥**；
 4. 请求日志可审计（写入插件专属日志文件）。
 
 **涉及**：`duck-plugin-js/src/**`、`duck-plugin/src/capability.rs`、`duck-platform/src/secret.rs`（P0-2）、文档。**估工 4.0 人日。**
@@ -1331,7 +1372,7 @@ lock 里只出现一次，本次只是把它提成 `duck-plugin-js` 的直接依
 **39 个测试组、累计 499 条用例，连跑三轮全绿**；四个改动文件 `rustfmt --check` 干净；
 clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 
-**移交（不在本项内）**：原方案第 3 条「凭据从 keyring 注入」**未做**，因为它要求先把
+**移交（不在本项内）**：原方案第 3 条「凭据注入」**未做**，因为它要求先把
 `duck-platform/src/secret.rs` 接上界面（该层至今零调用方，展示位未接）。本项交付的是**网络通路
 本身**；`duck.secret(name)` 与插件详情页的凭据输入，连同 `secret.rs` 的首次接线，留给独立一项。
 在那之前，`duck.fetch` 可用于无需鉴权的公开接口。
@@ -1370,6 +1411,144 @@ clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 可选匿名统计（**默认关闭**、明确告知、本地可查看已发送内容）。
 **涉及**：`duck-theme`、`pages/settings.rs`（外观页）、`i18n.rs`。**估工 3.0 人日。**
 
+### P3-6 消灭「演示项」：图标不许是死按钮（**2026-10-12 已实施**）
+
+**触发**：用户明确「界面不应再有演示数据 / 演示文字，**每个图标的功能都需要实现完整**」。
+这一条**推翻了 P2-3 的保留口径** —— 当时认为「自我标注为演示」属诚实项，可以留；用户不认这个理由。
+
+**处置判据（二选一）**：
+1. **前提在后端存在 → 接线**；
+2. **前提在后端不存在 → 删除**（一个点下去不会有结果的按钮，比没有它更糟）。
+
+**逐条处置**
+| 位置 | 原状 | 判据 | 处置 |
+| --- | --- | --- | --- |
+| `actions.rs` `TOOLBOX_REFRESH`（`⌘R` / 菜单「工具」/ 命令面板 / 活动栏，`RotateCw` 图标） | 只弹「演示：刷新（未接入工具后端）」 | 前提**存在**：`plugins::rescan` 早已就绪（安装/卸载插件后调用的就是它） | **接线**：调 `plugins::rescan`，提示真实结果（「已重新扫描插件目录，当前列出 {} 个工具。」） |
+| `toolbox.rs` 状态栏左：`↓ 0 B/s` / `↑ 0 B/s` | 恒为 0 的假读数 | 无下载引擎 | **删除** |
+| `toolbox.rs` 状态栏：全部暂停 / 全部开始 | 弹「演示：…（未接入任务后端）」 | 本应用**没有全局任务队列**（工具箱是工具页签，不是下载任务队列 —— 与 P2-3 删 `compact_rows` 同一理由） | **删除**（含 `render_status_action`） |
+| `toolbox.rs` 状态栏：完成后关机（`Power` 图标 + 预设下拉） | 弹「演示：…（未接入宿主电源能力）」 | 「完成后」的前提（任务队列）不存在；独立定时关机是另一个功能，不在本次范围 | **删除**（含 `render_shutdown_control` / `SHUTDOWN_PRESETS_MIN`） |
+| `toolbox.rs` 状态栏：剩余空间 | 真实（`statfs`） | — | **保留**，并补上插件 / 工具**真实计数** |
+| `pages/terminal.rs` 模块头 | 仍写着「TabKind::Ssh / Sftp 仍是演示数据」 | 10-12 已接真实 `ssh` / `scp` | **改写注释**（代码早已真实，注释过期） |
+
+**状态栏现在的内容**：左 = 「{} 个插件 · {} 个工具」（读注册表 —— 与侧栏同一份真源），右 = 家目录所在卷剩余空间。
+**两样都取不到时整条不渲染**（`render_status_bar` 返回 `Option<AnyElement>`），不留一条空栏占位。
+
+**验证**：`cargo check -p duck-app` 中 `toolbox.rs` / `actions.rs` **零错误零告警**；
+`cargo fmt -p duck-theme -- --check` 下 `i18n.rs` 干净；`duck-theme` 的 `table_is_sorted` 通过。
+i18n：新增 2 条（`{} 个插件 · {} 个工具` / `已重新扫描插件目录，当前列出 {} 个工具。`），
+删除 13 条随本次改动失效的条目（5 条「演示：…」+ 3 条上一轮终端页遗留 + 5 条状态栏控件文案）。
+
+⚠️ **顺带发现（当天稍后已由并发会话补齐）**：并发会话新建的 `crates/duck-app/src/pages/assistant.rs` 与
+`src/ai.rs` 当时有 **50 条中文尚无英译**，`duck-theme` 的 `every_chinese_literal_is_translated` 因此是红的。
+2026-10-12 14:30 复核：该守卫**已全绿**（P3-7 一轮的 `cargo test -p duck-theme` 通过）。
+
+**涉及文件**：`duck-app/src/actions.rs`、`duck-app/src/pages/toolbox.rs`、`duck-app/src/pages/terminal.rs`、
+`duck-theme/src/i18n.rs`、本文档。**估工 0.5 人日（已完成）**
+
+---
+
+### P3-7 终端分屏落地 + 两处「图标看着在、点下去没用」（**2026-10-12 已实施**）
+
+**触发**：用户实测三条 ——「分屏图标和功能没有实现」/「SFTP 窗口关掉后再点图标就无法显示」/「页面的图标都没有 tooltips」。
+
+| # | 现象 | 根因 | 处置 |
+| --- | --- | --- | --- |
+| 1 | 工具条没有分屏图标（**上一轮**按「不摆点不动的图标」把它撤了） | 真分屏要动会话表 / 焦点 / 尺寸 | **实现**：`SessionTab.split` = 右窗格会话键（`<id>#2`），`ensure_sessions` 为它独立起会话（Local 新 shell / SSH 复用 `ControlMaster` 再开一条 `ssh -t`），左右各一个画布 + 1px 发丝线；退出只收那一半；`⌘D`（`SplitPane` 动作）与工具条图标同一条路径。设计见 `terminal-ssh-sftp-design.md` §8.6 |
+| 2 | SFTP 面板关掉后再点图标没反应 | 目标**只从当前标签推导**：面板关掉后活动标签回落到本地 shell（于是 `connection_entry("local-shell")` 给出内置条目 → 开出一个永远列举不出东西的假面板）或空态（`active_tab()` 为 `None` → 按钮置灰） | **修**：`last_sftp_owner` + 纯函数 `resolve_sftp_owner`（当前标签所属连接 → 上次开过 SFTP 的连接 → 都没有才置灰，并把原因写进按钮文案）；`open_sftp_tab` 加守卫；标签右键菜单的「打开 SFTP 面板」只对 SSH 标签出现 |
+| 3 | 页面图标没有悬停提示 | 图标按钮只设了 `accessibility_label`（读屏能吃、鼠标看不见） | **修**：`duck-components` 的 `icon_button` / `toolbar_action_button` 两个构造器统一挂 `Tooltip`（文案与读屏标签同源），一处收口覆盖全仓约 50 个图标按钮；disabled 分支同样挂（gpui-base 的 `Button::disabled` 保留命中区，只拦点击） |
+
+**验证**：`cargo test -p duck-app` **113 条单测全绿**（含本项新增 3 条：`sftp_target_survives_closing_the_panel` /
+`sftp_target_refuses_local_shell_and_missing_profiles` / `split_key_never_collides_with_sftp_or_tab_ids`）；
+`duck-theme` 21 + 3 全绿（i18n 守卫含新增 6 条）；改动文件 clippy **零告警**、`rustfmt --check` 干净。
+i18n +6（分屏 / 取消分屏 / 分屏（仅限终端会话）/ 打开 SFTP 面板（需先连接远程主机）/ 本地 shell 没有远端文件可浏览… / 终端（分屏）/ 分屏 ⌘D…）。
+
+**已知不能无头断言的**：tooltip（`window.rendered_frame` 是 `pub(crate)`，测试拿不到），与全仓既有 5 处 tooltip 调用点同构、靠代码审查；
+分屏的真机表现（PTY 起两条会话、`⌘D` 手感、分隔线视觉）需 `sbin/run.sh` 后人工确认。
+
+**涉及文件**：`duck-app/src/pages/{terminal,terminal_canvas,terminal_data}.rs`、`duck-app/src/{app,pages/mod}.rs`、
+`duck-components/src/lib.rs`、`duck-theme/src/i18n.rs`、两份设计/差距文档。**估工 1 人日（已完成）**
+
+---
+
+### P3-8 SSH 连接报错 · 分屏支持不同连接 · 拖标签并入（**2026-10-12 已实施**）
+
+**触发**：用户实测「无法连接」（附报错截图）+ 对分屏提两点要求 ——「不止同一个连接分屏，还支持不同连接分屏」「拖动 tab 超过中线时提示是否并入分屏，参考主流软件设计」。
+
+| # | 现象 | 根因 | 处置 |
+| --- | --- | --- | --- |
+| 1 | 任何 SSH 连接都报 `command-line line 0: keyword controlpath extra arguments at end of line` | `ControlPath` 的值是 `~/Library/Application Support/DuckToolbox/ssh/<socket>` —— **路径含空格**；`ssh -o` 的值不再重新加引号解析，空格被当成「行尾多余参数」（真机 `ssh -G` 已复现：不带引号报同款错、带引号正常通过） | **修**：① `duck-ssh::ConnectionTarget::argv` 给 `ControlPath` 值加引号（通用防线，任何含空格路径都安全）；② 终端页 socket 目录从 `app_data_dir()` 改到 `cache_dir()`（`~/Library/Caches/DuckToolbox`，天然无空格）；③ 单测钉住「带空格目录 → 带引号 `ControlPath`」 |
+| 2 | 分屏只能连同一个连接 | `split` 只存会话键，没有「连谁」的信息，`ensure_sessions` 一律按标签自己的连接起会话 | **实现**：`SessionTab.split_owner` 记右窗格连接归属，`ensure_sessions` 升级为**按归属起会话**；入口三处共用同一份数据 —— ① 工具条 / `⌘D`（缺省 = 标签自己的连接，`split_owner_for`）② 左栏连接右键菜单「在分屏中打开」（连点的那条）③ 拖标签并入。右窗格**类型**跟着归属走（`split_kind()`），左 SSH 右 Local 合法 |
+| 3 | 分屏只能靠图标 / 快捷键，没有主流终端的拖拽手感 | 标签栏此前只挂 `on_click` / `context_menu`，没有拖拽载荷 | **实现**：`TabDrag` 载荷 + `TabDragGhost` 拖拽预览 + 画布 `.on_drag_move` / `.on_drop`；指针**过中线**点亮右半屏投放区（主题 `drag_border` 描边 + `drop_target` 底色，文案「松开并入分屏」），松手把该标签**整条会话搬过去**当右窗格；投放区渲染带 `cx.has_active_drag()` 守卫做拖放结束自愈 |
+
+**验证**：`cargo test -p duck-app` **132 条单测全绿**（较上轮 +19，含新增分屏归属 / 拖拽并入相关单测）+ 集成测试全绿；
+`duck-ssh` **18 条全绿**（含新增 `control_path_is_quoted_when_dir_has_spaces`）；`duck-theme` 20 绿 +
+1 红（红的 `every_chinese_literal_is_translated` 缺译清单 **100% 来自并发会话新写的 `db.rs`**，非本项）；
+改动文件 `rustfmt --check` 干净、clippy **零告警**（其余告警均在并发会话的文件上）。
+
+**已知不能无头断言的**：拖拽（`on_drag` / `on_drop` / `on_drag_move` 无头驱动不易）、真机 SSH 连接、分屏与拖拽的观感，
+均需 `sbin/run.sh` 后人工确认。
+
+**涉及文件**：`duck-app/src/pages/{terminal,terminal_data,terminal_canvas}`、`duck-ssh/src/target.rs`、
+`duck-theme/src/i18n.rs`、`docs/terminal-ssh-sftp-design.md`（§8.6 + §15）、本文档。**估工 1 人日（已完成）**
+
+---
+
+### P3-9 连接口令走加密落库 + 编辑回显（钥匙串退场）（**2026-10-12 已实施**）
+
+**触发**：用户实测「保存口令后点连接**弹出 macOS 钥匙串授权框**（『系统密码器』）仍无法连接」+「编辑连接时已保存的口令需要**反显**，连接信息要保存在数据库」。
+
+| # | 现象 | 根因 | 处置 |
+| --- | --- | --- | --- |
+| 1 | 点连接弹系统钥匙串授权框 | 口令存 keyring → macOS 钥匙串；dev 构建 ad-hoc 签名**每次重编译都变**，条目 ACL 失配 → 读一次弹一次，「始终允许」随签名失效 | **修**：口令改走新 `duck-platform::vault`（AES-256-GCM；ring 已在依赖图，零新增传递依赖），密钥落 `app_data_dir()/vault.key`（0600）；连接时本地解密，**全程零系统弹框** |
+| 2 | 编辑连接看不到已保存的口令 | 旧口径「不回读、不回显，空 = 不修改」—— 是为绕开钥匙串弹框做的妥协 | **修**：编辑弹窗**解密回显**（掩码显示），改端口不用重输口令；空值语义改为「清除口令」 |
+| 3 | 「连接信息要保存到数据库」 | 档案本就落 `kv: ssh_profiles`（`duck.sqlite3`）；口令却在钥匙串 / credentials.json | **修**：`StoredProfile.password` 存密文（hex(nonce‖ct)，`#[serde(default)]` 兼容旧档），SQLite 里 grep 不到明文（M2 验收线保持）；增删改随档案行原子生效 |
+
+**验证**：`duck-platform` 101+2+1+3+2 全绿（含 vault 往返 / 篡改拒绝 / 密钥文件 0600 单测）；
+`duck-theme` 21+3 全绿（i18n 表换 2 键、字节序守卫过）。`duck-app` 因并发会话的 `mssql.rs` 中间态暂阻，收尾后补跑。
+**不做钥匙串迁移**（读旧条目必弹框）；旧条目（服务 `com.duck.toolbox`）留用户在「钥匙串访问」自删。
+
+**涉及文件**：`duck-platform/src/vault.rs`（新）、`duck-platform/{Cargo.toml,lib.rs}`、根 `Cargo.toml`、
+`duck-app/src/pages/{terminal,terminal_data,terminal_dialogs}.rs`、`duck-theme/src/i18n.rs`、`docs/terminal-ssh-sftp-design.md`（§7 + §15.4）、本文档。
+
+---
+
+### P3-10 全仓凭据与系统钥匙串解绑（**2026-10-12 已实施**）
+
+**触发**：用户复查后定调 ——「AI API key 写进钥匙串这不对，不要和系统绑定关系，
+要和程序的数据库和文件绑定；我发现还有其他的连接信息使用的钥匙串，请都修改」。
+
+**处置**（全仓一次性清干净，不留残口径）：
+
+| 凭据 | 旧落点 | 新落点 |
+| --- | --- | --- |
+| AI API key | 系统钥匙串 | **vault 密文进厂商档案**（`ProviderProfile::api_key`，随 `kv: ai_providers` 落 `duck.sqlite3`） |
+| SSH 口令 | 系统钥匙串 | vault 密文进档案行（`StoredProfile.password`，见 P3-9） |
+| 数据库 / Redis 口令 | 系统钥匙串 | vault 密文进 `<应用数据目录>/credentials.json`（`secret.rs` 换文件后端，API 形态不变） |
+| 加密密钥本身 | — | `app_data_dir()/vault.key`（0600，32 字节 hex） |
+
+- `keyring` 依赖**整块删除**（根 `Cargo.toml`、`duck-platform/Cargo.toml`），`Cargo.lock` 计数 **0**；
+  `secret.rs` 里的 `SERVICE` / `Backend` / 两条编译期断言 / `#[ignore]` 实机往返测试一并删除。
+- `duck-ai::secret` 从「转发 `duck_platform::secret`」改为「转发 `duck_platform::vault`」，
+  `storage_key()` 删除；`ai_configured_keys` 标记表删除（一个事实不再记两处，
+  `load_configured` 从档案推导：`api_key.is_some()`）。
+- 备份归档的 `excludes` 由 `keyring-credentials` 改为 `credentials`（`vault.key` 同排除）；
+  导出包里**没有**任何凭据。
+- i18n：EN 表 7 替换 / 1 删除 / 3 新增，整表按 UTF-8 字节序重排（1424 → 1425 条）。
+
+**顺带修掉的真 bug**：`vault.rs` 的**首用竞态** —— `OnceLock<Result<..>>` + `create_new`
+仍不够：先创建的线程还没把 hex 写进去，另一个线程能读到空文件，`unhex("")` 得到长度 0 的
+`Vec`，转换失败报 `Invalid`。修法是进程内 `static FIRST_USE: Mutex<()>` + **双重检查**
+（拿到锁后再查一次 `KEY.get()`）。进程间不用考虑（本仓有单实例锁）。
+触发条件是本轮新增的 25 条 `secret` 测试都用 vault、把首用并发概率放大。
+
+**未迁移**：旧钥匙串条目（服务名 `com.duck.toolbox`）不改读（读一次必弹授权框），
+留给用户在「钥匙串访问」里自行删除；首次重新保存后新链路即接管。
+
+**涉及文件**：`duck-platform/src/{secret.rs,vault.rs,Cargo.toml,lib.rs}`、根 `Cargo.toml`、
+`duck-ai/src/{secret.rs,provider.rs,agent.rs,lib.rs}`、`duck-app/src/ai.rs`、
+`duck-app/src/pages/{settings,assistant}.rs`、`duck-app/src/backup.rs`、`duck-store/src/lib.rs`、
+`duck-theme/src/i18n.rs`、本文档 + `docs/{ai,database,redis,email,terminal-ssh-sftp}-design.md`。
+
 ---
 
 ## 7. 现有功能待完善清单（速查）
@@ -1382,6 +1561,8 @@ clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 | 顶栏搜索 | ~~承诺「搜索工具、命令…」，实际只过滤工具箱~~ **复核后不需要改**：顶栏入口已由 P1-4 改成「打开命令面板」，承诺由面板本身兑现，分组 / 键盘选择 / 模糊命中全部到位 | `top_bar.rs`、`pages/palette_tools.rs` | **P2-1 ✅**（由 P1-4 交付） |
 | 命令面板 | ~~只投影动作，不含工具与最近；`recent` 只写不读~~ **已解决**：最近使用置顶 + 工具按分类 + 设置项直达 + 自研模糊打分接管过滤 | `palette_tools.rs`、`duck-command/src/fuzzy.rs` | **P1-4 ✅** |
 | 工具箱 | ~~限速 / 代理三个死状态~~ **已解决**：三个字段与两组控件删除（下载引擎不存在，「真实消费」无从谈起） | `toolbox.rs` | **P2-3 ✅** |
+| 工具箱·状态栏 | ~~假速率 `0 B/s` + 全部暂停 / 全部开始 / 完成后关机，点击只弹「演示：…」~~ **已解决**：全部删除（前提——下载引擎 / 全局任务队列 / 宿主电源——都不存在），改挂真实读数（插件·工具计数 + 磁盘剩余空间），无内容时整条不渲染 | `pages/toolbox.rs` | **P3-6 ✅** |
+| 工具箱·刷新 | ~~`⌘R` / 菜单「工具→刷新」/ 命令面板的刷新只弹「演示：刷新（未接入工具后端）」~~ **已解决**：改调 `plugins::rescan` 真重扫插件目录 | `actions.rs`、`app/plugins.rs` | **P3-6 ✅** |
 | 设置·行为 | ~~「紧凑行高」「删除前确认」死开关~~ **已解决**：紧凑行高删除（无任务列表可作用）；「删除前确认」接线成**卸载插件前确认**并落 `kv` | `pages/settings.rs`、`market.rs` | **P2-3 ✅** |
 | 持久层 | ~~`settings` 表无读写方（死表）~~ **已解决**：迁移 v2 `DROP TABLE IF EXISTS settings`，两条测试反向钉住 | `store/db.rs` | **P2-3 ✅** |
 | 平台层 | ~~日志无单文件大小上限~~ **已解决**：`LOG_FILE_MAX_BYTES`（8 MiB，序号轮转）+ `LOG_DIR_MAX_BYTES`（256 MiB 占用兜底）；`dialog` 全阻塞；~~`open_url` 无失败反馈~~ **已解决**：`open_url` 改为返回 `Result` 并在后台回收子进程（原来点一次链接留一个僵尸） | `logging.rs`、`dialog.rs`、`shell.rs` | 日志上限已在 **P2-2 ✅**；`open_url` 已在 **P2-5 ✅** |
@@ -1393,20 +1574,27 @@ clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 | 窗口 | ~~仅主窗几何落盘；辅窗每次居中重建~~ **已解决**：主/辅窗几何与显示状态均落盘，会话（路由 / 右栏 / 辅窗集合）经 `kv` 恢复 | `app.rs`、`settings.rs` | **P1-2 ✅** |
 | 唤起快捷键 | ~~`⌥Space` 会把主窗整个切到前台（与键位的启动器语义不符）~~ **已解决**：落点改为**独立命令面板浮窗**（`WindowKind::PopUp` → macOS `NSPanel` + 非激活面板 + 层级 101；Windows `WS_EX_TOOLWINDOW \| WS_EX_TOPMOST`），失焦 / Esc / 关闭按钮三条出口；设置里加「唤起时打开主窗口」开关可回到完整旧行为 | `duck-shell/src/palette_window.rs`（新）、`command_palette.rs`、`app.rs`、`hotkey.rs`、`settings.rs` | **P1-1 ✅**（补充） |
 | 可访问性 | ~~零星 label，无全流程验证~~ **已解决**：自绘可点元素补 role / 名字 / 选中态（a11y 树只收带 role 的节点，此前**等于不存在**）+ `tab_stop` + 焦点描边；`gpui_base::Button` 默认已可 Tab | `duck-components/src/{lib,kit}.rs`、`duck-shell/src/view.rs`、`duck-app/src/theme_picker.rs`、`pages/{settings,logs}.rs`、两处新 `tests/` | **P2-7 ✅**（焦点环对比度挂起） |
+| 图标按钮 | ~~只有 `accessibility_label`，鼠标悬停看不到任何提示~~ **已解决**：`icon_button` / `toolbar_action_button` 两个构造器统一挂 `Tooltip`（文案与读屏标签同源），一处收口覆盖全仓约 50 个图标按钮 | `duck-components/src/lib.rs` | **P3-7 ✅** |
+| 终端·分屏 | ~~工具条上没有分屏入口（上一轮把死图标撤了）~~ **已解决**：`SessionTab.split`（右窗格会话键 `<id>#2`）+ 独立第二条会话 + 左右双画布；`⌘D` 与工具条图标同一路径。**增强（P3-8）**：`split_owner` 支持**不同连接分屏**（左栏右键菜单「在分屏中打开」）+ **拖标签过中线并入**（主流终端手感） | `pages/{terminal,terminal_canvas,terminal_data}.rs`、`app.rs` | **P3-7 ✅ / P3-8 ✅** |
+| 终端·SSH 连接 | ~~任何连接都报 `keyword controlpath extra arguments at end of line`~~ **已解决**：`ControlPath` 路径含空格（`Application Support`）被 ssh 拆成多词；给值加引号 + socket 目录改到无空格的 `cache_dir()` | `duck-ssh/src/target.rs`、`pages/terminal.rs` | **P3-8 ✅** |
+| 终端·SFTP 面板 | ~~面板关掉后再点图标没反应（目标只从当前标签推导 → 本地 shell 时开出假面板、无标签时按钮置灰）~~ **已解决**：记住上次开过 SFTP 的连接（`resolve_sftp_owner`），本地 shell / 非档案 id 一律拒绝 | `pages/terminal.rs` | **P3-7 ✅** |
+| 终端·连接口令 | ~~保存口令后点连接弹 macOS 钥匙串授权框 + 编辑时口令不反显~~ **已解决**：口令走 `duck_platform::vault`（AES-256-GCM）加密进档案行（`duck.sqlite3`），连接 / 回显全程本地解密零弹框 | `duck-platform/src/vault.rs`（新）、`pages/{terminal,terminal_data,terminal_dialogs}.rs` | **P3-9 ✅** |
+| AI·API key | ~~写进系统钥匙串（与系统绑定，且 dev 重编译后读一次弹一次授权框）~~ **已解决**：改密文进厂商档案（`ProviderProfile::api_key` → `kv: ai_providers`），编辑弹窗解密回显、清空即删除 | `pages/settings.rs`、`duck-ai/src/{secret,provider}.rs` | **P3-10 ✅** |
+| 全仓凭据 | ~~`keyring` 依赖 + `SERVICE = com.duck.toolbox`（系统钥匙串 / 凭据管理器）~~ **已解决**：`keyring` 依赖整块删除，`Cargo.lock` 计数 0；`secret.rs` 换「`credentials.json`（vault 密文）」文件后端 + `vault.key`（0600），全仓再无任何系统凭据存储调用 | `duck-platform/src/{secret,vault}.rs`、根 `Cargo.toml` | **P3-10 ✅** |
 
 ---
 
 ## 8. 建议路线图
 
 ### 第一步（先补 P0，约 9 人日）— 进度 9.0 / 9.0（**P0 全部完成**）
-P0-1 崩溃捕获（**已完成**）→ P0-2 keyring（**已完成**）→ P0-3 数据导出/重置
+P0-1 崩溃捕获（**已完成**）→ P0-2 安全凭据存储（**已完成**，2026-10-12 已与系统钥匙串解绑）→ P0-3 数据导出/重置
 （**已完成**）→ P0-4 引导 + 许可（**已完成**）。
 理由：它们不是锦上添花 —— 一旦有真实用户，"无法定位、凭据无处安放、数据找不回"会变成硬伤。
-> P0-2 的依赖评审已闭环（2026-10-11，用户确认后落地）：钉 `keyring = "3.6.3"`
-> （MIT OR Apache-2.0、MSRV 1.75；4.x 全系 MSRV 1.88 顶破本仓 1.85）。
-> 实测 lock 净增 2 包，且其中 `security-framework 2.11.1` 是 iOS target 专用、
-> 永不参与 mac/win 构建。实施中发现的**真陷阱**：`keyring` 默认无特性且漏开特性时
-> 静默回落内存 mock（写入成功、重启全丢），已用两条编译期断言钉死。详见 P0-2 章节。
+> P0-2 的依赖评审**已作废重做**（2026-10-12）：原结论钉 `keyring = "3.6.3"`（MIT OR Apache-2.0、
+> MSRV 1.75；4.x 全系 MSRV 1.88 顶破本仓 1.85），现改为**不使用 `keyring`**——
+> 凭据落 `<应用数据目录>/credentials.json`（vault 密文）+ `vault.key`，`Cargo.lock` 净减 2 包。
+> 当初踩到的**真陷阱**（`keyring` 默认无特性、漏开时静默回落内存 mock → 写入成功、重启全丢）
+> 已随依赖移除而不复存在，详见 P0-2 章节的历史留档。
 > P0-1 / P0-3 / P0-4 零新依赖（P0-3 复用已在依赖图里的 `tar` / `flate2`），因此先行落地。
 
 ### 第二步（再做 P1，约 18.5 人日）— 进度 18.5 / 18.5（**P1 全部完成**）

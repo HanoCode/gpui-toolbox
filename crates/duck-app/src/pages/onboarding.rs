@@ -166,7 +166,9 @@ impl OnboardingView {
                         // 圆点用正文色的强调版：不抢眼，但让三条读起来是三条。
                         div()
                             .flex_none()
-                            .mt(px(6.))
+                            // 相对首行行盒垂直居中（`notify.rs` 同款算法）——是字形几何校正，
+                            // 不属 spacing 阶梯，所以写成派生式而非裸 px(6)。
+                            .mt((tokens.typography.sm.line_height - px(DOT_SIZE)) / 2.)
                             .size(px(DOT_SIZE))
                             .rounded_full()
                             .bg(tokens.colors.muted_foreground),

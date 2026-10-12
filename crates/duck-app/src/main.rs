@@ -4,6 +4,8 @@
 //! 页面与窗口内部结构见 [`app`] 与 [`pages`]。
 
 mod actions;
+mod ai;
+mod ai_tools;
 mod app;
 mod assets;
 mod backup;

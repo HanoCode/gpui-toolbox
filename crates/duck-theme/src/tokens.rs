@@ -168,6 +168,12 @@ pub struct DensityTokens {
     pub task_row: Pixels,
     /// 任务行高（紧凑单行）。
     pub task_row_compact: Pixels,
+    /// 邮件列表行高（发件人 · 主题 · 摘要三行）。
+    ///
+    /// 单独一档而不是复用 [`DensityTokens::task_row`]：任务行是**双行**（标题 + 说明），
+    /// 最紧也要 36；邮件行是三行且带一条时间戳，压在 44 以下会把摘要行裁掉。
+    /// 三档 56 / 64 / 76 与设计稿第 ① 屏的 64 对齐（`docs/email-design.md` §4.10）。
+    pub mail_row: Pixels,
     /// 复选框边长。
     pub check_mark: Pixels,
     /// 活动栏轨宽（按钮居中 + 左右留白）。

@@ -23,6 +23,7 @@ mod open;
 mod paths;
 pub mod secret;
 mod shell;
+pub mod vault;
 
 pub use autostart::{LaunchAtLoginError, launch_at_login_enabled, set_launch_at_login};
 

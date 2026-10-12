@@ -1,0 +1,2561 @@
+{
+  "version": 1,
+  "created_at": "2026-10-12T11:11:37Z",
+  "updated_at": "2026-10-12T11:11:37Z",
+  "files": {
+    ".editorconfig": {
+      "role": "index",
+      "sha256": "ffbd7b07f89437528a3f7ed9036fcc189bab6a8f8330806dcee439ecfcce640f",
+      "size": 474,
+      "normalized_sha256": "ffbd7b07f89437528a3f7ed9036fcc189bab6a8f8330806dcee439ecfcce640f"
+    },
+    ".gitattributes": {
+      "role": "index",
+      "sha256": "21fa16a2122e2b0360b47502c577428b645437e08e9e87ffba661f84853cb476",
+      "size": 291,
+      "normalized_sha256": "21fa16a2122e2b0360b47502c577428b645437e08e9e87ffba661f84853cb476"
+    },
+    ".github/workflows/ci.yml": {
+      "role": "index",
+      "sha256": "c6808aa9d781143d9fe57a76631d061cceecfcd260aa241d8c69af20ad909d0b",
+      "size": 14484,
+      "normalized_sha256": "c6808aa9d781143d9fe57a76631d061cceecfcd260aa241d8c69af20ad909d0b"
+    },
+    ".github/workflows/plugin-index.yml": {
+      "role": "index",
+      "sha256": "2e5edd261d3ea123b57880ec4cefceb8e47caac00bad95e39eee531344962249",
+      "size": 8637,
+      "normalized_sha256": "2e5edd261d3ea123b57880ec4cefceb8e47caac00bad95e39eee531344962249"
+    },
+    ".github/workflows/release.yml": {
+      "role": "index",
+      "sha256": "625be5a8540cb31b1bd783259eb1e9db3f110e3ca9dd5d84602b3741c939ef30",
+      "size": 12132,
+      "normalized_sha256": "625be5a8540cb31b1bd783259eb1e9db3f110e3ca9dd5d84602b3741c939ef30"
+    },
+    ".gitignore": {
+      "role": "index",
+      "sha256": "0809aa1b21d1d16bb09260556a42ebfb93adc01cab905e8a6e42350130b1d524",
+      "size": 1006,
+      "normalized_sha256": "0809aa1b21d1d16bb09260556a42ebfb93adc01cab905e8a6e42350130b1d524"
+    },
+    ".skills/gpui-kit-design-guides/SKILL.md": {
+      "role": "index",
+      "sha256": "de874a5a8db458fc82c3300d5484afe1e0f5352bdae54db923e1f6dde64ea06a",
+      "size": 4219,
+      "normalized_sha256": "de874a5a8db458fc82c3300d5484afe1e0f5352bdae54db923e1f6dde64ea06a"
+    },
+    ".skills/gpui-kit-design-guides/references/design-guides.md": {
+      "role": "index",
+      "sha256": "a8aa022a59cde063a7bfcca0d112bdb88a1f836dbc3b6b9ccece62ba27bb9aa4",
+      "size": 50941,
+      "normalized_sha256": "a8aa022a59cde063a7bfcca0d112bdb88a1f836dbc3b6b9ccece62ba27bb9aa4"
+    },
+    ".skills/gpui-kit/SKILL.md": {
+      "role": "index",
+      "sha256": "dadd275d45d17c23c6e1f2fc5c10562ba1cf9af8e81ee3d69a51814208ce76af",
+      "size": 22497,
+      "normalized_sha256": "dadd275d45d17c23c6e1f2fc5c10562ba1cf9af8e81ee3d69a51814208ce76af"
+    },
+    ".skills/gpui-kit/references/coding-guides.md": {
+      "role": "index",
+      "sha256": "3bc34cc84dd9e1f98586968656a805bc018a30213fb012a913566bbce5e3d5df",
+      "size": 44090,
+      "normalized_sha256": "3bc34cc84dd9e1f98586968656a805bc018a30213fb012a913566bbce5e3d5df"
+    },
+    ".skills/gpui-kit/references/conventions.md": {
+      "role": "index",
+      "sha256": "790f5590d644c986a3634104f2b10373236d6d3580177d243741dcc2b24a9aec",
+      "size": 5362,
+      "normalized_sha256": "790f5590d644c986a3634104f2b10373236d6d3580177d243741dcc2b24a9aec"
+    },
+    ".skills/gpui-kit/references/gpui/action.md": {
+      "role": "index",
+      "sha256": "9b128fd82d40a93ed645d24b39d46c984bd203b3a0f4c20cc028fe80bf98c47f",
+      "size": 5091,
+      "normalized_sha256": "9b128fd82d40a93ed645d24b39d46c984bd203b3a0f4c20cc028fe80bf98c47f"
+    },
+    ".skills/gpui-kit/references/gpui/async.md": {
+      "role": "index",
+      "sha256": "d82d133b2b1e230565b18a2eeb4ff4b668aaef9c58ecd0b856636ffa900bd6bc",
+      "size": 6328,
+      "normalized_sha256": "d82d133b2b1e230565b18a2eeb4ff4b668aaef9c58ecd0b856636ffa900bd6bc"
+    },
+    ".skills/gpui-kit/references/gpui/context.md": {
+      "role": "index",
+      "sha256": "e32a54ab3fe1fa59e3fc9df92a3ffaa8b0b15b7eeb076ad375ee98bed055e25a",
+      "size": 6303,
+      "normalized_sha256": "e32a54ab3fe1fa59e3fc9df92a3ffaa8b0b15b7eeb076ad375ee98bed055e25a"
+    },
+    ".skills/gpui-kit/references/gpui/element-advanced.md": {
+      "role": "index",
+      "sha256": "008b71c775bbf174af091314ed6f9af2dd5edd20ab8042b731e7b979074e3ba6",
+      "size": 20530,
+      "normalized_sha256": "008b71c775bbf174af091314ed6f9af2dd5edd20ab8042b731e7b979074e3ba6"
+    },
+    ".skills/gpui-kit/references/gpui/element-api.md": {
+      "role": "index",
+      "sha256": "769cc2e10160c6c28666e3ffda394eec226354c5f126407b0dd600319895be8f",
+      "size": 11279,
+      "normalized_sha256": "769cc2e10160c6c28666e3ffda394eec226354c5f126407b0dd600319895be8f"
+    },
+    ".skills/gpui-kit/references/gpui/element-best-practices.md": {
+      "role": "index",
+      "sha256": "b58c70a1178f520afeb5368ba64bde705cc714ec3e2a61fa4dbe9bacd867589e",
+      "size": 13488,
+      "normalized_sha256": "b58c70a1178f520afeb5368ba64bde705cc714ec3e2a61fa4dbe9bacd867589e"
+    },
+    ".skills/gpui-kit/references/gpui/element-examples.md": {
+      "role": "index",
+      "sha256": "1763b92912a180fe7fc2af36dc62cadc555d46655c28b6ad69884e4ad06db580",
+      "size": 18087,
+      "normalized_sha256": "1763b92912a180fe7fc2af36dc62cadc555d46655c28b6ad69884e4ad06db580"
+    },
+    ".skills/gpui-kit/references/gpui/element-id.md": {
+      "role": "index",
+      "sha256": "3a976f0055fdaf39d05894a867b7df6cab291709c30a840d0fc87d2243598e2d",
+      "size": 2433,
+      "normalized_sha256": "3a976f0055fdaf39d05894a867b7df6cab291709c30a840d0fc87d2243598e2d"
+    },
+    ".skills/gpui-kit/references/gpui/element-patterns.md": {
+      "role": "index",
+      "sha256": "4f7f23af5a402b462e24055631ff31ea76c4fa4d98c0e01aab72d75ed106cc62",
+      "size": 15041,
+      "normalized_sha256": "4f7f23af5a402b462e24055631ff31ea76c4fa4d98c0e01aab72d75ed106cc62"
+    },
+    ".skills/gpui-kit/references/gpui/element.md": {
+      "role": "index",
+      "sha256": "95b8bbea3ee0348ec1aef07e032e6ff16e40acad7f1e86b87ec8e1e7691e56b9",
+      "size": 3978,
+      "normalized_sha256": "95b8bbea3ee0348ec1aef07e032e6ff16e40acad7f1e86b87ec8e1e7691e56b9"
+    },
+    ".skills/gpui-kit/references/gpui/entity-advanced.md": {
+      "role": "index",
+      "sha256": "9c566a9f494e52a93653dcccb706b59e3853d02ba5ff9a6ece1d804ec8e4d9f2",
+      "size": 12924,
+      "normalized_sha256": "9c566a9f494e52a93653dcccb706b59e3853d02ba5ff9a6ece1d804ec8e4d9f2"
+    },
+    ".skills/gpui-kit/references/gpui/entity-api.md": {
+      "role": "index",
+      "sha256": "70fdce9314e06643012afa42df742489fd50e5abaa3aaa659f9a5d4e67712867",
+      "size": 8739,
+      "normalized_sha256": "70fdce9314e06643012afa42df742489fd50e5abaa3aaa659f9a5d4e67712867"
+    },
+    ".skills/gpui-kit/references/gpui/entity-best-practices.md": {
+      "role": "index",
+      "sha256": "e3d5c728d6826cb9d26be1bf0eb9e775b51960affc00ef521a828b8b90c90b1a",
+      "size": 15095,
+      "normalized_sha256": "e3d5c728d6826cb9d26be1bf0eb9e775b51960affc00ef521a828b8b90c90b1a"
+    },
+    ".skills/gpui-kit/references/gpui/entity-patterns.md": {
+      "role": "index",
+      "sha256": "72cf52be722027ebfb629e5c8b2b1fe3680ae2feccb2e54b9c84e629082ce995",
+      "size": 13189,
+      "normalized_sha256": "72cf52be722027ebfb629e5c8b2b1fe3680ae2feccb2e54b9c84e629082ce995"
+    },
+    ".skills/gpui-kit/references/gpui/entity.md": {
+      "role": "index",
+      "sha256": "ed95e14711447b1d34c579ee9752ad1de7d50fa305092478e109b7e22bd4ab5f",
+      "size": 7413,
+      "normalized_sha256": "ed95e14711447b1d34c579ee9752ad1de7d50fa305092478e109b7e22bd4ab5f"
+    },
+    ".skills/gpui-kit/references/gpui/event.md": {
+      "role": "index",
+      "sha256": "e057203adad925e1fcd853c9590092e8bebf3e16b0efd148f7f49f8655fe7f47",
+      "size": 5714,
+      "normalized_sha256": "e057203adad925e1fcd853c9590092e8bebf3e16b0efd148f7f49f8655fe7f47"
+    },
+    ".skills/gpui-kit/references/gpui/focus-handle.md": {
+      "role": "index",
+      "sha256": "773615bb376f1b1998b8b689def019a08957835304882a9fe196063b148cd4d4",
+      "size": 7212,
+      "normalized_sha256": "773615bb376f1b1998b8b689def019a08957835304882a9fe196063b148cd4d4"
+    },
+    ".skills/gpui-kit/references/gpui/global.md": {
+      "role": "index",
+      "sha256": "9790f579b06b9e924dec987016736b2a4cb6f34de533e83f64358a40d9306062",
+      "size": 3933,
+      "normalized_sha256": "9790f579b06b9e924dec987016736b2a4cb6f34de533e83f64358a40d9306062"
+    },
+    ".skills/gpui-kit/references/gpui/layout-style.md": {
+      "role": "index",
+      "sha256": "815c7e295497a56bd8c7785ce61e11d4dff01ca9168afb2e996aba732047c6bb",
+      "size": 6360,
+      "normalized_sha256": "815c7e295497a56bd8c7785ce61e11d4dff01ca9168afb2e996aba732047c6bb"
+    },
+    ".skills/gpui-kit/references/gpui/test-examples.md": {
+      "role": "index",
+      "sha256": "2c8ce1a3cb5d27845d2aeed055ca9910bfb5730f2a3e947f5e4974428be46889",
+      "size": 3851,
+      "normalized_sha256": "2c8ce1a3cb5d27845d2aeed055ca9910bfb5730f2a3e947f5e4974428be46889"
+    },
+    ".skills/gpui-kit/references/gpui/test-reference.md": {
+      "role": "index",
+      "sha256": "ec80150e2fee2e51e30b74f28c79ec45bcfb09ed527ab9d794b4a8c9648342a6",
+      "size": 18817,
+      "normalized_sha256": "ec80150e2fee2e51e30b74f28c79ec45bcfb09ed527ab9d794b4a8c9648342a6"
+    },
+    ".skills/gpui-kit/references/gpui/test.md": {
+      "role": "index",
+      "sha256": "5128c78f2a710e8d61ffec7c4f5d7f29c8585f738eb19044b1c5ad266b2a8368",
+      "size": 18275,
+      "normalized_sha256": "5128c78f2a710e8d61ffec7c4f5d7f29c8585f738eb19044b1c5ad266b2a8368"
+    },
+    ".skills/gpui-kit/references/recipes.md": {
+      "role": "index",
+      "sha256": "7d5762fe5a57f2e6ee80c37c1067ad70c713b7db9ee53f022f5217fb4cd4c36e",
+      "size": 5324,
+      "normalized_sha256": "7d5762fe5a57f2e6ee80c37c1067ad70c713b7db9ee53f022f5217fb4cd4c36e"
+    },
+    ".skills/gpui-kit/references/usage.md": {
+      "role": "index",
+      "sha256": "9b9b9f77d1774cbc766e52fa00ccda00828552f008e0352740bca50e03a0b303",
+      "size": 11463,
+      "normalized_sha256": "9b9b9f77d1774cbc766e52fa00ccda00828552f008e0352740bca50e03a0b303"
+    },
+    "AGENTS.md": {
+      "role": "index",
+      "sha256": "08f3ba8dcc1ec052b2fe6d83882fefbfd511e2c65e9874b11ed381c8ce1cd31f",
+      "size": 27047,
+      "normalized_sha256": "08f3ba8dcc1ec052b2fe6d83882fefbfd511e2c65e9874b11ed381c8ce1cd31f"
+    },
+    "Cargo.lock": {
+      "role": "index",
+      "sha256": "1266e621eb007728463fae8d01412be20ffb5c65a0e73ba31dd0655c0839350d",
+      "size": 252359,
+      "normalized_sha256": "1266e621eb007728463fae8d01412be20ffb5c65a0e73ba31dd0655c0839350d"
+    },
+    "Cargo.toml": {
+      "role": "index",
+      "sha256": "f07c9e19cc2aacd2769edb443f66f261e2c30c8fa78b622e1f6a87e8c869dce9",
+      "size": 18497,
+      "normalized_sha256": "f07c9e19cc2aacd2769edb443f66f261e2c30c8fa78b622e1f6a87e8c869dce9"
+    },
+    "LICENSE": {
+      "role": "index",
+      "sha256": "82ed534bc94f5256ee9ed7c46e8077de9e521abc621745ec1cd55f71dec69fcd",
+      "size": 1065,
+      "normalized_sha256": "82ed534bc94f5256ee9ed7c46e8077de9e521abc621745ec1cd55f71dec69fcd"
+    },
+    "README.md": {
+      "role": "index",
+      "sha256": "61440ed5df0f977c746f56e2cf0bd865c88b9f3dda38fc4970de72a9bf6e728a",
+      "size": 4811,
+      "normalized_sha256": "61440ed5df0f977c746f56e2cf0bd865c88b9f3dda38fc4970de72a9bf6e728a"
+    },
+    "aoci.code.txt": {
+      "role": "index",
+      "sha256": "12cbc237b863041b3ab7b6c6330091964cb014a20e624ec1f88de6056aed56c2",
+      "size": 21,
+      "normalized_sha256": "12cbc237b863041b3ab7b6c6330091964cb014a20e624ec1f88de6056aed56c2"
+    },
+    "aoci.meta.txt": {
+      "role": "index",
+      "sha256": "ebafbe54981dfb23686171bb5253ded8c2bbf9c697b73a1b1af9283d686a5cc4",
+      "size": 2307,
+      "normalized_sha256": "ebafbe54981dfb23686171bb5253ded8c2bbf9c697b73a1b1af9283d686a5cc4"
+    },
+    "aoci.txt": {
+      "role": "index",
+      "sha256": "78396678708383d62916e740156ca65d39652877d5352073ff60ee5167b7a5d6",
+      "size": 301,
+      "normalized_sha256": "78396678708383d62916e740156ca65d39652877d5352073ff60ee5167b7a5d6"
+    },
+    "assets/AppIcon.icns": {
+      "role": "index",
+      "sha256": "37ed8ea9fcd212851452e4907037370dbb576db7d29cc236dc031801b8bca119",
+      "size": 591310
+    },
+    "assets/duck.ico": {
+      "role": "index",
+      "sha256": "0a6a55ef47520b30933437dd77cc04c11a18d6e49caf801abb4426a5c5f73423",
+      "size": 59735
+    },
+    "assets/icon-1024.png": {
+      "role": "index",
+      "sha256": "bc908258b730a5854aa1f7eceeee7e9f64c7799fe2bd60a763dd72f333bc86d5",
+      "size": 448570
+    },
+    "assets/licenses/THIRD_PARTY_LICENSES.md": {
+      "role": "index",
+      "sha256": "4fe22bd3e5f64425e82ef5d940990407d38efb0f4dc96eec056ee916a3cb7fcb",
+      "size": 1378240,
+      "normalized_sha256": "4fe22bd3e5f64425e82ef5d940990407d38efb0f4dc96eec056ee916a3cb7fcb"
+    },
+    "crates/duck-ai/Cargo.toml": {
+      "role": "index",
+      "sha256": "2720c5c1774054289ecf98eae3bd0ea64ea8e355877ccda06f96020e6e8dc74c",
+      "size": 906,
+      "normalized_sha256": "2720c5c1774054289ecf98eae3bd0ea64ea8e355877ccda06f96020e6e8dc74c"
+    },
+    "crates/duck-ai/src/agent.rs": {
+      "role": "index",
+      "sha256": "f1f1f15d125f82652f7dedeb031d48073ec2a4f987de31197303acc61601c492",
+      "size": 38460,
+      "normalized_sha256": "f1f1f15d125f82652f7dedeb031d48073ec2a4f987de31197303acc61601c492"
+    },
+    "crates/duck-ai/src/kb.rs": {
+      "role": "index",
+      "sha256": "72a60d2bd00495b7dca0d2e7d1873c507ff2fe3a5c7798278a3fb89495e3035c",
+      "size": 37987,
+      "normalized_sha256": "72a60d2bd00495b7dca0d2e7d1873c507ff2fe3a5c7798278a3fb89495e3035c"
+    },
+    "crates/duck-ai/src/lib.rs": {
+      "role": "index",
+      "sha256": "b27976234292fad02eaff43557d1d090e8cd7fea23b0b4ad6e5283d44fb948c5",
+      "size": 3729,
+      "normalized_sha256": "b27976234292fad02eaff43557d1d090e8cd7fea23b0b4ad6e5283d44fb948c5"
+    },
+    "crates/duck-ai/src/provider.rs": {
+      "role": "index",
+      "sha256": "6d1be202774b59b785b4e26e475f1c5712d927da500e8962947bab857a0241fa",
+      "size": 23286,
+      "normalized_sha256": "6d1be202774b59b785b4e26e475f1c5712d927da500e8962947bab857a0241fa"
+    },
+    "crates/duck-ai/src/secret.rs": {
+      "role": "index",
+      "sha256": "c18e93c1100f144d660a92bc7c5ba3c5b060316991dd96a336d9d36c16e80a2c",
+      "size": 5135,
+      "normalized_sha256": "c18e93c1100f144d660a92bc7c5ba3c5b060316991dd96a336d9d36c16e80a2c"
+    },
+    "crates/duck-ai/src/sse.rs": {
+      "role": "index",
+      "sha256": "a3a10b2c39242ae5fbe234e7f67f58b290bd14dfea06553f6a6187274e2d1baf",
+      "size": 14439,
+      "normalized_sha256": "a3a10b2c39242ae5fbe234e7f67f58b290bd14dfea06553f6a6187274e2d1baf"
+    },
+    "crates/duck-ai/src/store.rs": {
+      "role": "index",
+      "sha256": "89e3c0fa37fd0bc4c71050b8005e0c8c8fd89ead2cc8e514877e4d9a560fc59c",
+      "size": 18282,
+      "normalized_sha256": "89e3c0fa37fd0bc4c71050b8005e0c8c8fd89ead2cc8e514877e4d9a560fc59c"
+    },
+    "crates/duck-ai/src/tool.rs": {
+      "role": "index",
+      "sha256": "4fb714a2ab9f2996a87f16ebe772d84d24b894b6cad974eb2e121b91c3ff654c",
+      "size": 18369,
+      "normalized_sha256": "4fb714a2ab9f2996a87f16ebe772d84d24b894b6cad974eb2e121b91c3ff654c"
+    },
+    "crates/duck-ai/src/wire.rs": {
+      "role": "index",
+      "sha256": "a56caed5395e8022861e4b429f4adf768a3f26daefcf66245a71adaac7d02c42",
+      "size": 7628,
+      "normalized_sha256": "a56caed5395e8022861e4b429f4adf768a3f26daefcf66245a71adaac7d02c42"
+    },
+    "crates/duck-app/Cargo.toml": {
+      "role": "index",
+      "sha256": "fa0e379f47b369af4a9d2e3d3c02de6cc60f97f7d1b02bbf9d19a96b9b7716a4",
+      "size": 2122,
+      "normalized_sha256": "fa0e379f47b369af4a9d2e3d3c02de6cc60f97f7d1b02bbf9d19a96b9b7716a4"
+    },
+    "crates/duck-app/build.rs": {
+      "role": "index",
+      "sha256": "b6bc8b1f1cc38975cf85e281e4c14acc2234c86ba981cd8e9c30a306f7af01fa",
+      "size": 916,
+      "normalized_sha256": "b6bc8b1f1cc38975cf85e281e4c14acc2234c86ba981cd8e9c30a306f7af01fa"
+    },
+    "crates/duck-app/src/actions.rs": {
+      "role": "index",
+      "sha256": "1a1e0aad6d70c477e4f50e6e7408029c4b038ed048975b84e0a2cff317fcf071",
+      "size": 21821,
+      "normalized_sha256": "1a1e0aad6d70c477e4f50e6e7408029c4b038ed048975b84e0a2cff317fcf071"
+    },
+    "crates/duck-app/src/ai.rs": {
+      "role": "index",
+      "sha256": "681e9b0a47264e26b3cbd3ddf199b51ba19eeeda23dc0c72f586f5e15365c864",
+      "size": 15332,
+      "normalized_sha256": "681e9b0a47264e26b3cbd3ddf199b51ba19eeeda23dc0c72f586f5e15365c864"
+    },
+    "crates/duck-app/src/ai_tools.rs": {
+      "role": "index",
+      "sha256": "4a96b0c0d38896b84d745b620b2eb660e6bdc9a1488a84858ba1377c9da41c7a",
+      "size": 29448,
+      "normalized_sha256": "4a96b0c0d38896b84d745b620b2eb660e6bdc9a1488a84858ba1377c9da41c7a"
+    },
+    "crates/duck-app/src/app.rs": {
+      "role": "index",
+      "sha256": "d66e9c7511b821fe17c73d9b9d8b9060e6b071613f17aa405a2ab50e01d2789b",
+      "size": 48898,
+      "normalized_sha256": "d66e9c7511b821fe17c73d9b9d8b9060e6b071613f17aa405a2ab50e01d2789b"
+    },
+    "crates/duck-app/src/assets.rs": {
+      "role": "index",
+      "sha256": "6b134d4f2cbe255bc9c824797ce6ed524f10bd606809aa3bc0111e85013cfd8c",
+      "size": 1185,
+      "normalized_sha256": "6b134d4f2cbe255bc9c824797ce6ed524f10bd606809aa3bc0111e85013cfd8c"
+    },
+    "crates/duck-app/src/backup.rs": {
+      "role": "index",
+      "sha256": "e884b1ac32b9ac10620a1b9963fcc7b6217993ff75cfc7f42e1696812ce44375",
+      "size": 29125,
+      "normalized_sha256": "e884b1ac32b9ac10620a1b9963fcc7b6217993ff75cfc7f42e1696812ce44375"
+    },
+    "crates/duck-app/src/deeplink.rs": {
+      "role": "index",
+      "sha256": "8b688a6bd38979a84b216411cddc212f404751c9ec9031698466fb55b681c304",
+      "size": 14293,
+      "normalized_sha256": "8b688a6bd38979a84b216411cddc212f404751c9ec9031698466fb55b681c304"
+    },
+    "crates/duck-app/src/diagnostics.rs": {
+      "role": "index",
+      "sha256": "fa26d4607c656c2e6cc1d318e504847c8cb78bb5ab702d025f824e0577fbc01a",
+      "size": 3892,
+      "normalized_sha256": "fa26d4607c656c2e6cc1d318e504847c8cb78bb5ab702d025f824e0577fbc01a"
+    },
+    "crates/duck-app/src/hotkey.rs": {
+      "role": "index",
+      "sha256": "df9c06eba8f89675e07a62a00ab45050e23a10a165670d99e8406fe38a9a8b58",
+      "size": 9336,
+      "normalized_sha256": "df9c06eba8f89675e07a62a00ab45050e23a10a165670d99e8406fe38a9a8b58"
+    },
+    "crates/duck-app/src/language_switch.rs": {
+      "role": "index",
+      "sha256": "bacbda88a5b164a9075e58c315035f7f5dc89598f101833aa576d3cb6dcf21d7",
+      "size": 3777,
+      "normalized_sha256": "bacbda88a5b164a9075e58c315035f7f5dc89598f101833aa576d3cb6dcf21d7"
+    },
+    "crates/duck-app/src/main.rs": {
+      "role": "index",
+      "sha256": "46d356fd030cd22291a854023823df260ed250594d80d07785798db2462ea3c3",
+      "size": 12151,
+      "normalized_sha256": "46d356fd030cd22291a854023823df260ed250594d80d07785798db2462ea3c3"
+    },
+    "crates/duck-app/src/market.rs": {
+      "role": "index",
+      "sha256": "9fbe92935e8ec0703a5a9c73cf76562506069f194ea1ee84cf20435752e80976",
+      "size": 26387,
+      "normalized_sha256": "9fbe92935e8ec0703a5a9c73cf76562506069f194ea1ee84cf20435752e80976"
+    },
+    "crates/duck-app/src/pages/assistant.rs": {
+      "role": "index",
+      "sha256": "e3ad4f76927752854793d9ffbfa27dffcaaa0a62416a936ab9260f5b99b74ffa",
+      "size": 80732,
+      "normalized_sha256": "e3ad4f76927752854793d9ffbfa27dffcaaa0a62416a936ab9260f5b99b74ffa"
+    },
+    "crates/duck-app/src/pages/data.rs": {
+      "role": "index",
+      "sha256": "0acc3dd843aed6fae8dc57326c48c22e87434ac180b3c5215c987c55ed19ee0c",
+      "size": 11675,
+      "normalized_sha256": "0acc3dd843aed6fae8dc57326c48c22e87434ac180b3c5215c987c55ed19ee0c"
+    },
+    "crates/duck-app/src/pages/db.rs": {
+      "role": "index",
+      "sha256": "8b326217c7e7e9bbfcdbc01d3731b3b3b56b2bbdf1c520296cf8551b90b4e326",
+      "size": 303376,
+      "normalized_sha256": "8b326217c7e7e9bbfcdbc01d3731b3b3b56b2bbdf1c520296cf8551b90b4e326"
+    },
+    "crates/duck-app/src/pages/licenses.rs": {
+      "role": "index",
+      "sha256": "bbf3c03e3b3d48a48d6ad64698fad5e054e0d15cc3ac19dc36d1b204b4fd5e39",
+      "size": 13454,
+      "normalized_sha256": "bbf3c03e3b3d48a48d6ad64698fad5e054e0d15cc3ac19dc36d1b204b4fd5e39"
+    },
+    "crates/duck-app/src/pages/logs.rs": {
+      "role": "index",
+      "sha256": "57d7946578c5b2dd83d96d39ca4f4c044f6e9865e210cb3f4c6c53ac92022dba",
+      "size": 52918,
+      "normalized_sha256": "57d7946578c5b2dd83d96d39ca4f4c044f6e9865e210cb3f4c6c53ac92022dba"
+    },
+    "crates/duck-app/src/pages/mail.rs": {
+      "role": "index",
+      "sha256": "ccd7b7448f75d3dd7c1757fe03b7eaf30843f29ed2f982135da0683e83cf9a16",
+      "size": 78229,
+      "normalized_sha256": "ccd7b7448f75d3dd7c1757fe03b7eaf30843f29ed2f982135da0683e83cf9a16"
+    },
+    "crates/duck-app/src/pages/mail_data.rs": {
+      "role": "index",
+      "sha256": "4124b11641e1fb997fa174c27e9c103db61422d76e1735c7814f4f1dfea7ce51",
+      "size": 7098,
+      "normalized_sha256": "4124b11641e1fb997fa174c27e9c103db61422d76e1735c7814f4f1dfea7ce51"
+    },
+    "crates/duck-app/src/pages/mod.rs": {
+      "role": "index",
+      "sha256": "50b13e08fc3551cc132e3e4cb582dfabff1e3933d28d9f155b55f287c38ad9c5",
+      "size": 2509,
+      "normalized_sha256": "50b13e08fc3551cc132e3e4cb582dfabff1e3933d28d9f155b55f287c38ad9c5"
+    },
+    "crates/duck-app/src/pages/onboarding.rs": {
+      "role": "index",
+      "sha256": "0e715a4feaa449758312f42c3ff5f2f0b6f4392b0d45f84803ab084e9b42e6c7",
+      "size": 17049,
+      "normalized_sha256": "0e715a4feaa449758312f42c3ff5f2f0b6f4392b0d45f84803ab084e9b42e6c7"
+    },
+    "crates/duck-app/src/pages/overview.rs": {
+      "role": "index",
+      "sha256": "c58acdb4f09449bc23ee1f9593479ee63e9a4fb4f50e221cda7f2f88823928ca",
+      "size": 11023,
+      "normalized_sha256": "c58acdb4f09449bc23ee1f9593479ee63e9a4fb4f50e221cda7f2f88823928ca"
+    },
+    "crates/duck-app/src/pages/placeholder.rs": {
+      "role": "index",
+      "sha256": "f3e57f75a8e5a9e25509d59b1352a8caf08ae7c42218b5eb5f72c28c3647ceda",
+      "size": 1922,
+      "normalized_sha256": "f3e57f75a8e5a9e25509d59b1352a8caf08ae7c42218b5eb5f72c28c3647ceda"
+    },
+    "crates/duck-app/src/pages/plugin_center.rs": {
+      "role": "index",
+      "sha256": "c1d31486469277b6bf6389f9d1b393ed2832352f832719f19695278e9d20c0dd",
+      "size": 70754,
+      "normalized_sha256": "c1d31486469277b6bf6389f9d1b393ed2832352f832719f19695278e9d20c0dd"
+    },
+    "crates/duck-app/src/pages/redis.rs": {
+      "role": "index",
+      "sha256": "dd7bafaf913b7b91e1b081e40f990d8324f5b24ff3db7612cbfa64bd3af2bd37",
+      "size": 251139,
+      "normalized_sha256": "dd7bafaf913b7b91e1b081e40f990d8324f5b24ff3db7612cbfa64bd3af2bd37"
+    },
+    "crates/duck-app/src/pages/settings.rs": {
+      "role": "index",
+      "sha256": "b57b5a12aaf798d0a573500b8162bdc1dda974e80557aa53924a909664bfcef7",
+      "size": 200281,
+      "normalized_sha256": "b57b5a12aaf798d0a573500b8162bdc1dda974e80557aa53924a909664bfcef7"
+    },
+    "crates/duck-app/src/pages/status_support.rs": {
+      "role": "index",
+      "sha256": "8f89dfbc64ac277d1f2e28f85322b414ca73236eefc3872c98f42335accb6c3a",
+      "size": 8168,
+      "normalized_sha256": "8f89dfbc64ac277d1f2e28f85322b414ca73236eefc3872c98f42335accb6c3a"
+    },
+    "crates/duck-app/src/pages/terminal.rs": {
+      "role": "index",
+      "sha256": "164b83f5016e63d58fbceedfbf182c2a96076eb0fc6ecf320bcbe39d8cc479bb",
+      "size": 159473,
+      "normalized_sha256": "164b83f5016e63d58fbceedfbf182c2a96076eb0fc6ecf320bcbe39d8cc479bb"
+    },
+    "crates/duck-app/src/pages/terminal_canvas.rs": {
+      "role": "index",
+      "sha256": "cab8a7eba73859226fb2b3fb8e131937011c2c767918e51e833d262d94aef672",
+      "size": 79068,
+      "normalized_sha256": "cab8a7eba73859226fb2b3fb8e131937011c2c767918e51e833d262d94aef672"
+    },
+    "crates/duck-app/src/pages/terminal_data.rs": {
+      "role": "index",
+      "sha256": "02b0db7f4338c2a82c00e5dc1448e960b298fc395e164e7e863a2f672a7f9f50",
+      "size": 33189,
+      "normalized_sha256": "02b0db7f4338c2a82c00e5dc1448e960b298fc395e164e7e863a2f672a7f9f50"
+    },
+    "crates/duck-app/src/pages/terminal_dialogs.rs": {
+      "role": "index",
+      "sha256": "87b3c278a847d76e81f3cc4d0da6dc0973a920ecd4ca8c67e2e6df18ea0e3a0d",
+      "size": 30888,
+      "normalized_sha256": "87b3c278a847d76e81f3cc4d0da6dc0973a920ecd4ca8c67e2e6df18ea0e3a0d"
+    },
+    "crates/duck-app/src/pages/toolbox.rs": {
+      "role": "index",
+      "sha256": "380b3cb3ad775cfd78564289fe7df94a77fea2ee24762b30eda505444c314667",
+      "size": 48694,
+      "normalized_sha256": "380b3cb3ad775cfd78564289fe7df94a77fea2ee24762b30eda505444c314667"
+    },
+    "crates/duck-app/src/palette_tools.rs": {
+      "role": "index",
+      "sha256": "f4a47879ca27882622445fe1034ce6302f240ddb4f461d7c50e6eefc837b0942",
+      "size": 13327,
+      "normalized_sha256": "f4a47879ca27882622445fe1034ce6302f240ddb4f461d7c50e6eefc837b0942"
+    },
+    "crates/duck-app/src/plugins.rs": {
+      "role": "index",
+      "sha256": "d5d4178eb711fa6622c7eb39a82f7661a50ca88f64456d715c70875ba9afa28a",
+      "size": 31002,
+      "normalized_sha256": "d5d4178eb711fa6622c7eb39a82f7661a50ca88f64456d715c70875ba9afa28a"
+    },
+    "crates/duck-app/src/settings.rs": {
+      "role": "index",
+      "sha256": "04da98e88f15eb109ac76553036a20d54876aa37ddcdf72ea1c7b006a02b85b4",
+      "size": 32798,
+      "normalized_sha256": "04da98e88f15eb109ac76553036a20d54876aa37ddcdf72ea1c7b006a02b85b4"
+    },
+    "crates/duck-app/src/theme_picker.rs": {
+      "role": "index",
+      "sha256": "469b222669d71692e5450955cca7918f21c03bc0146b45cb901260246ee5b33b",
+      "size": 6212,
+      "normalized_sha256": "469b222669d71692e5450955cca7918f21c03bc0146b45cb901260246ee5b33b"
+    },
+    "crates/duck-app/src/tools.rs": {
+      "role": "index",
+      "sha256": "788bf57f0c732223c56105b96edfcbf50230f3864a6c422e9121ce86058d7170",
+      "size": 3351,
+      "normalized_sha256": "788bf57f0c732223c56105b96edfcbf50230f3864a6c422e9121ce86058d7170"
+    },
+    "crates/duck-app/src/top_bar.rs": {
+      "role": "index",
+      "sha256": "3c01bb27e5f8e03004180c919f0b4e803b9213e9942f85c7a97a5632255e6c5d",
+      "size": 5684,
+      "normalized_sha256": "3c01bb27e5f8e03004180c919f0b4e803b9213e9942f85c7a97a5632255e6c5d"
+    },
+    "crates/duck-app/src/tray/mark.rs": {
+      "role": "index",
+      "sha256": "6067a4fb3459af67c57af611e9c8a18905d57dc6b954fbd946adf54090a8d74c",
+      "size": 7581,
+      "normalized_sha256": "6067a4fb3459af67c57af611e9c8a18905d57dc6b954fbd946adf54090a8d74c"
+    },
+    "crates/duck-app/src/tray/menu.rs": {
+      "role": "index",
+      "sha256": "40646b5108c6578ed0bcf1457a382aa28ec5b27bc8383a4964ff4d0af879a4d0",
+      "size": 7428,
+      "normalized_sha256": "40646b5108c6578ed0bcf1457a382aa28ec5b27bc8383a4964ff4d0af879a4d0"
+    },
+    "crates/duck-app/src/tray/mod.rs": {
+      "role": "index",
+      "sha256": "5c4563a47310eacba8244bf021904d349f4f957c309a55740000fc93c1eb18f0",
+      "size": 8298,
+      "normalized_sha256": "5c4563a47310eacba8244bf021904d349f4f957c309a55740000fc93c1eb18f0"
+    },
+    "crates/duck-app/src/units.rs": {
+      "role": "index",
+      "sha256": "b12273f22c41cc5ef64df53007d9e4ae37f5ba0bc27ecd9c0e72677f9fa4bc0c",
+      "size": 297,
+      "normalized_sha256": "b12273f22c41cc5ef64df53007d9e4ae37f5ba0bc27ecd9c0e72677f9fa4bc0c"
+    },
+    "crates/duck-app/src/update.rs": {
+      "role": "index",
+      "sha256": "c607fa609aa1886e0319bec1c67207d203563a7aea115ce4c52d04b5c34af09f",
+      "size": 26004,
+      "normalized_sha256": "c607fa609aa1886e0319bec1c67207d203563a7aea115ce4c52d04b5c34af09f"
+    },
+    "crates/duck-app/tests/layout_settings_take_effect.rs": {
+      "role": "observe",
+      "sha256": "321de7c4f516f51264660f30b6835c5edf3838e92195672c6e4d7520b2efc2cb",
+      "size": 7761,
+      "normalized_sha256": "321de7c4f516f51264660f30b6835c5edf3838e92195672c6e4d7520b2efc2cb"
+    },
+    "crates/duck-app/tests/licenses_view.rs": {
+      "role": "observe",
+      "sha256": "a9566532b1552d07a45261c43b9f977898451f787f9dbb1942db5d994e6146d2",
+      "size": 4313,
+      "normalized_sha256": "a9566532b1552d07a45261c43b9f977898451f787f9dbb1942db5d994e6146d2"
+    },
+    "crates/duck-app/tests/logs_scroll_repro.rs": {
+      "role": "observe",
+      "sha256": "53c1aa1ec00f4400b50f9be07e83fd574afe00362c0b5c9aebfeb99f7cf820c8",
+      "size": 13928,
+      "normalized_sha256": "53c1aa1ec00f4400b50f9be07e83fd574afe00362c0b5c9aebfeb99f7cf820c8"
+    },
+    "crates/duck-app/tests/notify_channels.rs": {
+      "role": "observe",
+      "sha256": "4a9c834c8e7028c50bd41f4987b5570c58cf81bc1d4e0a757aa2882ebae7ae86",
+      "size": 6728,
+      "normalized_sha256": "4a9c834c8e7028c50bd41f4987b5570c58cf81bc1d4e0a757aa2882ebae7ae86"
+    },
+    "crates/duck-app/tests/notify_history.rs": {
+      "role": "observe",
+      "sha256": "2408cb432a8e032f620eafb5c664c4ecbea81216c78d5fec910e8431f3f96843",
+      "size": 5799,
+      "normalized_sha256": "2408cb432a8e032f620eafb5c664c4ecbea81216c78d5fec910e8431f3f96843"
+    },
+    "crates/duck-app/tests/notify_sticky.rs": {
+      "role": "observe",
+      "sha256": "8e92cd4b61c08ac445523c654eca44412f02c232ef59a27114a2476fcb197ec4",
+      "size": 3562,
+      "normalized_sha256": "8e92cd4b61c08ac445523c654eca44412f02c232ef59a27114a2476fcb197ec4"
+    },
+    "crates/duck-app/tests/palette_filtering.rs": {
+      "role": "observe",
+      "sha256": "694e62e7a3741de19c742325f4108ef4a7efccaa88510d8844a7e2baaf2a0ee5",
+      "size": 4821,
+      "normalized_sha256": "694e62e7a3741de19c742325f4108ef4a7efccaa88510d8844a7e2baaf2a0ee5"
+    },
+    "crates/duck-app/tests/terminal_tab_drag_split.rs": {
+      "role": "observe",
+      "sha256": "c84551f19b439e195ecb17fe6f0d463c29b9b5fb747f2b4155e2b619f4757df4",
+      "size": 9267,
+      "normalized_sha256": "c84551f19b439e195ecb17fe6f0d463c29b9b5fb747f2b4155e2b619f4757df4"
+    },
+    "crates/duck-app/tests/terminal_tab_key.rs": {
+      "role": "observe",
+      "sha256": "d1fbf6506e54d60b3dbd6ca74e201b4692bf443f7d6770e664c1386d63e5362e",
+      "size": 7440,
+      "normalized_sha256": "d1fbf6506e54d60b3dbd6ca74e201b4692bf443f7d6770e664c1386d63e5362e"
+    },
+    "crates/duck-command/Cargo.toml": {
+      "role": "index",
+      "sha256": "4f10458f0885903670b7659a81436a6f33274686dcc67cb3a46ce05396746bc9",
+      "size": 1015,
+      "normalized_sha256": "4f10458f0885903670b7659a81436a6f33274686dcc67cb3a46ce05396746bc9"
+    },
+    "crates/duck-command/src/action.rs": {
+      "role": "index",
+      "sha256": "6a1e77a0ebaf2aafeee92094df2ce1d5fd9df2f3ea5528e6fda604afbcae0551",
+      "size": 8168,
+      "normalized_sha256": "6a1e77a0ebaf2aafeee92094df2ce1d5fd9df2f3ea5528e6fda604afbcae0551"
+    },
+    "crates/duck-command/src/fuzzy.rs": {
+      "role": "index",
+      "sha256": "57c212aab725abd3d503e7a8b6b16ba6b36bb2886acbf202823a3358d1c385f2",
+      "size": 9998,
+      "normalized_sha256": "57c212aab725abd3d503e7a8b6b16ba6b36bb2886acbf202823a3358d1c385f2"
+    },
+    "crates/duck-command/src/keymap.rs": {
+      "role": "index",
+      "sha256": "20ec9d26c2862d28ac3562623d76ff03f3e7ad719c077a17debd006cdb99fa69",
+      "size": 6943,
+      "normalized_sha256": "20ec9d26c2862d28ac3562623d76ff03f3e7ad719c077a17debd006cdb99fa69"
+    },
+    "crates/duck-command/src/lib.rs": {
+      "role": "index",
+      "sha256": "caccedb16fba23f6421f36e90d05ad845562e9f481f7feca7fa820f8313c08ed",
+      "size": 1566,
+      "normalized_sha256": "caccedb16fba23f6421f36e90d05ad845562e9f481f7feca7fa820f8313c08ed"
+    },
+    "crates/duck-command/src/menu.rs": {
+      "role": "index",
+      "sha256": "1d1f6f2dad54d7b3ef7c6380cdd602b4209971ef31307547bf5860f10be7a3bb",
+      "size": 7942,
+      "normalized_sha256": "1d1f6f2dad54d7b3ef7c6380cdd602b4209971ef31307547bf5860f10be7a3bb"
+    },
+    "crates/duck-command/src/palette.rs": {
+      "role": "index",
+      "sha256": "892ec1354397b33886a92ef514980e37958e16803523514971518c0287f39c03",
+      "size": 6367,
+      "normalized_sha256": "892ec1354397b33886a92ef514980e37958e16803523514971518c0287f39c03"
+    },
+    "crates/duck-command/tests/dispatch_without_window.rs": {
+      "role": "observe",
+      "sha256": "e1df71a22d69118533ec4247f5800c11462d768192b36b936b50dfc052403447",
+      "size": 4037,
+      "normalized_sha256": "e1df71a22d69118533ec4247f5800c11462d768192b36b936b50dfc052403447"
+    },
+    "crates/duck-components/Cargo.toml": {
+      "role": "index",
+      "sha256": "ddc83322e4f3779e66c175267450b68595eb8d7d1a733fb5265720047ce65988",
+      "size": 1078,
+      "normalized_sha256": "ddc83322e4f3779e66c175267450b68595eb8d7d1a733fb5265720047ce65988"
+    },
+    "crates/duck-components/assets/dblogos/clickhouse.svg": {
+      "role": "index",
+      "sha256": "f45e4d5f3a7e8fc65316260e064c01663daa958456db86688be7fe4fa22a58b8",
+      "size": 370,
+      "normalized_sha256": "f45e4d5f3a7e8fc65316260e064c01663daa958456db86688be7fe4fa22a58b8"
+    },
+    "crates/duck-components/assets/dblogos/duckdb.svg": {
+      "role": "index",
+      "sha256": "40a490a664fbdebe593267d00249eed63d2b9f18b016ecaafcd4b72f16e26818",
+      "size": 556,
+      "normalized_sha256": "40a490a664fbdebe593267d00249eed63d2b9f18b016ecaafcd4b72f16e26818"
+    },
+    "crates/duck-components/assets/dblogos/dynamodb.svg": {
+      "role": "index",
+      "sha256": "de388100971d36b0e47dec3df1a4ddf3308cb380a325c7c1fa6edc261d10bbc6",
+      "size": 2498,
+      "normalized_sha256": "de388100971d36b0e47dec3df1a4ddf3308cb380a325c7c1fa6edc261d10bbc6"
+    },
+    "crates/duck-components/assets/dblogos/elasticsearch.svg": {
+      "role": "index",
+      "sha256": "20a5bb0b435e6a199b1b1987151798034101fd016bb7f3261d3f94680ac1c9bb",
+      "size": 1118,
+      "normalized_sha256": "20a5bb0b435e6a199b1b1987151798034101fd016bb7f3261d3f94680ac1c9bb"
+    },
+    "crates/duck-components/assets/dblogos/influxdb.svg": {
+      "role": "index",
+      "sha256": "d37e93fca9e943cc7e77f6c68016d88c55683f1dfa1a5b88605136f74bf97f84",
+      "size": 3793,
+      "normalized_sha256": "d37e93fca9e943cc7e77f6c68016d88c55683f1dfa1a5b88605136f74bf97f84"
+    },
+    "crates/duck-components/assets/dblogos/mariadb.svg": {
+      "role": "index",
+      "sha256": "749de00e3035e46b37f8264fa22bd75d835ca294b921011db79e35a1593a088d",
+      "size": 2123,
+      "normalized_sha256": "749de00e3035e46b37f8264fa22bd75d835ca294b921011db79e35a1593a088d"
+    },
+    "crates/duck-components/assets/dblogos/mongodb.svg": {
+      "role": "index",
+      "sha256": "5f191c9efdffa95ae28b06de182f1e4a41fd51d3b1b2b8d57445257d448a3258",
+      "size": 908,
+      "normalized_sha256": "5f191c9efdffa95ae28b06de182f1e4a41fd51d3b1b2b8d57445257d448a3258"
+    },
+    "crates/duck-components/assets/dblogos/mysql.svg": {
+      "role": "index",
+      "sha256": "851887e84347801f13fce62b8f4b1924caa107aa8f6589eeca3465c976096bb4",
+      "size": 3447,
+      "normalized_sha256": "851887e84347801f13fce62b8f4b1924caa107aa8f6589eeca3465c976096bb4"
+    },
+    "crates/duck-components/assets/dblogos/neo4j.svg": {
+      "role": "index",
+      "sha256": "8de39602176b9fb56a1630a43a34b66654f6b2c7c109aca8ecf81e20ebe39297",
+      "size": 904,
+      "normalized_sha256": "8de39602176b9fb56a1630a43a34b66654f6b2c7c109aca8ecf81e20ebe39297"
+    },
+    "crates/duck-components/assets/dblogos/oracle.svg": {
+      "role": "index",
+      "sha256": "4ba0e2685ed5d2fdbb08b71948664264aaaa74a9e1155f395ff8a0ed7b2153ef",
+      "size": 485,
+      "normalized_sha256": "4ba0e2685ed5d2fdbb08b71948664264aaaa74a9e1155f395ff8a0ed7b2153ef"
+    },
+    "crates/duck-components/assets/dblogos/postgres.svg": {
+      "role": "index",
+      "sha256": "15ff1d2b8261396ed9ff5f70eb86e3b1d8962520fa3ca064a11d20fa706312d0",
+      "size": 3179,
+      "normalized_sha256": "15ff1d2b8261396ed9ff5f70eb86e3b1d8962520fa3ca064a11d20fa706312d0"
+    },
+    "crates/duck-components/assets/dblogos/redis.svg": {
+      "role": "index",
+      "sha256": "b61376446fe0d41af5984cfe8735559ceaa22e655c1c33b1029631ac25c52cc6",
+      "size": 2852,
+      "normalized_sha256": "b61376446fe0d41af5984cfe8735559ceaa22e655c1c33b1029631ac25c52cc6"
+    },
+    "crates/duck-components/assets/dblogos/redshift.svg": {
+      "role": "index",
+      "sha256": "8c2d5dd24c5fb275fa79218688cc21ad4f5ada3fe9c41d1a24f7ed3b5d98f01c",
+      "size": 702,
+      "normalized_sha256": "8c2d5dd24c5fb275fa79218688cc21ad4f5ada3fe9c41d1a24f7ed3b5d98f01c"
+    },
+    "crates/duck-components/assets/dblogos/sqlite.svg": {
+      "role": "index",
+      "sha256": "c3fb0cd84aaed40de6aae036304ab3f80ee99ee60ad5e2e644d08559d8ee9959",
+      "size": 1493,
+      "normalized_sha256": "c3fb0cd84aaed40de6aae036304ab3f80ee99ee60ad5e2e644d08559d8ee9959"
+    },
+    "crates/duck-components/assets/dblogos/sqlserver.svg": {
+      "role": "index",
+      "sha256": "7656a497e805c21762d7a67b9e9cd638f101f0bff562254258d682aac406014d",
+      "size": 5113,
+      "normalized_sha256": "7656a497e805c21762d7a67b9e9cd638f101f0bff562254258d682aac406014d"
+    },
+    "crates/duck-components/assets/icons/LICENSE": {
+      "role": "index",
+      "sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
+      "size": 3208,
+      "normalized_sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+    },
+    "crates/duck-components/assets/icons/app-window.svg": {
+      "role": "index",
+      "sha256": "c5391b8696197554da5b6fd7f6b975402f2e420f8bd9d63f112169e9f022273b",
+      "size": 300,
+      "normalized_sha256": "c5391b8696197554da5b6fd7f6b975402f2e420f8bd9d63f112169e9f022273b"
+    },
+    "crates/duck-components/assets/icons/archive.svg": {
+      "role": "index",
+      "sha256": "0f6a5161a723042ca7fd5426b69c134ad7ebbd0f6bc61355c463234794a27dc7",
+      "size": 314,
+      "normalized_sha256": "0f6a5161a723042ca7fd5426b69c134ad7ebbd0f6bc61355c463234794a27dc7"
+    },
+    "crates/duck-components/assets/icons/arrow-down.svg": {
+      "role": "index",
+      "sha256": "b33e1dabb7afaa25707638f2dada899cec06fdce854d50e9e4a4e3abeb46f53a",
+      "size": 239,
+      "normalized_sha256": "b33e1dabb7afaa25707638f2dada899cec06fdce854d50e9e4a4e3abeb46f53a"
+    },
+    "crates/duck-components/assets/icons/arrow-up.svg": {
+      "role": "index",
+      "sha256": "f6b8bd76718449c05ece7ae7ec87eca2f220b0ecee4145371956e1effebd69bd",
+      "size": 238,
+      "normalized_sha256": "f6b8bd76718449c05ece7ae7ec87eca2f220b0ecee4145371956e1effebd69bd"
+    },
+    "crates/duck-components/assets/icons/at-sign.svg": {
+      "role": "index",
+      "sha256": "7ba41aa80f434311a1464ad8993677a4f2851799ede96dde8ca0c2c3b4a7d21c",
+      "size": 278,
+      "normalized_sha256": "7ba41aa80f434311a1464ad8993677a4f2851799ede96dde8ca0c2c3b4a7d21c"
+    },
+    "crates/duck-components/assets/icons/bell.svg": {
+      "role": "index",
+      "sha256": "44b10ea50af289a03321fc1e886c6a6f4b97b5d82193cc1149bf92cddca6f269",
+      "size": 370,
+      "normalized_sha256": "44b10ea50af289a03321fc1e886c6a6f4b97b5d82193cc1149bf92cddca6f269"
+    },
+    "crates/duck-components/assets/icons/bot.svg": {
+      "role": "index",
+      "sha256": "4d8aaa7cbce1a567e47b40f98164e09ca6f38c047e85b8546ca602348cc2ae97",
+      "size": 345,
+      "normalized_sha256": "4d8aaa7cbce1a567e47b40f98164e09ca6f38c047e85b8546ca602348cc2ae97"
+    },
+    "crates/duck-components/assets/icons/box.svg": {
+      "role": "index",
+      "sha256": "fd58686e02f4775d9b4a733b4847750c4ebecb36c03ce510f108501cafa86b36",
+      "size": 375,
+      "normalized_sha256": "fd58686e02f4775d9b4a733b4847750c4ebecb36c03ce510f108501cafa86b36"
+    },
+    "crates/duck-components/assets/icons/check.svg": {
+      "role": "index",
+      "sha256": "5687b17fd93b92f065d16da2eb5c9d445ee4034adca2f52a3d47212a244e2701",
+      "size": 219,
+      "normalized_sha256": "5687b17fd93b92f065d16da2eb5c9d445ee4034adca2f52a3d47212a244e2701"
+    },
+    "crates/duck-components/assets/icons/checkbox-check.svg": {
+      "role": "index",
+      "sha256": "6891eb7165f4e0a5678dd0ea9a964d3b227cea27a112041e6cd0fb6d924448e9",
+      "size": 216,
+      "normalized_sha256": "6891eb7165f4e0a5678dd0ea9a964d3b227cea27a112041e6cd0fb6d924448e9"
+    },
+    "crates/duck-components/assets/icons/checkbox-minus.svg": {
+      "role": "index",
+      "sha256": "7e1cd0e73884ad22c51069bf5416f7fe14143dfe76fc32d98c58a3bed1942d5d",
+      "size": 209,
+      "normalized_sha256": "7e1cd0e73884ad22c51069bf5416f7fe14143dfe76fc32d98c58a3bed1942d5d"
+    },
+    "crates/duck-components/assets/icons/chevron-down.svg": {
+      "role": "index",
+      "sha256": "c9c436b09a99718794a6b729165f319b41605b9e0c9fcff05c040eb4c180c0a1",
+      "size": 216,
+      "normalized_sha256": "c9c436b09a99718794a6b729165f319b41605b9e0c9fcff05c040eb4c180c0a1"
+    },
+    "crates/duck-components/assets/icons/chevron-left.svg": {
+      "role": "index",
+      "sha256": "76680117f0ad151e7adb60fce2130e344b76c5346baac5a053bf0f8333f190cd",
+      "size": 218,
+      "normalized_sha256": "76680117f0ad151e7adb60fce2130e344b76c5346baac5a053bf0f8333f190cd"
+    },
+    "crates/duck-components/assets/icons/chevron-right.svg": {
+      "role": "index",
+      "sha256": "e1b61c93447b05e1dda4671fbcf2ee3f2fadaa4ae036041e898971a61a009549",
+      "size": 217,
+      "normalized_sha256": "e1b61c93447b05e1dda4671fbcf2ee3f2fadaa4ae036041e898971a61a009549"
+    },
+    "crates/duck-components/assets/icons/circle-alert.svg": {
+      "role": "index",
+      "sha256": "9e3c3c3ad187f2dbfa4f01923964365865b38f2234124585fbbc2a8e9ec24bf0",
+      "size": 306,
+      "normalized_sha256": "9e3c3c3ad187f2dbfa4f01923964365865b38f2234124585fbbc2a8e9ec24bf0"
+    },
+    "crates/duck-components/assets/icons/circle-check.svg": {
+      "role": "index",
+      "sha256": "734e36939276518e1a0fa44db13e4ee19331441d1c74a5b0793ce6a3850fef8a",
+      "size": 255,
+      "normalized_sha256": "734e36939276518e1a0fa44db13e4ee19331441d1c74a5b0793ce6a3850fef8a"
+    },
+    "crates/duck-components/assets/icons/clipboard.svg": {
+      "role": "index",
+      "sha256": "478483bd316d747e084caefee0d69702561182e286806c65800f3b6f7299e869",
+      "size": 331,
+      "normalized_sha256": "478483bd316d747e084caefee0d69702561182e286806c65800f3b6f7299e869"
+    },
+    "crates/duck-components/assets/icons/clock.svg": {
+      "role": "index",
+      "sha256": "6b41846551e0a5c9c58582e7cb3d7b31630dd32ddd2c38c12e54016f0d26fb76",
+      "size": 248,
+      "normalized_sha256": "6b41846551e0a5c9c58582e7cb3d7b31630dd32ddd2c38c12e54016f0d26fb76"
+    },
+    "crates/duck-components/assets/icons/code.svg": {
+      "role": "index",
+      "sha256": "e776b7a798f0f48859b3381a2e134b9ab1a81c3d0f787a093b310a0ee6170271",
+      "size": 243,
+      "normalized_sha256": "e776b7a798f0f48859b3381a2e134b9ab1a81c3d0f787a093b310a0ee6170271"
+    },
+    "crates/duck-components/assets/icons/columns-2.svg": {
+      "role": "index",
+      "sha256": "dcc4b482254450fde87f89a7a1f3d92b607475dd2da3898952b5e2fb6805d666",
+      "size": 262,
+      "normalized_sha256": "dcc4b482254450fde87f89a7a1f3d92b607475dd2da3898952b5e2fb6805d666"
+    },
+    "crates/duck-components/assets/icons/copy.svg": {
+      "role": "index",
+      "sha256": "f10a344c923f374870709cdfc410bb6abc4c6c339c9a508a4c772cb86bcff13a",
+      "size": 316,
+      "normalized_sha256": "f10a344c923f374870709cdfc410bb6abc4c6c339c9a508a4c772cb86bcff13a"
+    },
+    "crates/duck-components/assets/icons/corner-left-up.svg": {
+      "role": "index",
+      "sha256": "b628e13face78fa1e8a55ece7383c4125b83ed764f0c9160b2252b17e22b31d3",
+      "size": 255,
+      "normalized_sha256": "b628e13face78fa1e8a55ece7383c4125b83ed764f0c9160b2252b17e22b31d3"
+    },
+    "crates/duck-components/assets/icons/database-zap.svg": {
+      "role": "index",
+      "sha256": "cf7cd1ac41cea00c8fee95ac128503465a6ed45dd34f76220b0f5eb3dcb07587",
+      "size": 364,
+      "normalized_sha256": "cf7cd1ac41cea00c8fee95ac128503465a6ed45dd34f76220b0f5eb3dcb07587"
+    },
+    "crates/duck-components/assets/icons/database.svg": {
+      "role": "index",
+      "sha256": "5b92e8ca0dc5b5a7dbb977019f46112659be270d422b86aef9b164d04dbb4710",
+      "size": 303,
+      "normalized_sha256": "5b92e8ca0dc5b5a7dbb977019f46112659be270d422b86aef9b164d04dbb4710"
+    },
+    "crates/duck-components/assets/icons/download.svg": {
+      "role": "index",
+      "sha256": "943171deb325a63d3c70baae10131075e9215d5db871f7add7d4dde413e9bf94",
+      "size": 292,
+      "normalized_sha256": "943171deb325a63d3c70baae10131075e9215d5db871f7add7d4dde413e9bf94"
+    },
+    "crates/duck-components/assets/icons/ellipsis.svg": {
+      "role": "index",
+      "sha256": "bb639465f35fc1bb0b0d2cdf2385568fbeef76c4fc49209f3906470ff73cecc9",
+      "size": 286,
+      "normalized_sha256": "bb639465f35fc1bb0b0d2cdf2385568fbeef76c4fc49209f3906470ff73cecc9"
+    },
+    "crates/duck-components/assets/icons/external-link.svg": {
+      "role": "index",
+      "sha256": "5d755b349098edfb44d68daf8bc15e0fb04112d63d592eaf3a2ec907ec9bd96f",
+      "size": 306,
+      "normalized_sha256": "5d755b349098edfb44d68daf8bc15e0fb04112d63d592eaf3a2ec907ec9bd96f"
+    },
+    "crates/duck-components/assets/icons/file-text.svg": {
+      "role": "index",
+      "sha256": "91ccd3065382396e2015ff0668f68f2ad2dffee9b45aac701948c71ee7f98aa7",
+      "size": 412,
+      "normalized_sha256": "91ccd3065382396e2015ff0668f68f2ad2dffee9b45aac701948c71ee7f98aa7"
+    },
+    "crates/duck-components/assets/icons/file.svg": {
+      "role": "index",
+      "sha256": "088b4cee13f5887904e46cc6d6bc85d47f9463d51920846fbe069940838d863d",
+      "size": 350,
+      "normalized_sha256": "088b4cee13f5887904e46cc6d6bc85d47f9463d51920846fbe069940838d863d"
+    },
+    "crates/duck-components/assets/icons/film.svg": {
+      "role": "index",
+      "sha256": "4850f9c585ed0e42e5c8dbafeeafdd26aa92230b2c1680ecefa8ccb76bda01d5",
+      "size": 391,
+      "normalized_sha256": "4850f9c585ed0e42e5c8dbafeeafdd26aa92230b2c1680ecefa8ccb76bda01d5"
+    },
+    "crates/duck-components/assets/icons/flag.svg": {
+      "role": "index",
+      "sha256": "c4f9d1236bcaccab1501c93ca39a79aad396c022b4c7b433f21f44a8e0411736",
+      "size": 350,
+      "normalized_sha256": "c4f9d1236bcaccab1501c93ca39a79aad396c022b4c7b433f21f44a8e0411736"
+    },
+    "crates/duck-components/assets/icons/folder-open.svg": {
+      "role": "index",
+      "sha256": "ab377482811e5b6b79d1ca9cb6e4217fff8fda1f97b52064b32ff1f181826d87",
+      "size": 381,
+      "normalized_sha256": "ab377482811e5b6b79d1ca9cb6e4217fff8fda1f97b52064b32ff1f181826d87"
+    },
+    "crates/duck-components/assets/icons/folder-plus.svg": {
+      "role": "index",
+      "sha256": "448c1700db584182a0bc0b4b8e4c737bdb9f85f9a0e23e3ba4c30db60277c496",
+      "size": 360,
+      "normalized_sha256": "448c1700db584182a0bc0b4b8e4c737bdb9f85f9a0e23e3ba4c30db60277c496"
+    },
+    "crates/duck-components/assets/icons/folders.svg": {
+      "role": "index",
+      "sha256": "cc66cf929a46bf2c88b19d49857ef5324acbda64822c63cff5298f394618aaf2",
+      "size": 398,
+      "normalized_sha256": "cc66cf929a46bf2c88b19d49857ef5324acbda64822c63cff5298f394618aaf2"
+    },
+    "crates/duck-components/assets/icons/forward.svg": {
+      "role": "index",
+      "sha256": "bee47d9cc81446d898f0edeee22e03618da00df41d95760d8d74726202037b4f",
+      "size": 258,
+      "normalized_sha256": "bee47d9cc81446d898f0edeee22e03618da00df41d95760d8d74726202037b4f"
+    },
+    "crates/duck-components/assets/icons/gauge.svg": {
+      "role": "index",
+      "sha256": "8f6b6a7f2442cb2fe35de9067c090e2b24a5812be8a0ed51eff82b99a7b8a28a",
+      "size": 255,
+      "normalized_sha256": "8f6b6a7f2442cb2fe35de9067c090e2b24a5812be8a0ed51eff82b99a7b8a28a"
+    },
+    "crates/duck-components/assets/icons/globe.svg": {
+      "role": "index",
+      "sha256": "724696b223103c11a75302760a8b26187000ed0c7db4404e0f9c2922e6acdba0",
+      "size": 305,
+      "normalized_sha256": "724696b223103c11a75302760a8b26187000ed0c7db4404e0f9c2922e6acdba0"
+    },
+    "crates/duck-components/assets/icons/hard-drive.svg": {
+      "role": "index",
+      "sha256": "f4e37ec7bd9ae22150371ed514ac1bafc8fb3e33e76a41503c8ba687f3b6c90c",
+      "size": 430,
+      "normalized_sha256": "f4e37ec7bd9ae22150371ed514ac1bafc8fb3e33e76a41503c8ba687f3b6c90c"
+    },
+    "crates/duck-components/assets/icons/house.svg": {
+      "role": "index",
+      "sha256": "49f0c14d674b96dd1b46b76dc4001f292cf99ea194e238863b67cd5a65e14979",
+      "size": 368,
+      "normalized_sha256": "49f0c14d674b96dd1b46b76dc4001f292cf99ea194e238863b67cd5a65e14979"
+    },
+    "crates/duck-components/assets/icons/image.svg": {
+      "role": "index",
+      "sha256": "f7f6481541b69c3c8384b1db355e189f12d631e39b608123f18266683a452565",
+      "size": 332,
+      "normalized_sha256": "f7f6481541b69c3c8384b1db355e189f12d631e39b608123f18266683a452565"
+    },
+    "crates/duck-components/assets/icons/inbox.svg": {
+      "role": "index",
+      "sha256": "aae8d65580928e0246944084168fa77c0c8993c72c2bda8bdffcb46c632b6b65",
+      "size": 367,
+      "normalized_sha256": "aae8d65580928e0246944084168fa77c0c8993c72c2bda8bdffcb46c632b6b65"
+    },
+    "crates/duck-components/assets/icons/info.svg": {
+      "role": "index",
+      "sha256": "ddc82f0a3dc10af839184fdd9be0e9566b3671e07e1bd1b0e0b9e725816e5f69",
+      "size": 268,
+      "normalized_sha256": "ddc82f0a3dc10af839184fdd9be0e9566b3671e07e1bd1b0e0b9e725816e5f69"
+    },
+    "crates/duck-components/assets/icons/kanban.svg": {
+      "role": "index",
+      "sha256": "c9fdb807df93c2c4653bb793e8b9b3c27169a786afc89cc5b1362e704522eee1",
+      "size": 252,
+      "normalized_sha256": "c9fdb807df93c2c4653bb793e8b9b3c27169a786afc89cc5b1362e704522eee1"
+    },
+    "crates/duck-components/assets/icons/layers.svg": {
+      "role": "index",
+      "sha256": "2da1f8164ee9f292dfccf1d468e1692730d81242e37f084af9aa1060aedd276d",
+      "size": 484,
+      "normalized_sha256": "2da1f8164ee9f292dfccf1d468e1692730d81242e37f084af9aa1060aedd276d"
+    },
+    "crates/duck-components/assets/icons/library.svg": {
+      "role": "index",
+      "sha256": "d2a766122f95e684e9d084f53c5759f036b6b735ec310e2637921e7dd00704ad",
+      "size": 275,
+      "normalized_sha256": "d2a766122f95e684e9d084f53c5759f036b6b735ec310e2637921e7dd00704ad"
+    },
+    "crates/duck-components/assets/icons/list-filter.svg": {
+      "role": "index",
+      "sha256": "9dc514262d6ab419bbaecdb5f00e1a04f7779f8f87e3a14406f991e2faecda8e",
+      "size": 252,
+      "normalized_sha256": "9dc514262d6ab419bbaecdb5f00e1a04f7779f8f87e3a14406f991e2faecda8e"
+    },
+    "crates/duck-components/assets/icons/list-ordered.svg": {
+      "role": "index",
+      "sha256": "73293a75b17b0713659c255f1fad0121d66f2e08639e966dba12bc6d83b3a2e8",
+      "size": 362,
+      "normalized_sha256": "73293a75b17b0713659c255f1fad0121d66f2e08639e966dba12bc6d83b3a2e8"
+    },
+    "crates/duck-components/assets/icons/mail.svg": {
+      "role": "index",
+      "sha256": "1c12e70001b2c5ccaff82bdfe3569955e77b5453ab8363e9a8d4fde34b00a835",
+      "size": 293,
+      "normalized_sha256": "1c12e70001b2c5ccaff82bdfe3569955e77b5453ab8363e9a8d4fde34b00a835"
+    },
+    "crates/duck-components/assets/icons/minus.svg": {
+      "role": "index",
+      "sha256": "d82099fd56c9504082f8286bb99bd4e79b0577a059d2fc72416f1c9d55ede9b7",
+      "size": 212,
+      "normalized_sha256": "d82099fd56c9504082f8286bb99bd4e79b0577a059d2fc72416f1c9d55ede9b7"
+    },
+    "crates/duck-components/assets/icons/moon.svg": {
+      "role": "index",
+      "sha256": "f2ecd2a544b184276df501844726f5af6286b9b23fdd86471b9b731a2d03045b",
+      "size": 314,
+      "normalized_sha256": "f2ecd2a544b184276df501844726f5af6286b9b23fdd86471b9b731a2d03045b"
+    },
+    "crates/duck-components/assets/icons/palette.svg": {
+      "role": "index",
+      "sha256": "2b8d4e56e24490442ebbc8a75fced80167097bce7b60a127141e18496422eca0",
+      "size": 539,
+      "normalized_sha256": "2b8d4e56e24490442ebbc8a75fced80167097bce7b60a127141e18496422eca0"
+    },
+    "crates/duck-components/assets/icons/panel-right.svg": {
+      "role": "index",
+      "sha256": "82e8b04e608eb0ef117bf8ea07165306028acee09bf8a1f7f442b0fe0b0333c0",
+      "size": 262,
+      "normalized_sha256": "82e8b04e608eb0ef117bf8ea07165306028acee09bf8a1f7f442b0fe0b0333c0"
+    },
+    "crates/duck-components/assets/icons/paperclip.svg": {
+      "role": "index",
+      "sha256": "c3dd6ef9bf1e8bc5a78bc9bff32f858ea9ee580dcf9d4a1decaf178d31321a96",
+      "size": 324,
+      "normalized_sha256": "c3dd6ef9bf1e8bc5a78bc9bff32f858ea9ee580dcf9d4a1decaf178d31321a96"
+    },
+    "crates/duck-components/assets/icons/pause.svg": {
+      "role": "index",
+      "sha256": "d646716ff227c6d217a6844b7465678a9bf3ff7c903e590247d357b133a8f587",
+      "size": 290,
+      "normalized_sha256": "d646716ff227c6d217a6844b7465678a9bf3ff7c903e590247d357b133a8f587"
+    },
+    "crates/duck-components/assets/icons/pencil.svg": {
+      "role": "index",
+      "sha256": "f67d3d04924f5a6182eb0ae8298f8c7258e79e2ea2e69de826fce07f464a2f19",
+      "size": 356,
+      "normalized_sha256": "f67d3d04924f5a6182eb0ae8298f8c7258e79e2ea2e69de826fce07f464a2f19"
+    },
+    "crates/duck-components/assets/icons/play.svg": {
+      "role": "index",
+      "sha256": "9e8b3ebd312978fad90701edfcc8ff48784074cfe9ffa4f2aaf8c7b2f7e0c17b",
+      "size": 286,
+      "normalized_sha256": "9e8b3ebd312978fad90701edfcc8ff48784074cfe9ffa4f2aaf8c7b2f7e0c17b"
+    },
+    "crates/duck-components/assets/icons/plug.svg": {
+      "role": "index",
+      "sha256": "929207a3c0cbe6b32f40c592f31818db51905bf4404df8180217bc8301b9d4a2",
+      "size": 302,
+      "normalized_sha256": "929207a3c0cbe6b32f40c592f31818db51905bf4404df8180217bc8301b9d4a2"
+    },
+    "crates/duck-components/assets/icons/plus.svg": {
+      "role": "index",
+      "sha256": "1b94460f6bd13e34bd0d09f184ebe27d472509aa7dff9d732dab9dcd4b831992",
+      "size": 233,
+      "normalized_sha256": "1b94460f6bd13e34bd0d09f184ebe27d472509aa7dff9d732dab9dcd4b831992"
+    },
+    "crates/duck-components/assets/icons/power.svg": {
+      "role": "index",
+      "sha256": "c3ae3f605ee6c40df30c88bf4e096c437b5004153ba00bd387a7045021acdf3c",
+      "size": 253,
+      "normalized_sha256": "c3ae3f605ee6c40df30c88bf4e096c437b5004153ba00bd387a7045021acdf3c"
+    },
+    "crates/duck-components/assets/icons/reply.svg": {
+      "role": "index",
+      "sha256": "7de91fa000b91fc1d717497378a97afe09c6573823ec4c436a8b9abf6706e122",
+      "size": 257,
+      "normalized_sha256": "7de91fa000b91fc1d717497378a97afe09c6573823ec4c436a8b9abf6706e122"
+    },
+    "crates/duck-components/assets/icons/rotate-cw.svg": {
+      "role": "index",
+      "sha256": "b44e0971aca95601e145fb662d90b9f3f99751bd212a62c454e7f0317c678f82",
+      "size": 276,
+      "normalized_sha256": "b44e0971aca95601e145fb662d90b9f3f99751bd212a62c454e7f0317c678f82"
+    },
+    "crates/duck-components/assets/icons/search.svg": {
+      "role": "index",
+      "sha256": "a682a72737f06cf3d96e77fe6b79a70abf2dba9c20a035d3d7203e842ff0c2bc",
+      "size": 252,
+      "normalized_sha256": "a682a72737f06cf3d96e77fe6b79a70abf2dba9c20a035d3d7203e842ff0c2bc"
+    },
+    "crates/duck-components/assets/icons/send.svg": {
+      "role": "index",
+      "sha256": "2a635362ed826711a8365c984a30bcc8b872522f2bf1d37ac9626f77ec29e65d",
+      "size": 370,
+      "normalized_sha256": "2a635362ed826711a8365c984a30bcc8b872522f2bf1d37ac9626f77ec29e65d"
+    },
+    "crates/duck-components/assets/icons/server.svg": {
+      "role": "index",
+      "sha256": "97003f91daca2e4a18f4ed90c43dbcd820b661c1d268791354c13e87943ef388",
+      "size": 384,
+      "normalized_sha256": "97003f91daca2e4a18f4ed90c43dbcd820b661c1d268791354c13e87943ef388"
+    },
+    "crates/duck-components/assets/icons/settings.svg": {
+      "role": "index",
+      "sha256": "470f7d1e9ba531990731e9281a2d463929cc20ca45c078f24cdcc25201d3d244",
+      "size": 563,
+      "normalized_sha256": "470f7d1e9ba531990731e9281a2d463929cc20ca45c078f24cdcc25201d3d244"
+    },
+    "crates/duck-components/assets/icons/sliders-horizontal.svg": {
+      "role": "index",
+      "sha256": "b6988e7fdeb741733bd8ff00f099f972a7995162b84a6532d2833742ba7792fd",
+      "size": 378,
+      "normalized_sha256": "b6988e7fdeb741733bd8ff00f099f972a7995162b84a6532d2833742ba7792fd"
+    },
+    "crates/duck-components/assets/icons/sparkles.svg": {
+      "role": "index",
+      "sha256": "2ba2b3a0ab96a181d1f6346455b97dd073f448259d3aacbb0af476f26dadaede",
+      "size": 544,
+      "normalized_sha256": "2ba2b3a0ab96a181d1f6346455b97dd073f448259d3aacbb0af476f26dadaede"
+    },
+    "crates/duck-components/assets/icons/square-function.svg": {
+      "role": "index",
+      "sha256": "6b7803e6460a56cf1b82a7b9d541734c2fff1d35a4775cbeab7a41b7107afc4e",
+      "size": 320,
+      "normalized_sha256": "6b7803e6460a56cf1b82a7b9d541734c2fff1d35a4775cbeab7a41b7107afc4e"
+    },
+    "crates/duck-components/assets/icons/square-terminal.svg": {
+      "role": "index",
+      "sha256": "5747cb7cd0805ab48a4d95583f3869142f5112f2c66d3e21147345d1647e67c6",
+      "size": 295,
+      "normalized_sha256": "5747cb7cd0805ab48a4d95583f3869142f5112f2c66d3e21147345d1647e67c6"
+    },
+    "crates/duck-components/assets/icons/square.svg": {
+      "role": "index",
+      "sha256": "2b3633cbaffa8ed3a2b9bd1f5bc98451572cb88562807bd594b9e199bbf21025",
+      "size": 241,
+      "normalized_sha256": "2b3633cbaffa8ed3a2b9bd1f5bc98451572cb88562807bd594b9e199bbf21025"
+    },
+    "crates/duck-components/assets/icons/star.svg": {
+      "role": "index",
+      "sha256": "4a6e1b2b047693c9ae1985cf42e415020b05a3088c7e1523c197b75528beeb5b",
+      "size": 568,
+      "normalized_sha256": "4a6e1b2b047693c9ae1985cf42e415020b05a3088c7e1523c197b75528beeb5b"
+    },
+    "crates/duck-components/assets/icons/sun.svg": {
+      "role": "index",
+      "sha256": "77022a016050b73cf0b6dfc6595b16be506e826d84f1a71b8c8a47f065afdcd5",
+      "size": 441,
+      "normalized_sha256": "77022a016050b73cf0b6dfc6595b16be506e826d84f1a71b8c8a47f065afdcd5"
+    },
+    "crates/duck-components/assets/icons/tag.svg": {
+      "role": "index",
+      "sha256": "5bf736a4b78966e74d87a92caee5f44eb3388206dddb46e63e464939b9a67fa0",
+      "size": 409,
+      "normalized_sha256": "5bf736a4b78966e74d87a92caee5f44eb3388206dddb46e63e464939b9a67fa0"
+    },
+    "crates/duck-components/assets/icons/trash-2.svg": {
+      "role": "index",
+      "sha256": "056544b48727cfca9c1aa4ee1f36839354f6a8dd278fe2c1f97439b59aa14460",
+      "size": 357,
+      "normalized_sha256": "056544b48727cfca9c1aa4ee1f36839354f6a8dd278fe2c1f97439b59aa14460"
+    },
+    "crates/duck-components/assets/icons/triangle-alert.svg": {
+      "role": "index",
+      "sha256": "db66f97e916f88bf3ff1e7ab095a35257012614754223cc2ef7876a33ae5d0da",
+      "size": 319,
+      "normalized_sha256": "db66f97e916f88bf3ff1e7ab095a35257012614754223cc2ef7876a33ae5d0da"
+    },
+    "crates/duck-components/assets/icons/upload.svg": {
+      "role": "index",
+      "sha256": "dd144f5e832f83d77b52e8e0bf77280b8430e812a53e7a35dc066ab1e5a6220d",
+      "size": 291,
+      "normalized_sha256": "dd144f5e832f83d77b52e8e0bf77280b8430e812a53e7a35dc066ab1e5a6220d"
+    },
+    "crates/duck-components/assets/icons/user.svg": {
+      "role": "index",
+      "sha256": "c4ced959797f4cd75c9e82577b5d5c1a7cb2932ef8a2c32f5f08a260d3d5e181",
+      "size": 276,
+      "normalized_sha256": "c4ced959797f4cd75c9e82577b5d5c1a7cb2932ef8a2c32f5f08a260d3d5e181"
+    },
+    "crates/duck-components/assets/icons/x.svg": {
+      "role": "index",
+      "sha256": "22b2ee34a7d4eadfdb27c6929665bb6e430561d339330cfd72d108ba809cf668",
+      "size": 237,
+      "normalized_sha256": "22b2ee34a7d4eadfdb27c6929665bb6e430561d339330cfd72d108ba809cf668"
+    },
+    "crates/duck-components/assets/icons/zap.svg": {
+      "role": "index",
+      "sha256": "38f03ece531d4dfd6c120fa4ac0824ab5e6f0eac0783f49a408aa61ac17f5ba1",
+      "size": 370,
+      "normalized_sha256": "38f03ece531d4dfd6c120fa4ac0824ab5e6f0eac0783f49a408aa61ac17f5ba1"
+    },
+    "crates/duck-components/assets/logo.png": {
+      "role": "index",
+      "sha256": "e64c92b935fd30804ce901f33a498acec768c723d7082165b67999802dd8c8a7",
+      "size": 32996
+    },
+    "crates/duck-components/src/command_palette.rs": {
+      "role": "index",
+      "sha256": "082a2cb75aa539cd2d630d28e396f7ae70046b9a44eace754ce73ec9fda0b315",
+      "size": 9380,
+      "normalized_sha256": "082a2cb75aa539cd2d630d28e396f7ae70046b9a44eace754ce73ec9fda0b315"
+    },
+    "crates/duck-components/src/content/data.rs": {
+      "role": "index",
+      "sha256": "9e428ab962e4a28375a6ccfe80cec2bc2a9d56b83cfc85048c899c657fed2623",
+      "size": 10248,
+      "normalized_sha256": "9e428ab962e4a28375a6ccfe80cec2bc2a9d56b83cfc85048c899c657fed2623"
+    },
+    "crates/duck-components/src/content/dock.rs": {
+      "role": "index",
+      "sha256": "0be3c6c0226bf203e72364646c407f4c154673aeb2988a043038a331f98a08cb",
+      "size": 5125,
+      "normalized_sha256": "0be3c6c0226bf203e72364646c407f4c154673aeb2988a043038a331f98a08cb"
+    },
+    "crates/duck-components/src/content/feedback.rs": {
+      "role": "index",
+      "sha256": "4fa2419dfff09cfddca80c437a5216f44aaeef7bd36741c945b69f11a2152451",
+      "size": 7382,
+      "normalized_sha256": "4fa2419dfff09cfddca80c437a5216f44aaeef7bd36741c945b69f11a2152451"
+    },
+    "crates/duck-components/src/content/mod.rs": {
+      "role": "index",
+      "sha256": "2da0b701d6438964bc9e549f34815a861c1cb84084a1bcb1b7afeb84a4c77987",
+      "size": 1821,
+      "normalized_sha256": "2da0b701d6438964bc9e549f34815a861c1cb84084a1bcb1b7afeb84a4c77987"
+    },
+    "crates/duck-components/src/content/nav.rs": {
+      "role": "index",
+      "sha256": "2d865bd6d4884635bcf5e5a57511aaee4d44e89c4a899feaac811d45f61ceef9",
+      "size": 5637,
+      "normalized_sha256": "2d865bd6d4884635bcf5e5a57511aaee4d44e89c4a899feaac811d45f61ceef9"
+    },
+    "crates/duck-components/src/content/table.rs": {
+      "role": "index",
+      "sha256": "ebb85eb270117b17abb9a85a9220ee044face297cb6525c0482970487847d64a",
+      "size": 9502,
+      "normalized_sha256": "ebb85eb270117b17abb9a85a9220ee044face297cb6525c0482970487847d64a"
+    },
+    "crates/duck-components/src/dblogos.rs": {
+      "role": "index",
+      "sha256": "41a504346b06e8d947952941a3533932824f6160711f6f60a2ac1fc20271a7b1",
+      "size": 4926,
+      "normalized_sha256": "41a504346b06e8d947952941a3533932824f6160711f6f60a2ac1fc20271a7b1"
+    },
+    "crates/duck-components/src/dialog.rs": {
+      "role": "index",
+      "sha256": "e9b98723440ee52332c4f29f6cc0d6941c9718522d25a8fe6b39255e940cbc06",
+      "size": 21340,
+      "normalized_sha256": "e9b98723440ee52332c4f29f6cc0d6941c9718522d25a8fe6b39255e940cbc06"
+    },
+    "crates/duck-components/src/icons.rs": {
+      "role": "index",
+      "sha256": "5b6c4098df1ea2175a72f0710a6bf0095f9c542056f88fb1c4026abcbc7e4dd1",
+      "size": 6811,
+      "normalized_sha256": "5b6c4098df1ea2175a72f0710a6bf0095f9c542056f88fb1c4026abcbc7e4dd1"
+    },
+    "crates/duck-components/src/kit.rs": {
+      "role": "index",
+      "sha256": "dcc39804b858f57578f9c64375b8116dccee114437aa3641555deb048b0ea114",
+      "size": 35242,
+      "normalized_sha256": "dcc39804b858f57578f9c64375b8116dccee114437aa3641555deb048b0ea114"
+    },
+    "crates/duck-components/src/lib.rs": {
+      "role": "index",
+      "sha256": "0b074a0a9dfbf199d61e6ba60d7c3fe75b1d2833d4b27f9ed8a9e5bfd5e80464",
+      "size": 24542,
+      "normalized_sha256": "0b074a0a9dfbf199d61e6ba60d7c3fe75b1d2833d4b27f9ed8a9e5bfd5e80464"
+    },
+    "crates/duck-components/src/motion.rs": {
+      "role": "index",
+      "sha256": "23980930908520523e5de2bc8b2c16b88acf4a282140b594e203a7dff409e71c",
+      "size": 12285,
+      "normalized_sha256": "23980930908520523e5de2bc8b2c16b88acf4a282140b594e203a7dff409e71c"
+    },
+    "crates/duck-components/src/notify.rs": {
+      "role": "index",
+      "sha256": "663d67877c1439ed04f67f206c34c8072b9ba740babd92e4ca0c7b2c4e0e6a2b",
+      "size": 19967,
+      "normalized_sha256": "663d67877c1439ed04f67f206c34c8072b9ba740babd92e4ca0c7b2c4e0e6a2b"
+    },
+    "crates/duck-components/src/sidebar.rs": {
+      "role": "index",
+      "sha256": "9ea526bb7c4d40c0f4c050a3203382f593c8a38c47a350cbe5bfb6d355af7bbe",
+      "size": 17872,
+      "normalized_sha256": "9ea526bb7c4d40c0f4c050a3203382f593c8a38c47a350cbe5bfb6d355af7bbe"
+    },
+    "crates/duck-components/tests/accessibility.rs": {
+      "role": "observe",
+      "sha256": "d305fbab650ec1762958e38b20da6a0f3b21138c1381aa69ff1655b71c82d8bd",
+      "size": 9459,
+      "normalized_sha256": "d305fbab650ec1762958e38b20da6a0f3b21138c1381aa69ff1655b71c82d8bd"
+    },
+    "crates/duck-components/tests/dialog_centering.rs": {
+      "role": "observe",
+      "sha256": "ead55b0705e262dd43f0a01b48dd551ba1ff1c35a632d8b76a96113e5db80d84",
+      "size": 15678,
+      "normalized_sha256": "ead55b0705e262dd43f0a01b48dd551ba1ff1c35a632d8b76a96113e5db80d84"
+    },
+    "crates/duck-db/Cargo.toml": {
+      "role": "index",
+      "sha256": "733501c22fc6d506a0203032c2bf41e39fb9efe48a94f7a1f872ee37e13dc851",
+      "size": 2130,
+      "normalized_sha256": "733501c22fc6d506a0203032c2bf41e39fb9efe48a94f7a1f872ee37e13dc851"
+    },
+    "crates/duck-db/src/ai.rs": {
+      "role": "index",
+      "sha256": "6fcca9eaa945b39cf2570f6a67258c16bcd8ed4cc824d3fdcd3e471a9e5ceb05",
+      "size": 5364,
+      "normalized_sha256": "6fcca9eaa945b39cf2570f6a67258c16bcd8ed4cc824d3fdcd3e471a9e5ceb05"
+    },
+    "crates/duck-db/src/cancel.rs": {
+      "role": "index",
+      "sha256": "e7f64262872f1f83664f0178491c6c67f45080e9a3f2119b99a39c297b2fcd4f",
+      "size": 15441,
+      "normalized_sha256": "e7f64262872f1f83664f0178491c6c67f45080e9a3f2119b99a39c297b2fcd4f"
+    },
+    "crates/duck-db/src/config.rs": {
+      "role": "index",
+      "sha256": "a7d09294bd585420d28a27d7af82b51a342bcb9e9f3818a67fd321df0b428c49",
+      "size": 20653,
+      "normalized_sha256": "a7d09294bd585420d28a27d7af82b51a342bcb9e9f3818a67fd321df0b428c49"
+    },
+    "crates/duck-db/src/csv.rs": {
+      "role": "index",
+      "sha256": "97883badbc1fd35e9d205a9881c2ba8ac2a2f27145501fe9cfee202b8bfad274",
+      "size": 4336,
+      "normalized_sha256": "97883badbc1fd35e9d205a9881c2ba8ac2a2f27145501fe9cfee202b8bfad274"
+    },
+    "crates/duck-db/src/drivers/clickhouse.rs": {
+      "role": "index",
+      "sha256": "0a1481408350a76c7281b18b23019c50a917b1ff34df6a9afc605e8d1ab15bbe",
+      "size": 39257,
+      "normalized_sha256": "0a1481408350a76c7281b18b23019c50a917b1ff34df6a9afc605e8d1ab15bbe"
+    },
+    "crates/duck-db/src/drivers/elasticsearch.rs": {
+      "role": "index",
+      "sha256": "89a73bc3beba16364527a54e094fef4169df1aefe4eab4f0e3e8999694ccf27c",
+      "size": 92736,
+      "normalized_sha256": "89a73bc3beba16364527a54e094fef4169df1aefe4eab4f0e3e8999694ccf27c"
+    },
+    "crates/duck-db/src/drivers/mod.rs": {
+      "role": "index",
+      "sha256": "72aebae7852a67fb8eef3d59353f6c8ca999cd2558f382d45a2e9b5dbb5e7b37",
+      "size": 35784,
+      "normalized_sha256": "72aebae7852a67fb8eef3d59353f6c8ca999cd2558f382d45a2e9b5dbb5e7b37"
+    },
+    "crates/duck-db/src/drivers/mongo.rs": {
+      "role": "index",
+      "sha256": "943ce97c4a305bb4cd7c4e90f442bf096a0425fb51ba1634c26ba58c60a8b877",
+      "size": 85230,
+      "normalized_sha256": "943ce97c4a305bb4cd7c4e90f442bf096a0425fb51ba1634c26ba58c60a8b877"
+    },
+    "crates/duck-db/src/drivers/mssql.rs": {
+      "role": "index",
+      "sha256": "cf413b61853b99b637952e8bf80ded5c916f0ed41e27b1771b0b830bb0109433",
+      "size": 54060,
+      "normalized_sha256": "cf413b61853b99b637952e8bf80ded5c916f0ed41e27b1771b0b830bb0109433"
+    },
+    "crates/duck-db/src/drivers/mysql.rs": {
+      "role": "index",
+      "sha256": "92e987e4cb067f85675dd7d29db8a37fa238dce39b998c9bf6844edb2f55bf5e",
+      "size": 27764,
+      "normalized_sha256": "92e987e4cb067f85675dd7d29db8a37fa238dce39b998c9bf6844edb2f55bf5e"
+    },
+    "crates/duck-db/src/drivers/postgres.rs": {
+      "role": "index",
+      "sha256": "8289e7bb483ff4b97105c5a131a827013fb65cbe639087226365ea0186ce7bcf",
+      "size": 35892,
+      "normalized_sha256": "8289e7bb483ff4b97105c5a131a827013fb65cbe639087226365ea0186ce7bcf"
+    },
+    "crates/duck-db/src/drivers/sqlite.rs": {
+      "role": "index",
+      "sha256": "163dc043c07f64244c22342cb216528d29b94b3d38739a46929638b931463624",
+      "size": 45149,
+      "normalized_sha256": "163dc043c07f64244c22342cb216528d29b94b3d38739a46929638b931463624"
+    },
+    "crates/duck-db/src/error.rs": {
+      "role": "index",
+      "sha256": "c67e4f0b4830d6f5071d59c779e035c8ece6a7e676737465cc74ecb9731972e7",
+      "size": 4247,
+      "normalized_sha256": "c67e4f0b4830d6f5071d59c779e035c8ece6a7e676737465cc74ecb9731972e7"
+    },
+    "crates/duck-db/src/import.rs": {
+      "role": "index",
+      "sha256": "486e652b25b702d260f0d59e7bc4efddd9e91ff33a82a0ec0c26e7ead8b73d04",
+      "size": 14925,
+      "normalized_sha256": "486e652b25b702d260f0d59e7bc4efddd9e91ff33a82a0ec0c26e7ead8b73d04"
+    },
+    "crates/duck-db/src/lib.rs": {
+      "role": "index",
+      "sha256": "d540fb2dcb430086194862a71ffe157bec129471fdd361c3dd65a75d3ade5bd6",
+      "size": 2407,
+      "normalized_sha256": "d540fb2dcb430086194862a71ffe157bec129471fdd361c3dd65a75d3ade5bd6"
+    },
+    "crates/duck-db/src/result.rs": {
+      "role": "index",
+      "sha256": "37ac938b78e7f2aae454cab37cf3811ae1e27ff88ca48c3ea17688a2d5151a15",
+      "size": 4170,
+      "normalized_sha256": "37ac938b78e7f2aae454cab37cf3811ae1e27ff88ca48c3ea17688a2d5151a15"
+    },
+    "crates/duck-db/src/sqlintel.rs": {
+      "role": "index",
+      "sha256": "5ba0941602b9890c8750d2499c6b91506408c4445b409e29b8d23df7d8e791d1",
+      "size": 28414,
+      "normalized_sha256": "5ba0941602b9890c8750d2499c6b91506408c4445b409e29b8d23df7d8e791d1"
+    },
+    "crates/duck-db/src/tunnel.rs": {
+      "role": "index",
+      "sha256": "3704333a353fe75962e8183b9a9a21f1929e71c180a9551036749f40a1a15573",
+      "size": 8038,
+      "normalized_sha256": "3704333a353fe75962e8183b9a9a21f1929e71c180a9551036749f40a1a15573"
+    },
+    "crates/duck-mail/Cargo.toml": {
+      "role": "index",
+      "sha256": "473f7c0d9f757827013a964023815673e48a2fe8f78b9216aac5c3dd8ae1515d",
+      "size": 2057,
+      "normalized_sha256": "473f7c0d9f757827013a964023815673e48a2fe8f78b9216aac5c3dd8ae1515d"
+    },
+    "crates/duck-mail/src/accounts.rs": {
+      "role": "index",
+      "sha256": "20e520f555a5dca3cb33b9c26645e690cc12b18884e5cbd6c3689ae95b50b68f",
+      "size": 12499,
+      "normalized_sha256": "20e520f555a5dca3cb33b9c26645e690cc12b18884e5cbd6c3689ae95b50b68f"
+    },
+    "crates/duck-mail/src/config.rs": {
+      "role": "index",
+      "sha256": "922d5ace80b39402d65606b12f78a37033b142b87731b20c60cccf5e8ad950c7",
+      "size": 2876,
+      "normalized_sha256": "922d5ace80b39402d65606b12f78a37033b142b87731b20c60cccf5e8ad950c7"
+    },
+    "crates/duck-mail/src/db/migrations.rs": {
+      "role": "index",
+      "sha256": "c35e647d8a60cc07f6da268446a2c2cdd3ba43872b623d1c19cff6e2a9cb4ba6",
+      "size": 4964,
+      "normalized_sha256": "c35e647d8a60cc07f6da268446a2c2cdd3ba43872b623d1c19cff6e2a9cb4ba6"
+    },
+    "crates/duck-mail/src/db/migrations/001_init.sql": {
+      "role": "index",
+      "sha256": "b2e6ba6176b728f3a7b4e2d8505a57ccd81464537f0784865cb4b50eb6235ec0",
+      "size": 13784,
+      "normalized_sha256": "b2e6ba6176b728f3a7b4e2d8505a57ccd81464537f0784865cb4b50eb6235ec0"
+    },
+    "crates/duck-mail/src/db/migrations/002_attachment_files.sql": {
+      "role": "index",
+      "sha256": "6fd1093038e75d71d1edb24ad65c5748f1e52210e7de85eb4b5b34e127a8473a",
+      "size": 1731,
+      "normalized_sha256": "6fd1093038e75d71d1edb24ad65c5748f1e52210e7de85eb4b5b34e127a8473a"
+    },
+    "crates/duck-mail/src/db/migrations/003_attachment_content.sql": {
+      "role": "index",
+      "sha256": "851e8ef6579b83320fbdc5a13e22019db54208b0f0881f58f5aa68355ae949bc",
+      "size": 659,
+      "normalized_sha256": "851e8ef6579b83320fbdc5a13e22019db54208b0f0881f58f5aa68355ae949bc"
+    },
+    "crates/duck-mail/src/db/migrations/004_carddav.sql": {
+      "role": "index",
+      "sha256": "6769e3ad674373bb885ce99f45630e74ef82bb52b7c358da9e2f1be2d49bab1f",
+      "size": 1835,
+      "normalized_sha256": "6769e3ad674373bb885ce99f45630e74ef82bb52b7c358da9e2f1be2d49bab1f"
+    },
+    "crates/duck-mail/src/db/migrations/005_mailbox_count_indexes.sql": {
+      "role": "index",
+      "sha256": "04c7f73cf1b6312a9a76c7463f2e50caece8f1b96d2101b614f01da6f504d47c",
+      "size": 792,
+      "normalized_sha256": "04c7f73cf1b6312a9a76c7463f2e50caece8f1b96d2101b614f01da6f504d47c"
+    },
+    "crates/duck-mail/src/db/migrations/006_contact_recovery.sql": {
+      "role": "index",
+      "sha256": "3953cc8b2f9945eceaaa8390c1a27f190575b2aca815f362063815802b45a889",
+      "size": 149,
+      "normalized_sha256": "3953cc8b2f9945eceaaa8390c1a27f190575b2aca815f362063815802b45a889"
+    },
+    "crates/duck-mail/src/db/migrations/007_account_label_ownership.sql": {
+      "role": "index",
+      "sha256": "9200d436f187aecdefd1b36968888b4fcaa697239b203f2682555f7fe57216ef",
+      "size": 10486,
+      "normalized_sha256": "9200d436f187aecdefd1b36968888b4fcaa697239b203f2682555f7fe57216ef"
+    },
+    "crates/duck-mail/src/db/migrations/008_sender_identities.sql": {
+      "role": "index",
+      "sha256": "df0235b8af11e5e48be1a1bc32fc9439333e02f9c576ddd89e669e20828a970b",
+      "size": 1034,
+      "normalized_sha256": "df0235b8af11e5e48be1a1bc32fc9439333e02f9c576ddd89e669e20828a970b"
+    },
+    "crates/duck-mail/src/db/migrations/009_contact_learning_clean_start.sql": {
+      "role": "index",
+      "sha256": "4ab1ab0891a2b7f379ef99f92e15d7944de6c307672143f690de2b930e86b697",
+      "size": 2993,
+      "normalized_sha256": "4ab1ab0891a2b7f379ef99f92e15d7944de6c307672143f690de2b930e86b697"
+    },
+    "crates/duck-mail/src/db/migrations/010_folder_hierarchy.sql": {
+      "role": "index",
+      "sha256": "154bb69ac2c8bda778837cfb34e702bf93ec1ee931a3c54a512ae2200a2dcf47",
+      "size": 1464,
+      "normalized_sha256": "154bb69ac2c8bda778837cfb34e702bf93ec1ee931a3c54a512ae2200a2dcf47"
+    },
+    "crates/duck-mail/src/db/migrations/011_pending_body_page.sql": {
+      "role": "index",
+      "sha256": "a39004dbe468fdd211caaae64d46f44f4360b2b7c54e58717f06aab31e8414aa",
+      "size": 219,
+      "normalized_sha256": "a39004dbe468fdd211caaae64d46f44f4360b2b7c54e58717f06aab31e8414aa"
+    },
+    "crates/duck-mail/src/db/migrations/012_sender_identity_sources.sql": {
+      "role": "index",
+      "sha256": "a43806efcd09257b93b3ec24d86bdf19216907434e65e6abbc8d8ee343b3dc5d",
+      "size": 725,
+      "normalized_sha256": "a43806efcd09257b93b3ec24d86bdf19216907434e65e6abbc8d8ee343b3dc5d"
+    },
+    "crates/duck-mail/src/db/migrations/files_001.sql": {
+      "role": "index",
+      "sha256": "5595daa350f0a98c294426d37e2fb39c2bbec8ae9b90de766e2450162c4cedb5",
+      "size": 2924,
+      "normalized_sha256": "5595daa350f0a98c294426d37e2fb39c2bbec8ae9b90de766e2450162c4cedb5"
+    },
+    "crates/duck-mail/src/db/migrations/files_002.sql": {
+      "role": "index",
+      "sha256": "6d9b4f9cb8f0b75b9735a70b7f12e3f657b57219ddcdedee3f1d068576db280c",
+      "size": 1002,
+      "normalized_sha256": "6d9b4f9cb8f0b75b9735a70b7f12e3f657b57219ddcdedee3f1d068576db280c"
+    },
+    "crates/duck-mail/src/db/mod.rs": {
+      "role": "index",
+      "sha256": "929afa6a2ab57737d52fff3a4eb4668ced10f8ad58a8892f14c49836c35b1faa",
+      "size": 9286,
+      "normalized_sha256": "929afa6a2ab57737d52fff3a4eb4668ced10f8ad58a8892f14c49836c35b1faa"
+    },
+    "crates/duck-mail/src/db/repo/accounts.rs": {
+      "role": "index",
+      "sha256": "6f5cf4a46092d01e488c3d410f9b8fb4247435d347aef95cbb63ce4a5ccc0199",
+      "size": 10180,
+      "normalized_sha256": "6f5cf4a46092d01e488c3d410f9b8fb4247435d347aef95cbb63ce4a5ccc0199"
+    },
+    "crates/duck-mail/src/db/repo/folders.rs": {
+      "role": "index",
+      "sha256": "473efeba4f138580c3c2ffaa3e5ef98b90801ab027a40458df1790295b9d0a85",
+      "size": 10790,
+      "normalized_sha256": "473efeba4f138580c3c2ffaa3e5ef98b90801ab027a40458df1790295b9d0a85"
+    },
+    "crates/duck-mail/src/db/repo/messages.rs": {
+      "role": "index",
+      "sha256": "7e4d12ee0ea535323aba6a240dc6ca12c7a6c3c203054733635ffeaba4db9476",
+      "size": 18838,
+      "normalized_sha256": "7e4d12ee0ea535323aba6a240dc6ca12c7a6c3c203054733635ffeaba4db9476"
+    },
+    "crates/duck-mail/src/db/repo/mod.rs": {
+      "role": "index",
+      "sha256": "f0b674fd598ec14d6e02ca6d98b9d3ca2d3f1590f888d7da1cbb2163543db68e",
+      "size": 431,
+      "normalized_sha256": "f0b674fd598ec14d6e02ca6d98b9d3ca2d3f1590f888d7da1cbb2163543db68e"
+    },
+    "crates/duck-mail/src/db/repo/search.rs": {
+      "role": "index",
+      "sha256": "acd9848214f779489c126452fd2e8282d500ce55436d509de14050847374aaca",
+      "size": 5906,
+      "normalized_sha256": "acd9848214f779489c126452fd2e8282d500ce55436d509de14050847374aaca"
+    },
+    "crates/duck-mail/src/error.rs": {
+      "role": "index",
+      "sha256": "e9252f36813951ec8c403fa6f5f51a4be4a1d3fadb5fcebbac9f946261abbf05",
+      "size": 5512,
+      "normalized_sha256": "e9252f36813951ec8c403fa6f5f51a4be4a1d3fadb5fcebbac9f946261abbf05"
+    },
+    "crates/duck-mail/src/events.rs": {
+      "role": "index",
+      "sha256": "42dc999ce4eb135c0860a9ff71e66cfe27d25416b6e2f018c8f39ee6348ad0f9",
+      "size": 3051,
+      "normalized_sha256": "42dc999ce4eb135c0860a9ff71e66cfe27d25416b6e2f018c8f39ee6348ad0f9"
+    },
+    "crates/duck-mail/src/lib.rs": {
+      "role": "index",
+      "sha256": "7284e4945ba36e00e7939f32e505eada79af5146e84a3dd7c4c0c55ade09eac5",
+      "size": 13511,
+      "normalized_sha256": "7284e4945ba36e00e7939f32e505eada79af5146e84a3dd7c4c0c55ade09eac5"
+    },
+    "crates/duck-mail/src/mime.rs": {
+      "role": "index",
+      "sha256": "e22defc8ab49aab64e3e32868c437766806bf00012d416143ff6c5966ef9081d",
+      "size": 27166,
+      "normalized_sha256": "e22defc8ab49aab64e3e32868c437766806bf00012d416143ff6c5966ef9081d"
+    },
+    "crates/duck-mail/src/models.rs": {
+      "role": "index",
+      "sha256": "31fd5c37e108f6444ab04b5629dbdeec7f7acd0b38819138e3b15e782dddc767",
+      "size": 17710,
+      "normalized_sha256": "31fd5c37e108f6444ab04b5629dbdeec7f7acd0b38819138e3b15e782dddc767"
+    },
+    "crates/duck-mail/src/proto/imap.rs": {
+      "role": "index",
+      "sha256": "c9c5f7d2eab8f40723b388bd9b50f1eaef42b65d599edb3c32c9b8f9d631b6db",
+      "size": 12695,
+      "normalized_sha256": "c9c5f7d2eab8f40723b388bd9b50f1eaef42b65d599edb3c32c9b8f9d631b6db"
+    },
+    "crates/duck-mail/src/proto/mod.rs": {
+      "role": "index",
+      "sha256": "4a227450edbbd2afdb6e9f5115e871a47c778c36df2a97509c70882f5f40e77d",
+      "size": 2402,
+      "normalized_sha256": "4a227450edbbd2afdb6e9f5115e871a47c778c36df2a97509c70882f5f40e77d"
+    },
+    "crates/duck-mail/src/runtime.rs": {
+      "role": "index",
+      "sha256": "fe5e56ad6a16a32ef59bcd12c5d960c040c80120601d522e6b625c650d18057a",
+      "size": 7509,
+      "normalized_sha256": "fe5e56ad6a16a32ef59bcd12c5d960c040c80120601d522e6b625c650d18057a"
+    },
+    "crates/duck-mail/src/sync.rs": {
+      "role": "index",
+      "sha256": "7050a1bf6bb326b9f167a0df277183971f15e14df72e8b7d4b6b704f6eac6fad",
+      "size": 24902,
+      "normalized_sha256": "7050a1bf6bb326b9f167a0df277183971f15e14df72e8b7d4b6b704f6eac6fad"
+    },
+    "crates/duck-platform/Cargo.toml": {
+      "role": "index",
+      "sha256": "f0426f49dd743d03234bee9c41742177fe6f85c7f0015928cba71fa4b7bbbe5a",
+      "size": 2543,
+      "normalized_sha256": "f0426f49dd743d03234bee9c41742177fe6f85c7f0015928cba71fa4b7bbbe5a"
+    },
+    "crates/duck-platform/src/archive.rs": {
+      "role": "index",
+      "sha256": "14298d08f3c0bc164f0053fd6ff5fc42ef37b8eba67e87e06d8377fe329ceb34",
+      "size": 14732,
+      "normalized_sha256": "14298d08f3c0bc164f0053fd6ff5fc42ef37b8eba67e87e06d8377fe329ceb34"
+    },
+    "crates/duck-platform/src/autostart.rs": {
+      "role": "index",
+      "sha256": "2f16b77041f9d3acf93aacdc1a0d9258fb0a76b16f423daaba52d2227c08c1b7",
+      "size": 6960,
+      "normalized_sha256": "2f16b77041f9d3acf93aacdc1a0d9258fb0a76b16f423daaba52d2227c08c1b7"
+    },
+    "crates/duck-platform/src/clipboard.rs": {
+      "role": "index",
+      "sha256": "ffff8ffc0782b20dd8cdeef820f859f48a67ca01fef0befbd6fca37bcd6069a4",
+      "size": 2597,
+      "normalized_sha256": "ffff8ffc0782b20dd8cdeef820f859f48a67ca01fef0befbd6fca37bcd6069a4"
+    },
+    "crates/duck-platform/src/crash.rs": {
+      "role": "index",
+      "sha256": "2364c31cca1b29503f2ca8c9c4bac90d4bbf924544ba06ba98c5e33f0d01911f",
+      "size": 6831,
+      "normalized_sha256": "2364c31cca1b29503f2ca8c9c4bac90d4bbf924544ba06ba98c5e33f0d01911f"
+    },
+    "crates/duck-platform/src/dialog.rs": {
+      "role": "index",
+      "sha256": "41e950662c12a9e3d919c7cfe9e019de6a48f6956aaf1c69bcb429df03adba54",
+      "size": 2178,
+      "normalized_sha256": "41e950662c12a9e3d919c7cfe9e019de6a48f6956aaf1c69bcb429df03adba54"
+    },
+    "crates/duck-platform/src/foreground.rs": {
+      "role": "index",
+      "sha256": "fc0dd98dbf309620ba88c37b0e8a31ff91b008e0633d77e2bf21d2e320d38ed6",
+      "size": 4719,
+      "normalized_sha256": "fc0dd98dbf309620ba88c37b0e8a31ff91b008e0633d77e2bf21d2e320d38ed6"
+    },
+    "crates/duck-platform/src/handlers.rs": {
+      "role": "index",
+      "sha256": "1bfda304ce78d772f7b7f28782704651cfbb2fc5997a17f78145efd6c63561ba",
+      "size": 8499,
+      "normalized_sha256": "1bfda304ce78d772f7b7f28782704651cfbb2fc5997a17f78145efd6c63561ba"
+    },
+    "crates/duck-platform/src/hotkey.rs": {
+      "role": "index",
+      "sha256": "5ebc72f32774b8e8de37e3b9818ea8c9d52a51e4283a9b32b97f784c58fb41e2",
+      "size": 38019,
+      "normalized_sha256": "5ebc72f32774b8e8de37e3b9818ea8c9d52a51e4283a9b32b97f784c58fb41e2"
+    },
+    "crates/duck-platform/src/ipc.rs": {
+      "role": "index",
+      "sha256": "fc30aa5b3813477f138d993e61c0b0c48f6861a57377d187819fdb24c8f0a153",
+      "size": 18454,
+      "normalized_sha256": "fc30aa5b3813477f138d993e61c0b0c48f6861a57377d187819fdb24c8f0a153"
+    },
+    "crates/duck-platform/src/lib.rs": {
+      "role": "index",
+      "sha256": "ed33434af514d07999c969c5b977511d8e29c85ab48ae63815c0ea0dff80b8cd",
+      "size": 2038,
+      "normalized_sha256": "ed33434af514d07999c969c5b977511d8e29c85ab48ae63815c0ea0dff80b8cd"
+    },
+    "crates/duck-platform/src/lock.rs": {
+      "role": "index",
+      "sha256": "f565b4c13ca3b8a3b1b24049227f0554f19c43ad979ec4c7d974c404ddf8371b",
+      "size": 5985,
+      "normalized_sha256": "f565b4c13ca3b8a3b1b24049227f0554f19c43ad979ec4c7d974c404ddf8371b"
+    },
+    "crates/duck-platform/src/logging.rs": {
+      "role": "index",
+      "sha256": "e6b8f940a885f5164d41399ba47e8b84942f996d28c9584c6256a8fc26a7c920",
+      "size": 34561,
+      "normalized_sha256": "e6b8f940a885f5164d41399ba47e8b84942f996d28c9584c6256a8fc26a7c920"
+    },
+    "crates/duck-platform/src/open.rs": {
+      "role": "index",
+      "sha256": "eead4d267cbf1af9453c4d5f996724afe7669e9c3ef8c7c76c363dfbea7788b9",
+      "size": 9554,
+      "normalized_sha256": "eead4d267cbf1af9453c4d5f996724afe7669e9c3ef8c7c76c363dfbea7788b9"
+    },
+    "crates/duck-platform/src/paths.rs": {
+      "role": "index",
+      "sha256": "10826a29069ca47b99ac25356983d759aac43e9850ba4188de032c1b9d516ef5",
+      "size": 1390,
+      "normalized_sha256": "10826a29069ca47b99ac25356983d759aac43e9850ba4188de032c1b9d516ef5"
+    },
+    "crates/duck-platform/src/secret.rs": {
+      "role": "index",
+      "sha256": "830c7c4dbf9d72fe53c3dd82dbce56087f6cf86bd9c360d9a87bbea2c9209011",
+      "size": 35094,
+      "normalized_sha256": "830c7c4dbf9d72fe53c3dd82dbce56087f6cf86bd9c360d9a87bbea2c9209011"
+    },
+    "crates/duck-platform/src/shell.rs": {
+      "role": "index",
+      "sha256": "cd8fd1243d0fe667f28f2e1959ddae0e9ca56bec3945205af1b4750b4122c948",
+      "size": 2447,
+      "normalized_sha256": "cd8fd1243d0fe667f28f2e1959ddae0e9ca56bec3945205af1b4750b4122c948"
+    },
+    "crates/duck-platform/src/vault.rs": {
+      "role": "index",
+      "sha256": "61badf22b9777ce92b80ecf4f7f582c52a4553a04b6eaf0ebd506e2a6f725229",
+      "size": 13590,
+      "normalized_sha256": "61badf22b9777ce92b80ecf4f7f582c52a4553a04b6eaf0ebd506e2a6f725229"
+    },
+    "crates/duck-platform/tests/clipboard_concurrency.rs": {
+      "role": "observe",
+      "sha256": "8ed134fe01f135396d0984de82226efe6f67689af9c9490959af7480ed25c348",
+      "size": 1780,
+      "normalized_sha256": "8ed134fe01f135396d0984de82226efe6f67689af9c9490959af7480ed25c348"
+    },
+    "crates/duck-platform/tests/crash_lands_on_panic.rs": {
+      "role": "observe",
+      "sha256": "baa7634d4be4e6447b18b79d9d576b2d891d133ca83be9351783406f6741ba60",
+      "size": 1694,
+      "normalized_sha256": "baa7634d4be4e6447b18b79d9d576b2d891d133ca83be9351783406f6741ba60"
+    },
+    "crates/duck-platform/tests/packaging_matches_the_code.rs": {
+      "role": "observe",
+      "sha256": "e273728b6a73b5e8371a33beb9b2629f95f506ab7c50e2206991949aabd23ca2",
+      "size": 3928,
+      "normalized_sha256": "e273728b6a73b5e8371a33beb9b2629f95f506ab7c50e2206991949aabd23ca2"
+    },
+    "crates/duck-platform/tests/windows_safe_paths.rs": {
+      "role": "observe",
+      "sha256": "5edda2a40e54616b1ac54cb93ded45dc09a5ed16d7ce1e7d2b80f077a97f11fb",
+      "size": 4251,
+      "normalized_sha256": "5edda2a40e54616b1ac54cb93ded45dc09a5ed16d7ce1e7d2b80f077a97f11fb"
+    },
+    "crates/duck-plugin-js/Cargo.toml": {
+      "role": "index",
+      "sha256": "bc572184509916c91d1f0d2d92214ed092106fc59fda5b5a84419fea61805119",
+      "size": 716,
+      "normalized_sha256": "bc572184509916c91d1f0d2d92214ed092106fc59fda5b5a84419fea61805119"
+    },
+    "crates/duck-plugin-js/src/lib.rs": {
+      "role": "index",
+      "sha256": "e4023d47374c08d7d16154432cba0e070f18d9e6e467c850fac97316acf41f2b",
+      "size": 24838,
+      "normalized_sha256": "e4023d47374c08d7d16154432cba0e070f18d9e6e467c850fac97316acf41f2b"
+    },
+    "crates/duck-plugin-js/src/net.rs": {
+      "role": "index",
+      "sha256": "db0c38b0c8d9c389179a5d48f72e4c7037ee1d3463c70c3c517a71f12076f4ba",
+      "size": 21330,
+      "normalized_sha256": "db0c38b0c8d9c389179a5d48f72e4c7037ee1d3463c70c3c517a71f12076f4ba"
+    },
+    "crates/duck-plugin-js/tests/dev_plugins.rs": {
+      "role": "observe",
+      "sha256": "3773156f8eeed3ef31ad444352e62b52900e256ca0d67733468d61b7512a92b3",
+      "size": 6729,
+      "normalized_sha256": "3773156f8eeed3ef31ad444352e62b52900e256ca0d67733468d61b7512a92b3"
+    },
+    "crates/duck-plugin-js/tests/network.rs": {
+      "role": "observe",
+      "sha256": "d2d9aa4d21582b64a16298f9537e15f5f729126d61ec99782f57d611f02a4e2d",
+      "size": 14409,
+      "normalized_sha256": "d2d9aa4d21582b64a16298f9537e15f5f729126d61ec99782f57d611f02a4e2d"
+    },
+    "crates/duck-plugin-registry/Cargo.toml": {
+      "role": "index",
+      "sha256": "723b2ac001ef8255fbaf06e75e6eda2156e933cfcb3d6945bc3b91958eb0b895",
+      "size": 512,
+      "normalized_sha256": "723b2ac001ef8255fbaf06e75e6eda2156e933cfcb3d6945bc3b91958eb0b895"
+    },
+    "crates/duck-plugin-registry/src/error.rs": {
+      "role": "index",
+      "sha256": "e6e2112482b61aef1563d1978009c852124b65fd71edacda11cc6b387ce7cd89",
+      "size": 5106,
+      "normalized_sha256": "e6e2112482b61aef1563d1978009c852124b65fd71edacda11cc6b387ce7cd89"
+    },
+    "crates/duck-plugin-registry/src/fetch.rs": {
+      "role": "index",
+      "sha256": "9c86ff7d803f5afae7ef29ba1847b4590863e61ff1623ef18078e494aab35d45",
+      "size": 2428,
+      "normalized_sha256": "9c86ff7d803f5afae7ef29ba1847b4590863e61ff1623ef18078e494aab35d45"
+    },
+    "crates/duck-plugin-registry/src/index.rs": {
+      "role": "index",
+      "sha256": "b500daab401ce31a71c03d4956b5b25af233eb18da5e36558e38db58e868f579",
+      "size": 21407,
+      "normalized_sha256": "b500daab401ce31a71c03d4956b5b25af233eb18da5e36558e38db58e868f579"
+    },
+    "crates/duck-plugin-registry/src/install.rs": {
+      "role": "index",
+      "sha256": "5cf5c167e2bd127c704ab998b746cd571cb541afc93998a5b4c02b92db70528b",
+      "size": 34669,
+      "normalized_sha256": "5cf5c167e2bd127c704ab998b746cd571cb541afc93998a5b4c02b92db70528b"
+    },
+    "crates/duck-plugin-registry/src/lib.rs": {
+      "role": "index",
+      "sha256": "146917c2b26cef2b82418c68b400f179d2d00cc24613d475a28de41a2468bb22",
+      "size": 2394,
+      "normalized_sha256": "146917c2b26cef2b82418c68b400f179d2d00cc24613d475a28de41a2468bb22"
+    },
+    "crates/duck-plugin-registry/src/sha256.rs": {
+      "role": "index",
+      "sha256": "73e162c571274b191140c2582f15ec595175ea0642f656837fcb0aad174e93ba",
+      "size": 3248,
+      "normalized_sha256": "73e162c571274b191140c2582f15ec595175ea0642f656837fcb0aad174e93ba"
+    },
+    "crates/duck-plugin-registry/src/status.rs": {
+      "role": "index",
+      "sha256": "51e2e6d0b4fe824ebd60be03eee6b4ee6b56b553e998a9912830279b32642333",
+      "size": 3336,
+      "normalized_sha256": "51e2e6d0b4fe824ebd60be03eee6b4ee6b56b553e998a9912830279b32642333"
+    },
+    "crates/duck-plugin-registry/tests/publisher_contract.rs": {
+      "role": "observe",
+      "sha256": "fdef4f1b6cce04216d98150f9d824b810314a478a0b165bd9478951829bb362f",
+      "size": 10051,
+      "normalized_sha256": "fdef4f1b6cce04216d98150f9d824b810314a478a0b165bd9478951829bb362f"
+    },
+    "crates/duck-plugin/Cargo.toml": {
+      "role": "index",
+      "sha256": "14481b4bf8e27df63c92f6193d7692c5cf03d9bddbef56b40b8f4c2062fb1235",
+      "size": 340,
+      "normalized_sha256": "14481b4bf8e27df63c92f6193d7692c5cf03d9bddbef56b40b8f4c2062fb1235"
+    },
+    "crates/duck-plugin/src/capability.rs": {
+      "role": "index",
+      "sha256": "f7a38f24e7954c044d6905acbe5718399aeb76e4d27d1877096aa555586ab8a1",
+      "size": 22773,
+      "normalized_sha256": "f7a38f24e7954c044d6905acbe5718399aeb76e4d27d1877096aa555586ab8a1"
+    },
+    "crates/duck-plugin/src/lib.rs": {
+      "role": "index",
+      "sha256": "f0b594058ecac70d4abde554e97ae01d40e5f5e718cfecea97e4b5b7c357a1c7",
+      "size": 2551,
+      "normalized_sha256": "f0b594058ecac70d4abde554e97ae01d40e5f5e718cfecea97e4b5b7c357a1c7"
+    },
+    "crates/duck-plugin/src/manifest.rs": {
+      "role": "index",
+      "sha256": "8c66cd245f1a196f4a1ab66f88b3ab3f75765a93bb9548db5ebfec05a86b65eb",
+      "size": 14590,
+      "normalized_sha256": "8c66cd245f1a196f4a1ab66f88b3ab3f75765a93bb9548db5ebfec05a86b65eb"
+    },
+    "crates/duck-plugin/src/registry.rs": {
+      "role": "index",
+      "sha256": "294af29045e00e68de2eb974f29bf115b27b9cb34bbf255877b8fdae6758a699",
+      "size": 9469,
+      "normalized_sha256": "294af29045e00e68de2eb974f29bf115b27b9cb34bbf255877b8fdae6758a699"
+    },
+    "crates/duck-redis/Cargo.toml": {
+      "role": "index",
+      "sha256": "9a039974d61dcb90a7b89b5e26a6d57fbc427ecc4586566e31dc3e94c61e8bc9",
+      "size": 689,
+      "normalized_sha256": "9a039974d61dcb90a7b89b5e26a6d57fbc427ecc4586566e31dc3e94c61e8bc9"
+    },
+    "crates/duck-redis/src/capability.rs": {
+      "role": "index",
+      "sha256": "0fb427576d26870616ea9d411fdefe21816666f3609ccd72a4a4958f300f1598",
+      "size": 17288,
+      "normalized_sha256": "0fb427576d26870616ea9d411fdefe21816666f3609ccd72a4a4958f300f1598"
+    },
+    "crates/duck-redis/src/config.rs": {
+      "role": "index",
+      "sha256": "680ded9fb969cc6a4395d94cff194928feca49d039f56b74360b2b044883fd8b",
+      "size": 24217,
+      "normalized_sha256": "680ded9fb969cc6a4395d94cff194928feca49d039f56b74360b2b044883fd8b"
+    },
+    "crates/duck-redis/src/conn.rs": {
+      "role": "index",
+      "sha256": "da92e6d9e34602d1ced999d086e8600e6e0b4462996ef4672db82b07b386a66a",
+      "size": 39683,
+      "normalized_sha256": "da92e6d9e34602d1ced999d086e8600e6e0b4462996ef4672db82b07b386a66a"
+    },
+    "crates/duck-redis/src/error.rs": {
+      "role": "index",
+      "sha256": "aaad090350f2fd785f96a24bc51ee796a115833d6185ff0255e812a7940f0799",
+      "size": 5384,
+      "normalized_sha256": "aaad090350f2fd785f96a24bc51ee796a115833d6185ff0255e812a7940f0799"
+    },
+    "crates/duck-redis/src/lib.rs": {
+      "role": "index",
+      "sha256": "82813857234e95fb7a4d50865c85fde4c96e18bdb2f0d7623028de6254fb1b6d",
+      "size": 3081,
+      "normalized_sha256": "82813857234e95fb7a4d50865c85fde4c96e18bdb2f0d7623028de6254fb1b6d"
+    },
+    "crates/duck-redis/src/monitor.rs": {
+      "role": "index",
+      "sha256": "9f2482d0f88e19b2f4ada71fe7de52cbc8f54175ea141156c25ddae9272b5273",
+      "size": 5375,
+      "normalized_sha256": "9f2482d0f88e19b2f4ada71fe7de52cbc8f54175ea141156c25ddae9272b5273"
+    },
+    "crates/duck-redis/src/scan.rs": {
+      "role": "index",
+      "sha256": "6538a7e61fdfa99b5baec890e7eb0d8166afbb8ccae5fdebda41e9ecc717fcab",
+      "size": 15176,
+      "normalized_sha256": "6538a7e61fdfa99b5baec890e7eb0d8166afbb8ccae5fdebda41e9ecc717fcab"
+    },
+    "crates/duck-redis/src/server.rs": {
+      "role": "index",
+      "sha256": "23bef8a78d0abcd85fd52eae83dd4411daf5411aa51f99a482e26e958100a06a",
+      "size": 22453,
+      "normalized_sha256": "23bef8a78d0abcd85fd52eae83dd4411daf5411aa51f99a482e26e958100a06a"
+    },
+    "crates/duck-redis/src/value.rs": {
+      "role": "index",
+      "sha256": "6c281c5bd4577032ffacc0979d3e6d548f3eba9882f3fa9ad5a11900e8be4feb",
+      "size": 16050,
+      "normalized_sha256": "6c281c5bd4577032ffacc0979d3e6d548f3eba9882f3fa9ad5a11900e8be4feb"
+    },
+    "crates/duck-redis/src/writegate.rs": {
+      "role": "index",
+      "sha256": "cdb4076e67c9318730304b64d976db35b1dea2167c8db1e5f60161367fd5aa26",
+      "size": 15992,
+      "normalized_sha256": "cdb4076e67c9318730304b64d976db35b1dea2167c8db1e5f60161367fd5aa26"
+    },
+    "crates/duck-shell/Cargo.toml": {
+      "role": "index",
+      "sha256": "8e13790c39b494d31458a4d7f089d80a9b4169e8283b2a422e2338344bb24039",
+      "size": 468,
+      "normalized_sha256": "8e13790c39b494d31458a4d7f089d80a9b4169e8283b2a422e2338344bb24039"
+    },
+    "crates/duck-shell/src/auxiliary.rs": {
+      "role": "index",
+      "sha256": "1455ce42076dcf6af1a6e29b02e5123a113efdba3c82d88b80d498dc8f1a9030",
+      "size": 5548,
+      "normalized_sha256": "1455ce42076dcf6af1a6e29b02e5123a113efdba3c82d88b80d498dc8f1a9030"
+    },
+    "crates/duck-shell/src/lib.rs": {
+      "role": "index",
+      "sha256": "eade349a8c865a50f5d4d320aee715dd26847ef3c5c95d32c85d2ded2ccbe868",
+      "size": 4273,
+      "normalized_sha256": "eade349a8c865a50f5d4d320aee715dd26847ef3c5c95d32c85d2ded2ccbe868"
+    },
+    "crates/duck-shell/src/notifications.rs": {
+      "role": "index",
+      "sha256": "30418e1a302343b64e2e37f1777e02cd7f56b3acfaaeb28aced98dad7b04258a",
+      "size": 11496,
+      "normalized_sha256": "30418e1a302343b64e2e37f1777e02cd7f56b3acfaaeb28aced98dad7b04258a"
+    },
+    "crates/duck-shell/src/palette_window.rs": {
+      "role": "index",
+      "sha256": "2261fde8752dfbe16784fdc77ba42d066de664919de0af89b32d1bb15eb6619a",
+      "size": 12392,
+      "normalized_sha256": "2261fde8752dfbe16784fdc77ba42d066de664919de0af89b32d1bb15eb6619a"
+    },
+    "crates/duck-shell/src/view.rs": {
+      "role": "index",
+      "sha256": "a51fef607774dcda992285fd839f2f2d70b1618e3158a73834a2469079df2aff",
+      "size": 49258,
+      "normalized_sha256": "a51fef607774dcda992285fd839f2f2d70b1618e3158a73834a2469079df2aff"
+    },
+    "crates/duck-shell/tests/palette_click_repro.rs": {
+      "role": "observe",
+      "sha256": "092efe11ae5a3c1bea2e489fec5e6798d4169c420e9a76ab7065ca29a182a2ef",
+      "size": 11232,
+      "normalized_sha256": "092efe11ae5a3c1bea2e489fec5e6798d4169c420e9a76ab7065ca29a182a2ef"
+    },
+    "crates/duck-ssh/Cargo.toml": {
+      "role": "index",
+      "sha256": "8c574dde3449c834a10094f717d385579c8a6363162f8e457435163867bffff5",
+      "size": 419,
+      "normalized_sha256": "8c574dde3449c834a10094f717d385579c8a6363162f8e457435163867bffff5"
+    },
+    "crates/duck-ssh/src/lib.rs": {
+      "role": "index",
+      "sha256": "2749ef355018f5157f6a837953e0a9abf4222c8b0ed7218ff87dafb85cb66bec",
+      "size": 10426,
+      "normalized_sha256": "2749ef355018f5157f6a837953e0a9abf4222c8b0ed7218ff87dafb85cb66bec"
+    },
+    "crates/duck-ssh/src/remote.rs": {
+      "role": "index",
+      "sha256": "58fb141719ee0ae992777ebc014491a003c4073c4ec0f05beb1932ed82254d3e",
+      "size": 17530,
+      "normalized_sha256": "58fb141719ee0ae992777ebc014491a003c4073c4ec0f05beb1932ed82254d3e"
+    },
+    "crates/duck-ssh/src/target.rs": {
+      "role": "index",
+      "sha256": "e80604793250a02a2aafd5e7d07050b48fe3156907c602087bd58479116dd71d",
+      "size": 18874,
+      "normalized_sha256": "e80604793250a02a2aafd5e7d07050b48fe3156907c602087bd58479116dd71d"
+    },
+    "crates/duck-store/Cargo.toml": {
+      "role": "index",
+      "sha256": "e748d178883f558365af0af8a04a95cc8bbaa0fc186777b5139d2b6e5da13348",
+      "size": 400,
+      "normalized_sha256": "e748d178883f558365af0af8a04a95cc8bbaa0fc186777b5139d2b6e5da13348"
+    },
+    "crates/duck-store/src/db.rs": {
+      "role": "index",
+      "sha256": "a0575d0fb54d9cf05fb4c1bf457be3391eacbb952f953e17b76f4c2a88d1ae60",
+      "size": 8124,
+      "normalized_sha256": "a0575d0fb54d9cf05fb4c1bf457be3391eacbb952f953e17b76f4c2a88d1ae60"
+    },
+    "crates/duck-store/src/lib.rs": {
+      "role": "index",
+      "sha256": "a4237c688649f8af1bf4314bb071bc93ba4b3d35449b99b1a48b1c45caa0d507",
+      "size": 10439,
+      "normalized_sha256": "a4237c688649f8af1bf4314bb071bc93ba4b3d35449b99b1a48b1c45caa0d507"
+    },
+    "crates/duck-store/src/writer.rs": {
+      "role": "index",
+      "sha256": "723c9998deb0dc27768dada7765b0a421dd2c438f227d0f44eed93e6cf62ec60",
+      "size": 19191,
+      "normalized_sha256": "723c9998deb0dc27768dada7765b0a421dd2c438f227d0f44eed93e6cf62ec60"
+    },
+    "crates/duck-term/Cargo.toml": {
+      "role": "index",
+      "sha256": "150f8f84a1732255c5a93da8e3854986ce045101c9ae34a941005f242e0deb38",
+      "size": 554,
+      "normalized_sha256": "150f8f84a1732255c5a93da8e3854986ce045101c9ae34a941005f242e0deb38"
+    },
+    "crates/duck-term/src/keymap.rs": {
+      "role": "index",
+      "sha256": "94a2eea97e3a85f17b9033ded560a1ac9e6d57c4fed103f475a0abbe9c5a7414",
+      "size": 16744,
+      "normalized_sha256": "94a2eea97e3a85f17b9033ded560a1ac9e6d57c4fed103f475a0abbe9c5a7414"
+    },
+    "crates/duck-term/src/lib.rs": {
+      "role": "index",
+      "sha256": "7d1d3910c7138cccb68c6c0bd73ac924e9c71713cca3210cf602b0b12940f0d2",
+      "size": 2648,
+      "normalized_sha256": "7d1d3910c7138cccb68c6c0bd73ac924e9c71713cca3210cf602b0b12940f0d2"
+    },
+    "crates/duck-term/src/palette.rs": {
+      "role": "index",
+      "sha256": "6a409f387d1ab8f6af694d844f3e4b2cdf2dc1f26c6bb14cf54d25003e2b14f9",
+      "size": 6829,
+      "normalized_sha256": "6a409f387d1ab8f6af694d844f3e4b2cdf2dc1f26c6bb14cf54d25003e2b14f9"
+    },
+    "crates/duck-term/src/session.rs": {
+      "role": "index",
+      "sha256": "a70d05cef7f403eb7f84d6d8b631c551664bad338bc8a10825e11c746d332a0b",
+      "size": 40041,
+      "normalized_sha256": "a70d05cef7f403eb7f84d6d8b631c551664bad338bc8a10825e11c746d332a0b"
+    },
+    "crates/duck-theme/Cargo.toml": {
+      "role": "index",
+      "sha256": "9947b39c14686045d17ddc3d838d42d9a3fb5f267e2daadec07e04099f8694bd",
+      "size": 427,
+      "normalized_sha256": "9947b39c14686045d17ddc3d838d42d9a3fb5f267e2daadec07e04099f8694bd"
+    },
+    "crates/duck-theme/src/builtin.rs": {
+      "role": "index",
+      "sha256": "6d963acc8a5e7983591fd14b77897024ab46d7dffd4583aa464671533cd5dfcf",
+      "size": 56934,
+      "normalized_sha256": "6d963acc8a5e7983591fd14b77897024ab46d7dffd4583aa464671533cd5dfcf"
+    },
+    "crates/duck-theme/src/i18n.rs": {
+      "role": "index",
+      "sha256": "d4b9fde0ef4c54966328e1508563930a592a00129e57f57e04ffc05205b7d411",
+      "size": 119533,
+      "normalized_sha256": "d4b9fde0ef4c54966328e1508563930a592a00129e57f57e04ffc05205b7d411"
+    },
+    "crates/duck-theme/src/lib.rs": {
+      "role": "index",
+      "sha256": "f4d8d419f3cab2a1d92603c3d20d7a78d9263646f4118e4006d6131bcf44ec9d",
+      "size": 1581,
+      "normalized_sha256": "f4d8d419f3cab2a1d92603c3d20d7a78d9263646f4118e4006d6131bcf44ec9d"
+    },
+    "crates/duck-theme/src/manager.rs": {
+      "role": "index",
+      "sha256": "db4fda908f685b89e4fd52b15e18bc3938446fc1fd7ffe775f0cf295c76f9f4e",
+      "size": 18883,
+      "normalized_sha256": "db4fda908f685b89e4fd52b15e18bc3938446fc1fd7ffe775f0cf295c76f9f4e"
+    },
+    "crates/duck-theme/src/syntax.rs": {
+      "role": "index",
+      "sha256": "669df9df1b47014450305ab62f9186a02b7654e9eff5057cc351e270d89561a2",
+      "size": 8725,
+      "normalized_sha256": "669df9df1b47014450305ab62f9186a02b7654e9eff5057cc351e270d89561a2"
+    },
+    "crates/duck-theme/src/tokens.rs": {
+      "role": "index",
+      "sha256": "a1cdef94955c632479ef58ff95c6d7a33b3e81ea895bb8f5d28fb518b8c32ddd",
+      "size": 12882,
+      "normalized_sha256": "a1cdef94955c632479ef58ff95c6d7a33b3e81ea895bb8f5d28fb518b8c32ddd"
+    },
+    "crates/duck-theme/src/wire.rs": {
+      "role": "index",
+      "sha256": "2a94113eaee2af84ba7879a3832511211c064cd7c3cf2ca5a3f5abdabdb14c3a",
+      "size": 10330,
+      "normalized_sha256": "2a94113eaee2af84ba7879a3832511211c064cd7c3cf2ca5a3f5abdabdb14c3a"
+    },
+    "crates/duck-theme/tests/accessibility_contrast.rs": {
+      "role": "observe",
+      "sha256": "8d47277dc721e38e8e6d74c3f9f02a414a6688589c0cea2479b45436db994ee9",
+      "size": 7912,
+      "normalized_sha256": "8d47277dc721e38e8e6d74c3f9f02a414a6688589c0cea2479b45436db994ee9"
+    },
+    "crates/duck-tools/Cargo.toml": {
+      "role": "index",
+      "sha256": "fb85dd91e6aa944316f1b3f63da64cfc776536ec6667b4fe3edd3b3692e987d4",
+      "size": 523,
+      "normalized_sha256": "fb85dd91e6aa944316f1b3f63da64cfc776536ec6667b4fe3edd3b3692e987d4"
+    },
+    "crates/duck-tools/src/category.rs": {
+      "role": "index",
+      "sha256": "9bf0f30065a92725b55bfa4825fdeb559179e59e0952417388a4676a0868fca8",
+      "size": 2770,
+      "normalized_sha256": "9bf0f30065a92725b55bfa4825fdeb559179e59e0952417388a4676a0868fca8"
+    },
+    "crates/duck-tools/src/help.rs": {
+      "role": "index",
+      "sha256": "b72843aea95e5e583d77495d0cf98e6aa2299f27e055c8287337e07637268da6",
+      "size": 752,
+      "normalized_sha256": "b72843aea95e5e583d77495d0cf98e6aa2299f27e055c8287337e07637268da6"
+    },
+    "crates/duck-tools/src/inbox.rs": {
+      "role": "index",
+      "sha256": "c90d898d768e725c23e8d3e50f887c2437ea3f15422ae86b6b91438febb77b3f",
+      "size": 2618,
+      "normalized_sha256": "c90d898d768e725c23e8d3e50f887c2437ea3f15422ae86b6b91438febb77b3f"
+    },
+    "crates/duck-tools/src/lib.rs": {
+      "role": "index",
+      "sha256": "c8d123dfadf4e9f06068eca4993ffef9680d1688fdccab9c30c3b96894ed543e",
+      "size": 1607,
+      "normalized_sha256": "c8d123dfadf4e9f06068eca4993ffef9680d1688fdccab9c30c3b96894ed543e"
+    },
+    "crates/duck-tools/src/meta.rs": {
+      "role": "index",
+      "sha256": "ed64912a178ff52f6d3a58c9fb6ca8a1e44fdca48874654790f5fca323197f1b",
+      "size": 7301,
+      "normalized_sha256": "ed64912a178ff52f6d3a58c9fb6ca8a1e44fdca48874654790f5fca323197f1b"
+    },
+    "crates/duck-tools/src/paste.rs": {
+      "role": "index",
+      "sha256": "c9d5093cdcc31eb22cad61c268fe7f2bb08a3e2c6035ad36509f3c404f373f05",
+      "size": 7928,
+      "normalized_sha256": "c9d5093cdcc31eb22cad61c268fe7f2bb08a3e2c6035ad36509f3c404f373f05"
+    },
+    "crates/duck-tools/src/pinyin.rs": {
+      "role": "index",
+      "sha256": "f4fd2f76b5b0a950b19372ef62f66981fcd079fac982f328df0ee9160406bf12",
+      "size": 2318,
+      "normalized_sha256": "f4fd2f76b5b0a950b19372ef62f66981fcd079fac982f328df0ee9160406bf12"
+    },
+    "crates/duck-tools/src/query.rs": {
+      "role": "index",
+      "sha256": "15103490c17bc937e8a51e90dadf578213bfb7815f1c7c4a6802c29ae63a89d7",
+      "size": 1511,
+      "normalized_sha256": "15103490c17bc937e8a51e90dadf578213bfb7815f1c7c4a6802c29ae63a89d7"
+    },
+    "crates/duck-tools/src/registry.rs": {
+      "role": "index",
+      "sha256": "28ec584cb672b6d038b4cde23bdf55bc75582c99a6f4353d0fb9839ff878ea03",
+      "size": 13557,
+      "normalized_sha256": "28ec584cb672b6d038b4cde23bdf55bc75582c99a6f4353d0fb9839ff878ea03"
+    },
+    "crates/duck-tools/src/search.rs": {
+      "role": "index",
+      "sha256": "6de3f42d06a48faccde35dbd25d70a9736bc9a66c794e222f2e0f1c55b8904dd",
+      "size": 5758,
+      "normalized_sha256": "6de3f42d06a48faccde35dbd25d70a9736bc9a66c794e222f2e0f1c55b8904dd"
+    },
+    "crates/duck-tools/src/settings.rs": {
+      "role": "index",
+      "sha256": "0fdfb82beeecdb44f4dd76437f6ae6054a9286a366bd2c9462ee28037433eefd",
+      "size": 7573,
+      "normalized_sha256": "0fdfb82beeecdb44f4dd76437f6ae6054a9286a366bd2c9462ee28037433eefd"
+    },
+    "crates/duck-update/Cargo.toml": {
+      "role": "index",
+      "sha256": "8a8a8517b475248df3c6409ad54361f89fbe1a045f82c9da88c6fc9e723662cc",
+      "size": 427,
+      "normalized_sha256": "8a8a8517b475248df3c6409ad54361f89fbe1a045f82c9da88c6fc9e723662cc"
+    },
+    "crates/duck-update/src/download.rs": {
+      "role": "index",
+      "sha256": "0fcedb05d62fb2fb2d39a4b73dd12968dbdec88ad8da7431355e160b64638242",
+      "size": 12546,
+      "normalized_sha256": "0fcedb05d62fb2fb2d39a4b73dd12968dbdec88ad8da7431355e160b64638242"
+    },
+    "crates/duck-update/src/error.rs": {
+      "role": "index",
+      "sha256": "a8121fdab8fac5db1525dcbd55d9c463567241ce7aeb68f808bdc6ef579a2c53",
+      "size": 4477,
+      "normalized_sha256": "a8121fdab8fac5db1525dcbd55d9c463567241ce7aeb68f808bdc6ef579a2c53"
+    },
+    "crates/duck-update/src/install/macos.rs": {
+      "role": "index",
+      "sha256": "63de07c982af5bc7abb750fca58f270de1430c414112bd3a60d631472688f969",
+      "size": 18552,
+      "normalized_sha256": "63de07c982af5bc7abb750fca58f270de1430c414112bd3a60d631472688f969"
+    },
+    "crates/duck-update/src/install/mod.rs": {
+      "role": "index",
+      "sha256": "e8e6db36871a91167ac1374078adbdc20b9b28250bbfd99b4977405795f086e2",
+      "size": 8802,
+      "normalized_sha256": "e8e6db36871a91167ac1374078adbdc20b9b28250bbfd99b4977405795f086e2"
+    },
+    "crates/duck-update/src/install/windows.rs": {
+      "role": "index",
+      "sha256": "8105026493c08958bf81a70c2b39aeaeb091e38de538d445643b14504781a9e2",
+      "size": 17120,
+      "normalized_sha256": "8105026493c08958bf81a70c2b39aeaeb091e38de538d445643b14504781a9e2"
+    },
+    "crates/duck-update/src/lib.rs": {
+      "role": "index",
+      "sha256": "dd58a1a14339bb8fcb208b975b5e79b26878e3738092fdac7fb4ab09921452c6",
+      "size": 2921,
+      "normalized_sha256": "dd58a1a14339bb8fcb208b975b5e79b26878e3738092fdac7fb4ab09921452c6"
+    },
+    "crates/duck-update/src/manifest.rs": {
+      "role": "index",
+      "sha256": "cd228c4646cef495331bed85922e13108e4153ecc57cea60ff444d63c94b1f35",
+      "size": 22066,
+      "normalized_sha256": "cd228c4646cef495331bed85922e13108e4153ecc57cea60ff444d63c94b1f35"
+    },
+    "crates/duck-update/src/pipeline.rs": {
+      "role": "index",
+      "sha256": "3f5fd6dd450b4041fa5c0840563b8f6b78d86f02e1771759a9091641fa55c2ab",
+      "size": 23042,
+      "normalized_sha256": "3f5fd6dd450b4041fa5c0840563b8f6b78d86f02e1771759a9091641fa55c2ab"
+    },
+    "crates/duck-update/src/platform.rs": {
+      "role": "index",
+      "sha256": "2555c52681f4d98468cd536fdfc7796084d5d391907bf4e9926ca922037a4ea6",
+      "size": 4845,
+      "normalized_sha256": "2555c52681f4d98468cd536fdfc7796084d5d391907bf4e9926ca922037a4ea6"
+    },
+    "crates/duck-update/src/sha256.rs": {
+      "role": "index",
+      "sha256": "9e101892c6a2be944cd29dc69e5e4677cbd6faf054dea3667f7719b55d54bb6a",
+      "size": 3318,
+      "normalized_sha256": "9e101892c6a2be944cd29dc69e5e4677cbd6faf054dea3667f7719b55d54bb6a"
+    },
+    "crates/duck-update/src/signature.rs": {
+      "role": "index",
+      "sha256": "4e790f78f08584e35a42b45355a31cc11c67590e9ad4cf7511aeda5d25b48752",
+      "size": 7800,
+      "normalized_sha256": "4e790f78f08584e35a42b45355a31cc11c67590e9ad4cf7511aeda5d25b48752"
+    },
+    "crates/duck-update/src/swap.rs": {
+      "role": "index",
+      "sha256": "9bb27345c20cdf1d7d1ecd401e8ff96725fe2fffe67068de9b579a80ad0a738d",
+      "size": 16670,
+      "normalized_sha256": "9bb27345c20cdf1d7d1ecd401e8ff96725fe2fffe67068de9b579a80ad0a738d"
+    },
+    "crates/duck-update/src/target.rs": {
+      "role": "index",
+      "sha256": "a04b6ebe7f819a317dd13da9dbb8f82ed584d3ab09dad8742314fa03793d84ac",
+      "size": 8061,
+      "normalized_sha256": "a04b6ebe7f819a317dd13da9dbb8f82ed584d3ab09dad8742314fa03793d84ac"
+    },
+    "crates/duck-update/src/verify.rs": {
+      "role": "index",
+      "sha256": "c021f31a287249924c796d6836a98cad322f4c78d93873533400669f529e05c3",
+      "size": 6359,
+      "normalized_sha256": "c021f31a287249924c796d6836a98cad322f4c78d93873533400669f529e05c3"
+    },
+    "crates/duck-update/src/version.rs": {
+      "role": "index",
+      "sha256": "72d315718b8c120bbe37dd5f29524c63660a7f1fc05b6614b1f14e2c4b457914",
+      "size": 2042,
+      "normalized_sha256": "72d315718b8c120bbe37dd5f29524c63660a7f1fc05b6614b1f14e2c4b457914"
+    },
+    "crates/duck-update/tests/manifest_wire_format.rs": {
+      "role": "observe",
+      "sha256": "8424a5c718cd31ca7cefcfb51f82878f3341c819f8eb6072bf06ba25a71e0fb3",
+      "size": 7231,
+      "normalized_sha256": "8424a5c718cd31ca7cefcfb51f82878f3341c819f8eb6072bf06ba25a71e0fb3"
+    },
+    "crates/duck-update/tests/release_toolchain.rs": {
+      "role": "observe",
+      "sha256": "177d85d041c1261fefb9de281f97ac88e624e7996ac576339a73d9ec21cc6325",
+      "size": 4987,
+      "normalized_sha256": "177d85d041c1261fefb9de281f97ac88e624e7996ac576339a73d9ec21cc6325"
+    },
+    "docs/ai-design.md": {
+      "role": "index",
+      "sha256": "a561d6bd548c441117997abd7d67f0e9a6be87b86d2482ecc99f5c2332accef0",
+      "size": 43006,
+      "normalized_sha256": "a561d6bd548c441117997abd7d67f0e9a6be87b86d2482ecc99f5c2332accef0"
+    },
+    "docs/architecture-gap-analysis.md": {
+      "role": "index",
+      "sha256": "e21d42ed741b98560fed072e7029b9b52d53d19b75b60d6028fccac770bed5fa",
+      "size": 149727,
+      "normalized_sha256": "e21d42ed741b98560fed072e7029b9b52d53d19b75b60d6028fccac770bed5fa"
+    },
+    "docs/database-design.md": {
+      "role": "index",
+      "sha256": "7cfd52f938eed43f00f6b2620fb2f0e16e7ea74851e1fead7d5654f797e90c7a",
+      "size": 38958,
+      "normalized_sha256": "7cfd52f938eed43f00f6b2620fb2f0e16e7ea74851e1fead7d5654f797e90c7a"
+    },
+    "docs/email-design.md": {
+      "role": "index",
+      "sha256": "0b74f5918141928a753412e9d29de9b95bb3fa942fc05da1621ed71497b8086c",
+      "size": 58023,
+      "normalized_sha256": "0b74f5918141928a753412e9d29de9b95bb3fa942fc05da1621ed71497b8086c"
+    },
+    "docs/mail-ui-mockup.html": {
+      "role": "index",
+      "sha256": "1cdf7312e93d1efe98d953ceaae1d4644a3b2c90d5a49bc1e02974257bf20bb3",
+      "size": 91629,
+      "normalized_sha256": "1cdf7312e93d1efe98d953ceaae1d4644a3b2c90d5a49bc1e02974257bf20bb3"
+    },
+    "docs/redis-design.md": {
+      "role": "index",
+      "sha256": "f278599afe35ce385269c83f335d0fb92666e65a678038167eec863b817f1c84",
+      "size": 41100,
+      "normalized_sha256": "f278599afe35ce385269c83f335d0fb92666e65a678038167eec863b817f1c84"
+    },
+    "docs/terminal-ssh-sftp-design.md": {
+      "role": "index",
+      "sha256": "de97fe8b2c6a43ae7cb48c066c2126e7f0a394fe6fcda19a55e72fc91d0dfde9",
+      "size": 62086,
+      "normalized_sha256": "de97fe8b2c6a43ae7cb48c066c2126e7f0a394fe6fcda19a55e72fc91d0dfde9"
+    },
+    "plugins/text-stat/main.js": {
+      "role": "index",
+      "sha256": "63d8935d0e7d39709a29de3bf406c97b3117f2efa70f860d1c41415f45e016b1",
+      "size": 1552,
+      "normalized_sha256": "63d8935d0e7d39709a29de3bf406c97b3117f2efa70f860d1c41415f45e016b1"
+    },
+    "plugins/text-stat/plugin.toml": {
+      "role": "index",
+      "sha256": "a0424cfe9c9976502d02ec035d080698aeb5c2ea745edaa7b9ce3a882d419fac",
+      "size": 1480,
+      "normalized_sha256": "a0424cfe9c9976502d02ec035d080698aeb5c2ea745edaa7b9ce3a882d419fac"
+    },
+    "rust-toolchain.toml": {
+      "role": "index",
+      "sha256": "fb4610261a3823468f88e3b7f1520af8b2ac96fd4e877628a2c5977fe07c90d0",
+      "size": 425,
+      "normalized_sha256": "fb4610261a3823468f88e3b7f1520af8b2ac96fd4e877628a2c5977fe07c90d0"
+    },
+    "rustfmt.toml": {
+      "role": "index",
+      "sha256": "a65563d368ae3cd3745e306e7c9111e7701f701b81dfb48bdb9b1f85b1b34bdd",
+      "size": 128,
+      "normalized_sha256": "a65563d368ae3cd3745e306e7c9111e7701f701b81dfb48bdb9b1f85b1b34bdd"
+    },
+    "sbin/_common.sh": {
+      "role": "index",
+      "sha256": "9e7f8dcdafb9022a306c5e40fd9a18311734fb5c855c72eb45ef2ddf12e85ac9",
+      "size": 3869,
+      "normalized_sha256": "9e7f8dcdafb9022a306c5e40fd9a18311734fb5c855c72eb45ef2ddf12e85ac9"
+    },
+    "sbin/licenses.py": {
+      "role": "index",
+      "sha256": "aef01dd15a1bf2e007157411a3702eca3964a2b16d1db10f13f4e7ff33630899",
+      "size": 20821,
+      "normalized_sha256": "aef01dd15a1bf2e007157411a3702eca3964a2b16d1db10f13f4e7ff33630899"
+    },
+    "sbin/manifest.py": {
+      "role": "index",
+      "sha256": "adfe71619d02745c43ea02628c7ff2ca74e96b4bb36d7ecdd0cb6c105b489c05",
+      "size": 10905,
+      "normalized_sha256": "adfe71619d02745c43ea02628c7ff2ca74e96b4bb36d7ecdd0cb6c105b489c05"
+    },
+    "sbin/minisign_sign.py": {
+      "role": "index",
+      "sha256": "e927c6f20a0636a5dfc331bb7d0e67ed4cbc3b40bebd34149772ace8f139daf1",
+      "size": 14943,
+      "normalized_sha256": "e927c6f20a0636a5dfc331bb7d0e67ed4cbc3b40bebd34149772ace8f139daf1"
+    },
+    "sbin/package.ps1": {
+      "role": "index",
+      "sha256": "5ef5d71cc4376f3e30b787904636fdf216e5f73abffd861bd0a03db09598bd5a",
+      "size": 4595,
+      "normalized_sha256": "5ef5d71cc4376f3e30b787904636fdf216e5f73abffd861bd0a03db09598bd5a"
+    },
+    "sbin/package.sh": {
+      "role": "index",
+      "sha256": "a039e61f352e695fa64454e9251d1860282b51b1676bdd13f29b18ccd67bfdb9",
+      "size": 15960,
+      "normalized_sha256": "a039e61f352e695fa64454e9251d1860282b51b1676bdd13f29b18ccd67bfdb9"
+    },
+    "sbin/plugin_index.py": {
+      "role": "index",
+      "sha256": "2eb2c51393c10b8ad90a21c09d9f4e8969fbe7b852e6386ee6dbb992f93264a2",
+      "size": 21577,
+      "normalized_sha256": "2eb2c51393c10b8ad90a21c09d9f4e8969fbe7b852e6386ee6dbb992f93264a2"
+    },
+    "sbin/run.sh": {
+      "role": "index",
+      "sha256": "e7498fe7af35305567e46ba1cb47af54c48d921b09df09e2f1eb00bfa7bcbffc",
+      "size": 4427,
+      "normalized_sha256": "e7498fe7af35305567e46ba1cb47af54c48d921b09df09e2f1eb00bfa7bcbffc"
+    }
+  },
+  "managed_scope": {
+    "version": "managed-scope-baseline/v1",
+    "policy_identity": "3b029307ca9a998f7863146b9aae29089dbd7d695d8e543a5334a9ba32f41394",
+    "observe_change_policy": "review_required",
+    "budget_policy_identity": "15e9b37a6c57e9bf03c9df3d0d049eb5b9a7f5540f9d34960408114e2538a32d",
+    "budget_policy": {
+      "version": "cognition-budget-policy/v1",
+      "mode": "enforce",
+      "whole_index": {
+        "target_tokens": 200000,
+        "warning_tokens": 300000,
+        "max_tokens": 400000
+      },
+      "r": [
+        {
+          "min_c": 1,
+          "max_c": 4,
+          "target_tokens": 25,
+          "max_tokens": 50
+        },
+        {
+          "min_c": 5,
+          "max_c": 7,
+          "target_tokens": 45,
+          "max_tokens": 90
+        },
+        {
+          "min_c": 8,
+          "max_c": 8,
+          "target_tokens": 70,
+          "max_tokens": 140
+        },
+        {
+          "min_c": 9,
+          "max_c": 9,
+          "target_tokens": 90,
+          "max_tokens": 180
+        }
+      ],
+      "s": [
+        {
+          "min_c": 1,
+          "max_c": 4,
+          "target_tokens": 20,
+          "max_tokens": 40
+        },
+        {
+          "min_c": 5,
+          "max_c": 7,
+          "target_tokens": 40,
+          "max_tokens": 80
+        },
+        {
+          "min_c": 8,
+          "max_c": 8,
+          "target_tokens": 70,
+          "max_tokens": 140
+        },
+        {
+          "min_c": 9,
+          "max_c": 9,
+          "target_tokens": 100,
+          "max_tokens": 200
+        }
+      ]
+    },
+    "apply_authorization_mode": "auto"
+  }
+}

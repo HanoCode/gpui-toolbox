@@ -917,7 +917,9 @@ impl ShellView {
                 let popover_id = SharedString::from(format!("{}-popover", button_id));
                 Popover::new(popover_id)
                     .anchor(Anchor::LeftCenter)
-                    .offset(px(6.))
+                    // 弹层与触发按钮之间的锚点间隙 = 「独立表面」档间距，全仓两处
+                    // popover 同源（另一处在 `notifications.rs` 的通知中心）。
+                    .offset(theme.tokens().spacing.sm)
                     .trigger(button)
                     .child(content(cx))
                     .into_any_element()
@@ -1158,7 +1160,7 @@ impl ShellView {
             .size_full()
             .items_center()
             .justify_center()
-            .px(px(24.))
+            .px(active_theme(cx).tokens().spacing.xl)
             .child(meta_text(tr(cx, "此模块暂未提供侧栏内容。"), cx))
             .into_any_element()
     }

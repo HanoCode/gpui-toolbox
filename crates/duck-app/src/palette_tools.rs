@@ -14,7 +14,7 @@ use duck_components::{ButtonVariant, body_text, button, meta_text};
 use duck_theme::{active_theme, t, tr};
 use duck_tools::{RegisteredTool, ToolCategory, ToolRegistry};
 use gpui::{
-    AnyElement, App, IntoElement as _, ParentElement as _, SharedString, Styled as _, Window, px,
+    AnyElement, App, IntoElement as _, ParentElement as _, SharedString, Styled as _, Window,
 };
 use gpui_component::{
     Icon,
@@ -60,11 +60,14 @@ pub fn palette_groups(cx: &App, query: &str) -> Vec<CommandGroup> {
 
 /// 面板空结果态：面板只列得出**已装**的工具，装新的得去插件市场，所以这里给条明路。
 pub fn palette_empty(_window: &mut Window, cx: &mut App) -> AnyElement {
+    let tokens = active_theme(cx).tokens();
     v_flex()
         .w_full()
         .items_center()
-        .gap(px(10.))
-        .py(px(26.))
+        // 三行内容（标题 / 说明 / 按钮）之间的组间距取 `sm`；
+        // 上下留白取 `xl`，撑出空态该有的呼吸感。
+        .gap(tokens.spacing.sm)
+        .py(tokens.spacing.xl)
         .child(body_text(tr(cx, "没有匹配的项"), cx))
         .child(meta_text(
             tr(cx, "换个关键词试试，或到插件市场安装更多工具。"),
@@ -133,6 +136,9 @@ fn settings_group(cx: &App, query: &str) -> Option<CommandGroup> {
         };
         let item = CommandItem::new()
             .label(label)
+            // 图标尺寸**不在这里定，也定不了**：库渲染条目时会 `icon.size_4()`（`command/state.rs`），
+            // 而 `Icon::with_size` 是整体覆盖，我们传的 `.size()` 会被盖掉。实际值 = 1rem = 13px
+            // （`duck-theme/src/manager.rs` 把 `kit.font_size` 钉成 `typography.sm.size`）。
             .icon(Icon::new(icon))
             .action(Box::new(OpenSettingsPage {
                 page: SharedString::from(key),
@@ -181,6 +187,7 @@ fn tool_item(cx: &App, tool: &RegisteredTool, query: &str) -> Option<(i32, Comma
 
     let mut item = CommandItem::new()
         .label(label)
+        // 同 `settings_group`：条目图标尺寸由库的 `size_4()` 决定（≈13px），这里设了也会被覆盖。
         .icon(Icon::new(meta.icon()))
         .action(Box::new(OpenTool {
             id: SharedString::from(tool.id()),

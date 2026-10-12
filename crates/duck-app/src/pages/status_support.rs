@@ -6,7 +6,10 @@
 
 use std::rc::Rc;
 
-use duck_components::{field_hint, field_label, title_text};
+use duck_components::{
+    ButtonVariant, ConfirmHandler, ControlExt as _, dialog_footer, dialog_top_offset, field_hint,
+    field_label, modal_drag, modal_drag_area, modal_offset, modal_title_row,
+};
 use gpui::{App, AppContext as _, ParentElement as _, Styled as _, Window, px};
 use gpui_component::{
     WindowExt as _,
@@ -20,6 +23,9 @@ pub type NumberConfirm = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
 /// 文本输入弹窗的确认回调。
 pub type TextConfirm = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
+/// 输入弹窗（[`open_prompt`]）宽度：正文只有一行输入 + 提示，与插件市场的安装弹窗同宽。
+const PROMPT_DIALOG_WIDTH: f32 = 520.;
 
 use crate::units::{GB, KB, MB};
 
@@ -92,18 +98,29 @@ struct PromptSpec {
 /// 输入弹窗的内核确认回调：返回 `false` 表示校验未通过，弹窗保持打开。
 type PromptConfirm = Rc<dyn Fn(&str, &mut Window, &mut App) -> bool>;
 
-/// 输入弹窗通用实现：`on_ok` 返回 `false` 表示校验未通过，弹窗保持打开。
+/// 输入弹窗通用实现：确认回调返回 `false` 表示校验未通过，弹窗保持打开。
 fn open_prompt(window: &mut Window, cx: &mut App, spec: PromptSpec, on_ok: PromptConfirm) {
     let input = cx.new(|cx| InputState::new(window, cx).placeholder(spec.placeholder));
-    let ok_input = input.clone();
+    let confirm: ConfirmHandler = {
+        let input = input.clone();
+        Rc::new(move |window, cx| {
+            let text = input.read(cx).value().to_string();
+            on_ok(&text, window, cx)
+        })
+    };
     let content_input = input.clone();
+    let drag = modal_drag(cx);
     window.open_dialog(cx, move |dialog, _, cx| {
-        let ok_input = ok_input.clone();
-        let on_ok = on_ok.clone();
         let content_input = content_input.clone();
+        let confirm = Rc::clone(&confirm);
+        let offset = modal_offset(&drag, cx);
+        let drag_for_content = drag.clone();
         dialog
-            .title(title_text(spec.title, cx))
-            .w(px(520.))
+            .w(px(PROMPT_DIALOG_WIDTH))
+            .ml(offset.x)
+            .margin_top(dialog_top_offset(cx) + offset.y)
+            .opacity(offset.opacity)
+            .close_button(false)
             .button_props(
                 DialogButtonProps::default()
                     // 按钮文案按弹窗渲染时的语言解析（弹窗开着时不跟随切换）。
@@ -113,24 +130,39 @@ fn open_prompt(window: &mut Window, cx: &mut App, spec: PromptSpec, on_ok: Promp
             )
             .content(move |content, _, cx| {
                 let tokens = duck_theme::active_theme(cx).tokens().clone();
-                let mut row = Input::new(&content_input).w_full();
+                // 单行输入统一走 `control`：`density.control` 高 + `typography.sm` 字，
+                // 不传 size 时 gpui-component 会用 `h_8()`（26px），与本仓控件基线差一档。
+                let mut row = Input::new(&content_input).control(cx).w_full();
                 if !spec.suffix.is_empty() {
                     row = row.suffix(field_hint(spec.suffix, cx).flex_none());
                 }
                 let mut column = v_flex()
                     .w_full()
                     .gap(tokens.spacing.sm)
+                    .child(modal_title_row(
+                        "status-prompt-title",
+                        &drag_for_content,
+                        duck_theme::tr(cx, spec.title),
+                        cx,
+                    ))
                     .child(field_label(spec.label, cx))
                     .child(row);
                 if let Some(hint) = spec.hint {
                     column = column.child(field_hint(hint, cx));
                 }
-                content.child(column)
+                content.child(modal_drag_area(&drag_for_content, column))
             })
-            .on_ok(move |_, window, cx| {
-                let text = ok_input.read(cx).value().to_string();
-                on_ok(&text, window, cx)
+            .on_ok({
+                let confirm = Rc::clone(&confirm);
+                move |_, window, cx| confirm(window, cx)
             })
+            .footer(dialog_footer(
+                "status-prompt",
+                duck_theme::tr(cx, "确定"),
+                ButtonVariant::Primary,
+                confirm,
+                cx,
+            ))
     });
     input.update(cx, |input, cx| input.focus(window, cx));
 }

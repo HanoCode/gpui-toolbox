@@ -86,7 +86,7 @@ impl Store {
     /// 读出 `kv` 全表快照（按 `key` 升序）。
     ///
     /// 供数据导出用：`kv` 里放的是应用设置（主题、语言、各种开关），是全库最值得
-    /// 备份的一张表。不含 keyring 里的密钥——那不在本库。
+    /// 备份的一张表。不含凭据——口令在这张表里一律是密文（见 `duck-platform::vault`）。
     #[must_use]
     pub fn kv_all(&self) -> Vec<(String, String)> {
         let Ok(conn) = self.conn.lock() else {

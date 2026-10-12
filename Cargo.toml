@@ -20,7 +20,7 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = 
     "runtime_shaders",
 ] }
 gpui-base = "0.7.1"
-gpui-component = "0.7.1"
+gpui-component = { version = "0.7.1", features = ["tree-sitter-sql"] }
 gpui-component-assets = { package = "gpui-kit-assets", version = "0.7.1" }
 
 duck-theme = { path = "crates/duck-theme" }
@@ -34,6 +34,12 @@ duck-update = { path = "crates/duck-update" }
 duck-plugin = { path = "crates/duck-plugin" }
 duck-plugin-js = { path = "crates/duck-plugin-js" }
 duck-plugin-registry = { path = "crates/duck-plugin-registry" }
+duck-db = { path = "crates/duck-db" }
+duck-redis = { path = "crates/duck-redis" }
+duck-ai = { path = "crates/duck-ai" }
+duck-term = { path = "crates/duck-term" }
+duck-ssh = { path = "crates/duck-ssh" }
+duck-mail = { path = "crates/duck-mail" }
 
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1"
@@ -79,6 +85,104 @@ toml = "0.8"
 # 会顶破本仓 `rust-version = "1.85"`；升级必须同步核对 MSRV。MIT（QuickJS-NG 同 MIT）。
 rquickjs = { version = "=0.11.0", default-features = false, features = ["std", "loader", "macro"] }
 
+# 数据库模块（duck-db，docs/database-design.md）三条 M1 引擎驱动 + SQL 智能层：
+# - `postgres` 0.19（阻塞版，内部即 tokio-postgres 的同步封装）：MIT OR Apache-2.0，
+#   rust-version 1.85 恰好压线，升级前必须重核。不带类型特性：读路径走
+#   `simple_query` 文本协议（值不经类型 OID 映射），特性用不上。
+#   TLS 走 `postgres_rustls`，**必须钉 `=0.1.1`**：它的 MSRV 分界线同样陡
+#   （0.1.0 = 1.84、**0.1.1 = 1.85**、0.1.2 起 = 1.86、0.1.5 = 1.93、0.1.6 = 1.97），
+#   写 `"0.1"` 会解析到 0.1.6 顶破 `rust-version = "1.85"`。MIT OR Apache-2.0。
+#   它只依赖 tokio-postgres / tokio-rustls，两者都**已在依赖图内**（`postgres` 与
+#   `mysql` 的 rustls 通道），所以引入它等于零新增下载。
+# - `mysql` 28（rust-mysql-simple 阻塞版）：MIT/Apache-2.0。关默认特性——默认的
+#   `minimal` 走系统 zlib，与「终端用户零系统依赖」取向冲突；改用 `default-rust`
+#   （flate2 rust_backend，已在图内）+ `rustls-tls-ring`（TLS 走 rustls/ring，维持
+#   全仓单一 crypto 库；MySQL 8 caching_sha2_password 的完整握手需要 TLS 通道）。
+# - `rustls` / `tokio-rustls` / `webpki-roots` 直接依赖：PG 的 TLS 要自己造
+#   `ClientConfig`（信任链 + 自签例外档），再由 `tokio-rustls::TlsConnector` 交给
+#   `postgres_rustls::MakeTlsConnector`。三者早已在图内（`mysql` 的 rustls-tls-ring、
+#   `ureq` 的 rustls 通道），这里只是提成直接依赖。
+#   ⚠️ **必须 `default-features = false` + 只开 `ring`**：rustls 0.23 的默认 provider 是
+#   `aws-lc-rs`，一开就会拖进 `aws-lc-sys` + `cmake`（要 C 工具链、体积翻倍），
+#   而本仓全仓单一 crypto 库就是 ring（与 ureq / mysql / 终端一致）。
+#   信任链用 `webpki-roots`（编译进二进制）而非系统钥匙串，与更新器 / 插件出网同一份根集。
+# - `sqlparser` 0.52：Apache-2.0，语句分类 / 风险分级 / 只读证明（duck-db::sqlintel）。
+#   0.6x 未声明 MSRV，钉缓存既有且被 dbx 验证过的 0.52。
+#
+# SQL Server（`tiberius`，docs/database-design.md §5 的 M2 选型）：
+# - **async-only**：`tiberius` 只有 async API，由驱动内部自管 current-thread
+#   runtime `block_on`（同 §4.1 对 mongodb 的口径），tokio 不传染给调用方。
+# - `default-features = false` + `tds73` + `rustls`：默认特性带 `winauth`
+#   （Windows 集成认证，非目标平台也拉依赖）与 `native-tls`（会引 openssl /
+#   schannel，破坏本仓「全仓单一 crypto = ring」）。`rustls` 档走
+#   `tokio-rustls` + `tokio-util` + `rustls-native-certs`，前两者已在图内。
+# - MSRV：`tiberius 0.12.3` **未声明** `rust-version`，按依赖准入的实证流程
+#   （独立 crate + `resolver = "3"` + 逐包读 registry 的 `rust-version`）核过
+#   整棵树：**144 个包、0 个超 1.85**。0.13 起需 1.88，不可用。MIT/Apache-2.0。
+# - **零新增 tokio**：`postgres`（阻塞版）内部就是 `tokio-postgres`，
+#   `tokio 1.53.2` 早已在 `Cargo.lock` 里。MSRV 1.71。
+postgres = "0.19"
+postgres_rustls = "=0.1.1"
+mysql = { version = "28", default-features = false, features = ["default-rust", "rustls-tls-ring"] }
+tiberius = { version = "0.12", default-features = false, features = ["tds73", "rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false }
+webpki-roots = "1"
+sqlparser = "0.52"
+
+# MongoDB（docs/database-design.md §5 的 M2 选型）：**必须精确钉 `=3.6.0`**。
+# 与本仓其它「钉版本」的理由不同，这条不是 API 兼容问题而是**硬门**问题：
+# `mongodb 3.6` 声明 `rust-version = "1.85"`（恰好压线，实测 registry 里的
+# `Cargo.toml`），而 `3.9` 已是 **1.88**；写 `"3.6"` 会解析到 3.9+，必须 `=`。
+# - `default-features = false` 去掉 `dns-resolver`（hickory 系，只服务
+#   `mongodb+srv://` 的 SRV 查询）；`rustls-tls` + `compat-3-0-0` 显式补回
+#   （后者是 3.6 的 default 之一，含 `bson-2`，关了 default 就得自己写）。
+# - **零新增 TLS 栈**：3.6 要的是 `rustls 0.23` + `tokio-rustls 0.26` + `ring`，
+#   与本仓 `mysql` / `postgres_rustls` 那两行**同一套**（上面已经声明了），
+#   所以不会出现「两代 rustls 并存」。
+# - ⚠️ **`time` 族必须钉在 0.3.44（由 `Cargo.lock` 承载）**：`bson 2.15` 显式开了
+#   `time` 的 `macros` feature，于是 `time` / `time-core` / `time-macros` 一起**进入
+#   编译树**——在引入 mongodb 之前它们并不在树里（`mac-notification-sys` 那个引用方
+#   在 host 上根本没启用，`cargo tree -i time` 无输出）。而 crates.io 当前的 `time
+#   0.3.55` 声明 **rust-version 1.88**，顶破本仓 1.85 硬门。降到 `0.3.44`（**1.81**）
+#   之后 `time` / `time-core` / `time-macros` / `num-conv` 全部达标，且实测
+#   `cargo check -p duck-platform` 通过——两侧约束都只是 `^0.3`，降级不影响任何消费者。
+#   本仓构建一律 `--locked`，所以这个 pin 靠 lock 文件固化；**要升 `time` 先核目标版本
+#   的 `rust-version ≤ 1.85` 再改，别直接 `cargo update`**。
+mongodb = { version = "=3.6.0", default-features = false, features = [
+    "rustls-tls",
+    "compat-3-0-0",
+] }
+
+# 异步驱动的执行器（当前唯一消费者：`tiberius`）。
+# - `rt` + `net` + `time` 三档就够：`Builder::new_current_thread().enable_all()`
+#   + `block_on`，不需要 `rt-multi-thread`（那是给「一个 runtime 服务多线程」用的，
+#   而本仓的口径是**每条连接一个 current-thread runtime**，见 §4.1 方案 A）。
+# - **不开 `macros`**：本 crate 不用 `#[tokio::main]` / `tokio::select!`，
+#   开了只会拖进 `tokio-macros` 的 proc-macro 编译时间。
+# - 不是新下载：`tokio` 已在 `Cargo.lock`（`postgres` 的传递依赖）。MSRV 1.71，MIT。
+tokio = { version = "1", default-features = false }
+# `tiberius` 的 `Client::connect` 要的是 `futures::io` 的 `AsyncRead + AsyncWrite`，
+# 而 `tokio::net::TcpStream` 实现的是 tokio 自己的 trait —— `compat` 就是这层桥。
+# 已在图内（`tiberius` / `postgres_rustls` 的传递依赖），**零新增下载**。
+tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
+
+# Redis 模块（duck-redis，docs/redis-design.md）的客户端：
+# - **必须用 `=` 钉死 `1.2.2`**。redis 的 MSRV 分界线很陡（本机 cargo 索引实测
+#   `rust_version` 字段）：1.2.0/1.2.1/1.2.2 = **1.85**（恰好压线），
+#   1.2.3 起全部 = **1.88**，会顶破本仓 `rust-version = "1.85"`。
+#   写 `"1.2"` 会解析到 1.2.3+，必须精确钉。BSD-3-Clause。
+# - `default-features = false` + 只开四个纯协议特性：**不引 aio / tokio-comp / smol-comp**，
+#   本仓零 tokio 纪律，走 `Client::get_connection()` 的阻塞 API（与 duck-db 的
+#   「同步内核 + background_executor」口径一致）。不开 TLS（M1 明文 + SSH 隧道）；
+#   不开 cluster（M1.4 需要时再评估其传递依赖）。
+redis = { version = "=1.2.2", default-features = false, features = [
+    "acl",
+    "streams",
+    "geospatial",
+    "script",
+] }
+
 # 开机自启（duck-platform::autostart，按 target 平台分别取用）：
 # - macOS 走 SMAppService（登录项，macOS 13+）：objc2 官方绑定，配对图中已有的 objc2 0.6；
 #   许可证 Zlib OR Apache-2.0 OR MIT，MSRV 1.71。
@@ -109,17 +213,17 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSRe
 #   会多出第四条），只影响 Windows 的编译时间，不动运行时。
 global-hotkey = "0.8.0"
 
-# 安全凭据存储（duck-platform::secret）：系统钥匙串 / 凭据管理器。
-# - `keyring` 3.6.3：MIT OR Apache-2.0，MSRV 1.75，edition 2021。**不用 4.x**——
-#   4.x 全系 MSRV 1.88，会顶破本仓 `rust-version = "1.85"`。
-# - **默认无特性**（`default-features = false`）：不选后端时 `keyring` 不会报错，
-#   而是把默认 store 静默换成进程内的内存 mock，表现是「写入成功、重启全丢」。
-#   所以后端特性必须按 target 显式开，声明见 duck-platform 的 target 依赖表；
-#   `secret.rs` 末尾有两条编译期断言把这件事钉死。
-# - 传递依赖零新增：`security-framework 3.7.0` / `security-framework-sys 2.17.0` /
-#   `core-foundation-sys 0.8.7` / `windows-sys 0.60.2` / `windows-targets 0.53.5` /
-#   `zeroize 1.9.1` / `log 0.4.34` 均已在依赖图内且版本一致。
-keyring = { version = "3.6.3", default-features = false }
+# 凭据存储（duck-platform::secret）：`<应用数据目录>/credentials.json`。
+# **不引任何第三方**——JSON 编解码复用 `serde_json`（早已在图里），
+# 加解密一律不做（本模块不提供加密，保护靠文件权限位，见其模块文档）。
+# 历史上这里钉过 `keyring 3.6.3`，2026-10-12 移除：与系统钥匙串绑定会把
+# 「应用数据」拆成两半（备份/迁移只能搬走一半），且各平台后端可用性不一致。
+
+# 本机加密保管箱（duck-platform::vault）：SSH 连接口令的落库加密。
+# - `ring` 0.17：ISC 类许可，MSRV 1.63。**全仓单一 crypto 库就是 ring**
+#   （rustls / ureq / mysql 的 TLS 都走它），这里只是把已在依赖图里的它提成直依赖，
+#   用 AES-256-GCM 加密口令后存进 SQLite —— 传递依赖零新增。
+ring = "0.17.14"
 
 # Windows 资源编译（duck-app 的 build.rs）：把 assets/duck.ico 嵌入 .exe，
 # 文件管理器 / 任务栏 / 快捷方式即显示应用图标。MIT OR Apache-2.0。
@@ -130,6 +234,30 @@ winresource = "0.1"
 # 工具注册表：中文名 → 拼音全拼 / 首字母（零传递依赖，MIT）。
 # 只要 `plain`：全拼与首字母都需要它，其余（声调 / 多音字 / compat）用不到。
 pinyin = { version = "0.11", default-features = false, features = ["plain"] }
+
+# 终端仿真内核（crates/duck-term）。vendored 基线与差异记录见 vendor/README.md：
+# - `alacritty_terminal` 0.26.0：Apache-2.0，MSRV 1.85.0（恰好压线）。取 oxideterm
+#   维护的 vendored 副本——它带两处有文档的补丁（ASCII 快路径 + 视口滚动单独上报
+#   damage，后者正是后续增量渲染要用的），且这是 S3 验证过的形态。
+# - `vte` 0.15.0：alacritty_terminal 的解析器；`ansi` 特性提供 `vte::ansi` 处理器
+#   与颜色 / 事件类型。两者都经 [patch.crates-io] 指向 vendor/ 同名目录。
+alacritty_terminal = "0.26.0"
+vte = { version = "0.15.0", default-features = false, features = ["std", "ansi"] }
+
+# 邮箱模块（duck-mail，docs/email-design.md）的协议层。
+# - `async-imap 0.11`：客户端视角的 IMAP。选它而不是自研（melib 用 alpha 版
+#   `imap-codec`）或复用自己的服务端实现（`temp/stalwart` 的 `imap-proto` 是**服务端
+#   视角**：`parser/` 解 `Command`、`protocol/` 序列化 `Response`，客户端要的是镜像
+#   方向，见设计文档 §2.4②）。关默认特性、只开 `runtime-tokio`（本仓全仓 tokio）。
+#   未声明 MSRV；MSRV 1.85 下的实际可编译性由 CI 的 stable 工具链把关。
+# - `mail-parser 0.11` + **`full_encoding`**：后者才有完整的 `encoding_rs` 通道，
+#   否则 GB2312/GBK/Big5/Shift-JIS 会解成 U+FFFD（中文邮件用户不可接受）。
+#   0.11 的默认特性是空的，必须显式开。
+# - `base64 0.22`：已在锁文件里（传递依赖），这里提成直接依赖用于 CID 内联图与
+#   IMAP 正文段的 base64 解码，**零新增下载**。
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+mail-parser = { version = "0.11", features = ["full_encoding"] }
+base64 = "0.22"
 
 # 全员共享的 lint 基线。各 crate 通过 `[lints] workspace = true` 显式启用。
 # 仅对明确有害的写法设 deny，其余保持默认，避免阻塞日常构建。
@@ -149,5 +277,8 @@ gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "b8f0c026553
 gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "b8f0c026553711c1e049fee501932d3801f23567" }
 gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "b8f0c026553711c1e049fee501932d3801f23567" }
 gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast", rev = "b8f0c026553711c1e049fee501932d3801f23567" }
+# 终端仿真内核：vendored（基线与差异记录见 vendor/README.md，升级必须同步该表）。
+alacritty_terminal = { path = "vendor/alacritty-terminal" }
+vte = { path = "vendor/vte" }
 # 注：compat/ 还提供 gpui-pre-web 与 gpui-pre-reqwest-client 替身，但本项目的
 # HTTP 客户端（gpui-pre-reqwest 0.12.15）在 patch 后随旧依赖图整体退出，二者无需声明。

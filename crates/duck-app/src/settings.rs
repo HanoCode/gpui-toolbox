@@ -18,7 +18,8 @@ use duck_store::Store;
 use duck_theme::{Appearance, AppearanceWire, active_theme, apply};
 
 use crate::pages::{
-    ASSISTANT_ROUTE, DATABASE_ROUTE, OVERVIEW_ROUTE, PROJECTS_ROUTE, SSH_ROUTE, TOOLBOX_ROUTE,
+    ASSISTANT_ROUTE, DATABASE_ROUTE, EMAIL_ROUTE, OVERVIEW_ROUTE, PROJECTS_ROUTE, REDIS_ROUTE,
+    SSH_ROUTE, TOOLBOX_ROUTE,
 };
 
 /// 外观设置在 `kv` 表里的键。
@@ -58,13 +59,15 @@ const STARTUP_SAMPLES: usize = 10;
 /// 直接引用路由常量而不是抄一份字面量：路由增删时这里自动跟上，而存档里的旧 id
 /// 也就自动变成「不认识」→ 回落首页，不会把窗口开到空白页。清单必须与
 /// `app::build_main_window` 登记的 `ShellRoute` 保持一致（含功能占位路由）。
-const KNOWN_ROUTES: [RouteId; 6] = [
+const KNOWN_ROUTES: [RouteId; 8] = [
     OVERVIEW_ROUTE,
     TOOLBOX_ROUTE,
     SSH_ROUTE,
     DATABASE_ROUTE,
+    REDIS_ROUTE,
     PROJECTS_ROUTE,
     ASSISTANT_ROUTE,
+    EMAIL_ROUTE,
 ];
 
 // ── 外观 ────────────────────────────────────────────────────────────────────

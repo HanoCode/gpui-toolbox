@@ -1,0 +1,22 @@
+[package]
+name = "duck-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AI 助手内核：OpenAI 兼容协议 / SSE 流式解析 / 会话与知识库持久化（不依赖 gpui、不引 tokio）。"
+
+# 依赖纪律（AGENTS.md §1）：本 crate 是内核层，**不得引入 gpui**，也不引 tokio。
+# 本仓零 tokio 纪律下，流式输出靠「ureq 阻塞 Body 读取 + 调用方起专用线程」实现，
+# 内核只提供同步阻塞的 `stream_chat`，由上层决定线程与事件回传方式。
+# 依赖全部已在工作区依赖图内（duck-platform / ureq 由 duck-db 引入、rusqlite 由
+# duck-store 引入），**零新增第三方下载**。
+[dependencies]
+duck-platform.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

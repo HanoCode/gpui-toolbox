@@ -9,6 +9,7 @@
 mod builtin;
 mod i18n;
 mod manager;
+mod syntax;
 mod tokens;
 mod wire;
 

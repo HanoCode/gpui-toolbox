@@ -83,7 +83,8 @@ pub fn palette_card(
     cx: &App,
 ) -> AnyElement {
     let theme = active_theme(cx);
-    let colors = theme.tokens().colors;
+    let tokens = theme.tokens();
+    let colors = tokens.colors;
     let extended = theme.extended();
     let radius = theme.components().dialog_radius;
 
@@ -98,13 +99,15 @@ pub fn palette_card(
     let close_button = div()
         .id("palette-close")
         .absolute()
+        // 贴着搜索行的内边距落位，属该行的几何对齐（`CLOSE_BUTTON_SIZE` 也是常量），
+        // 不属 spacing 阶梯 —— 保留裸值并在此说明。
         .top(px(7.))
         .right(px(7.))
         .size(px(CLOSE_BUTTON_SIZE))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.))
+        .rounded(tokens.radius.md)
         .text_color(extended.colors.text_tertiary)
         // 可点元素一律手型光标（gpui-fast 没有 `cursor_point`，用 `cursor_pointer`）。
         .cursor_pointer()
@@ -158,17 +161,27 @@ pub fn palette_footer(matched: usize, cx: &App) -> AnyElement {
     let tertiary = extended.colors.text_tertiary;
     let text_size = tokens.typography.xs.size;
     let chip_bg = tokens.colors.background;
+    // 键帽与提示条的尺寸一律走 token（裸 px 不随「界面缩放」走）。括号里是原裸值：
+    // 16 / 12 / 4 是同值搬迁；3、4、7 原本不在 spacing(2·4·8·12·16·24·32) /
+    // radius(3·6·8·12) 阶梯上，收敛到最近档。
+    let chip_h = tokens.spacing.lg; // 16
+    let chip_pad_x = tokens.spacing.xxs; // 原 3 → 2
+    let chip_radius = tokens.radius.sm; // 原 4 → 3
+    let row_pad_x = tokens.spacing.md; // 12
+    let row_pad_y = tokens.spacing.sm; // 原 7 → 8
+    let row_gap = tokens.spacing.xs; // 4
+    let sep_margin_x = tokens.spacing.xxs; // 原 3 → 2
 
     // 键帽：小圆角框，弱于正文的示意元素。
     let chip = move |label: &'static str| -> AnyElement {
         div()
             .flex()
-            .h(px(16.))
-            .min_w(px(16.))
+            .h(chip_h)
+            .min_w(chip_h)
             .items_center()
             .justify_center()
-            .px(px(3.))
-            .rounded(px(4.))
+            .px(chip_pad_x)
+            .rounded(chip_radius)
             .bg(chip_bg)
             .border_1()
             .border_color(hairline)
@@ -179,7 +192,7 @@ pub fn palette_footer(matched: usize, cx: &App) -> AnyElement {
     };
     let label = move |text: &'static str| -> AnyElement { div().child(text).into_any_element() };
     let sep = div()
-        .mx(px(3.))
+        .mx(sep_margin_x)
         .text_color(hairline)
         .child("·")
         .into_any_element();
@@ -191,8 +204,8 @@ pub fn palette_footer(matched: usize, cx: &App) -> AnyElement {
         .flex_none()
         .items_center()
         .justify_between()
-        .px(px(12.))
-        .py(px(7.))
+        .px(row_pad_x)
+        .py(row_pad_y)
         .border_t_1()
         .border_color(hairline)
         .text_size(text_size)
@@ -200,14 +213,14 @@ pub fn palette_footer(matched: usize, cx: &App) -> AnyElement {
         .child(
             h_flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(row_gap)
                 .child(chip("↑"))
                 .child(chip("↓"))
                 .child(label(tr(cx, "选择")))
                 .child(sep)
                 .child(chip("↵"))
                 .child(label(tr(cx, "打开")))
-                .child(div().mx(px(3.)).text_color(hairline).child("·"))
+                .child(div().mx(sep_margin_x).text_color(hairline).child("·"))
                 .child(chip("Esc"))
                 .child(label(tr(cx, "关闭"))),
         )

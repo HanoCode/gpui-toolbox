@@ -1,0 +1,50 @@
+[package]
+name = "duck-mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "邮箱模块内核：账户档案、IMAP 协议、MIME 解码、本地 SQLite 存储与同步引擎（不依赖 gpui）。"
+
+# 依赖纪律（AGENTS.md §1）：本 crate 是内核层，**不得引入 gpui**；
+# 平台能力只取 duck-platform（凭据 / 路径）。
+#
+# 异步模型（docs/email-design.md §4.1）：IMAP 是常驻连接 + IDLE 推送 + 多账号并发，
+# 必须异步；沿用 `duck-db` 的「方案 B」——本 crate 自管内嵌 tokio runtime，
+# **tokio 的类型不出本 crate 的公共 API**（唯一出口是 `runtime::MailRuntime` 与
+# `Task<T>`）。DB 层是纯同步 rusqlite，走 crate 自己的专用写线程，不经 tokio。
+[dependencies]
+duck-platform.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+# 协议层：IMAP 走 `async-imap`（客户端视角的 `imap-proto`，见设计文档 §4.4 的选型论证），
+# MIME 解析走 `mail-parser` 的 `full_encoding`（否则 GB2312/GBK/Big5 会解成 U+FFFD）。
+async-imap.workspace = true
+mail-parser.workspace = true
+
+# TLS：与全仓同一套 rustls + ring，信任链用编译进二进制的 `webpki-roots`，
+# 不走系统钥匙串（与更新器 / 插件出网 / duck-db 同一份根集）。
+rustls.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+
+# tokio 只在 `runtime.rs` 里出现。feature 按需：多线程 runtime + 宏 + 同步原语
+# + 定时器（超时/退避）+ TCP + 异步读写（rustls 握手）+ 文件（附件落盘）。
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+    "io-util",
+    "fs",
+] }
+# `async-imap` 的 `Session` 用 futures 的 `Stream`；`futures-util` 只为 `StreamExt`。
+futures-util.workspace = true
+# 内联图（CID → `data:`）与 IMAP 的 base64 正文解码。
+base64.workspace = true
+
+[lints]
+workspace = true

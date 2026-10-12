@@ -9,7 +9,7 @@ use gpui_component::Icon;
 
 use duck_command::{ActionMeta, ActionSlot, install_app_handler, install_handler};
 use duck_components::DuckIcon;
-use duck_theme::{Appearance, ThemeMode, ThemePreference, active_theme, apply, tr};
+use duck_theme::{Appearance, ThemeMode, ThemePreference, active_theme, apply, tr, trf};
 
 use crate::pages::open_settings;
 
@@ -25,10 +25,14 @@ pub mod ids {
     pub const ROUTE_SSH: &str = "route.ssh";
     /// 切到数据库页。
     pub const ROUTE_DATABASE: &str = "route.database";
+    /// 切到 Redis / Valkey 页。
+    pub const ROUTE_REDIS: &str = "route.redis";
     /// 切到项目管理页。
     pub const ROUTE_PROJECTS: &str = "route.projects";
     /// 切到 AI 助手页。
     pub const ROUTE_ASSISTANT: &str = "route.assistant";
+    /// 切到邮箱页。
+    pub const ROUTE_EMAIL: &str = "route.email";
     /// 收起 / 展开侧栏。
     pub const VIEW_TOGGLE_SIDEBAR: &str = "view.toggle-sidebar";
     /// 明暗外观切换。
@@ -37,7 +41,7 @@ pub mod ids {
     pub const SETTINGS_OPEN: &str = "settings.open";
     /// 主题选择器（活动栏 Popover）。
     pub const THEME_PICK: &str = "theme.pick";
-    /// 刷新当前工具列表（演示）。
+    /// 重新扫描插件目录并刷新工具列表。
     pub const TOOLBOX_REFRESH: &str = "toolbox.refresh";
     /// 检查更新。
     pub const UPDATE_CHECK: &str = "update.check";
@@ -158,6 +162,21 @@ pub fn declare_all(cx: &mut App) {
     duck_command::declare(
         cx,
         ActionMeta {
+            id: ids::ROUTE_REDIS,
+            label: |cx| SharedString::from(tr(cx, "Redis")),
+            // 关键词全 ASCII，省去 i18n 译条（同上面四条的约定）。
+            keywords: &["redis", "valkey", "kv", "cache"],
+            group: Some("导航"),
+            icon: Some(|_| Icon::new(DuckIcon::DatabaseZap)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette, ActionSlot::Menu],
+            menu: Some(("视图", Some("导航"))),
+            keys: &["$mod-5"],
+        },
+    );
+    duck_command::declare(
+        cx,
+        ActionMeta {
             id: ids::ROUTE_PROJECTS,
             label: |cx| SharedString::from(tr(cx, "项目管理")),
             keywords: &["projects", "project", "kanban", "tasks"],
@@ -166,7 +185,8 @@ pub fn declare_all(cx: &mut App) {
             icon_color: None,
             slots: &[ActionSlot::Palette, ActionSlot::Menu],
             menu: Some(("视图", Some("导航"))),
-            keys: &["$mod-5"],
+            // Redis 插在数据库页之后占走了 `⌘5`，本项与 AI 助手顺延一档。
+            keys: &["$mod-6"],
         },
     );
     duck_command::declare(
@@ -180,7 +200,24 @@ pub fn declare_all(cx: &mut App) {
             icon_color: None,
             slots: &[ActionSlot::Palette, ActionSlot::Menu],
             menu: Some(("视图", Some("导航"))),
-            keys: &["$mod-6"],
+            keys: &["$mod-7"],
+        },
+    );
+    // 邮箱：入口先挂上，页面是「功能正在建设中」的空白页（`PlaceholderPage`）。
+    // 活动栏最末一条，键位接在 AI 助手之后（`⌘8`），现有 ⌘1–⌘7 不动。
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::ROUTE_EMAIL,
+            label: |cx| SharedString::from(tr(cx, "邮箱")),
+            // 关键词全 ASCII，省去 i18n 译条（同上面几条的约定）。
+            keywords: &["email", "mail", "inbox", "imap", "smtp"],
+            group: Some("导航"),
+            icon: Some(|_| Icon::new(DuckIcon::Mail)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette, ActionSlot::Menu],
+            menu: Some(("视图", Some("导航"))),
+            keys: &["$mod-8"],
         },
     );
     duck_command::declare(
@@ -376,8 +413,20 @@ pub fn install_stateless_handlers(cx: &mut App) {
         crate::update::check_now(cx);
     });
     install_app_handler(cx, ids::APP_QUIT, quit);
+    // 「刷新」是**真动作**（`⌘R` / 菜单「工具」/ 命令面板 / 活动栏同一份声明），不是演示项：
+    // 重扫插件目录并重建工具注册表 —— 用户手改了插件目录、或想强制重读清单时走这一条。
     install_handler(cx, ids::TOOLBOX_REFRESH, |window, cx| {
-        duck_components::notify::info(tr(cx, "演示：刷新（未接入工具后端）"), window, cx);
+        crate::plugins::rescan(cx);
+        let tools = duck_tools::ToolRegistry::listed(cx).len();
+        duck_components::notify::info(
+            trf(
+                cx,
+                "已重新扫描插件目录，当前列出 {} 个工具。",
+                &[&tools.to_string()],
+            ),
+            window,
+            cx,
+        );
     });
 
     // 标准菜单项的落点。隐藏 / 隐藏其他 / 显示全部 / 关于都不依赖窗口（窗口全关时
@@ -413,8 +462,10 @@ pub fn install_shell_handlers(cx: &mut App, shell: &gpui::Entity<duck_shell::She
     install_handler(cx, ids::ROUTE_TOOLBOX, navigate("toolbox"));
     install_handler(cx, ids::ROUTE_SSH, navigate("ssh"));
     install_handler(cx, ids::ROUTE_DATABASE, navigate("database"));
+    install_handler(cx, ids::ROUTE_REDIS, navigate("redis"));
     install_handler(cx, ids::ROUTE_PROJECTS, navigate("projects"));
     install_handler(cx, ids::ROUTE_ASSISTANT, navigate("assistant"));
+    install_handler(cx, ids::ROUTE_EMAIL, navigate("email"));
 
     install_handler(cx, ids::VIEW_TOGGLE_SIDEBAR, {
         let weak = weak.clone();
@@ -455,4 +506,41 @@ fn toggle_appearance(cx: &mut App) {
         },
         cx,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duck_command::metas;
+    use gpui::TestAppContext;
+
+    /// 「数据库」页必须能从命令面板搜到（B11 的验收点），并且带着它的键位。
+    ///
+    /// 这条测试同时**钉住「不要往 duck-tools 里再登记一条同名的 ToolMeta」**：
+    /// 面板条目完全由动作注册表派生，重复登记会在面板里冒出两个「数据库」。
+    #[gpui::test]
+    fn database_page_is_searchable_from_the_palette(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            duck_command::install(cx);
+            declare_all(cx);
+        });
+        cx.update(|cx| {
+            let meta = metas(cx)
+                .iter()
+                .find(|meta| meta.id == ids::ROUTE_DATABASE)
+                .expect("数据库路由必须已声明");
+            assert!(
+                meta.slots.contains(&ActionSlot::Palette),
+                "路由必须进命令面板，否则只能靠点侧栏到达"
+            );
+            for keyword in ["database", "db", "sql"] {
+                assert!(
+                    meta.keywords.contains(&keyword),
+                    "命令面板要能用 `{keyword}` 搜到数据库页"
+                );
+            }
+            let keys = duck_command::keybindings_for(cx, ids::ROUTE_DATABASE);
+            assert!(!keys.is_empty(), "数据库页要有默认键位（设计稿定的是 ⌘4）");
+        });
+    }
 }

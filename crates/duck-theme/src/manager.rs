@@ -421,6 +421,8 @@ fn project_onto_kit(kit: &mut ComponentTheme, theme: &ResolvedTheme) {
     let extended = theme.extended.colors;
     kit.apply_semantic_tokens(tokens);
     kit.focus_ring = false;
+    // 代码编辑器的语法高亮角色色：走本仓 token，不留在库默认色板上。
+    crate::syntax::apply(kit, theme);
     // gpui-component 的 `text_base` 取 `font_size`（默认映射到 md=16px），对桌面密度偏大；
     // 与 13px 正文基线对齐取 `sm`。
     kit.font_size = tokens.typography.sm.size;

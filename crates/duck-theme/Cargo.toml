@@ -13,5 +13,11 @@ gpui-component.workspace = true
 [dependencies.serde]
 workspace = true
 
+[dependencies.serde_json]
+workspace = true
+
+[dependencies.tracing]
+workspace = true
+
 [lints]
 workspace = true

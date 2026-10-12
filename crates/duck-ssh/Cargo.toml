@@ -1,0 +1,11 @@
+[package]
+name = "duck-ssh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Duck Toolbox 远端能力：驱动系统 ssh/scp 客户端（无 GPUI，零新增依赖）"
+
+[dependencies]
+# 刻意保持**零依赖**：只用 `std::process` 驱动系统 OpenSSH 客户端。
+# 详见 `src/lib.rs` 模块头里对「为什么不用 russh」的说明。

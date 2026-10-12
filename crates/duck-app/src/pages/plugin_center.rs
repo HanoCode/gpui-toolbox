@@ -11,11 +11,13 @@
 //! 所以插件中心必须先有一次成功的市场拉取（或用上一次的缓存）才能把「未安装」列出来。
 
 use std::collections::{BTreeSet, HashSet};
+use std::rc::Rc;
 
 use duck_components::{
-    ButtonVariant, DuckIcon, body_text, button, card, content, detail_title_text, dropdown_select,
-    field_hint, icon_text_button, meta_text, option_row, settings_section, switch_control,
-    title_text, toolbar_action_button,
+    ButtonVariant, ConfirmHandler, DuckIcon, body_text, button, card, content, detail_title_text,
+    dialog_footer, dialog_top_offset, dropdown_select, field_hint, icon_text_button, meta_text,
+    modal_drag, modal_drag_area, modal_offset, modal_title_row, option_row, settings_section,
+    switch_control, toolbar_action_button,
 };
 use duck_plugin::{Capabilities, Capability};
 use duck_plugin_registry::PluginStatus;
@@ -379,6 +381,8 @@ impl PluginCenterView {
         h_flex()
             .id("plugin-center-search-box")
             .track_focus(&input_focus)
+            // 搜索框宽度区间：布局约束（不在 spacing 阶梯上），保留裸值；
+            // `.flex_shrink(1.)` + `min_w` 让它在窄窗口里先让位、再兜底可读宽度。
             .w(px(240.))
             .flex_shrink(1.)
             .min_w(px(160.))
@@ -524,7 +528,7 @@ impl PluginCenterView {
             label,
             h_flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(theme.tokens().spacing.xs)
                 .child(Icon::new(DuckIcon::RotateCw).size(theme.extended().icon.md))
                 .child(
                     div()
@@ -590,7 +594,7 @@ impl PluginCenterView {
             .id(SharedString::from(format!("plugin-center-tag-{tag}")))
             .flex_none()
             .px(tokens.spacing.sm)
-            .py(px(2.))
+            .py(tokens.spacing.xxs)
             .rounded_full()
             .border(theme.extended().stroke.thin)
             .text_size(tokens.typography.xs.size)
@@ -715,6 +719,7 @@ impl PluginCenterView {
                 .child(
                     div()
                         .flex_none()
+                        // 插件图标底板边长：布局约束（不在 spacing / 密度阶梯上），保留裸值。
                         .size(px(40.))
                         .rounded(tokens.radius.md)
                         .bg(chrome.nav_hover)
@@ -1319,6 +1324,21 @@ fn open_install_dialog(
 ) {
     let added_count = added.len();
     let selection = cx.new(|_| GrantSelection::new(initial));
+    // 确认动作放函数级 `Rc`：键盘 ⏎ 与底部「同意并安装 / 更新」按钮**共用同一份**
+    // 落库逻辑。先记授权再装——装完才写的话，安装过程中弹出的工具已经按旧授予跑过了。
+    // 安装失败时这条记录会留着：下次打开确认框正好接着上次的勾选，比「失败即清空、
+    // 用户得重勾一遍」更贴近意图。
+    let confirm: ConfirmHandler = {
+        let selection = selection.clone();
+        let id = plugin_id.clone();
+        let declared = capabilities.clone();
+        Rc::new(move |_window, cx| {
+            let allowed = selection.read(cx).snapshot();
+            plugins::set_granted(cx, &id, &declared, &allowed);
+            market::install_plugin(cx, &id);
+            true
+        })
+    };
     let title_key = if updating {
         "更新插件「{}」"
     } else {
@@ -1335,20 +1355,17 @@ fn open_install_dialog(
         "安装后，本插件会请求访问以下资源："
     };
 
+    let drag = modal_drag(cx);
     window.open_dialog(cx, move |dialog, _, cx| {
         // 内容闭包可能被多次调用（重排 / 重绘），所以每一轮都从克隆出来的数据重建。
         let capabilities = capabilities.clone();
         let added = added.clone();
         // 逐条勾选要用的一份；`Entity` 克隆只是引用计数。
         let selection_for_rows = selection.clone();
-        // 同样是一次性 `move`：`on_ok` 从外层闭包里拿走它。
-        let id_for_ok = plugin_id.clone();
+        // 确认动作：`on_ok`（键盘 ⏎）与底部主按钮各取一份 `Rc`。
+        let confirm = Rc::clone(&confirm);
         // 勾选框 id 要用一份专用的：`content` 也是 `Fn`，直接捕获 `plugin_id` 会被移走。
         let id_for_rows = plugin_id.clone();
-        // 声明上限：写授予记录时要按它收窄（首次安装时插件还没被发现，
-        // 让 `set_granted` 自己查清单会查不到）。
-        let declared = capabilities.clone();
-        let selection_for_ok = selection.clone();
         let title = trf(cx, title_key, &[name.as_str()]);
         let lead = tr(cx, lead_key);
         let ok_text = tr(cx, ok_key);
@@ -1365,10 +1382,15 @@ fn open_install_dialog(
             cx,
             "勾选要放行的能力；取消勾选即拒绝，之后可在插件中心逐项调整。",
         );
+        let offset = modal_offset(&drag, cx);
+        let drag_for_content = drag.clone();
 
         dialog
-            .title(title_text(title, cx))
             .w(px(INSTALL_DIALOG_W))
+            .ml(offset.x)
+            .margin_top(dialog_top_offset(cx) + offset.y)
+            .opacity(offset.opacity)
+            .close_button(false)
             .button_props(
                 DialogButtonProps::default()
                     // 按钮文案按弹窗渲染时的语言解析（弹窗开着时不跟随切换）。
@@ -1417,10 +1439,18 @@ fn open_install_dialog(
                     })
                     .collect();
 
-                content.child(
+                content.child(modal_drag_area(
+                    &drag_for_content,
                     v_flex()
                         .w_full()
                         .gap(tokens.spacing.sm)
+                        .child(modal_title_row(
+                            "plugin-install-title",
+                            &drag_for_content,
+                            // `content` 闭包是 `Fn`（重排时会重跑），捕获的值只能借不能移。
+                            title.clone(),
+                            cx,
+                        ))
                         .child(body_text(lead, cx))
                         .children(
                             note.clone()
@@ -1429,17 +1459,19 @@ fn open_install_dialog(
                         .child(v_flex().w_full().gap(tokens.spacing.xs).children(rows))
                         .child(field_hint(grant_hint, cx))
                         .child(field_hint(footer, cx)),
-                )
+                ))
             })
-            .on_ok(move |_, _, cx| {
-                // 先记授权再装：装完才写的话，安装过程中弹出的工具已经按旧授予跑过了。
-                // 安装失败时这条记录会留着——下次打开确认框正好接着上次的勾选，
-                // 比「失败即清空、用户得重勾一遍」更贴近意图。
-                let allowed = selection_for_ok.read(cx).snapshot();
-                plugins::set_granted(cx, &id_for_ok, &declared, &allowed);
-                market::install_plugin(cx, &id_for_ok);
-                true
+            .on_ok({
+                let confirm = Rc::clone(&confirm);
+                move |_, window, cx| confirm(window, cx)
             })
+            .footer(dialog_footer(
+                "plugin-install",
+                ok_text,
+                ButtonVariant::Primary,
+                confirm,
+                cx,
+            ))
     });
 }
 
@@ -1598,7 +1630,8 @@ pub(crate) fn title_bar_button(cx: &App) -> gpui::AnyElement {
                 // 图标 + 文字横排：xs 档字号，色随按钮的 muted_foreground。
                 h_flex()
                     .items_center()
-                    .gap(px(3.))
+                    // 图标与文案属「同一控件的两部分」→ spacing.xs（原裸值 3，off-scale）。
+                    .gap(theme.tokens().spacing.xs)
                     .child(Icon::new(DuckIcon::Layers).size(theme.extended().icon.md))
                     .child(
                         div()

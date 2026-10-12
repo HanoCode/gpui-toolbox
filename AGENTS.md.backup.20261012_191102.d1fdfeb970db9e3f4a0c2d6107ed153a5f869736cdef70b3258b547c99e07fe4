@@ -1,0 +1,171 @@
+# AGENTS.md — Duck Toolbox 编码助手约束
+
+> 本文件是 AI 编码助手（Cursor / Codex / Claude / WorkBuddy 等）在本仓库工作时的
+> **强制约束**。与任何通用默认习惯或训练数据冲突时，一律以本文件为准。
+> 新会话开始处理本仓库任务前，先读完本文件。
+
+## 1. 项目概览与分层
+
+Duck Toolbox 是 macOS 桌面工具箱外壳。Cargo workspace，成员为 `crates/*`。
+
+| crate | 职责 | 依赖方向 |
+| --- | --- | --- |
+| `duck-theme` | 主题 token、内置预设、`Appearance`、i18n | 最底层，不依赖其他 duck-* |
+| `duck-components` | 视觉组件库（按钮 / 导航 / 卡片 / 表单原语 / 侧栏面板 / 通知） | → `duck-theme` |
+| `duck-shell` | 窗口外壳：自绘标题栏、活动栏、路由与内容槽位 | → `duck-components` |
+| `duck-app` | 可执行文件装配（bin = `duck`）、页面 | → 全部 |
+
+**分层边界（不可越界）**：
+- 行为与展示分离 —— 不把颜色 / 尺寸 / 布局写进底层行为代码；交互行为不写进应用层样式代码。
+- 依赖方向单向向下，禁止反向依赖或循环依赖。
+
+## 2. 常用命令
+
+```bash
+sbin/run.sh [--release] [--no-build] [--log-level debug]   # 构建并启动
+sbin/package.sh [--dmg] [--zip] [--universal] [--sign ...]  # 打包 .app
+cargo build -p duck-app                                     # 仅构建
+cargo test -p duck-theme                                    # i18n 覆盖率守卫等单测
+cargo fmt --all                                             # 格式化（提交前必跑）
+cargo clippy --workspace --all-targets                      # 静态检查（提交前必跑）
+```
+
+## 3. 硬性约束（Non-negotiables）
+
+### 3.1 变更前必须确认
+对项目的任何**文件新增、修改、删除**，以及**依赖、配置、目录结构**变更，
+必须先列出：受影响文件清单 → 具体改动 → 潜在影响，**取得用户明确同意后**再执行。
+不要"顺手"重构无关代码，不要一次引入多个未确认的改动。
+
+### 3.2 绝不发明 API
+GPUI / gpui-component 的 API 以**当前源码为准**，不凭记忆或类比 React / 旧版 GPUI 推断。
+常用签名先查 `temp/gpui-kit/` 与 `~/.cargo/registry` 下的实际定义。
+"看起来合理但不存在的方法"是本项目最常见的失败来源。
+查阅优先级：`temp/gpui-kit/` 源码 → `.skills/gpui-kit/` 指南 → `https://gpui-kit.com`。
+
+### 3.3 国际化：源串即键，必须补 EN
+- 文案在代码里**直接写中文**，取词用 `tr(cx, "外观")` / `trf(cx, "剩余 {}", &[..])`。
+- 新增任何中文文案，**必须**同步在 `crates/duck-theme/src/i18n.rs` 的 `EN` 表中补英译
+  （表按 key 字节序排序，二分查找），否则 `cargo test -p duck-theme` 的覆盖率守卫会失败。
+- 缺表项回落源串，**不得**翻成空串。
+- `ShellRoute` / `ShellAction` / `AuxiliaryWindowView` 的文案是**闭包**
+  （`with_label_fn` / `with_title_fn`），渲染时解析；切换语言走
+  `update_appearance` → `install()` → 全窗口 `refresh()`。
+- `InputState` 占位只在构建时定型：语言变化需在 render 里 `set_placeholder` 同步
+  （见两处 `sync_*_placeholder`）。
+
+### 3.4 Shell 脚本（sbin/）兼容 bash 3.2
+- **变量展开一律写 `${VAR}`，禁止裸 `$VAR`**。根因：macOS 自带 bash 3.2 在 UTF-8 locale 下，
+  变量名后紧跟多字节字符（如全角括号）时会把该字符字节并入变量名，报 `VAR?: unbound variable`。
+- 不用关联数组 / `mapfile` / `${var,,}`；`set -e` 下禁止裸 `[ cond ] && cmd`，一律用 `if`。
+- `usage()` 从文件头注释用 `sed -n 'A,Bp' "$0"` 提取，改注释须同步行号。
+- 脚本改动后至少跑一次 `bash -n` 做语法校验。
+
+### 3.5 依赖：快照严格对齐
+`gpui-component 0.7.1` · `gpui-base 0.7.1` · `gpui-pre =0.3.8`（别名 `gpui`）·
+`gpui-pre-platform =0.3.8` · `gpui-kit-assets 0.7.1`（别名 `gpui-component-assets`）。
+升级任一 crate 时必须同步 `=` 约束，禁止局部升级导致内核与组件层错配。
+新增第三方依赖前，先核对版本号、许可证，并说明必要性。
+
+**GPUI 核心经 `[patch.crates-io]` 替换为 gpui-fast**（longbridge/gpui-fast，锁 rev）：
+版本号仍是 `=0.3.8`，只是实现来自 gpui-fast 的 compat 替身 crate（`gpui-pre` /
+`gpui-pre-platform` / `gpui-pre-macros` / `gpui-pre-sum-tree`）。升级 gpui-fast 时：
+同步根 `Cargo.toml` 里的 rev，并对照其 `compat/` 目录核对替身清单是否变化；
+retained mode / scroll layers 默认开启，`GPUI_VIEW_RETENTION=0`、
+`GPUI_SCROLL_LAYERS=0` 可随时降级。`unicode-properties` 钉在 `=0.1.3`
+（gpui_web 的 `=` 约束与 resvg 链路冲突，只能锁低版本），不要放开。
+
+### 3.6 UI 规格对齐 FluxDown（改动前先核对参考源码）
+参考实现位于 `temp/FluxDown/`，数值以该源码为准，不凭感觉调：
+
+- 设置行（横排 `option_row`）：`px(spacing.lg)`、`py(spacing.sm)`、
+  `min_h = density.control + 20`、行内 gap `spacing.lg`、
+  标题列 `flex_1().min_w(160)`、控件列 `min_w_0()`。
+- 设置行（竖排 `option_row_stacked`）：`py(spacing.md)`，label 与控件间 gap `spacing.sm`。
+- 分组卡片 `option_group`：`card` + 行间 `h(px(1.)).pl(spacing.lg)` 的 hairline（**左侧留白，不贯通**）。
+- 组标题 `caption_heading`：`typography.xs`(12/16) / MEDIUM / 三级文字色，`px(spacing.xs).pb(spacing.sm)`。
+- 文字：`body_text`（`typography.sm` 13/18 / foreground）、`meta_text`（`typography.xs` 12/16 / muted_foreground）。
+- 标题一律走 `title_text`（`typography.md` 15/20 SEMIBOLD）或 `detail_title_text`
+  （`typography.lg` 17/22 SEMIBOLD，**仅详情视图**）；对话框 `Dialog::title` 也用 `title_text`。
+  调用点不再自拼 `text_size` + `font_weight`。
+- 字阶**全站唯一来源**是 `duck_theme::builtin::base_tokens`，逐档对齐 macOS HIG 内建文本样式：
+  `xs` 12/16 · `sm` 13/18 · `md` 15/20 · `lg` 17/22 · `xl` 22/26 · `mono_md` 13/20，
+  扩展 token `extended.badge` 10/13（角标）· `extended.display` 26/32（展示数值）。
+  **禁止在调用点写裸 `px(字号)`**：裸值不随「字号 / 界面缩放」设置变化。
+- 「标签—值」表（`option_row`）的**值一律 `body_text`**；`meta_text` 只用于整行级辅助说明
+  （状态行、空态文案、卡片元信息）。
+- 下拉一律 `dropdown_select`（outline Button + `control(cx)` + caret + 勾选菜单，min_w 160）；
+  布尔项一律 `switch_control`（gpui-component `Switch`）；**不用** gpui-component `Checkbox`。
+- 对比度：主色按钮文字 ≥ 4.5:1；强调色文字 ≥ 4.5:1；选中导航图标 ≥ 3:1。
+
+### 3.7 主题统一入口
+UI 改主题一律走 `duck_theme::update_appearance(cx, |a| ...)`，不直接改全局状态。
+`ResolvedTheme::build(builtin, accent, scale, font_size)`；明暗槽位可选预设见 `presets_for`。
+
+### 3.8 通知
+统一用 `duck_components::notify`：`info/success/warning/error`（应用内 toast）、
+`sticky(key, tone, msg, ...)`（常驻且**同 key 替换**，给会反复触发的错误/警告用——
+`error`/`warning` 常驻且默认 id 是随机 uuid，同一条反复推会堆满右上角）、
+`system`（仅操作系统通知中心）、`system_with_toast`（双通道）。
+窗口必须挂在 `gpui_component::Root` 上，否则推不出去。
+
+**两条投递通道，没有第三条**：设置→通知里可调的是「应用内横幅三档」
+（`BannerLevel{All/WarningsAndErrors/Off}`）与「系统通知」开关。`gpui-component` 的通知
+**没有任何声音 API**，所以没有「声音」通道——要加得自己接音频后端。
+
+**通道开关是 App 级全局，`kv` 只负责持久化**（`notify::channels` / `set_channels`，
+`duck-app` 启动时投影一次）。设置项改动**不要**写成「`kv_put` → 回读 `kv` → 投影」：
+`kv_put` 是去抖落盘的，回读拿到的是旧值，运行时档位不会变、界面还会弹回旧档。
+一律从当前全局值出发只改那一位。
+
+**自绘 toast 不要同时带 `title`/`message`**：`in_app` 把文本渲进 `content` 是因为库里
+`type_` 图标的 `top(18px)` 按 16px rem 硬编码（本项目 rem = 13px）。而库的 `push_system`
+只认 `title`/`message`，两者皆空时它**静默不发**；也不能补上——库的渲染会把
+`title`/`message`/`content` **依次**放进同一个 `v_flex`，文本会出现两遍。
+所以 `system_with_toast` 拆成两条通知推（系统那条只有文本，不建 toast；
+应用内那条显式 `delivery(InApp)`、只有自绘内容）。
+
+**投给哪个窗口**：一律投给「当前最该看到它」的窗口，顺序
+`cx.active_window()` → `cx.window_stack()` 首个（前→后；Windows 返回 `None`）→
+`cx.windows().first()`。直接写 `windows().first()` 会把提示投到创建最早的窗口
+（主窗口），在设置窗口里操作时它会被整个盖住，看起来像「没反应」。
+
+**系统通知的平台前提**：启动早期必须 `cx.set_app_identity(id, name)`（见 `main.rs`），
+否则 Windows 上（便携 exe 无 MSIX 包身份）通知被静默丢弃；macOS 还要求 `.app`
+位于系统信任位置，`sbin/run.sh` 的 dev bundle 不在其中，系统通知不显示属预期。
+**无头测试同样要设身份**（`cx.set_app_identity(..)`），否则测试平台像 Windows 一样
+丢通知，`shown_system_notifications()` 恒为空、断言会以「功能坏了」的样子失败。
+
+**动作处理器有两档**：`install_handler`（窗口级）与 `install_app_handler`（App 级）。
+不依赖窗口的动作（退出 / 打开设置 / 打开日志 / 检查更新）必须登记成 App 级——
+macOS 关掉所有窗口后应用仍驻留，菜单栏照旧可点，此时没有活跃窗口可传。
+
+## 4. 代码风格
+
+- 遵循 `rustfmt.toml`（edition 2024）与 `.editorconfig`；提交前 `cargo fmt --all`。
+- 遵守 `Cargo.toml` 的 `[workspace.lints]`（各 crate 经 `[lints] workspace = true` 生效）：
+  `unsafe_op_in_unsafe_fn` / `dbg_macro` / `todo` 为 deny，不留调试残留。
+- 重复元素必须有**领域派生的 `ElementId`**，禁止用列表下标当 id。
+- 对外 `pub` 数据结构用 builder + reader 方法，**不暴露 `pub` 字段**。
+- GPUI 的 `cx` 是保留名；其他持有物按内容命名，不要也叫 `cx`。
+- 注释与文档使用中文，与现有代码保持一致。
+
+## 5. 提交前检查清单
+
+- [ ] `cargo fmt --all` 无 diff
+- [ ] `cargo clippy --workspace --all-targets` 无 error
+- [ ] `cargo test -p duck-theme` 通过（新增文案已补 `EN`）
+- [ ] 改动涉及 `sbin/*.sh` 时已 `bash -n` 校验
+- [ ] 未发明 API —— 所有调用均能在当前源码中找到定义
+- [ ] 变更范围与用户确认的范围一致，无越界重构
+
+## 6. 参考资料
+
+| 资源 | 用途 |
+| --- | --- |
+| `.skills/gpui-kit/` | GPUI Kit 编码指南（架构 / 状态 / API / 测试） |
+| `.skills/gpui-kit-design-guides/` | 组件选择、间距、层级、配色、动效设计指南 |
+| `temp/gpui-kit/` | 上游源码（查真实 API 签名） |
+| `temp/FluxDown/` | UI 规格参考实现 |
+| `.workbuddy/memory/MEMORY.md` | 项目约定长期沉淀 |
+| `.workbuddy/memory/YYYY-MM-DD.md` | 每日工作日志 |

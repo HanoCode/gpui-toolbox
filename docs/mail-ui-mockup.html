@@ -1,0 +1,1380 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duck Toolbox · 邮箱模块 UI 设计稿</title>
+<style>
+/* ============================================================
+   Duck Toolbox 邮箱模块 UI 设计稿
+   颜色 / 尺寸全部取自 crates/duck-theme 的真实 token，不是近似值：
+     DefaultDark  bg #1C1C1E · surface #2C2C2E · surface2 #3A3A3C
+                  fg #F5F5F7 · fg2 #A1A1A6 · border #48484A · primary #3B82F6
+     DefaultLight bg #F8F9FA · surface #FFFFFF · surface2 #F1F3F5
+                  fg #09090B · fg2 #71717A · border #E4E4E7
+     派生：chrome / navSelected / hairline / textTertiary 按 builtin.rs 的 mix 规则算出
+     尺寸：spacing 2/4/8/12/16/24/32 · radius 3/6/8 · 密度 Normal
+           activity_rail 48 · activity_button 32 · activity_tile 32 · title_bar 40
+           nav_row 28 · control 28 · status_bar 28 · section_header 24
+     字阶：badge 10/13 · xs 12/16 · sm 13/18 · md 15/20 · lg 17/22 · xl 22/26
+   ============================================================ */
+:root{
+  --bg:#1C1C1E; --surface:#2C2C2E; --surface2:#3A3A3C;
+  --fg:#F5F5F7; --fg2:#A1A1A6; --fg3:#757578;
+  --border:#48484A; --hairline:#3E3E40;
+  --primary:#3B82F6; --primary-fg:#FFFFFF;
+  --destructive:#EF4444; --success:#30D158; --warning:#FFB340;
+  --chrome:#222224; --nav-selected:#38383A; --nav-hover:#2E2E33;
+  --row-hover:rgba(59,130,246,.16);
+  --accent-tint:rgba(59,130,246,.16);
+  --accent-text:#6BA5F8;
+  --page:#0F0F10;
+  --panel-line:rgba(255,255,255,.08);
+  --win-shadow:0 20px 56px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+  --lightdot:#FF5F57; --yellowdot:#FEBC2E; --greendot:#28C840;
+}
+[data-theme="light"]{
+  --bg:#F8F9FA; --surface:#FFFFFF; --surface2:#F1F3F5;
+  --fg:#09090B; --fg2:#71717A; --fg3:#A7A7AD;
+  --border:#E4E4E7; --hairline:#EFEFF1;
+  --primary:#3B82F6; --primary-fg:#FFFFFF;
+  --destructive:#EF4444; --success:#1F9D55; --warning:#C77C02;
+  --chrome:#F6F7F8; --nav-selected:#E9E9EC; --nav-hover:#EFF0F3;
+  --row-hover:rgba(59,130,246,.10);
+  --accent-tint:rgba(59,130,246,.10);
+  --accent-text:#1D6FE0;
+  --page:#ECECEF;
+  --panel-line:rgba(0,0,0,.06);
+  --win-shadow:0 20px 56px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.1);
+  --lightdot:#FF5F57; --yellowdot:#FEBC2E; --greendot:#28C840;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--page); color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  font-size:13px; line-height:18px;
+  padding:32px 40px 96px;
+}
+a{color:var(--accent-text);text-decoration:none}
+
+/* ---------- 页面头 ---------- */
+.page-head{max-width:1180px;margin:0 auto 28px}
+.page-head h1{font-size:26px;line-height:32px;font-weight:600;letter-spacing:-.01em}
+.page-head .sub{color:var(--fg2);margin-top:6px;font-size:13px}
+.page-head .sub code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:var(--accent-tint);color:var(--accent-text);padding:1px 5px;border-radius:4px}
+.controls{display:flex;align-items:center;gap:8px;margin-top:16px;flex-wrap:wrap}
+.btn{
+  height:28px;padding:0 10px;border-radius:6px;border:1px solid var(--border);
+  background:var(--surface);color:var(--fg);font-size:13px;font-family:inherit;
+  display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+}
+.btn:hover{background:var(--row-hover);border-color:var(--primary)}
+.btn .ic{width:14px;height:14px;color:var(--fg2)}
+.controls .zoom{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin-left:4px}
+input[type=range]{width:130px;accent-color:var(--primary)}
+
+/* ---------- 章节 ---------- */
+.shot{max-width:1180px;margin:0 auto 44px}
+.shot > h2{font-size:17px;line-height:22px;font-weight:600;display:flex;align-items:baseline;gap:8px}
+.shot > h2 .idx{
+  font-size:12px;font-weight:600;color:var(--primary-fg);background:var(--primary);
+  width:20px;height:20px;border-radius:5px;display:inline-flex;align-items:center;
+  justify-content:center;flex:none;
+}
+.shot > .cap{color:var(--fg2);font-size:13px;line-height:20px;margin:6px 0 14px;max-width:900px}
+.stage{zoom:var(--zoom,1)}
+.notes{margin-top:14px;padding:12px 14px;border-left:2px solid var(--primary);
+  background:color-mix(in srgb, var(--primary) 6%, transparent);border-radius:0 6px 6px 0}
+.notes li{list-style:none;font-size:12.5px;line-height:19px;color:var(--fg2);
+  padding-left:14px;position:relative}
+.notes li + li{margin-top:5px}
+.notes li::before{content:"";position:absolute;left:2px;top:7px;width:4px;height:4px;
+  border-radius:50%;background:var(--primary)}
+.notes li b{color:var(--fg);font-weight:600}
+.notes code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  background:var(--accent-tint);color:var(--accent-text);padding:0 4px;border-radius:3px}
+
+/* ---------- 窗口外壳 ---------- */
+.win{
+  width:1180px;height:760px;background:var(--bg);border:1px solid var(--border);
+  border-radius:10px;overflow:hidden;box-shadow:var(--win-shadow);
+  display:flex;flex-direction:column;position:relative;color:var(--fg);
+}
+.win.aux{width:760px;height:600px}
+.titlebar{
+  height:40px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;
+  background:var(--chrome);border-bottom:1px solid var(--hairline);
+}
+.lights{display:flex;gap:8px;flex:none}
+.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:var(--lightdot)}
+.lights i:nth-child(2){background:var(--yellowdot)}
+.lights i:nth-child(3){background:var(--greendot)}
+.search{
+  height:24px;width:330px;border-radius:6px;background:var(--surface);
+  border:1px solid var(--border);display:flex;align-items:center;gap:6px;padding:0 8px;
+  color:var(--fg2);font-size:12px;
+}
+.search .ic{width:13px;height:13px;color:var(--fg2);flex:none}
+.search kbd{margin-left:auto;font-family:inherit;font-size:11px;color:var(--fg3);
+  border:1px solid var(--border);border-radius:4px;padding:0 4px;line-height:15px}
+.titlebar .trail{margin-left:auto;display:flex;align-items:center;gap:4px}
+.tbtn{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;
+  justify-content:center;color:var(--fg2)}
+.tbtn .ic{width:14px;height:14px}
+.tbtn.hot{background:var(--row-hover);color:var(--fg)}
+
+.body{flex:1;display:flex;min-height:0}
+
+/* ---------- 活动栏 ---------- */
+.rail{
+  width:48px;flex:none;background:var(--chrome);border-right:1px solid var(--hairline);
+  display:flex;flex-direction:column;gap:4px;align-items:center;
+}
+.rail .tile{width:48px;height:32px;display:flex;align-items:center;justify-content:center;position:relative}
+.rail .rb{width:32px;height:32px;border-radius:6px;display:flex;align-items:center;
+  justify-content:center;color:var(--fg2)}
+.rail .rb .ic{width:18px;height:18px}
+.rail .tile.on .rb{background:var(--nav-selected);color:var(--primary)}
+.rail .spacer{flex:1}
+
+/* ---------- 左栏：账户与文件夹树 ---------- */
+.sidebar{
+  width:216px;flex:none;background:var(--chrome);border-right:1px solid var(--hairline);
+  display:flex;flex-direction:column;min-height:0;
+}
+.acct{
+  height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);
+}
+.avatar{width:22px;height:22px;border-radius:50%;background:var(--primary);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex:none}
+.acct .who{font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct .chev{width:12px;height:12px;color:var(--fg3);flex:none}
+.acct .add{margin-left:auto;display:flex;gap:2px}
+.acct .add .ic{width:13px;height:13px;color:var(--fg2)}
+.sb-scroll{flex:1;overflow:hidden;padding:6px 8px 8px}
+.sect{
+  height:24px;display:flex;align-items:center;padding:0 6px;font-size:11px;
+  color:var(--fg3);letter-spacing:.02em;
+}
+.sect .plus{margin-left:auto}
+.sect .ic{width:12px;height:12px;color:var(--fg3)}
+.navrow{
+  height:28px;border-radius:6px;display:flex;align-items:center;gap:8px;padding:0 8px;
+  font-size:13px;color:var(--fg);
+}
+.navrow .ic{width:16px;height:16px;color:var(--fg2);flex:none}
+.navrow .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.navrow .cnt{margin-left:auto;font-size:11.5px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.navrow .cnt.on{color:var(--accent-text);font-weight:600}
+.navrow.sel{background:var(--nav-selected);font-weight:500}
+.navrow.sel .ic{color:var(--primary)}
+.navrow.hot{background:var(--row-hover)}
+.tagrow .tagname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tagdot{width:8px;height:8px;border-radius:2px;flex:none}
+
+/* ---------- 中栏：线程列表 ---------- */
+.list{width:340px;flex:none;background:var(--surface);border-right:1px solid var(--hairline);
+  display:flex;flex-direction:column;min-height:0}
+.listbar{
+  height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;
+  border-bottom:1px solid var(--hairline);
+}
+.listbar h3{font-size:15px;line-height:20px;font-weight:600}
+.listbar .n{font-size:12px;color:var(--fg2);font-variant-numeric:tabular-nums}
+.listbar .acts{margin-left:auto;display:flex;gap:2px}
+.ibtn{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--fg2)}
+.ibtn .ic{width:14px;height:14px}
+.ibtn.hot{background:var(--row-hover);color:var(--fg)}
+.threads{flex:1;overflow:hidden}
+.th{
+  height:64px;padding:0 12px;border-bottom:1px solid var(--hairline);
+  display:flex;gap:8px;align-items:flex-start;padding-top:9px;position:relative;
+}
+.th.sel{background:var(--accent-tint)}
+.th.sel::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--primary)}
+.th.hot{background:var(--row-hover)}
+.th .ava{width:26px;height:26px;border-radius:50%;flex:none;display:flex;
+  align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#fff}
+.th .mid{flex:1;min-width:0}
+.th .r1{display:flex;align-items:center;gap:5px;height:17px}
+.th .from{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.th .when{margin-left:auto;font-size:11px;color:var(--fg3);flex:none;font-variant-numeric:tabular-nums}
+.th .subj{font-size:12.5px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;margin-top:1px}
+.th .snip{font-size:11.5px;color:var(--fg3);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;margin-top:2px}
+.th.unread .from,.th.unread .subj{font-weight:600;color:var(--fg)}
+.th .udot{width:6px;height:6px;border-radius:50%;background:var(--primary);flex:none}
+.th .mark{display:flex;gap:3px;flex:none;align-items:center;margin-top:1px}
+.th .mark .ic{width:12px;height:12px;color:var(--fg3)}
+.th .mark .ic.star{color:var(--warning)}
+
+/* ---------- 右栏：阅读器 ---------- */
+.reader{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg);min-height:0}
+.rdbar{
+  height:44px;flex:none;display:flex;align-items:center;gap:2px;padding:0 12px;
+  border-bottom:1px solid var(--hairline);
+}
+.rdbar .sep{width:1px;height:18px;background:var(--hairline);margin:0 6px}
+.rdbar .right{margin-left:auto;display:flex;gap:2px}
+.rdhead{padding:14px 20px 12px;border-bottom:1px solid var(--hairline)}
+.rdhead h2{font-size:17px;line-height:22px;font-weight:600}
+.chips{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.chip{
+  height:19px;padding:0 7px;border-radius:5px;font-size:11px;display:inline-flex;
+  align-items:center;gap:4px;background:var(--accent-tint);color:var(--accent-text);
+}
+.chip .ic{width:11px;height:11px}
+.chip.neutral{background:var(--surface2);color:var(--fg2)}
+.sender{display:flex;align-items:center;gap:8px;margin-top:10px}
+.sender .ava{width:28px;height:28px;border-radius:50%;background:var(--primary);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex:none}
+.sender .nm{font-size:13px;font-weight:600}
+.sender .addr{font-size:12px;color:var(--fg2)}
+.sender .when{margin-left:auto;font-size:12px;color:var(--fg3)}
+.banner{
+  margin:12px 20px 0;padding:8px 10px;border-radius:6px;display:flex;align-items:center;gap:8px;
+  font-size:12px;color:var(--fg);background:color-mix(in srgb,var(--warning) 13%,transparent);
+  border:1px solid color-mix(in srgb,var(--warning) 32%,transparent);
+}
+.banner .ic{width:14px;height:14px;color:var(--warning);flex:none}
+.banner .acts{margin-left:auto;display:flex;gap:6px}
+.banner .b1{color:var(--accent-text);font-weight:500}
+.banner .b2{color:var(--fg2)}
+.doc{flex:1;overflow:hidden;padding:18px 20px 0;font-size:13px;line-height:20px}
+.doc p{margin-bottom:10px}
+.doc .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:12px 0;font-size:13px}
+.doc .kv .k{color:var(--fg2)}
+.doc .total{
+  display:flex;align-items:baseline;gap:8px;margin:14px 0;padding:10px 12px;border-radius:6px;
+  background:var(--surface);
+}
+.doc .total .big{font-size:22px;line-height:26px;font-weight:600;font-variant-numeric:tabular-nums}
+.doc .quote{border-left:2px solid var(--border);padding-left:10px;color:var(--fg2);font-size:12.5px}
+.attach{border-top:1px solid var(--hairline);padding:12px 20px 14px;flex:none}
+.attach .hd{font-size:12px;color:var(--fg2);margin-bottom:8px}
+.attach .row{display:flex;gap:8px;flex-wrap:wrap}
+.acard{
+  display:flex;align-items:center;gap:8px;height:40px;padding:0 10px;border-radius:6px;
+  border:1px solid var(--border);background:var(--surface);min-width:180px;
+}
+.acard .ic{width:16px;height:16px;color:var(--fg2);flex:none}
+.acard .meta{min-width:0}
+.acard .fname{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acard .fsize{font-size:11px;color:var(--fg3)}
+
+/* ---------- 右侧栏：AI 助手 ---------- */
+.rsidebar{
+  width:300px;flex:none;background:var(--surface);border-left:1px solid var(--hairline);
+  display:flex;flex-direction:column;min-height:0;
+}
+.rside-head{
+  height:44px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px;
+  border-bottom:1px solid var(--hairline);
+}
+.tabs{display:flex;gap:2px;background:var(--surface2);border-radius:6px;padding:2px}
+.tab{height:22px;padding:0 9px;border-radius:4px;display:flex;align-items:center;
+  font-size:12px;color:var(--fg2)}
+.tab.on{background:var(--surface);color:var(--fg);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.18)}
+.rc{flex:1;overflow:hidden;padding:12px;display:flex;flex-direction:column;gap:10px}
+.card{background:var(--bg);border:1px solid var(--hairline);border-radius:8px;padding:10px 11px}
+.card h4{font-size:12px;font-weight:600;color:var(--fg);display:flex;align-items:center;gap:5px;margin-bottom:7px}
+.card h4 .ic{width:13px;height:13px;color:var(--primary)}
+.card li{list-style:none;font-size:12.5px;line-height:19px;color:var(--fg2);padding-left:12px;position:relative}
+.card li + li{margin-top:4px}
+.card li::before{content:"";position:absolute;left:2px;top:7px;width:4px;height:4px;border-radius:50%;background:var(--fg3)}
+.card li b{color:var(--fg);font-weight:600}
+.sug{
+  display:flex;align-items:flex-start;gap:7px;padding:7px 9px;border-radius:6px;
+  border:1px solid var(--border);background:var(--surface);font-size:12.5px;line-height:18px;
+}
+.sug + .sug{margin-top:6px}
+.sug .n{width:15px;height:15px;border-radius:4px;background:var(--accent-tint);color:var(--accent-text);
+  font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px}
+.sug .ic{margin-left:auto;width:13px;height:13px;color:var(--fg3);flex:none;margin-top:2px}
+.ask{margin-top:auto;flex:none;border-top:1px solid var(--hairline);padding-top:10px}
+.askbox{
+  border-radius:8px;border:1px solid var(--border);background:var(--surface);padding:8px 9px;
+  font-size:12.5px;color:var(--fg3);min-height:56px;position:relative;
+}
+.askbox .send{position:absolute;right:7px;bottom:6px;width:22px;height:22px;border-radius:5px;
+  background:var(--primary);display:flex;align-items:center;justify-content:center}
+.askbox .send .ic{width:13px;height:13px;color:#fff}
+.ask .foot{display:flex;align-items:center;gap:6px;margin-top:7px;font-size:11px;color:var(--fg3)}
+.ask .foot .ic{width:11px;height:11px}
+.guard{height:22px;border-radius:5px;background:color-mix(in srgb,var(--warning) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);color:var(--warning);
+  font-size:11px;display:flex;align-items:center;gap:5px;padding:0 7px;margin-top:7px}
+.guard .ic{width:11px;height:11px}
+
+/* ---------- 状态栏 ---------- */
+.statusbar{
+  height:28px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;
+  background:var(--chrome);border-top:1px solid var(--hairline);font-size:11.5px;color:var(--fg2);
+}
+.statusbar .dot{width:6px;height:6px;border-radius:50%;background:var(--success);flex:none}
+.statusbar .sp{margin-left:auto;display:flex;align-items:center;gap:12px}
+.statusbar .ic{width:12px;height:12px}
+
+/* ---------- 撰写窗口 ---------- */
+.compose-head{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;
+  border-bottom:1px solid var(--hairline);background:var(--surface)}
+.compose-head .ttl{font-size:13px;font-weight:600}
+.field{height:36px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--hairline)}
+.field .k{width:56px;flex:none;font-size:12.5px;color:var(--fg2)}
+.field .v{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.field .v.ghost{color:var(--fg3)}
+.tocard{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:9999px;
+  background:var(--accent-tint);color:var(--accent-text);font-size:11.5px}
+.tocard .x{font-size:11px;opacity:.7}
+.toolrow{height:36px;flex:none;display:flex;align-items:center;gap:2px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);background:var(--surface)}
+.toolrow .sep{width:1px;height:16px;background:var(--hairline);margin:0 5px}
+.toolrow .sp{margin-left:auto}
+.compose-body{flex:1;padding:16px 18px;font-size:13px;line-height:22px;overflow:hidden}
+.compose-body .sig{margin-top:18px;color:var(--fg2);font-size:12.5px;line-height:19px}
+.compose-foot{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;
+  border-top:1px solid var(--hairline);background:var(--surface)}
+.pbtn{height:28px;padding:0 14px;border-radius:6px;background:var(--primary);color:#fff;
+  font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:6px;border:none;font-family:inherit}
+.pbtn .ic{width:14px;height:14px}
+.sbtn{height:28px;padding:0 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);
+  color:var(--fg);font-size:13px;display:inline-flex;align-items:center;gap:6px;font-family:inherit}
+.sbtn .ic{width:14px;height:14px;color:var(--fg2)}
+
+/* ---------- 模态（添加账户向导） ---------- */
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.42);display:flex;
+  align-items:center;justify-content:center}
+.dialog{
+  width:640px;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  box-shadow:var(--win-shadow);overflow:hidden;
+}
+.dlg-head{height:44px;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid var(--hairline)}
+.dlg-head .ttl{font-size:15px;font-weight:600}
+.dlg-head .sub{font-size:12px;color:var(--fg2);margin-left:8px}
+.dlg-tabs{display:flex;gap:2px;padding:10px 16px 0;border-bottom:1px solid var(--hairline)}
+.dtab{height:28px;padding:0 12px;border-radius:6px 6px 0 0;font-size:13px;color:var(--fg2);
+  display:flex;align-items:center;gap:6px;position:relative;top:1px}
+.dtab.on{background:var(--surface);color:var(--fg);font-weight:500;
+  border:1px solid var(--hairline);border-bottom-color:var(--surface)}
+.dtab .ic{width:14px;height:14px}
+.dlg-body{padding:18px 20px 8px;display:flex;flex-direction:column;gap:14px}
+.f label{display:block;font-size:12.5px;color:var(--fg2);margin-bottom:6px}
+.f label .hint{color:var(--fg3);font-size:11.5px}
+.input{
+  height:28px;border-radius:6px;border:1px solid var(--border);background:var(--bg);
+  display:flex;align-items:center;padding:0 9px;font-size:13px;gap:8px;
+}
+.input.ph{color:var(--fg3)}
+.input .tail{margin-left:auto;display:flex;gap:6px;color:var(--fg2)}
+.input .ic{width:14px;height:14px}
+.input.focus{border-color:var(--primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 30%,transparent)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.check{display:flex;align-items:center;gap:8px;font-size:12.5px}
+.box{width:16px;height:16px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);
+  display:flex;align-items:center;justify-content:center;flex:none}
+.box .ic{width:12px;height:12px;color:#fff}
+.box.off{background:transparent;border-color:var(--border)}
+.srv{width:100%;border-collapse:collapse;font-size:12.5px}
+.srv th{text-align:left;font-weight:500;color:var(--fg2);font-size:11.5px;padding:0 0 6px}
+.srv td{padding:5px 0;border-top:1px solid var(--hairline)}
+.dlg-foot{height:56px;display:flex;align-items:center;gap:8px;padding:0 16px;
+  border-top:1px solid var(--hairline);background:var(--bg)}
+.dlg-foot .sp{margin-left:auto}
+
+/* ---------- 空态 / 同步 ---------- */
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  color:var(--fg2);text-align:center}
+.empty .big{width:48px;height:48px;color:var(--fg3);opacity:.75}
+.empty .big .ic{width:48px;height:48px}
+.empty h3{font-size:15px;line-height:20px;font-weight:600;color:var(--fg)}
+.empty p{font-size:12.5px;line-height:19px;max-width:360px}
+.progress{width:280px;height:4px;border-radius:9999px;background:color-mix(in srgb,var(--fg2) 22%,transparent);overflow:hidden}
+.progress i{display:block;height:100%;width:38%;background:var(--primary);border-radius:9999px}
+.syncrows{width:420px;display:flex;flex-direction:column;gap:8px}
+.syncrow{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--fg2)}
+.syncrow .ic{width:14px;height:14px;color:var(--fg2)}
+.syncrow .nm{color:var(--fg)}
+.syncrow .rt{margin-left:auto;font-variant-numeric:tabular-nums}
+
+/* ---------- 浮层：命令面板 / 右键菜单 ---------- */
+.overlay{position:absolute;inset:0;background:rgba(0,0,0,.28)}
+.palette{
+  position:absolute;left:50%;top:96px;transform:translateX(-50%);width:560px;
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  box-shadow:var(--win-shadow);overflow:hidden;
+}
+.palette .q{height:44px;display:flex;align-items:center;gap:9px;padding:0 14px;
+  border-bottom:1px solid var(--hairline);font-size:15px}
+.palette .q .ic{width:16px;height:16px;color:var(--fg2)}
+.palette .q .caret{width:1.5px;height:16px;background:var(--primary);margin-left:-5px}
+.pal-grp{padding:6px 0}
+.pal-grp .gh{height:24px;display:flex;align-items:center;padding:0 14px;font-size:11px;
+  color:var(--fg3);letter-spacing:.02em}
+.pal-item{height:28px;display:flex;align-items:center;gap:9px;padding:0 14px;font-size:13px}
+.pal-item .ic{width:14px;height:14px;color:var(--fg2)}
+.pal-item .rt{margin-left:auto;font-size:11.5px;color:var(--fg3);display:flex;gap:5px}
+.pal-item.on{background:var(--accent-tint)}
+.pal-item.on .ic{color:var(--primary)}
+.ctx{
+  position:absolute;width:216px;background:var(--surface);border:1px solid var(--border);
+  border-radius:6px;box-shadow:var(--win-shadow);padding:4px;
+}
+.ctx .mi{height:28px;display:flex;align-items:center;gap:9px;padding:0 8px;border-radius:4px;font-size:13px}
+.ctx .mi .ic{width:14px;height:14px;color:var(--fg2)}
+.ctx .mi .kb{margin-left:auto;font-size:11px;color:var(--fg3)}
+.ctx .mi.on{background:var(--row-hover)}
+.ctx .mi.danger{color:var(--destructive)}
+.ctx .mi.danger .ic{color:var(--destructive)}
+.ctx hr{border:none;border-top:1px solid var(--hairline);margin:4px 0}
+
+/* ---------- token 速查 ---------- */
+.spec-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;max-width:1180px;margin:0 auto}
+.swatch{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface)}
+.swatch .c{height:52px}
+.swatch .m{padding:8px 10px}
+.swatch .nm{font-size:12.5px;font-weight:600}
+.swatch .hx{font-size:11px;color:var(--fg2);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.swatch .rl{font-size:11px;color:var(--fg3);margin-top:2px}
+.type-row{display:flex;align-items:baseline;gap:14px;padding:7px 0;border-bottom:1px solid var(--hairline)}
+.type-row .tag{width:74px;flex:none;font-size:11px;color:var(--fg3);font-family:ui-monospace,Menlo,monospace}
+.type-row .txt{flex:1}
+.pin{
+  display:inline-flex;align-items:center;justify-content:center;min-width:15px;height:15px;
+  border-radius:9999px;background:var(--primary);color:#fff;font-size:9.5px;font-weight:700;
+  vertical-align:middle;margin-left:6px;flex:none;
+}
+.legend{max-width:1180px;margin:12px auto 0;display:flex;flex-wrap:wrap;gap:8px 20px}
+.legend span{font-size:12px;color:var(--fg2);display:inline-flex;align-items:center;gap:6px}
+.two{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;max-width:1180px;margin:0 auto}
+.mini{
+  border:1px solid var(--border);border-radius:8px;background:var(--bg);overflow:hidden;
+  box-shadow:var(--win-shadow);
+}
+.mini .cap2{height:32px;display:flex;align-items:center;padding:0 12px;font-size:12.5px;
+  font-weight:600;background:var(--chrome);border-bottom:1px solid var(--hairline)}
+.mini .in{padding:14px}
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <h1>邮箱模块 UI 设计稿</h1>
+  <p class="sub">
+    Duck Toolbox · <code>duck-mail</code> · 对应 <code>docs/email-design.md</code> §4.10 · 2026-10-12 ·
+    颜色与尺寸全部取自 <code>duck-theme</code> 真实 token
+  </p>
+  <div class="controls">
+    <button class="btn" id="themeBtn"><svg class="ic" data-ic="moon"></svg><span id="themeTxt">明色</span></button>
+    <div class="zoom">
+      <svg class="ic" data-ic="search" style="width:13px;height:13px;color:var(--fg3)"></svg>
+      缩放 <input type="range" id="zoom" min="50" max="100" value="72"><span id="zoomTxt" style="width:38px">72%</span>
+    </div>
+  </div>
+</header>
+
+<section class="shot">
+  <h2><span class="idx">0</span>设计 token 基线</h2>
+  <p class="cap">效果图里出现的每个颜色、每档字号、每个高度都来自这里，不是估算：暗色取 <b>DefaultDark</b>、明色取 <b>DefaultLight</b>，密度取 <b>Normal</b>。切换右上角按钮可对照两套。</p>
+</section>
+<div class="spec-grid">
+  <div class="swatch"><div class="c" style="background:var(--bg)"></div><div class="m"><div class="nm">background</div><div class="hx">dark #1C1C1E / light #F8F9FA</div><div class="rl">窗口底</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--surface)"></div><div class="m"><div class="nm">surface</div><div class="hx">#2C2C2E / #FFFFFF</div><div class="rl">列表、卡片、弹窗</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--chrome)"></div><div class="m"><div class="nm">chrome</div><div class="hx">派生 mix(bg,surface,.35)</div><div class="rl">标题栏 / 活动栏 / 左栏</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--nav-selected)"></div><div class="m"><div class="nm">navSelected</div><div class="hx">派生（不透明中性块）</div><div class="rl">选中导航底</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--primary)"></div><div class="m"><div class="nm">primary</div><div class="hx">#3B82F6</div><div class="rl">强调 / 选中图标 / 进度</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--row-hover)"></div><div class="m"><div class="nm">hoverTint</div><div class="hx">primary α .16 / .10</div><div class="rl">悬停唯一底色</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--surface2)"></div><div class="m"><div class="nm">muted / surface2</div><div class="hx">#3A3A3C / #F1F3F5</div><div class="rl">次级块、页签槽</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--fg3)"></div><div class="m"><div class="nm">textTertiary</div><div class="hx">派生 mix(fg2,surface,.38)</div><div class="rl">时间 / 计数 / 分区标题</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--destructive)"></div><div class="m"><div class="nm">destructive</div><div class="hx">#EF4444</div><div class="rl">删除（底色过 button_surface）</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--warning)"></div><div class="m"><div class="nm">warning</div><div class="hx">#FFB340 / #C77C02</div><div class="rl">旗标 / 远程内容横幅</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--success)"></div><div class="m"><div class="nm">success</div><div class="hx">#30D158 / #1F9D55</div><div class="rl">已连接状态点</div></div></div>
+  <div class="swatch"><div class="c" style="background:var(--surface2);display:flex;align-items:center;justify-content:center;color:var(--fg2);font-size:11px">28 / 32 / 40 / 44</div><div class="m"><div class="nm">控件高度</div><div class="hx">control 28 · rail btn 32</div><div class="rl">titleBar 40 · sectionHeader 24</div></div></div>
+</div>
+
+<section class="shot" style="margin-top:36px">
+  <h2><span class="idx">1</span>主界面 · 三栏（列表 + 阅读器）</h2>
+  <p class="cap">活动栏 <b>邮箱</b>（第 8 位，<code>⌘8</code>）选中：左栏账户与文件夹树 → 中栏线程列表 → 右栏阅读器。窗口按主窗口真实尺寸 <b>1180×760</b> 绘制。</p>
+  <div class="stage">
+  <div class="win">
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="search"><svg class="ic" data-ic="search"></svg>搜索邮件、联系人、附件…<kbd>⌘K</kbd></div>
+      <div class="trail">
+        <div class="tbtn"><svg class="ic" data-ic="sun"></svg></div>
+        <div class="tbtn"><svg class="ic" data-ic="layers"></svg></div>
+        <div class="tbtn"><svg class="ic" data-ic="globe"></svg></div>
+      </div>
+    </div>
+    <div class="body">
+      <div class="rail">
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="gauge"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="box"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="square-terminal"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="database"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="database-zap"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="kanban"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="bot"></svg></div></div>
+        <div class="tile on"><div class="rb"><svg class="ic" data-ic="mail"></svg></div></div>
+        <div class="spacer"></div>
+        <div class="tile" style="margin-bottom:5px"><div class="rb"><svg class="ic" data-ic="settings"></svg></div></div>
+      </div>
+
+      <div class="sidebar">
+        <div class="acct">
+          <div class="avatar">展</div>
+          <div class="who">zhanpeng@duck.dev</div>
+          <svg class="chev" data-ic="chevron-down"></svg>
+          <div class="add">
+            <svg class="ic" data-ic="plus"></svg>
+          </div>
+        </div>
+        <div class="sb-scroll">
+          <div class="sect">文件夹<span class="plus"><svg class="ic" data-ic="folder-plus"></svg></span></div>
+          <div class="navrow"><svg class="ic" data-ic="sparkles"></svg><span class="lbl">智能箱</span><span class="cnt on">12</span></div>
+          <div class="navrow sel"><svg class="ic" data-ic="inbox"></svg><span class="lbl">收件箱</span><span class="cnt on">28</span></div>
+          <div class="navrow"><svg class="ic" data-ic="flag"></svg><span class="lbl">旗标</span><span class="cnt">3</span></div>
+          <div class="navrow"><svg class="ic" data-ic="pencil"></svg><span class="lbl">草稿</span><span class="cnt">2</span></div>
+          <div class="navrow"><svg class="ic" data-ic="send"></svg><span class="lbl">已发送</span></div>
+          <div class="navrow"><svg class="ic" data-ic="archive"></svg><span class="lbl">归档</span></div>
+          <div class="navrow"><svg class="ic" data-ic="triangle-alert"></svg><span class="lbl">垃圾邮件</span><span class="cnt">1</span></div>
+          <div class="navrow"><svg class="ic" data-ic="trash-2"></svg><span class="lbl">回收站</span></div>
+          <div class="sect" style="margin-top:6px">标签<span class="plus"><svg class="ic" data-ic="plus"></svg></span></div>
+          <div class="navrow tagrow"><span class="tagdot" style="background:#3B82F6"></span><span class="tagname">发票</span><span class="cnt">9</span></div>
+          <div class="navrow tagrow"><span class="tagdot" style="background:#F59E0B"></span><span class="tagname">客户</span><span class="cnt">4</span></div>
+          <div class="navrow tagrow"><span class="tagdot" style="background:#10B981"></span><span class="tagname">待办</span><span class="cnt">2</span></div>
+          <div class="navrow tagrow"><span class="tagdot" style="background:#8B5CF6"></span><span class="tagname">订阅</span></div>
+        </div>
+      </div>
+
+      <div class="list">
+        <div class="listbar">
+          <h3>收件箱</h3><span class="n">28 封未读</span>
+          <div class="acts">
+            <div class="ibtn hot"><svg class="ic" data-ic="list-filter"></svg></div>
+            <div class="ibtn"><svg class="ic" data-ic="rotate-cw"></svg></div>
+            <div class="ibtn"><svg class="ic" data-ic="panel-right"></svg></div>
+          </div>
+        </div>
+        <div class="threads">
+          <div class="th unread sel">
+            <div class="ava" style="background:#3B82F6">王</div>
+            <div class="mid">
+              <div class="r1"><span class="udot"></span><span class="from">王敏</span><span class="when">14:28</span></div>
+              <div class="subj">关于 Q3 采购预算的最终确认</div>
+              <div class="snip">附件里是最终版，麻烦今天下班前回一下确认…</div>
+            </div>
+            <div class="mark"><svg class="ic" data-ic="paperclip"></svg></div>
+          </div>
+          <div class="th unread">
+            <div class="ava" style="background:#10B981">财</div>
+            <div class="mid">
+              <div class="r1"><span class="udot"></span><span class="from">财务共享中心</span><span class="when">13:02</span></div>
+              <div class="subj">【发票】您的电子发票已开具</div>
+              <div class="snip">金额 ¥12,480.00，请查收附件 PDF…</div>
+            </div>
+            <div class="mark"><svg class="ic" data-ic="paperclip"></svg></div>
+          </div>
+          <div class="th">
+            <div class="ava" style="background:#F59E0B">李</div>
+            <div class="mid">
+              <div class="r1"><span class="from">李工</span><span class="when">11:40</span></div>
+              <div class="subj">Re: 数据库连接池超时排查记录</div>
+              <div class="snip">把 max_size 从 8 提到 16 之后就没再复现了…</div>
+            </div>
+            <div class="mark"><svg class="ic star" data-ic="star"></svg></div>
+          </div>
+          <div class="th">
+            <div class="ava" style="background:#6B7280">G</div>
+            <div class="mid">
+              <div class="r1"><span class="from">GitHub</span><span class="when">10:15</span></div>
+              <div class="subj">Re: [duck-toolbox] PR #482 已合并</div>
+              <div class="snip">zhanpeng pushed 3 commits to plugin-index…</div>
+            </div>
+          </div>
+          <div class="th hot">
+            <div class="ava" style="background:#EF4444">R</div>
+            <div class="mid">
+              <div class="r1"><span class="from">Rust Weekly</span><span class="when">周一</span></div>
+              <div class="subj">This Week in Rust 570</div>
+              <div class="snip">gpui 生态新进展、rquickjs 0.12 发布…</div>
+            </div>
+          </div>
+          <div class="th">
+            <div class="ava" style="background:#8B5CF6">张</div>
+            <div class="mid">
+              <div class="r1"><span class="from">张倩</span><span class="when">周一</span></div>
+              <div class="subj">周四下午 3 点评审会（附议程）</div>
+              <div class="snip">议程我放在附件里了，会议室改到 B-302…</div>
+            </div>
+            <div class="mark"><svg class="ic" data-ic="paperclip"></svg></div>
+          </div>
+          <div class="th">
+            <div class="ava" style="background:#6B7280">V</div>
+            <div class="mid">
+              <div class="r1"><span class="from">Vercel</span><span class="when">周日</span></div>
+              <div class="subj">Deployment Failed: duck-site</div>
+              <div class="snip">Build failed at step 4/6 — rustc not found…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="reader">
+        <div class="rdbar">
+          <div class="ibtn hot"><svg class="ic" data-ic="reply"></svg></div>
+          <div class="ibtn"><svg class="ic" data-ic="forward"></svg></div>
+          <div class="sep"></div>
+          <div class="ibtn"><svg class="ic" data-ic="archive"></svg></div>
+          <div class="ibtn"><svg class="ic" data-ic="clock"></svg></div>
+          <div class="ibtn"><svg class="ic" data-ic="trash-2"></svg></div>
+          <div class="sep"></div>
+          <div class="ibtn"><svg class="ic" data-ic="tag"></svg></div>
+          <div class="ibtn"><svg class="ic" data-ic="flag"></svg></div>
+          <div class="right">
+            <div class="ibtn"><svg class="ic" data-ic="sparkles"></svg></div>
+            <div class="ibtn"><svg class="ic" data-ic="ellipsis"></svg></div>
+          </div>
+        </div>
+        <div class="rdhead">
+          <h2>关于 Q3 采购预算的最终确认</h2>
+          <div class="chips">
+            <span class="chip"><svg class="ic" data-ic="inbox"></svg>收件箱</span>
+            <span class="chip"><svg class="ic" data-ic="tag"></svg>发票</span>
+            <span class="chip neutral">3 封往来</span>
+          </div>
+          <div class="sender">
+            <div class="ava">王</div>
+            <div>
+              <div class="nm">王敏</div>
+              <div class="addr">wangmin@example.com · 收件人：我</div>
+            </div>
+            <div class="when">今天 14:28</div>
+          </div>
+        </div>
+        <div class="banner">
+          <svg class="ic" data-ic="image"></svg>
+          这封邮件包含<b style="margin:0 3px">远程图片</b>，可能被用于追踪你是否已读。
+          <div class="acts"><span class="b1">显示图片</span><span class="b2">始终信任该发件人</span></div>
+        </div>
+        <div class="doc">
+          <p>展鹏你好，</p>
+          <p>附件是 Q3 采购预算的最终确认版，与上周评审会结论一致。核心变更有两处：</p>
+          <div class="kv">
+            <span class="k">采购科目</span><span>医疗器械耗材 · Q3</span>
+            <span class="k">变更项 1</span><span>培训物料单价由 ¥180 调整为 ¥165</span>
+            <span class="k">变更项 2</span><span>新增「供应商履约评价」支出 ¥42,000</span>
+            <span class="k">生效日期</span><span>2026 年 10 月 15 日</span>
+          </div>
+          <div class="total">
+            <span style="color:var(--fg2)">确认后总额</span>
+            <span class="big">¥1,286,400.00</span>
+            <span style="color:var(--fg3);font-size:12px">较上版 +¥42,000</span>
+          </div>
+          <p>麻烦今天下班前回复确认，我明天一早就提交到采购系统。</p>
+          <div class="quote">—— 以下为引用 ——<br>发件人：展鹏　时间：2026-10-11 09:12<br>&gt; 收到，我这边核一下耗材清单的口径，明天回你。</div>
+        </div>
+        <div class="attach">
+          <div class="hd">2 个附件 · 共 1.4 MB</div>
+          <div class="row">
+            <div class="acard"><svg class="ic" data-ic="file-text"></svg><div class="meta"><div class="fname">Q3采购预算确认版.xlsx</div><div class="fsize">284 KB · 表格</div></div></div>
+            <div class="acard"><svg class="ic" data-ic="file-text"></svg><div class="meta"><div class="fname">评审会会议纪要.pdf</div><div class="fsize">1.1 MB · PDF</div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span class="dot"></span>已连接 · IMAP imap.duck.dev:993
+      <span class="sp">
+        <span>3 个账户 · 12,906 封</span>
+        <svg class="ic" data-ic="rotate-cw"></svg>
+        <span>同步于 14:32</span>
+      </span>
+    </div>
+  </div>
+  </div>
+  <ul class="notes">
+    <li><b>活动栏</b>沿用 shell 的滑动选中底块（<code>SlidingHighlight</code>）：底块是不透明的 <code>navSelected</code>，强调色只落在图标上，与已有 7 条路由完全一致。</li>
+    <li><b>左栏</b>是 shell 级 <code>with_sidebar</code>，不是页面内嵌——右栏同理（项目已有教训：<code>flex_1</code> 在 gpui-fast Block 容器里会塌高）。行高 28 走 <code>nav_row</code>，分区标题 24 走 <code>section_header</code>。</li>
+    <li><b>中栏</b>行高 <b>64px</b>（三行信息：发件人 / 主题 / 摘要）。这一档<b>需要新增密度 token</b>，现有 <code>task_row</code>(44) 表达不了三行；建议叫 <code>mail_row</code>，三档 56 / 64 / 76。</li>
+    <li><b>未读数</b>用 <code>accent_text</code>（不是 <code>primary</code>）——它才对 <code>surface</code> 保证 ≥4.5:1；时间戳用 <code>text_tertiary</code>，与计数区分主次。</li>
+    <li><b>悬停</b>统一 <code>hoverTint</code>（强调色薄层）；选中行是 <code>accentTint</code> + 左缘 3px 强调条，两者不会混淆。</li>
+    <li><b>阅读器工具栏</b>图标只放真正绑定了的：回复 / 转发 / 归档 / 推迟 / 删除 / 打标签 / 旗标。提示文案里的键位必须与 <code>bind_keys</code> 实查一致，别写没绑的键。</li>
+    <li><b>远程图片横幅</b>走 warning 的 13% 底 + 32% 描边，<b>不新造颜色</b>。首版默认拦截（隐私优先），按钮给「本次显示 / 始终信任该发件人」两级。</li>
+    <li><b>附件卡</b>用 <code>surface</code> 底 + <code>border</code> 描边，与正文的 <code>background</code> 底拉开一层。</li>
+    <li><b>状态栏</b>复用 shell 的 28px 状态栏：左侧连接状态（success 圆点），右侧账户数、同步动作、最后同步时间。</li>
+  </ul>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">2</span>阅读器 · AI 面板展开</h2>
+  <p class="cap">右侧栏（shell 级 <code>with_right_sidebar</code>，默认宽 300，可拖 260–400）承载 AI 助手：<b>摘要 / 回复 / 问答</b>三个页签。窗口加宽到 1440 展示展开态（真实使用时 1180 宽会把中栏压到 280）。</p>
+  <div class="stage">
+  <div class="win" style="width:1440px">
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="search"><svg class="ic" data-ic="search"></svg>搜索邮件、联系人、附件…<kbd>⌘K</kbd></div>
+      <div class="trail">
+        <div class="tbtn"><svg class="ic" data-ic="sun"></svg></div>
+        <div class="tbtn"><svg class="ic" data-ic="layers"></svg></div>
+        <div class="tbtn"><svg class="ic" data-ic="globe"></svg></div>
+      </div>
+    </div>
+    <div class="body">
+      <div class="rail">
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="gauge"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="box"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="square-terminal"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="database"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="database-zap"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="kanban"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="bot"></svg></div></div>
+        <div class="tile on"><div class="rb"><svg class="ic" data-ic="mail"></svg></div></div>
+      </div>
+      <div class="sidebar">
+        <div class="acct">
+          <div class="avatar">展</div><div class="who">zhanpeng@duck.dev</div>
+          <svg class="chev" data-ic="chevron-down"></svg>
+          <div class="add"><svg class="ic" data-ic="plus"></svg></div>
+        </div>
+        <div class="sb-scroll">
+          <div class="sect">文件夹</div>
+          <div class="navrow"><svg class="ic" data-ic="sparkles"></svg><span class="lbl">智能箱</span><span class="cnt on">12</span></div>
+          <div class="navrow sel"><svg class="ic" data-ic="inbox"></svg><span class="lbl">收件箱</span><span class="cnt on">28</span></div>
+          <div class="navrow"><svg class="ic" data-ic="flag"></svg><span class="lbl">旗标</span><span class="cnt">3</span></div>
+          <div class="navrow"><svg class="ic" data-ic="pencil"></svg><span class="lbl">草稿</span><span class="cnt">2</span></div>
+          <div class="navrow"><svg class="ic" data-ic="send"></svg><span class="lbl">已发送</span></div>
+          <div class="navrow"><svg class="ic" data-ic="archive"></svg><span class="lbl">归档</span></div>
+          <div class="sect" style="margin-top:6px">标签</div>
+          <div class="navrow tagrow"><span class="tagdot" style="background:#3B82F6"></span><span class="tagname">发票</span><span class="cnt">9</span></div>
+          <div class="navrow tagrow"><span class="tagdot" style="background:#F59E0B"></span><span class="tagname">客户</span><span class="cnt">4</span></div>
+        </div>
+      </div>
+      <div class="list" style="width:300px">
+        <div class="listbar">
+          <h3>收件箱</h3><span class="n">28</span>
+          <div class="acts">
+            <div class="ibtn"><svg class="ic" data-ic="list-filter"></svg></div>
+            <div class="ibtn"><svg class="ic" data-ic="panel-right"></svg></div>
+          </div>
+        </div>
+        <div class="threads">
+          <div class="th unread sel">
+            <div class="ava" style="background:#3B82F6">王</div>
+            <div class="mid">
+              <div class="r1"><span class="udot"></span><span class="from">王敏</span><span class="when">14:28</span></div>
+              <div class="subj">关于 Q3 采购预算的最终确认</div>
+              <div class="snip">附件里是最终版，麻烦今天下班前回…</div>
+            </div>
+          </div>
+          <div class="th unread">
+            <div class="ava" style="background:#10B981">财</div>
+            <div class="mid">
+              <div class="r1"><span class="udot"></span><span class="from">财务共享中心</span><span class="when">13:02</span></div>
+              <div class="subj">【发票】您的电子发票已开具</div>
+              <div class="snip">金额 ¥12,480.00，请查收附件…</div>
+            </div>
+          </div>
+          <div class="th">
+            <div class="ava" style="background:#F59E0B">李</div>
+            <div class="mid">
+              <div class="r1"><span class="from">李工</span><span class="when">11:40</span></div>
+              <div class="subj">Re: 数据库连接池超时排查记录</div>
+              <div class="snip">把 max_size 从 8 提到 16 之后…</div>
+            </div>
+          </div>
+          <div class="th">
+            <div class="ava" style="background:#6B7280">G</div>
+            <div class="mid">
+              <div class="r1"><span class="from">GitHub</span><span class="when">10:15</span></div>
+              <div class="subj">Re: [duck-toolbox] PR #482 已合并</div>
+              <div class="snip">zhanpeng pushed 3 commits…</div>
+            </div>
+          </div>
+          <div class="th">
+            <div class="ava" style="background:#EF4444">R</div>
+            <div class="mid">
+              <div class="r1"><span class="from">Rust Weekly</span><span class="when">周一</span></div>
+              <div class="subj">This Week in Rust 570</div>
+              <div class="snip">gpui 生态新进展…</div>
+            </div>
+          </div>
+          <div class="th">
+            <div class="ava" style="background:#8B5CF6">张</div>
+            <div class="mid">
+              <div class="r1"><span class="from">张倩</span><span class="when">周一</span></div>
+              <div class="subj">周四下午 3 点评审会（附议程）</div>
+              <div class="snip">会议室改到 B-302…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="reader">
+        <div class="rdbar">
+          <div class="ibtn"><svg class="ic" data-ic="reply"></svg></div>
+          <div class="ibtn"><svg class="ic" data-ic="forward"></svg></div>
+          <div class="sep"></div>
+          <div class="ibtn"><svg class="ic" data-ic="archive"></svg></div>
+          <div class="ibtn"><svg class="ic" data-ic="trash-2"></svg></div>
+          <div class="right"><div class="ibtn hot"><svg class="ic" data-ic="sparkles"></svg></div></div>
+        </div>
+        <div class="rdhead">
+          <h2>关于 Q3 采购预算的最终确认</h2>
+          <div class="chips">
+            <span class="chip"><svg class="ic" data-ic="inbox"></svg>收件箱</span>
+            <span class="chip neutral">3 封往来</span>
+          </div>
+          <div class="sender">
+            <div class="ava">王</div>
+            <div><div class="nm">王敏</div><div class="addr">wangmin@example.com · 收件人：我</div></div>
+            <div class="when">今天 14:28</div>
+          </div>
+        </div>
+        <div class="doc">
+          <p>展鹏你好，</p>
+          <p>附件是 Q3 采购预算的最终确认版，与上周评审会结论一致。核心变更有两处：</p>
+          <div class="kv">
+            <span class="k">采购科目</span><span>医疗器械耗材 · Q3</span>
+            <span class="k">变更项 1</span><span>培训物料单价由 ¥180 调整为 ¥165</span>
+            <span class="k">变更项 2</span><span>新增「供应商履约评价」支出 ¥42,000</span>
+          </div>
+          <div class="total">
+            <span style="color:var(--fg2)">确认后总额</span><span class="big">¥1,286,400.00</span>
+          </div>
+          <p>麻烦今天下班前回复确认，我明天一早就提交到采购系统。</p>
+        </div>
+        <div class="attach">
+          <div class="hd">2 个附件 · 共 1.4 MB</div>
+          <div class="row">
+            <div class="acard"><svg class="ic" data-ic="file-text"></svg><div class="meta"><div class="fname">Q3采购预算确认版.xlsx</div><div class="fsize">284 KB</div></div></div>
+            <div class="acard"><svg class="ic" data-ic="file-text"></svg><div class="meta"><div class="fname">评审会会议纪要.pdf</div><div class="fsize">1.1 MB</div></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rsidebar">
+        <div class="rside-head">
+          <div class="tabs">
+            <span class="tab on">摘要</span><span class="tab">回复</span><span class="tab">问答</span>
+          </div>
+          <div class="ibtn" style="margin-left:auto"><svg class="ic" data-ic="x"></svg></div>
+        </div>
+        <div class="rc">
+          <div class="card">
+            <h4><svg class="ic" data-ic="sparkles"></svg>线程摘要</h4>
+            <ul>
+              <li>王敏发来 <b>Q3 采购预算最终确认版</b>，与上周评审会结论一致。</li>
+              <li>两处变更：培训物料单价 ¥180→<b>¥165</b>；新增供应商履约评价支出 <b>¥42,000</b>。</li>
+              <li>确认后总额 <b>¥1,286,400.00</b>，10 月 15 日生效。</li>
+              <li>需要我今天下班前回复确认，她明早提交采购系统。</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h4><svg class="ic" data-ic="reply"></svg>建议回复</h4>
+            <div class="sug"><span class="n">1</span><span>确认无误，我这边同意按此版本提交。</span><svg class="ic" data-ic="corner-left-up"></svg></div>
+            <div class="sug"><span class="n">2</span><span>耗材单价可以，履约评价那 4.2 万我需要再跟供应商对一下。</span><svg class="ic" data-ic="corner-left-up"></svg></div>
+            <div class="sug"><span class="n">3</span><span>收到，明天上午 10 点前给你最终答复。</span><svg class="ic" data-ic="corner-left-up"></svg></div>
+          </div>
+          <div class="ask">
+            <div class="askbox">
+              继续追问，例如「把附件里的表也跟着核一遍」…
+              <div class="send"><svg class="ic" data-ic="send"></svg></div>
+            </div>
+            <div class="guard"><svg class="ic" data-ic="triangle-alert"></svg>AI 只出草稿，发送必须由你点确认</div>
+            <div class="foot">
+              <svg class="ic" data-ic="circle-alert"></svg>本线程消耗 1,284 tokens
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span class="dot"></span>已连接 · IMAP imap.duck.dev:993
+      <span class="sp"><span>3 个账户 · 12,906 封</span><span>同步于 14:32</span></span>
+    </div>
+  </div>
+  </div>
+  <ul class="notes">
+    <li>右栏默认<b>关闭</b>（复用现有 7 条路由的右栏展开态持久化），点阅读器工具栏的 <code>sparkles</code> 打开。</li>
+    <li><b>页签槽</b>用 <code>surface2</code> 底 + 选中 <code>surface</code>，是 gpui-component 的 segment 观感，不新造控件。</li>
+    <li>「建议回复」用编号卡片而不是直接写进正文——<b>点一下才落到草稿</b>，避免 AI 文本被误当最终稿。</li>
+    <li>显式写着 <b>「AI 只出草稿，发送必须由你点确认」</b>：对应 <code>docs/email-design.md</code> §4.9 的闸门纪律，界面上要看得见。</li>
+    <li>token 用量放底部小字并在设置页有汇总页——邮件场景 AI 调用频次远高于聊天，成本必须可见。</li>
+  </ul>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">3</span>撰写窗口（独立辅助窗口，非模态）</h2>
+  <p class="cap">走 <code>settings.rs</code> 已有的 <code>AuxWindow</code> 机制：可以一边写一边翻收件箱。工具条只保留真正落地的能力，右上角是 AI 起草 / 润色。</p>
+  <div class="stage">
+  <div class="win aux">
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div style="font-size:12.5px;font-weight:600">新邮件</div>
+      <div class="trail">
+        <div class="tbtn"><svg class="ic" data-ic="clock"></svg></div>
+        <div class="tbtn"><svg class="ic" data-ic="trash-2"></svg></div>
+      </div>
+    </div>
+    <div class="field">
+      <span class="k">发件人</span>
+      <span class="v">zhanpeng@duck.dev</span>
+      <svg class="ic" data-ic="chevron-down" style="width:12px;height:12px;color:var(--fg3)"></svg>
+    </div>
+    <div class="field">
+      <span class="k">收件人</span>
+      <span class="tocard">王敏 &lt;wangmin@example.com&gt;<span class="x">×</span></span>
+      <span class="tocard">李工 &lt;ligong@example.com&gt;<span class="x">×</span></span>
+      <span class="v ghost">＋</span>
+      <span style="margin-left:auto;font-size:12px;color:var(--fg2)">抄送 / 密送</span>
+    </div>
+    <div class="field">
+      <span class="k">主题</span>
+      <span class="v">Re: 关于 Q3 采购预算的最终确认</span>
+    </div>
+    <div class="toolrow">
+      <div class="ibtn"><svg class="ic" data-ic="code"></svg></div>
+      <div class="sep"></div>
+      <div class="ibtn"><svg class="ic" data-ic="file-text"></svg></div>
+      <div class="ibtn"><svg class="ic" data-ic="library"></svg></div>
+      <div class="ibtn"><svg class="ic" data-ic="list-filter"></svg></div>
+      <div class="ibtn"><svg class="ic" data-ic="image"></svg></div>
+      <div class="ibtn"><svg class="ic" data-ic="paperclip"></svg></div>
+      <div class="ibtn"><svg class="ic" data-ic="external-link"></svg></div>
+      <div class="sep"></div>
+      <div class="ibtn"><svg class="ic" data-ic="clock"></svg></div>
+      <div class="sp"></div>
+      <div class="ibtn hot"><svg class="ic" data-ic="sparkles"></svg></div>
+    </div>
+    <div class="compose-body">
+      <p>王敏你好，</p>
+      <p>预算表我核过了，两处变更都没问题。耗材单价的调整口径跟采购系统的报价模板一致，履约评价那 4.2 万我也跟供应商确认过，可以按这个版本提交。</p>
+      <p>附件是我这边更新的耗材清单，跟你的表对齐一下就行。</p>
+      <div class="sig">——<br>展鹏 · 产品经理<br>zhanpeng@duck.dev</div>
+    </div>
+    <div class="compose-foot">
+      <button class="pbtn"><svg class="ic" data-ic="send"></svg>发送</button>
+      <button class="sbtn"><svg class="ic" data-ic="chevron-down"></svg></button>
+      <button class="sbtn"><svg class="ic" data-ic="clock"></svg>定时发送</button>
+      <button class="sbtn"><svg class="ic" data-ic="paperclip"></svg>添加附件</button>
+      <span style="margin-left:auto;font-size:11.5px;color:var(--fg3)">草稿已自动保存 · 14:41</span>
+    </div>
+  </div>
+  </div>
+  <ul class="notes">
+    <li><b>非模态</b>：撰写是独立辅助窗口而非模态弹窗，这样「翻收件箱找信息再接着写」不需要来回开关。</li>
+    <li><b>收件人芯片</b>用 <code>accentTint</code> 底 + <code>accent_text</code> 字，与阅读器的标签芯片同一套观感。</li>
+    <li>工具条图标与项目既有 <code>icon_button</code> 同规格（28×28 / 图标 14 / 悬停 <code>hoverTint</code>），悬停提示收口在构造器里。</li>
+    <li>主按钮底色过 <code>button_surface()</code> 收敛保证 AA；<b>不用</b> <code>#EF4444</code> 做「发送」——它是 <code>destructive</code> 语义。</li>
+    <li>右下角常驻「草稿已自动保存 · 时间」，对应 <code>drafts_meta</code> 表的落库状态，不另弹 Toast。</li>
+  </ul>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">4</span>添加账户向导（多页签模态）</h2>
+  <p class="cap">照 <code>redis.rs</code> 六页签连接编辑器的范式做四页签。默认走自动发现，失败才展开服务器表手工填。</p>
+  <div class="stage">
+  <div class="win" style="height:620px">
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="search"><svg class="ic" data-ic="search"></svg>搜索邮件、联系人、附件…<kbd>⌘K</kbd></div>
+      <div class="trail">
+        <div class="tbtn"><svg class="ic" data-ic="sun"></svg></div>
+        <div class="tbtn"><svg class="ic" data-ic="layers"></svg></div>
+      </div>
+    </div>
+    <div class="body">
+      <div class="rail">
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="gauge"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="box"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="square-terminal"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="database"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="database-zap"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="kanban"></svg></div></div>
+        <div class="tile"><div class="rb"><svg class="ic" data-ic="bot"></svg></div></div>
+        <div class="tile on"><div class="rb"><svg class="ic" data-ic="mail"></svg></div></div>
+      </div>
+      <div class="sidebar">
+        <div class="acct"><div class="avatar">展</div><div class="who">zhanpeng@duck.dev</div>
+          <svg class="chev" data-ic="chevron-down"></svg></div>
+        <div class="sb-scroll">
+          <div class="sect">文件夹</div>
+          <div class="navrow"><svg class="ic" data-ic="sparkles"></svg><span class="lbl">智能箱</span><span class="cnt on">12</span></div>
+          <div class="navrow sel"><svg class="ic" data-ic="inbox"></svg><span class="lbl">收件箱</span><span class="cnt on">28</span></div>
+          <div class="navrow"><svg class="ic" data-ic="send"></svg><span class="lbl">已发送</span></div>
+        </div>
+      </div>
+      <div class="list">
+        <div class="listbar"><h3>收件箱</h3><span class="n">28</span></div>
+        <div class="threads">
+          <div class="th unread"><div class="ava" style="background:#3B82F6">王</div>
+            <div class="mid"><div class="r1"><span class="udot"></span><span class="from">王敏</span><span class="when">14:28</span></div>
+            <div class="subj">关于 Q3 采购预算的最终确认</div><div class="snip">附件里是最终版…</div></div></div>
+          <div class="th unread"><div class="ava" style="background:#10B981">财</div>
+            <div class="mid"><div class="r1"><span class="udot"></span><span class="from">财务共享中心</span><span class="when">13:02</span></div>
+            <div class="subj">【发票】您的电子发票已开具</div><div class="snip">金额 ¥12,480.00…</div></div></div>
+          <div class="th"><div class="ava" style="background:#F59E0B">李</div>
+            <div class="mid"><div class="r1"><span class="from">李工</span><span class="when">11:40</span></div>
+            <div class="subj">Re: 数据库连接池超时排查记录</div><div class="snip">max_size 提到 16…</div></div></div>
+          <div class="th"><div class="ava" style="background:#6B7280">G</div>
+            <div class="mid"><div class="r1"><span class="from">GitHub</span><span class="when">10:15</span></div>
+            <div class="subj">Re: [duck-toolbox] PR #482 已合并</div><div class="snip">3 commits…</div></div></div>
+        </div>
+      </div>
+      <div class="reader">
+        <div class="rdbar">
+          <div class="ibtn"><svg class="ic" data-ic="reply"></svg></div>
+          <div class="ibtn"><svg class="ic" data-ic="forward"></svg></div>
+          <div class="sep"></div>
+          <div class="ibtn"><svg class="ic" data-ic="archive"></svg></div>
+          <div class="ibtn"><svg class="ic" data-ic="trash-2"></svg></div>
+          <div class="right"><div class="ibtn"><svg class="ic" data-ic="sparkles"></svg></div></div>
+        </div>
+        <div class="rdhead">
+          <h2>关于 Q3 采购预算的最终确认</h2>
+          <div class="sender"><div class="ava">王</div>
+            <div><div class="nm">王敏</div><div class="addr">wangmin@example.com · 收件人：我</div></div>
+            <div class="when">今天 14:28</div></div>
+        </div>
+        <div class="doc"><p>展鹏你好，</p><p>附件是 Q3 采购预算的最终确认版…</p></div>
+      </div>
+    </div>
+    <div class="scrim">
+      <div class="dialog">
+        <div class="dlg-head">
+          <span class="ttl">添加邮箱账户</span>
+          <span class="sub">也可以直接选 Gmail / Outlook，走 OAuth 免密登录</span>
+        </div>
+        <div class="dlg-tabs">
+          <div class="dtab on"><svg class="ic" data-ic="mail"></svg>邮箱与密码</div>
+          <div class="dtab"><svg class="ic" data-ic="server"></svg>服务器</div>
+          <div class="dtab"><svg class="ic" data-ic="plug"></svg>安全</div>
+          <div class="dtab"><svg class="ic" data-ic="sliders-horizontal"></svg>高级</div>
+        </div>
+        <div class="dlg-body">
+          <div class="f">
+            <label>邮箱地址</label>
+            <div class="input ph">输入你的邮箱地址<samp style="opacity:.6"></samp></div>
+          </div>
+          <div class="f">
+            <label>密码 <span class="hint">· 加密存储在本机，不写入明文</span></label>
+            <div class="input ph">••••••••••<span class="tail"><svg class="ic" data-ic="globe"></svg></span></div>
+          </div>
+          <div class="grid2">
+            <div class="f">
+              <label>账户名称</label>
+              <div class="input ph">工作邮箱</div>
+            </div>
+            <div class="f">
+              <label>标签颜色</label>
+              <div class="input"><span class="tagdot" style="background:#3B82F6"></span><span>蓝</span>
+                <span class="tail"><svg class="ic" data-ic="chevron-down"></svg></span></div>
+            </div>
+          </div>
+          <table class="srv">
+            <tr><th style="width:70px">协议</th><th>服务器</th><th>端口</th><th style="width:90px">加密</th></tr>
+            <tr><td>IMAP</td><td>imap.example.com</td><td>993</td><td>SSL/TLS</td></tr>
+            <tr><td>SMTP</td><td>smtp.example.com</td><td>465</td><td>SSL/TLS</td></tr>
+          </table>
+          <div class="check">
+            <span class="box"><svg class="ic" data-ic="check"></svg></span>
+            自动发现服务器设置（先试 SRV 记录，再试标准端口）
+          </div>
+        </div>
+        <div class="dlg-foot">
+          <span style="font-size:12px;color:var(--fg2)">凭据：本机加密存储（AES-256-GCM）</span>
+          <span class="sp"></span>
+          <button class="sbtn">取消</button>
+          <button class="sbtn"><svg class="ic" data-ic="zap"></svg>测试连接</button>
+          <button class="pbtn">下一步</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+  <ul class="notes">
+    <li><b>必须 <code>.close_button(false)</code></b>：库默认在右上角自画 ✕，会和 <code>modal_title_row</code> 叠成两个（项目已踩过）。</li>
+    <li>弹窗<b>恒居中、不可拖</b>（自绘拖动与库的绝对定位叠加会漂移，已定案删除），高度由 prepaint 实测内容盒补齐。</li>
+    <li>调用点必须带 <code>.opacity(offset.opacity)</code>，否则量到高度前会「先从顶部冒出再跳到居中」。</li>
+    <li>服务器表默认<b>只读展示自动发现的结果</b>，切到「服务器」页签才变成可编辑表单——不必让所有人面对 6 个端口的填空。</li>
+    <li>密码框用 <code>InputState::masked(true)</code> + <code>mask_toggle()</code>，掩码只是显示层，<code>value()</code> 取的是真值；<b>留空 = 不修改</b>（编辑已有账户时）。</li>
+  </ul>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">5</span>空态与首次同步</h2>
+  <p class="cap">两种必经状态：还没有账户时的空态，和首封邮件到达前的全量同步。全量同步不允许白屏等待——<b>先出列表，正文懒加载</b>。</p>
+  <div class="two">
+    <div class="mini">
+      <div class="cap2">邮箱 · 未添加账户</div>
+      <div style="height:330px;display:flex;flex-direction:column">
+        <div class="empty">
+          <div class="big"><svg class="ic" data-ic="mail"></svg></div>
+          <h3>还没有邮箱账户</h3>
+          <p>支持 IMAP / SMTP 的任意邮箱，也可以用 Gmail、Outlook 的 OAuth 免密登录。凭据加密存在本机。</p>
+          <div style="display:flex;gap:8px;margin-top:4px">
+            <button class="pbtn"><svg class="ic" data-ic="plus"></svg>添加邮箱账户</button>
+            <button class="sbtn"><svg class="ic" data-ic="globe"></svg>Gmail / Outlook</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mini">
+      <div class="cap2">邮箱 · 首次全量同步</div>
+      <div style="height:330px;display:flex;flex-direction:column">
+        <div class="empty" style="gap:16px">
+          <div class="big" style="opacity:.4"><svg class="ic" data-ic="rotate-cw"></svg></div>
+          <h3>正在拉取历史邮件</h3>
+          <div class="progress"><i></i></div>
+          <p style="font-size:12px">3,482 / 12,906 封 · 收件箱已完成，正在同步「已发送」</p>
+          <div class="syncrows" style="margin-top:2px">
+            <div class="syncrow"><svg class="ic" data-ic="circle-check" style="color:var(--success)"></svg><span class="nm">收件箱</span><span class="rt">4,120 封 · 完成</span></div>
+            <div class="syncrow"><svg class="ic" data-ic="rotate-cw" style="color:var(--primary)"></svg><span class="nm">已发送</span><span class="rt">1,284 / 3,906</span></div>
+            <div class="syncrow"><svg class="ic" data-ic="minus" style="color:var(--fg3)"></svg><span class="nm">归档</span><span class="rt">等待中</span></div>
+            <div class="syncrow"><svg class="ic" data-ic="minus" style="color:var(--fg3)"></svg><span class="nm">垃圾邮件</span><span class="rt">等待中</span></div>
+          </div>
+          <button class="sbtn" style="margin-top:2px"><svg class="ic" data-ic="play"></svg>先在后台跑，我去读已同步的</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <ul class="notes">
+    <li>空态<b>不许有演示数据</b>：界面上的每个图标/按钮都要有真实功能（项目已定的判据），所以这里只有两个真按钮，没有假收件箱。</li>
+    <li>同步进度<b>按文件夹分行</b>而不是一条总进度条——用户真正想知道的是「收件箱能读了没」，不是全局百分比。</li>
+    <li>「先去读已同步的」是主动出口：后台同步与前台可用解耦，进程退出时同步状态落库、下次续传。</li>
+  </ul>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">6</span>命令面板与右键菜单</h2>
+  <p class="cap">新增一条路由会同时派生四个输出面（活动栏 / <code>⌘n</code> / 原生菜单 / 命令面板）。邮箱动作按分组出现在面板里；列表行的右键菜单沿用项目既有的 <code>ContextMenuExt</code>。</p>
+  <div class="two">
+    <div class="mini">
+      <div class="cap2">命令面板 · 邮箱分组</div>
+      <div style="height:300px;position:relative;background:var(--bg)">
+        <div class="palette" style="position:absolute;left:16px;top:16px;transform:none;width:calc(100% - 32px)">
+          <div class="q"><svg class="ic" data-ic="search"></svg>邮箱<span class="caret"></span></div>
+          <div class="pal-grp">
+            <div class="gh">邮箱</div>
+            <div class="pal-item on"><svg class="ic" data-ic="pencil"></svg>撰写新邮件<span class="rt">⌘N</span></div>
+            <div class="pal-item"><svg class="ic" data-ic="rotate-cw"></svg>刷新收件箱<span class="rt">⌘R</span></div>
+            <div class="pal-item"><svg class="ic" data-ic="mail"></svg>打开邮箱<span class="rt">⌘8</span></div>
+            <div class="pal-item"><svg class="ic" data-ic="flag"></svg>标记选中邮件为旗标</div>
+            <div class="pal-item"><svg class="ic" data-ic="archive"></svg>归档选中邮件</div>
+            <div class="pal-item"><svg class="ic" data-ic="sparkles"></svg>用 AI 摘要当前线程</div>
+          </div>
+          <div class="pal-grp">
+            <div class="gh">设置</div>
+            <div class="pal-item"><svg class="ic" data-ic="settings"></svg>打开邮箱设置<span class="rt">设置 › 邮箱</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mini">
+      <div class="cap2">列表行右键菜单</div>
+      <div style="height:300px;position:relative;background:var(--bg);padding:16px">
+        <div class="th" style="width:100%;border:1px solid var(--border);border-radius:6px;background:var(--surface)">
+          <div class="ava" style="background:#3B82F6">王</div>
+          <div class="mid">
+            <div class="r1"><span class="from">王敏</span><span class="when">14:28</span></div>
+            <div class="subj">关于 Q3 采购预算的最终确认</div>
+            <div class="snip">附件里是最终版…</div>
+          </div>
+        </div>
+        <div class="ctx" style="position:absolute;left:150px;top:74px">
+          <div class="mi on"><svg class="ic" data-ic="reply"></svg>回复<span class="kb">⌘R</span></div>
+          <div class="mi"><svg class="ic" data-ic="forward"></svg>转发<span class="kb">⇧⌘F</span></div>
+          <hr>
+          <div class="mi"><svg class="ic" data-ic="archive"></svg>归档<span class="kb">E</span></div>
+          <div class="mi"><svg class="ic" data-ic="clock"></svg>推迟到…<span class="kb">B</span></div>
+          <div class="mi"><svg class="ic" data-ic="tag"></svg>添加标签<span class="kb">L</span></div>
+          <div class="mi"><svg class="ic" data-ic="flag"></svg>标记为旗标<span class="kb">S</span></div>
+          <div class="mi"><svg class="ic" data-ic="mail"></svg>标记为未读<span class="kb">⇧U</span></div>
+          <div class="mi"><svg class="ic" data-ic="clock"></svg>把发件人加进白名单</div>
+          <hr>
+          <div class="mi danger"><svg class="ic" data-ic="trash-2"></svg>删除<span class="kb">⌘⌫</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <ul class="notes">
+    <li>面板里的动作全部来自 <code>actions.rs</code> 的 <code>ActionMeta</code> 登记，与原生菜单、<code>⌘n</code> 键位<b>同一份数据</b>；图标提示的文案与 <code>accessibility_label</code> 同源。</li>
+    <li>右键菜单用 <code>ContextMenuExt</code>（对 <code>InteractiveElement + ParentElement + Styled</code> 有 blanket impl），闭包 <code>'static</code>——循环里的引用要先 <code>clone</code>。</li>
+    <li><b>提示文案里的键位必须实查 <code>bind_keys</code></b>：上面这些键位在落地时逐个核对，没绑的就不写（项目已踩过「右栏写了 ⌘T/⌘W，实际一个都没绑」）。</li>
+    <li>删除走「软删除 + 宽限期」并给<b>撤销 Toast</b>，与归档区分语义，不共用一条确认弹窗。</li>
+  </ul>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">7</span>字阶与图标规格（施工用）</h2>
+  <p class="cap">左：从 <code>builtin.rs</code> / <code>tokens.rs</code> 抄下来的确切字阶。右：邮箱模块<b>需要补</b>的 10 个 Lucide 图标（其余 68 个仓库已有），进 <code>duck-components/assets/icons/</code>。</p>
+  <div class="two" style="align-items:start">
+    <div class="mini">
+      <div class="cap2">字阶（暗色，Normal 密度）</div>
+      <div class="in">
+        <div class="type-row"><span class="tag">badge 10/13</span><span class="txt" style="font-size:10px;line-height:13px">未读角标 BETA</span></div>
+        <div class="type-row"><span class="tag">xs 12/16</span><span class="txt" style="font-size:12px;line-height:16px">时间戳、计数、分区标题</span></div>
+        <div class="type-row"><span class="tag">sm 13/18</span><span class="txt" style="font-size:13px;line-height:18px">正文、列表发件人、按钮</span></div>
+        <div class="type-row"><span class="tag">md 15/20</span><span class="txt" style="font-size:15px;line-height:20px">列表标题、弹窗标题</span></div>
+        <div class="type-row"><span class="tag">lg 17/22</span><span class="txt" style="font-size:17px;line-height:22px">邮件主题</span></div>
+        <div class="type-row"><span class="tag">xl 22/26</span><span class="txt" style="font-size:22px;line-height:26px">金额数值</span></div>
+        <div class="type-row" style="border-bottom:none"><span class="tag">display 26/32</span><span class="txt" style="font-size:26px;line-height:32px;font-weight:600">指标卡数值</span></div>
+      </div>
+    </div>
+    <div class="mini">
+      <div class="cap2">需要新增的图标（Lucide · stroke 1.75）</div>
+      <div class="in" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px 8px;text-align:center">
+        <div><svg class="ic" data-ic="inbox" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">inbox</div></div>
+        <div><svg class="ic" data-ic="star" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">star</div></div>
+        <div><svg class="ic" data-ic="reply" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">reply</div></div>
+        <div><svg class="ic" data-ic="forward" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">forward</div></div>
+        <div><svg class="ic" data-ic="paperclip" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">paperclip</div></div>
+        <div><svg class="ic" data-ic="tag" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">tag</div></div>
+        <div><svg class="ic" data-ic="sparkles" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">sparkles</div></div>
+        <div><svg class="ic" data-ic="pencil" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">pencil</div></div>
+        <div><svg class="ic" data-ic="at-sign" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">at-sign</div></div>
+        <div><svg class="ic" data-ic="flag" style="width:24px;height:24px;color:var(--fg)"></svg><div style="font-size:11px;color:var(--fg3);margin-top:4px">flag</div></div>
+        <div style="grid-column:span 4;text-align:left;font-size:11.5px;color:var(--fg2);padding-top:2px">
+          仓库已有 68 个中可直接复用：<code style="color:var(--fg)">mail · folders · folder-open · archive · trash-2 · clock · send · rotate-cw · list-filter · panel-right · image · file-text · settings · sliders-horizontal · server · plug · user · plus · minus · x · ellipsis · chevron-down · check</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="legend">
+  <span><b style="color:var(--fg)">说明</b></span>
+  <span>· 所有图标取自仓库真实的 <code>assets/icons</code>（内联 SVG，离线可看）</span>
+  <span>· 切换明色可对照两套主题</span>
+  <span>· 缩放滑块可看整窗口构图</span>
+</div>
+
+<script>
+const ICONS = {
+  'app-window': '<rect x="2" y="4" width="20" height="16" rx="2" /><path d="M10 4v4" /><path d="M2 8h20" /><path d="M6 4v4" />',
+  'archive': '<rect width="20" height="5" x="2" y="3" rx="1" /><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" /><path d="M10 12h4" />',
+  'arrow-down': '<path d="M12 5v14" /><path d="m19 12-7 7-7-7" />',
+  'arrow-up': '<path d="m5 12 7-7 7 7" /><path d="M12 19V5" />',
+  'at-sign': '<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>',
+  'bell': '<path d="M10.268 21a2 2 0 0 0 3.464 0" /><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" />',
+  'bot': '<path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" /><path d="M2 14h2" /><path d="M20 14h2" /><path d="M15 13v2" /><path d="M9 13v2" />',
+  'box': '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" />',
+  'check': '<path d="M20 6 9 17l-5-5" />',
+  'checkbox-check': '<path d="M20 6 9 17l-5-5" />',
+  'checkbox-minus': '<path d="M5 12h14" />',
+  'chevron-down': '<path d="m6 9 6 6 6-6" />',
+  'chevron-left': '<path d="m15 18-6-6 6-6" />',
+  'chevron-right': '<path d="m9 18 6-6-6-6" />',
+  'circle-alert': '<circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" /><line x1="12" x2="12.01" y1="16" y2="16" />',
+  'circle-check': '<circle cx="12" cy="12" r="10" /><path d="m16 9-5.5 5.5L8 12" />',
+  'clipboard': '<rect width="8" height="4" x="8" y="2" rx="1" ry="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />',
+  'clock': '<circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />',
+  'code': '<path d="m16 18 6-6-6-6" /><path d="m8 6-6 6 6 6" />',
+  'columns-2': '<rect width="18" height="18" x="3" y="3" rx="2" /><path d="M12 3v18" />',
+  'copy': '<rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />',
+  'corner-left-up': '<path d="M14 9 9 4 4 9" /><path d="M20 20h-7a4 4 0 0 1-4-4V4" />',
+  'database': '<ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5V19A9 3 0 0 0 21 19V5" /><path d="M3 12A9 3 0 0 0 21 12" />',
+  'database-zap': '<ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5V19A9 3 0 0 0 15 21.84" /><path d="M21 5V8" /><path d="M21 12L18 17H22L19 22" /><path d="M3 12A9 3 0 0 0 14.59 14.87" />',
+  'download': '<path d="M12 15V3" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5" />',
+  'ellipsis': '<circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" />',
+  'external-link': '<path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />',
+  'file': '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /><path d="M14 2v5a1 1 0 0 0 1 1h5" />',
+  'file-text': '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /><path d="M14 2v5a1 1 0 0 0 1 1h5" /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" />',
+  'film': '<rect width="18" height="18" x="3" y="3" rx="2" /><path d="M7 3v18" /><path d="M3 7.5h4" /><path d="M3 12h18" /><path d="M3 16.5h4" /><path d="M17 3v18" /><path d="M17 7.5h4" /><path d="M17 16.5h4" />',
+  'flag': '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>',
+  'folder-open': '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />',
+  'folder-plus': '<path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  'folders': '<path d="M20 5a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h2.5a1.5 1.5 0 0 1 1.2.6l.6.8a1.5 1.5 0 0 0 1.2.6z" /><path d="M3 8.268a2 2 0 0 0-1 1.738V19a2 2 0 0 0 2 2h11a2 2 0 0 0 1.732-1" />',
+  'forward': '<path d="m15 17 5-5-5-5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/>',
+  'gauge': '<path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" />',
+  'globe': '<circle cx="12" cy="12" r="10" /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /><path d="M2 12h20" />',
+  'hard-drive': '<path d="M10 16h.01" /><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /><path d="M21.946 12.013H2.054" /><path d="M6 16h.01" />',
+  'house': '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" /><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />',
+  'image': '<rect width="18" height="18" x="3" y="3" rx="2" ry="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />',
+  'inbox': '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  'info': '<circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" />',
+  'kanban': '<path d="M5 3v14" /><path d="M12 3v8" /><path d="M19 3v18" />',
+  'layers': '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" /><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" /><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" />',
+  'library': '<path d="m16 6 4 14" /><path d="M12 6v14" /><path d="M8 8v12" /><path d="M4 4v16" />',
+  'list-filter': '<path d="M2 5h20" /><path d="M6 12h12" /><path d="M9 19h6" />',
+  'mail': '<path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7" /><rect x="2" y="4" width="20" height="16" rx="2" />',
+  'minus': '<path d="M5 12h14" />',
+  'moon': '<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" />',
+  'palette': '<path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z" /><circle cx="13.5" cy="6.5" r=".5" fill="currentColor" /><circle cx="17.5" cy="10.5" r=".5" fill="currentColor" /><circle cx="6.5" cy="12.5" r=".5" fill="currentColor" /><circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />',
+  'panel-right': '<rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" />',
+  'paperclip': '<path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/>',
+  'pause': '<rect x="14" y="3" width="5" height="18" rx="1" /><rect x="5" y="3" width="5" height="18" rx="1" />',
+  'pencil': '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  'play': '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" />',
+  'plug': '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
+  'plus': '<path d="M5 12h14" /><path d="M12 5v14" />',
+  'power': '<path d="M12 2v10" /><path d="M18.4 6.6a9 9 0 1 1-12.77.04" />',
+  'reply': '<path d="M20 18v-2a4 4 0 0 0-4-4H4"/><path d="m9 17-5-5 5-5"/>',
+  'rotate-cw': '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" />',
+  'search': '<path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" />',
+  'send': '<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /><path d="m21.854 2.147-10.94 10.939" />',
+  'server': '<rect width="20" height="8" x="2" y="2" rx="2" ry="2" /><rect width="20" height="8" x="2" y="14" rx="2" ry="2" /><line x1="6" x2="6.01" y1="6" y2="6" /><line x1="6" x2="6.01" y1="18" y2="18" />',
+  'settings': '<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /><circle cx="12" cy="12" r="3" />',
+  'sliders-horizontal': '<path d="M10 5H3" /><path d="M12 19H3" /><path d="M14 3v4" /><path d="M16 17v4" /><path d="M21 12h-9" /><path d="M21 19h-5" /><path d="M21 5h-7" /><path d="M8 10v4" /><path d="M8 12H3" />',
+  'sparkles': '<path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M19 3v4"/><path d="M21 5h-4"/><path d="M5 17v3"/><path d="M6.5 18.5h-3"/>',
+  'square': '<rect width="18" height="18" x="3" y="3" rx="2" />',
+  'square-terminal': '<path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" />',
+  'star': '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>',
+  'sun': '<circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" />',
+  'tag': '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
+  'trash-2': '<path d="M10 11v6" /><path d="M14 11v6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />',
+  'triangle-alert': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" />',
+  'upload': '<path d="M12 3v12" /><path d="m7 8 5-5 5 5" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />',
+  'user': '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />',
+  'x': '<path d="M18 6 6 18" /><path d="m6 6 12 12" />',
+  'zap': '<path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" />'
+};
+
+// 图标注入：<svg data-ic="mail"> → 填进 Lucide 的 inner markup。
+// 注意：仓库 .svg 的 viewBox / stroke 属性长在根节点上，而注入只搬 inner markup，
+// 所以这里必须把整套根属性补回去，否则路径会按 fill:black 画成实心块。
+function setIcon(el, name) {
+  var body = ICONS[name];
+  if (!body) return;
+  el.innerHTML = body;
+  el.setAttribute("viewBox", "0 0 24 24");
+  el.setAttribute("fill", "none");
+  el.setAttribute("stroke", "currentColor");
+  el.setAttribute("stroke-width", "1.75");
+  el.setAttribute("stroke-linecap", "round");
+  el.setAttribute("stroke-linejoin", "round");
+}
+document.querySelectorAll("[data-ic]").forEach(function (el) {
+  setIcon(el, el.getAttribute("data-ic"));
+});
+
+// 主题切换
+var root = document.documentElement;
+var btn = document.getElementById("themeBtn");
+var txt = document.getElementById("themeTxt");
+btn.addEventListener("click", function () {
+  var dark = root.getAttribute("data-theme") === "dark";
+  root.setAttribute("data-theme", dark ? "light" : "dark");
+  txt.textContent = dark ? "暗色" : "明色";
+  setIcon(btn.querySelector(".ic"), dark ? "moon" : "sun");
+});
+
+// 缩放
+var rng = document.getElementById("zoom");
+var ztxt = document.getElementById("zoomTxt");
+function applyZoom() {
+  document.querySelectorAll(".stage").forEach(function (s) {
+    s.style.setProperty("--zoom", (rng.value / 100).toString());
+    s.style.zoom = (rng.value / 100).toString();
+  });
+  ztxt.textContent = rng.value + "%";
+}
+rng.addEventListener("input", applyZoom);
+applyZoom();
+</script>
+</body>
+</html>

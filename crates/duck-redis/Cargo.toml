@@ -1,0 +1,26 @@
+[package]
+name = "duck-redis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Redis / Valkey 模块内核：连接档案、分级锁写闸门、SCAN 键树与值模型（不依赖 gpui）。"
+
+# 依赖纪律（AGENTS.md §1）：本 crate 是内核层，**不得引入 gpui**；
+# 平台能力只取 duck-platform（凭据 / 路径 / 对话框）。`redis` 走阻塞 API，
+# 由调用方（duck-app 的页面）丢进 gpui 的 background_executor，本 crate 不开线程。
+[dependencies]
+duck-platform.workspace = true
+redis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+# 解码管线（`decode.rs`）的两条现成通道，**零新增包**——两者都早已在工作区依赖图里
+# （`flate2` 随 ureq 的 gzip 特性、`base64` 随 bson），这里只是提成直接依赖。
+# Base64 / JWT 段用 `base64`；GZIP 档用 `flate2`；URL 百分号、PHP serialize、
+# Unix 时间戳历法都是手写纯函数，不再引第三方（`chrono` 的时区特性会带来新传递依赖）。
+base64.workspace = true
+flate2.workspace = true
+
+[lints]
+workspace = true

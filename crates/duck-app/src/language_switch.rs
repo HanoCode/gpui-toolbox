@@ -10,7 +10,7 @@ use duck_components::{DuckIcon, toolbar_dropdown_button};
 use duck_theme::{Locale, active_theme, t, tr, update_appearance};
 use gpui::{
     Anchor, AnyElement, App, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div,
 };
 use gpui_component::{Icon, h_flex, menu::PopupMenuItem, tooltip::Tooltip};
 
@@ -52,7 +52,8 @@ pub fn language_switch(cx: &App) -> AnyElement {
             label,
             h_flex()
                 .items_center()
-                .gap(px(3.))
+                // 图标与文案属「同一控件的两部分」→ spacing.xs（原裸值 3，off-scale）。
+                .gap(theme.tokens().spacing.xs)
                 .child(Icon::new(DuckIcon::Globe).size(theme.extended().icon.md))
                 // 模式文案用 xs 档：与图标等高协调，色随按钮的 muted_foreground。
                 .child(

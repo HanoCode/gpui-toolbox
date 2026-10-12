@@ -161,11 +161,14 @@ pub fn loading_block(text: Option<SharedString>, cx: &App) -> Div {
 }
 
 /// 进度条：`value` 取 0..=1；`loading` 为真时忽略 `value` 走不确定态动画。
+///
+/// ⚠️ 上游 `Progress::value` 的语义是 **0..=100（百分比）**，这里负责换算——
+/// 调用方一律传 0..=1 的比例值（此前直接透传，62% 只画出 0.62%，几乎不可见）。
 pub fn progress_bar(id: impl Into<ElementId>, value: f32, cx: &App) -> Progress {
     let theme = active_theme(cx);
     let components = theme.components();
     Progress::new(id)
-        .value(value.clamp(0., 1.))
+        .value(value.clamp(0., 1.) * 100.)
         .h(components.progress_height)
         .rounded(components.progress_radius)
 }
@@ -180,6 +183,9 @@ pub fn alert_block(
     message: impl Into<SharedString>,
     cx: &App,
 ) -> Alert {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
     let variant = match tone {
         Tone::Info => AlertVariant::Info,
         Tone::Success => AlertVariant::Success,
@@ -188,6 +194,12 @@ pub fn alert_block(
     };
     Alert::new(id, message.into())
         .with_variant(variant)
-        .icon(Icon::new(tone.icon_name()).text_color(tone.color(cx)))
-        .text_size(active_theme(cx).tokens().typography.sm.size)
+        // 显式给尺寸：库把 `Alert` 的图标原样 `.child()` 进布局（`alert.rs`），不设 `.size()`
+        // 就会继承下面的 `typography.sm`（13px），越出 `icon.sm/md/lg` 的 12/14/16 阶梯。
+        .icon(
+            Icon::new(tone.icon_name())
+                .size(extended.icon.md)
+                .text_color(tone.color(cx)),
+        )
+        .text_size(tokens.typography.sm.size)
 }

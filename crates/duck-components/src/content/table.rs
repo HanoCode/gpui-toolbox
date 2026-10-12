@@ -184,7 +184,12 @@ fn table_header(columns: &[DataColumn], cx: &App) -> Option<Div> {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let xs = tokens.typography.xs;
-    let hairline = theme.extended().colors.hairline;
+    let extended = theme.extended();
+    let hairline = extended.colors.hairline;
+    // 列间竖线：宽取 hairline token（1px、不随缩放变粗），高取最大档图标高
+    // ——与终端工具栏那处竖分隔线同款（`terminal.rs`）。
+    let divider_w = extended.stroke.thin;
+    let divider_h = extended.icon.lg;
     let mut header = h_flex()
         .w_full()
         .flex_none()
@@ -196,8 +201,8 @@ fn table_header(columns: &[DataColumn], cx: &App) -> Option<Div> {
         if index > 0 {
             header = header.child(
                 div()
-                    .w(px(1.))
-                    .h(px(16.))
+                    .w(divider_w)
+                    .h(divider_h)
                     .flex_none()
                     .rounded_full()
                     .bg(hairline),
@@ -235,6 +240,8 @@ fn table_body(id: &ElementId, body: Body, skeleton_rows: usize, cx: &App) -> Any
             description,
         } => feedback::empty_state(icon, title, description, None, cx)
             .flex_none()
+            // 空态高度是**固定容器尺寸**（让空态粗略顶住表格正文的视觉高度），
+            // 不是间距 / 圆角，故不用 spacing 阶梯、保留裸值。
             .h(px(260.))
             .into_any_element(),
         Body::Blank => div().flex_1().min_h_0().into_any_element(),

@@ -7,6 +7,9 @@ description = "Duck Toolbox 平台能力层：路径 / 日志 / 原生对话框 
 
 [dependencies]
 dirs.workspace = true
+# 凭据存储（`secret`）：<应用数据目录>/credentials.json 的整读整写。
+# 已在依赖图里（`duck-store` / `duck-app` 早就用着同一个版本），**不新增下载**。
+serde_json.workspace = true
 rfd.workspace = true
 arboard.workspace = true
 tracing.workspace = true
@@ -16,6 +19,10 @@ tracing-subscriber.workspace = true
 # 选 `tar.gz` 而不是 `zip` 的原因见 `src/archive.rs` 的模块注释。
 tar.workspace = true
 flate2.workspace = true
+# 本机加密保管箱（`vault`）：SSH 连接口令的落库加密。ring 早已在依赖图里
+#（rustls / ureq / mysql 的 TLS 后端），提成直依赖**不新增任何传递依赖**；
+# 全仓单一 crypto 库就是它（另见根 `Cargo.toml` 的 rustls 注释）。
+ring.workspace = true
 # 单实例锁用 `flock`（stdlib 到 1.89 才有 `File::try_lock`，本工程 MSRV 1.85）。
 # 版本与 `duck-app` 保持一致；它早已在依赖图里（同版本，不新增下载）。
 libc = "0.2"
@@ -26,17 +33,9 @@ libc = "0.2"
 # 详见 `src/hotkey.rs` 的模块注释。
 global-hotkey.workspace = true
 
-# 开机自启的平台后端，各自只在对应平台参与编译。
-#
-# `keyring` 的后端特性**只能**在这里按 target 开：它默认无特性，而不开特性时
-# 不会报错，会把默认 store 静默换成进程内的内存 mock（「写入成功、重启全丢」）。
-# 这里的 `#[cfg]` 谓词必须与 `src/secret.rs::system_store` 的谓词逐字一致；
-# 漏开的后果不是运行时出错，而是**编译失败**（`secret.rs` 末尾引用了被同一特性
-# 门控的 `keyring::macos` / `keyring::windows` 模块做编译期断言）。这是刻意的：
-# 编译不过比悄悄丢数据好。
+# 平台后端：开机自启与「解除隐藏」。各自只在对应平台参与编译。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-service-management.workspace = true
-keyring = { workspace = true, features = ["apple-native"] }
 # `foreground`（解除隐藏 + 还原最小化的窗口）：gpui 只暴露了 `hide` 与
 # `minimize_window`，没有反向的那两条。版本与 gpui-fast 锁定的快照一致，
 # 且 `NSResponder` / `NSWindow` 两个特性 gpui_macos 本来就开着 ——
@@ -46,4 +45,3 @@ objc2-app-kit.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-registry.workspace = true
-keyring = { workspace = true, features = ["windows-native"] }

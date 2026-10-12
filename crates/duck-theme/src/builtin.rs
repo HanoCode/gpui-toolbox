@@ -1074,16 +1074,16 @@ pub fn extended_tokens(base: &SemanticThemeTokens, mode: ThemeMode) -> ExtendedT
 pub fn density_tokens(density: Density, scale: f32) -> DensityTokens {
     let s = |value: f32| px(value * scale);
     // (control, nav_row, toolbar_button, title_bar, status_bar, status_control,
-    //  section_header, task_row, task_row_compact, check_mark, rail, tile, button)
+    //  section_header, task_row, task_row_compact, mail_row, check_mark, rail, tile, button)
     let base = match density {
         Density::Compact => [
-            24., 24., 24., 36., 24., 20., 22., 36., 26., 14., 44., 28., 28.,
+            24., 24., 24., 36., 24., 20., 22., 36., 26., 56., 14., 44., 28., 28.,
         ],
         Density::Normal => [
-            28., 28., 28., 40., 28., 22., 24., 44., 30., 16., 48., 32., 32.,
+            28., 28., 28., 40., 28., 22., 24., 44., 30., 64., 16., 48., 32., 32.,
         ],
         Density::Comfortable => [
-            32., 34., 32., 44., 32., 26., 28., 52., 36., 18., 52., 36., 36.,
+            32., 34., 32., 44., 32., 26., 28., 52., 36., 76., 18., 52., 36., 36.,
         ],
     };
     let [
@@ -1096,6 +1096,7 @@ pub fn density_tokens(density: Density, scale: f32) -> DensityTokens {
         section_header,
         task_row,
         task_row_compact,
+        mail_row,
         check_mark,
         activity_rail,
         activity_tile,
@@ -1112,6 +1113,7 @@ pub fn density_tokens(density: Density, scale: f32) -> DensityTokens {
         section_header: s(section_header),
         task_row: s(task_row),
         task_row_compact: s(task_row_compact),
+        mail_row: s(mail_row),
         check_mark: s(check_mark),
         activity_rail: s(activity_rail),
         activity_tile: s(activity_tile),
@@ -1486,6 +1488,7 @@ mod tests {
                 n.task_row_compact,
                 f.task_row_compact,
             ),
+            ("mail_row", c.mail_row, n.mail_row, f.mail_row),
             ("check_mark", c.check_mark, n.check_mark, f.check_mark),
             (
                 "activity_rail",
@@ -1536,6 +1539,7 @@ mod tests {
             ("status_bar", one.status_bar, two.status_bar),
             ("section_header", one.section_header, two.section_header),
             ("task_row", one.task_row, two.task_row),
+            ("mail_row", one.mail_row, two.mail_row),
             ("check_mark", one.check_mark, two.check_mark),
             ("activity_rail", one.activity_rail, two.activity_rail),
         ] {

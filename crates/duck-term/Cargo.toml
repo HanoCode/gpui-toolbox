@@ -1,0 +1,18 @@
+[package]
+name = "duck-term"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Duck Toolbox 终端仿真内核：本地 PTY + alacritty 终端状态机（无 GPUI）"
+
+[dependencies]
+alacritty_terminal = { workspace = true }
+vte = { workspace = true }
+
+# 终端网格状态 `Term` 必须放进锁里供渲染层与 event-loop 线程并发访问；
+# alacritty 的 `FairMutex`（re-export 自 parking_lot）已在依赖图内。
+parking_lot = "0.12"
+
+[dev-dependencies]
+# （暂无）

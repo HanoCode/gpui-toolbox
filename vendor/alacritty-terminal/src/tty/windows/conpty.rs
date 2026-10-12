@@ -1,0 +1,417 @@
+use log::{info, warn};
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
+use std::io::{Error, Result};
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::IntoRawHandle;
+use std::{mem, ptr};
+
+use windows_sys::Win32::Foundation::{FreeLibrary, HANDLE, HMODULE, S_OK};
+use windows_sys::Win32::Globalization::{
+    CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
+};
+use windows_sys::Win32::System::Console::{COORD, HPCON};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
+use windows_sys::core::{HRESULT, PWSTR};
+use windows_sys::s;
+
+use windows_sys::Win32::System::Threading::{
+    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT,
+    InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute,
+};
+
+use crate::event::{OnResize, WindowSize};
+use crate::tty::Options;
+use crate::tty::windows::blocking::{UnblockedReader, UnblockedWriter};
+use crate::tty::windows::child::ChildExitWatcher;
+use crate::tty::windows::{Pty, cmdline, win32_string};
+
+const PIPE_CAPACITY: usize = crate::event_loop::READ_BUFFER_SIZE;
+
+// All Windows distributions stage the same pinned runtime. Searching PATH or
+// falling back to the OS would make keyboard behavior depend on unrelated installs.
+type CreatePseudoConsoleFn =
+    unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT;
+type ResizePseudoConsoleFn = unsafe extern "system" fn(HPCON, COORD) -> HRESULT;
+type ClosePseudoConsoleFn = unsafe extern "system" fn(HPCON);
+
+struct ConptyApi {
+    _library: ConptyLibrary,
+    create: CreatePseudoConsoleFn,
+    resize: ResizePseudoConsoleFn,
+    close: ClosePseudoConsoleFn,
+}
+
+struct ConptyLibrary(HMODULE);
+
+impl Drop for ConptyLibrary {
+    fn drop(&mut self) {
+        // Conpty owns this reference until after ClosePseudoConsole returns.
+        unsafe { FreeLibrary(self.0) };
+    }
+}
+
+impl ConptyApi {
+    fn new() -> Result<Self> {
+        type LoadedFn = unsafe extern "system" fn() -> isize;
+        let executable = std::env::current_exe()?;
+        let directory = executable
+            .parent()
+            .ok_or_else(|| Error::other("Missing executable directory"))?;
+        let runtime = directory.join("resources").join("conpty");
+        let architecture = match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "aarch64" => "arm64",
+            _ => return Err(Error::other("Unsupported bundled ConPTY architecture")),
+        };
+        if !runtime.join(architecture).join("OpenConsole.exe").is_file() {
+            return Err(Error::new(
+                std::io::ErrorKind::NotFound,
+                "Missing bundled resources/conpty console host",
+            ));
+        }
+        let library_path = win32_string(&runtime.join("conpty.dll"));
+        unsafe {
+            let hmodule = LoadLibraryExW(
+                library_path.as_ptr(),
+                ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+            );
+            if hmodule.is_null() {
+                let error = Error::last_os_error();
+                return Err(Error::new(
+                    error.kind(),
+                    format!("Cannot load bundled resources/conpty/conpty.dll: {error}"),
+                ));
+            }
+            let library = ConptyLibrary(hmodule);
+            let create_fn = GetProcAddress(hmodule, s!("CreatePseudoConsole"))
+                .ok_or_else(Error::last_os_error)?;
+            let resize_fn = GetProcAddress(hmodule, s!("ResizePseudoConsole"))
+                .ok_or_else(Error::last_os_error)?;
+            let close_fn = GetProcAddress(hmodule, s!("ClosePseudoConsole"))
+                .ok_or_else(Error::last_os_error)?;
+
+            info!("Using bundled resources/conpty/conpty.dll for pseudoconsole");
+            Ok(Self {
+                _library: library,
+                create: mem::transmute::<LoadedFn, CreatePseudoConsoleFn>(create_fn),
+                resize: mem::transmute::<LoadedFn, ResizePseudoConsoleFn>(resize_fn),
+                close: mem::transmute::<LoadedFn, ClosePseudoConsoleFn>(close_fn),
+            })
+        }
+    }
+}
+
+/// RAII Pseudoconsole.
+pub struct Conpty {
+    pub handle: HPCON,
+    api: ConptyApi,
+}
+
+impl Drop for Conpty {
+    fn drop(&mut self) {
+        // XXX: This will block until the conout pipe is drained. Will cause a deadlock if the
+        // conout pipe has already been dropped by this point.
+        //
+        // See PR #3084 and https://docs.microsoft.com/en-us/windows/console/closepseudoconsole.
+        unsafe { (self.api.close)(self.handle) }
+    }
+}
+
+// The ConPTY handle can be sent between threads.
+unsafe impl Send for Conpty {}
+
+pub fn new(config: &Options, window_size: WindowSize) -> Result<Pty> {
+    let api = ConptyApi::new()?;
+    let mut pty_handle: HPCON = 0;
+
+    // Passing 0 as the size parameter allows the "system default" buffer
+    // size to be used. There may be small performance and memory advantages
+    // to be gained by tuning this in the future, but it's likely a reasonable
+    // start point.
+    let (conout, conout_pty_handle) = miow::pipe::anonymous(0)?;
+    let (conin_pty_handle, conin) = miow::pipe::anonymous(0)?;
+
+    // Create the Pseudo Console, using the pipes.
+    let result = unsafe {
+        (api.create)(
+            window_size.into(),
+            conin_pty_handle.into_raw_handle() as HANDLE,
+            conout_pty_handle.into_raw_handle() as HANDLE,
+            0,
+            &mut pty_handle as *mut _,
+        )
+    };
+
+    if result != S_OK {
+        return Err(Error::other(format!(
+            "Bundled ConPTY creation failed: HRESULT {result:#010x}"
+        )));
+    }
+    let conpty = Conpty { handle: pty_handle, api };
+
+    let mut success;
+
+    // Prepare child process startup info.
+
+    let mut size: usize = 0;
+
+    let mut startup_info_ex: STARTUPINFOEXW = unsafe { mem::zeroed() };
+
+    startup_info_ex.StartupInfo.lpTitle = std::ptr::null_mut() as PWSTR;
+
+    startup_info_ex.StartupInfo.cb = mem::size_of::<STARTUPINFOEXW>() as u32;
+
+    // Setting this flag but leaving all the handles as default (null) ensures the
+    // PTY process does not inherit any handles from this Alacritty process.
+    startup_info_ex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+
+    // Create the appropriately sized thread attribute list.
+    unsafe {
+        let failure =
+            InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut size as *mut usize) > 0;
+
+        // This call was expected to return false.
+        if failure {
+            return Err(Error::last_os_error());
+        }
+    }
+
+    let mut attr_list: Box<[u8]> = vec![0; size].into_boxed_slice();
+
+    // Set startup info's attribute list & initialize it
+    //
+    // Lint failure is spurious; it's because winapi's definition of PROC_THREAD_ATTRIBUTE_LIST
+    // implies it is one pointer in size (32 or 64 bits) but really this is just a dummy value.
+    // Casting a *mut u8 (pointer to 8 bit type) might therefore not be aligned correctly in
+    // the compiler's eyes.
+    #[allow(clippy::cast_ptr_alignment)]
+    {
+        startup_info_ex.lpAttributeList = attr_list.as_mut_ptr() as _;
+    }
+
+    unsafe {
+        success = InitializeProcThreadAttributeList(
+            startup_info_ex.lpAttributeList,
+            1,
+            0,
+            &mut size as *mut usize,
+        ) > 0;
+
+        if !success {
+            return Err(Error::last_os_error());
+        }
+    }
+
+    // Set thread attribute list's Pseudo Console to the specified ConPTY.
+    unsafe {
+        success = UpdateProcThreadAttribute(
+            startup_info_ex.lpAttributeList,
+            0,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+            pty_handle as *mut std::ffi::c_void,
+            mem::size_of::<HPCON>(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ) > 0;
+
+        if !success {
+            return Err(Error::last_os_error());
+        }
+    }
+
+    // Prepare child process creation arguments.
+    let cmdline = win32_string(&cmdline(config));
+    let cwd = config.working_directory.as_ref().map(win32_string);
+    let mut creation_flags = EXTENDED_STARTUPINFO_PRESENT;
+    let custom_env_block = convert_custom_env(&config.env);
+    let custom_env_block_pointer = match &custom_env_block {
+        Some(custom_env_block) => {
+            creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+            custom_env_block.as_ptr() as *mut std::ffi::c_void
+        },
+        None => ptr::null_mut(),
+    };
+
+    let mut proc_info: PROCESS_INFORMATION = unsafe { mem::zeroed() };
+    unsafe {
+        success = CreateProcessW(
+            ptr::null(),
+            cmdline.as_ptr() as PWSTR,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            false as i32,
+            creation_flags,
+            custom_env_block_pointer,
+            cwd.as_ref().map_or_else(ptr::null, |s| s.as_ptr()),
+            &mut startup_info_ex.StartupInfo as *mut STARTUPINFOW,
+            &mut proc_info as *mut PROCESS_INFORMATION,
+        ) > 0;
+
+        if !success {
+            return Err(Error::last_os_error());
+        }
+    }
+
+    let child_watcher = ChildExitWatcher::new(proc_info.hProcess)?;
+    let conin = UnblockedWriter::new(conin, PIPE_CAPACITY);
+    let conout = UnblockedReader::new(conout, PIPE_CAPACITY);
+
+    Ok(Pty::new(conpty, conout, conin, child_watcher))
+}
+
+// Windows environment variables are case-insensitive, and the caller is responsible for
+// deduplicating environment variables, so do that here while converting.
+//
+// https://learn.microsoft.com/en-us/previous-versions/troubleshoot/windows/win32/createprocess-cannot-eliminate-duplicate-variables#environment-variables
+fn convert_custom_env(custom_env: &HashMap<String, String>) -> Option<WindowsEnvironmentBlock> {
+    // Windows inherits parent's env when no `lpEnvironment` parameter is specified.
+    if custom_env.is_empty() {
+        return None;
+    }
+
+    let mut environment = Vec::new();
+    let mut all_env_keys = HashSet::new();
+    for (custom_key, custom_value) in custom_env {
+        let custom_key_os = OsStr::new(custom_key);
+        if all_env_keys.insert(custom_key_os.to_ascii_uppercase()) {
+            environment.push((custom_key_os.to_os_string(), OsString::from(custom_value)));
+        } else {
+            // Environment values can contain credentials and must never enter logs.
+            warn!("Omitting duplicate environment variable key: '{custom_key}'");
+        }
+    }
+
+    // Pull the current process environment after, to avoid overwriting the user provided one.
+    for (inherited_key, inherited_value) in std::env::vars_os() {
+        if all_env_keys.insert(inherited_key.to_ascii_uppercase()) {
+            environment.push((inherited_key, inherited_value));
+        }
+    }
+
+    // CreateProcessW requires a case-insensitively sorted Unicode environment block.
+    environment.sort_by(|left, right| compare_windows_environment_names(&left.0, &right.0));
+    let mut converted_block = Vec::new();
+    for (key, value) in environment {
+        add_windows_env_key_value_to_block(&mut converted_block, &key, &value);
+    }
+    converted_block.push(0);
+    Some(WindowsEnvironmentBlock(converted_block))
+}
+
+fn compare_windows_environment_names(left: &OsStr, right: &OsStr) -> Ordering {
+    let left = left.encode_wide().collect::<Vec<_>>();
+    let right = right.encode_wide().collect::<Vec<_>>();
+    let result = unsafe {
+        CompareStringOrdinal(
+            left.as_ptr(),
+            left.len() as i32,
+            right.as_ptr(),
+            right.len() as i32,
+            true as i32,
+        )
+    };
+    match result {
+        CSTR_LESS_THAN => Ordering::Less,
+        CSTR_EQUAL => Ordering::Equal,
+        CSTR_GREATER_THAN => Ordering::Greater,
+        _ => left.cmp(&right),
+    }
+}
+
+struct WindowsEnvironmentBlock(Vec<u16>);
+
+impl WindowsEnvironmentBlock {
+    fn as_ptr(&self) -> *const u16 {
+        self.0.as_ptr()
+    }
+}
+
+impl Drop for WindowsEnvironmentBlock {
+    fn drop(&mut self) {
+        // The block may contain credentials supplied through custom environment variables.
+        self.0.fill(0);
+    }
+}
+
+// According to the `lpEnvironment` parameter description:
+// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa#parameters
+//
+// > An environment block consists of a null-terminated block of null-terminated strings. Each
+// string is in the following form:
+// >
+// > name=value\0
+fn add_windows_env_key_value_to_block(block: &mut Vec<u16>, key: &OsStr, value: &OsStr) {
+    block.extend(key.encode_wide());
+    block.push('=' as u16);
+    block.extend(value.encode_wide());
+    block.push(0);
+}
+
+impl OnResize for Conpty {
+    fn on_resize(&mut self, window_size: WindowSize) {
+        let result = unsafe { (self.api.resize)(self.handle, window_size.into()) };
+        assert_eq!(result, S_OK);
+    }
+}
+
+impl From<WindowSize> for COORD {
+    fn from(window_size: WindowSize) -> Self {
+        let lines = window_size.num_lines;
+        let columns = window_size.num_cols;
+        COORD { X: columns as i16, Y: lines as i16 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::windows::ffi::OsStringExt;
+
+    use super::*;
+
+    #[test]
+    fn custom_environment_block_is_sorted_and_overrides_parent_path() {
+        let custom_env = HashMap::from([
+            ("ZZ_OXIDETERM_SORT_PROBE".to_string(), "last".to_string()),
+            ("AA_OXIDETERM_SORT_PROBE".to_string(), "first".to_string()),
+            ("PaTh".to_string(), "oxideterm-path-probe".to_string()),
+        ]);
+        let block = convert_custom_env(&custom_env).expect("custom environment block");
+        let entries = block
+            .0
+            .split(|unit| *unit == 0)
+            .take_while(|entry| !entry.is_empty())
+            .collect::<Vec<_>>();
+        let keys = entries
+            .iter()
+            .map(|entry| {
+                let delimiter_search_start = usize::from(entry.first() == Some(&('=' as u16)));
+                let delimiter = entry[delimiter_search_start..]
+                    .iter()
+                    .position(|unit| *unit == '=' as u16)
+                    .map(|index| index + delimiter_search_start)
+                    .expect("environment entry delimiter");
+                OsString::from_wide(&entry[..delimiter])
+            })
+            .collect::<Vec<_>>();
+
+        assert!(keys.windows(2).all(|pair| {
+            compare_windows_environment_names(&pair[0], &pair[1]) != Ordering::Greater
+        }));
+        let path_entries = keys
+            .iter()
+            .enumerate()
+            .filter_map(|(index, key)| {
+                key.to_string_lossy()
+                    .eq_ignore_ascii_case("PATH")
+                    .then(|| String::from_utf16_lossy(entries[index]))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(path_entries, ["PaTh=oxideterm-path-probe"]);
+    }
+}

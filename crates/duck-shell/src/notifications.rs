@@ -45,11 +45,14 @@ pub fn bell(cx: &App) -> AnyElement {
         };
         div()
             .absolute()
+            // 负向偏移是贴着铃铛图标的**光学校正**（1~2px 级别的视觉误差修正），
+            // 依图标几何而定、不属 spacing 阶梯，故保留裸值。
             .top(px(-5.))
             .right(px(-7.))
-            .min_w(px(14.))
-            .h(px(14.))
-            .px(px(3.))
+            // 角标方框对齐图标档位（`icon.md`），而非各自的裸 px：改密度/缩放时跟图标同步。
+            .min_w(theme.extended().icon.md)
+            .h(theme.extended().icon.md)
+            .px(tokens.spacing.xxs)
             .rounded_full()
             .flex()
             .items_center()
@@ -88,7 +91,9 @@ pub fn bell(cx: &App) -> AnyElement {
             Popover::new("shell-notification-center")
                 // 菜单锚在按钮右下角：顶栏贴窗口上缘，向上弹会出界（同语言切换）。
                 .anchor(Anchor::BottomRight)
-                .offset(px(6.))
+                // 弹层与触发按钮之间的锚点间隙 = 「独立表面」档间距，全仓两处
+                // popover 同源（另一处在 `view.rs` 的活动栏弹层）。
+                .offset(theme.tokens().spacing.sm)
                 .trigger(trigger)
                 .on_open_change(|open, _, cx| {
                     if *open {
@@ -201,7 +206,7 @@ fn history_panel(cx: &App) -> AnyElement {
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .gap(px(2.))
+                            .gap(tokens.spacing.xxs)
                             .children(entry.title().clone().map(|title| {
                                 div()
                                     .text_size(typography.sm.size)
@@ -243,7 +248,8 @@ fn history_panel(cx: &App) -> AnyElement {
     let divider = div()
         .flex_none()
         .w_full()
-        .h(px(1.))
+        // 1px hairline 取 `stroke.thin`（不随缩放变粗），与全仓分隔线同源。
+        .h(theme.extended().stroke.thin)
         .bg(theme.extended().colors.hairline);
 
     v_flex()

@@ -4,16 +4,24 @@
 //! shadcn 风格外观。业务组件依赖这里，不直接散落颜色和尺寸字面量。
 //!
 //! 结构与 FluxDown `fluxdown_ui_components` 对应：按钮族 / 图标 / 交互动效 / 表单原语 /
-//! 侧栏面板五块。
+//! 侧栏面板 / 弹窗外壳六块。
 
 pub mod command_palette;
 pub mod content;
+pub mod dblogos;
+mod dialog;
 mod icons;
 mod kit;
 mod motion;
 pub mod notify;
 mod sidebar;
 
+pub use dblogos::DatabaseLogo;
+pub use dialog::{
+    ActionHandler, ConfirmHandler, FooterAction, ModalDrag, ModalOffset, dialog_footer,
+    dialog_footer_with_action, dialog_top_offset, modal_drag, modal_drag_area, modal_offset,
+    modal_title_row,
+};
 pub use icons::{ComponentAssets, DuckIcon, LOGO_ASSET_PATH};
 pub use kit::{
     ControlExt, DROPDOWN_MIN_WIDTH, IconControlExt, NavItem, ROW_MIN_PADDING, TITLE_MIN_WIDTH,
@@ -32,6 +40,16 @@ use gpui::{
     ParentElement, Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled, div, px,
 };
 pub use gpui_base::Button;
+use gpui_component::tooltip::Tooltip;
+
+/// 给图标按钮挂悬停提示。
+///
+/// 图标按钮**没有可见文字**：`accessibility_label` 只有读屏消费得到，鼠标用户悬停时
+/// 依然看不出这个图标是干什么的（此前全仓的图标按钮都是这样）。提示与读屏标签
+/// 共用同一份文案 —— 两者本来就该是同一句话，分两份写迟早会漂移。
+fn with_icon_tooltip(button: Button, label: SharedString) -> Button {
+    button.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+}
 
 /// 等宽数字（OpenType `tnum`）：计数、大小、百分比等会刷新的数字统一使用，
 /// 避免比例数字在刷新时左右跳动。
@@ -131,22 +149,26 @@ fn icon_button_frame(
     let radius = theme.components().button_radius;
     let stroke = theme.extended().stroke.thin;
     let disabled_opacity = theme.extended().opacity.disabled;
+    let label: SharedString = label.into();
 
-    Button::new(id)
-        .size(theme.density().control)
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .rounded(radius)
-        .border(stroke)
-        .border_color(palette.border)
-        .bg(palette.background)
-        .text_color(palette.foreground)
-        .focus_visible(move |style| style.border_color(tokens.colors.ring))
-        .styles(move |styles| styles.disabled(move |style| style.opacity(disabled_opacity)))
-        .accessibility_label(label)
-        .child(palette.state_layer(radius, stroke))
+    with_icon_tooltip(
+        Button::new(id)
+            .size(theme.density().control)
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .rounded(radius)
+            .border(stroke)
+            .border_color(palette.border)
+            .bg(palette.background)
+            .text_color(palette.foreground)
+            .focus_visible(move |style| style.border_color(tokens.colors.ring))
+            .styles(move |styles| styles.disabled(move |style| style.opacity(disabled_opacity)))
+            .accessibility_label(label.clone())
+            .child(palette.state_layer(radius, stroke)),
+        label,
+    )
 }
 
 /// 创建带前置图标的主要操作按钮。
@@ -198,6 +220,11 @@ pub fn primary_icon_button(
 /// 创建顶栏 / 状态栏等 chrome 区域的紧凑图标按钮。
 ///
 /// 默认图标为二级文字色，悬停时淡入 `navHover` 底、图标变为正文色，按下淡入 `navSelected`。
+///
+/// ⚠️ **图标档位契约：一律传 `extended.icon.md`**。方形内边距是按它算的
+/// （`px = (高度 - icon.md) / 2`，与 [`crate::toolbar_dropdown_button`] 同公式），
+/// 传更小 / 更大的档位会让按钮不再是正方形，且图标与相邻 chrome 按钮差一档。
+/// 需要更小图标时（如标签页关闭 ✕）请连同「按钮不再方形」一起接受，并在调用点写明原因。
 pub fn toolbar_action_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -227,6 +254,7 @@ pub fn toolbar_action_button(
     // `toolbar_dropdown_button` 同公式），传入图标+文字组合时自动加宽，
     // 内容不再溢出按钮命中区。
     let height = theme.density().toolbar_button;
+    let label: SharedString = label.into();
     let button = Button::new(id)
         .h(height)
         .px((height - theme.extended().icon.md) / 2.)
@@ -242,20 +270,26 @@ pub fn toolbar_action_button(
         .border_1()
         .border_color(gpui::transparent_black())
         .disabled(disabled)
-        .accessibility_label(label);
+        .accessibility_label(label.clone());
     if disabled {
-        return button.child(icon).opacity(opacity.muted).cursor_default();
+        return with_icon_tooltip(
+            button.child(icon).opacity(opacity.muted).cursor_default(),
+            label,
+        );
     }
-    button
-        .cursor_pointer()
-        .hover(move |style| style.text_color(hover_foreground))
-        .focus_visible(move |style| style.border_color(tokens.colors.ring))
-        .child(
-            StateLayer::new(radius)
-                .hover(extended.hover_tint)
-                .press(extended.hover_tint_press),
-        )
-        .child(icon)
+    with_icon_tooltip(
+        button
+            .cursor_pointer()
+            .hover(move |style| style.text_color(hover_foreground))
+            .focus_visible(move |style| style.border_color(tokens.colors.ring))
+            .child(
+                StateLayer::new(radius)
+                    .hover(extended.hover_tint)
+                    .press(extended.hover_tint_press),
+            )
+            .child(icon),
+        label,
+    )
 }
 
 /// 创建活动栏按钮；选中底色由调用方绘制（活动栏以一块随选中项滑动的底块表达）。

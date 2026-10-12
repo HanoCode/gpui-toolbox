@@ -42,6 +42,7 @@ duck_icons! {
     Archive => "archive",
     ArrowDown => "arrow-down",
     ArrowUp => "arrow-up",
+    AtSign => "at-sign",
     Bell => "bell",
     Bot => "bot",
     Box => "box",
@@ -56,40 +57,63 @@ duck_icons! {
     Clipboard => "clipboard",
     Clock => "clock",
     Code => "code",
+    Columns2 => "columns-2",
     Copy => "copy",
+    CornerLeftUp => "corner-left-up",
     Database => "database",
+    DatabaseZap => "database-zap",
     Download => "download",
     Ellipsis => "ellipsis",
     ExternalLink => "external-link",
     File => "file",
     FileText => "file-text",
     Film => "film",
+    Flag => "flag",
     FolderOpen => "folder-open",
+    FolderPlus => "folder-plus",
     Folders => "folders",
+    Forward => "forward",
     Gauge => "gauge",
     Globe => "globe",
     HardDrive => "hard-drive",
+    House => "house",
     Image => "image",
+    Inbox => "inbox",
     Info => "info",
     Kanban => "kanban",
     Layers => "layers",
     Library => "library",
     ListFilter => "list-filter",
+    ListOrdered => "list-ordered",
+    Mail => "mail",
+    Minus => "minus",
     Moon => "moon",
     PanelRight => "panel-right",
     Palette => "palette",
+    Paperclip => "paperclip",
     Pause => "pause",
+    Pencil => "pencil",
     Play => "play",
+    Plug => "plug",
     Plus => "plus",
     Power => "power",
+    Reply => "reply",
     RotateCw => "rotate-cw",
     Search => "search",
+    Send => "send",
+    Server => "server",
     Settings => "settings",
     SlidersHorizontal => "sliders-horizontal",
+    Sparkles => "sparkles",
+    Square => "square",
+    SquareFunction => "square-function",
     SquareTerminal => "square-terminal",
+    Star => "star",
     Sun => "sun",
+    Tag => "tag",
     Trash2 => "trash-2",
     TriangleAlert => "triangle-alert",
+    Upload => "upload",
     User => "user",
     X => "x",
     Zap => "zap",
@@ -110,7 +134,8 @@ pub const LOGO_ASSET_PATH: &str = "duck/logo.png";
 /// 组件 crate 一并提供的**非图标**嵌入资源（路径 → 字节）。
 ///
 /// 图标走 [`DuckIcon::ALL`]；这里只放位图等整块资源，避免把 PNG 塞进图标枚举
-/// （图标测试断言每个条目都是 SVG）。
+/// （图标测试断言每个条目都是 SVG）。数据库品牌 logo 有固有色，走
+/// [`crate::dblogos::DatabaseLogo`] 单独一列（见 [`ComponentAssets::load`]）。
 const EXTRA_ASSETS: &[(&str, &[u8])] = &[(LOGO_ASSET_PATH, include_bytes!("../assets/logo.png"))];
 
 /// 组件 crate 拥有的嵌入资源（[`DuckIcon`] 全集 + [`EXTRA_ASSETS`]）。
@@ -120,6 +145,12 @@ impl AssetSource for ComponentAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if let Some((_, bytes)) = EXTRA_ASSETS.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(*bytes)));
+        }
+        if let Some(logo) = crate::dblogos::DatabaseLogo::ALL
+            .iter()
+            .find(|logo| logo.asset_path() == path)
+        {
+            return Ok(Some(Cow::Borrowed(logo.bytes())));
         }
         Ok(DuckIcon::ALL
             .iter()
@@ -131,6 +162,11 @@ impl AssetSource for ComponentAssets {
         Ok(EXTRA_ASSETS
             .iter()
             .map(|(name, _)| *name)
+            .chain(
+                crate::dblogos::DatabaseLogo::ALL
+                    .iter()
+                    .map(|logo| logo.asset_path()),
+            )
             .chain(DuckIcon::ALL.iter().map(|icon| icon.asset_path()))
             .filter(|asset| asset.starts_with(path))
             .map(SharedString::new_static)

@@ -166,7 +166,8 @@ pub fn segmented_tabs(
         .flex_none()
         .items_center()
         .h(control)
-        .p(px(2.))
+        // 轨道内边距 = 最紧一档间距，与选中底块的 `control - 2*间距` 内高配套。
+        .p(tokens.spacing.xxs)
         .rounded(tab_radius + px(1.))
         .bg(theme.extended().colors.nav_hover)
         .child(SegmentedTabs {
@@ -175,7 +176,8 @@ pub fn segmented_tabs(
             selected,
             on_select: Rc::new(on_select),
             style: SegmentedStyle {
-                height: control - px(4.),
+                // 内高 = 轨道高 − 上下各一份轨道内边距，与上面的 `.p(间距)` 同源。
+                height: control - tokens.spacing.xxs * 2.,
                 radius: tab_radius,
                 padding_x: tokens.spacing.md,
                 text_size: tokens.typography.sm.size,
@@ -279,7 +281,7 @@ impl RenderOnce for SegmentedTabs {
                     .flex()
                     .items_center()
                     .h_full()
-                    .gap(px(2.))
+                    .gap(active_theme(cx).tokens().spacing.xxs)
                     .on_children_prepainted(move |bounds, window, _| {
                         let origin = bounds.first().map_or(px(0.), |first| first.origin.x);
                         let measured: Vec<(Pixels, Pixels)> = bounds
@@ -578,10 +580,15 @@ pub fn field_error(text: impl Into<SharedString>, cx: &App) -> Div {
         .child(text.into())
 }
 
-/// 标准字段：标签 → 控件 → 可选说明。标签与控件、控件与说明间距 6px。
+/// 标准字段：标签 → 控件 → 可选错误 / 说明。标签与控件、控件与说明间距 6px
+///（`spacing.xs + spacing.xxs`，即「一个控件内部」的紧密度）。
+///
+/// 校验提示**贴着它描述的控件**，不另起一行汇总——汇总行会让用户来回找是哪一项错了。
+/// `error` 与 `hint` 可以同时给：说明常驻、错误按需出现，两者语义不同。
 pub fn form_field(
     label: impl Into<SharedString>,
     control: impl IntoElement,
+    error: Option<SharedString>,
     hint: Option<SharedString>,
     cx: &App,
 ) -> Div {
@@ -594,6 +601,7 @@ pub fn form_field(
         .gap(spacing.xs + spacing.xxs)
         .child(field_label(label, cx))
         .child(control)
+        .when_some(error, |this, error| this.child(field_error(error, cx)))
         .when_some(hint, |this, hint| this.child(field_hint(hint, cx)))
 }
 
@@ -773,14 +781,17 @@ pub fn settings_section(
 pub fn option_group(rows: impl IntoIterator<Item = AnyElement>, cx: &App) -> Div {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
-    let hairline = theme.extended().colors.hairline;
+    let extended = theme.extended();
+    let hairline = extended.colors.hairline;
+    // 行间分隔线是一根 1px hairline（不随缩放变粗），宽度取 `stroke.thin`。
+    let hairline_w = extended.stroke.thin;
     let mut group = crate::card(cx).flex().flex_col().w_full().overflow_hidden();
     for (index, row) in rows.into_iter().enumerate() {
         if index > 0 {
             group = group.child(
                 div()
                     .w_full()
-                    .h(px(1.))
+                    .h(hairline_w)
                     .pl(tokens.spacing.lg)
                     .child(div().size_full().bg(hairline)),
             );

@@ -21,6 +21,12 @@ duck-update.workspace = true
 duck-plugin.workspace = true
 duck-plugin-js.workspace = true
 duck-plugin-registry.workspace = true
+duck-db.workspace = true
+duck-redis.workspace = true
+duck-ai.workspace = true
+duck-term.workspace = true
+duck-ssh.workspace = true
+duck-mail.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
@@ -32,6 +38,14 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tray-icon.workspace = true
+
+# 数据库页 SQL 补全（duck-app/src/pages/db.rs 的 SqlCompletionProvider）：
+# gpui-base 的 `CompletionProvider` trait 签名直接引用 `lsp_types` 的
+# CompletionContext / CompletionItem / CompletionResponse，实现方必须能具名这两个
+# 类型。ropey 已由 gpui-base 经 `gpui_component::input::Rope` 转出口，无需直依赖。
+# 两包都已在依赖图内（gpui-base / gpui-component 同源），零新增传递依赖。
+anyhow = "1"
+lsp-types = "=0.97.0"
 
 # 构建脚本依赖：winresource 本体跨平台可编译；非 Windows 目标由 build.rs 里的
 # `CARGO_CFG_WINDOWS` 运行期短路。不能按 target 门控——build.rs 在所有宿主上

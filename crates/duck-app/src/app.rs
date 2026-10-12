@@ -1,6 +1,6 @@
 //! 应用装配：全局状态、主窗口打开、路由与活动栏动作。
 
-use duck_command::ActionSlot;
+use duck_command::{ActionSlot, primary_modifier};
 use duck_components::DuckIcon;
 use duck_shell::{
     PaletteWindow, RouteId, ShellAction, ShellRoute, ShellView, main_window_options,
@@ -8,16 +8,20 @@ use duck_shell::{
 };
 use duck_theme::{DuckThemeState, active_theme, tr, trf};
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, IntoElement as _,
+    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, IntoElement as _, KeyBinding,
     ParentElement as _, SharedString, Styled as _, WeakEntity, Window, WindowBounds, WindowHandle,
     WindowId, point, px, size,
 };
 use gpui_component::{Icon, Root};
 
 use crate::pages::{
-    ASSISTANT_ROUTE, DATABASE_ROUTE, OVERVIEW_ROUTE, OverviewPage, PROJECTS_ROUTE, PlaceholderPage,
-    SSH_ROUTE, TOOLBOX_ROUTE, ToolboxPage, open_licenses, open_logs, open_plugin_center,
-    open_settings,
+    ASSISTANT_ROUTE, AssistantPage, Clear, CloseTab, CopySelection, DATABASE_ROUTE, DatabasePage,
+    DeleteToLineEnd, DeleteToLineStart, DeleteWordForward, EMAIL_ROUTE, MailPage, MoveToLineEnd,
+    MoveToLineStart, NewTab, OVERVIEW_ROUTE, OverviewPage, PROJECTS_ROUTE, PasteFromClipboard,
+    PlaceholderPage, REDIS_ROUTE, RedisPage, SSH_ROUTE, ScrollLineDown, ScrollLineUp,
+    ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, SelectAll, SendCtrlC, SendTab,
+    SendTabPrev, SplitPane, TOOLBOX_ROUTE, TerminalPage, ToolboxPage, ZoomIn, ZoomOut, ZoomReset,
+    open_licenses, open_logs, open_plugin_center, open_settings,
 };
 use crate::settings::AuxWindow;
 use crate::top_bar::TopBarSearch;
@@ -296,6 +300,88 @@ pub fn install(cx: &mut App) {
     duck_command::install(cx);
     actions::declare_all(cx);
     duck_command::bind_all(cx);
+    // 终端画布的键位必须绑在更深的 `"Terminal"` 上下文里：gpui 的按键派发**先查
+    // action 绑定**，全部未命中才轮到 `on_key_down`；而 `gpui_base::Root` 在 `"Root"`
+    // 上下文占着 `"tab"` / `"shift-tab"` / `"cmd-c"`（macOS）/ `"ctrl-c"`（非 macOS）
+    // （`root.rs:15`）。不在这里用同键动作盖掉，终端就收不到这些键。
+    // 动作定义与处理见 `pages::terminal_canvas`；这套清单对齐
+    // `temp/zed/assets/keymaps/default-macos.json` 的 `"Terminal"` 上下文。
+    let modifier = primary_modifier();
+    cx.bind_keys([
+        // —— 全局冲突键 ——
+        KeyBinding::new("tab", SendTab, Some("Terminal")),
+        KeyBinding::new("shift-tab", SendTabPrev, Some("Terminal")),
+        // `Ctrl-C`（SIGINT）：非 macOS 上 Root 把它绑给了 `Copy`，不盖掉就是死的。
+        // macOS 上显式绑也无害 —— 发出去的正是终端本来就该收到的 `0x03`。
+        KeyBinding::new("ctrl-c", SendCtrlC, Some("Terminal")),
+        // —— 字号 / 清屏 ——
+        // `=` / `+` 都绑（美式布局 `+` 在 `=` 上，事件里两种键名都会出现）。
+        KeyBinding::new(&format!("{modifier}-="), ZoomIn, Some("Terminal")),
+        KeyBinding::new(&format!("{modifier}-+"), ZoomIn, Some("Terminal")),
+        KeyBinding::new(&format!("{modifier}--"), ZoomOut, Some("Terminal")),
+        KeyBinding::new(&format!("{modifier}-0"), ZoomReset, Some("Terminal")),
+        KeyBinding::new(&format!("{modifier}-k"), Clear, Some("Terminal")),
+        // 分屏 / 取消分屏（与工具条那个图标同一条路径）。
+        KeyBinding::new(&format!("{modifier}-d"), SplitPane, Some("Terminal")),
+        // —— 视口滚动：只挪视口，不向 PTY 写字节 ——
+        KeyBinding::new("shift-up", ScrollLineUp, Some("Terminal")),
+        KeyBinding::new("shift-down", ScrollLineDown, Some("Terminal")),
+        KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
+        KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
+        KeyBinding::new(&format!("{modifier}-up"), ScrollPageUp, Some("Terminal")),
+        KeyBinding::new(
+            &format!("{modifier}-down"),
+            ScrollPageDown,
+            Some("Terminal"),
+        ),
+        KeyBinding::new("shift-home", ScrollToTop, Some("Terminal")),
+        KeyBinding::new("shift-end", ScrollToBottom, Some("Terminal")),
+        KeyBinding::new(&format!("{modifier}-home"), ScrollToTop, Some("Terminal")),
+        KeyBinding::new(&format!("{modifier}-end"), ScrollToBottom, Some("Terminal")),
+        // —— 行编辑（发控制字节，靠 shell 的行编辑生效；对齐 zed 的 SendKeystroke）——
+        KeyBinding::new(
+            &format!("{modifier}-left"),
+            MoveToLineStart,
+            Some("Terminal"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-right"),
+            MoveToLineEnd,
+            Some("Terminal"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-backspace"),
+            DeleteToLineStart,
+            Some("Terminal"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-delete"),
+            DeleteToLineEnd,
+            Some("Terminal"),
+        ),
+        KeyBinding::new("alt-delete", DeleteWordForward, Some("Terminal")),
+        // —— 剪贴板 / 选区 ——
+        // `⌘C` 在 `"Root"` 上下文被绑给了 `Copy`、`⌘A` 被绑给了 `SelectAll`
+        //（`gpui-base/src/root.rs`）：不在更深的 `"Terminal"` 上下文用同键动作盖掉，
+        // 终端里按 ⌘C 永远不会是「复制选中的文本」。
+        KeyBinding::new(&format!("{modifier}-c"), CopySelection, Some("Terminal")),
+        KeyBinding::new(
+            &format!("{modifier}-v"),
+            PasteFromClipboard,
+            Some("Terminal"),
+        ),
+        KeyBinding::new(&format!("{modifier}-a"), SelectAll, Some("Terminal")),
+        // —— 标签 ——
+        // 主流终端的一致键位；此前只写在设置页的快捷键说明里，一条都没绑。
+        KeyBinding::new(&format!("{modifier}-t"), NewTab, Some("Terminal")),
+        KeyBinding::new(&format!("{modifier}-w"), CloseTab, Some("Terminal")),
+    ]);
+    // —— 数据库页 ——
+    // 绑在页面自己的 `"Database"` 上下文（`pages::db::bind_keys`）：焦点在 SQL 编辑器里时
+    // 上下文栈更深的是 `Editor`，它占着 `⌘Z`（撤销）与 `⌘.`，所以只挑它没占的
+    // `⌘↵` / `⌘S` / `⌘⇧⌫`。三条键在 `gpui_base::Root` 的默认表里都不存在
+    // （见 `gpui-base/src/input` 的 `KeyBinding` 清单，已逐条核对）。
+    crate::pages::bind_db_keys(cx);
     duck_command::refresh_menus(cx);
     actions::install_stateless_handlers(cx);
 
@@ -595,26 +681,48 @@ pub(crate) fn observe_system_appearance(window: &Window) {
         .detach();
 }
 
-/// 构造 shell：概览 / 工具箱两条已实现路由 + 4 条功能占位路由（SSH 终端 / 数据库 /
-/// 项目管理 / AI 助手），以及活动栏底部的外观切换与设置动作。
+/// 构造 shell：概览 / 工具箱 / SSH 终端 / 数据库 / Redis / AI 助手六条已实现路由
+/// + 2 条功能占位路由（项目管理 / 邮箱），以及活动栏底部的外观切换与设置动作。
 ///
 /// 路由一旦登记，活动栏按钮、`⌘n` 键位、原生菜单项、命令面板条目会**同时**出现
-/// （四输出面派生自同一份动作清单）。4 条占位路由曾按 P2-4 整体移除，现按用户要求
-/// 恢复入口：点开是「功能正在建设中」的空白页，各模块落地后换掉视图即可。
+/// （四输出面派生自同一份动作清单）。占位路由曾按 P2-4 整体移除，现按用户要求
+/// 恢复入口：点开是「功能正在建设中」的空白页，各模块落地后换掉视图即可
+/// （SSH 终端与数据库页即按这条路径从占位页换成了真实页面）。
 fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
     let overview = cx.new(|_| OverviewPage::new());
     let toolbox = cx.new(ToolboxPage::new);
-    // 尚未实现的功能：先用空白占位页挂上入口，落地后换视图即可。
-    let ssh = cx.new(|_| PlaceholderPage::new("SSH 终端", DuckIcon::SquareTerminal));
-    let database = cx.new(|_| PlaceholderPage::new("数据库", DuckIcon::Database));
+    let ssh = cx.new(|cx| TerminalPage::new(window, cx));
+    let database = cx.new(|cx| DatabasePage::new(window, cx));
+    let redis = cx.new(|cx| RedisPage::new(window, cx));
     let projects = cx.new(|_| PlaceholderPage::new("项目管理", DuckIcon::Kanban));
-    let assistant = cx.new(|_| PlaceholderPage::new("AI 助手", DuckIcon::Bot));
+    // 邮箱：已接上 `duck-mail` 内核（M1：账户 CRUD、IMAP 拉取、增量同步、正文按需下载）。
+    // 构造时会在后台打开库并拉账户，所以需要 `window`（同数据库 / Redis 页）。
+    let email = cx.new(|cx| MailPage::new(window, cx));
+    // AI 助手：占位页已换成真实页面（`pages/assistant.rs`，见 `docs/ai-design.md`）。
+    let assistant = cx.new(|cx| AssistantPage::new(window, cx));
 
     // 顶栏搜索入口是窗口级 chrome：所有路由共用同一实例，切换路由时状态保留。
     let search = cx.new(|_| TopBarSearch::new());
     let toolbox_sidebar = toolbox.read(cx).sidebar_state();
     // 右侧栏（帮助与设置）由 shell 统一布局；toolbox 只提供按活跃工具渲染的内容。
     let toolbox_right_view = toolbox.clone();
+    // SSH 终端：左栏（连接列表）状态同样由 shell 顶栏的侧栏开关共享，
+    // 右栏（会话详情 / 传输队列）内容由本页按活跃标签渲染。
+    let ssh_sidebar = ssh.read(cx).sidebar_state();
+    let ssh_right_view = ssh.clone();
+    // 数据库：左栏（连接列表）与右栏（连接信息 / 对象树 / 选中行详情）同 SSH 的挂法。
+    let db_sidebar = database.read(cx).sidebar_state();
+    let db_right_view = database.clone();
+    // Redis：与数据库页同款挂法（左栏连接列表 / 右栏连接信息 + 键详情）。
+    let redis_sidebar = redis.read(cx).sidebar_state();
+    let redis_right_view = redis.clone();
+    // AI 助手：左栏会话历史、右栏会话参数，挂法与数据库 / Redis 页一致。
+    let assistant_sidebar = assistant.read(cx).sidebar_state();
+    let assistant_right_view = assistant.clone();
+    // 邮箱：只有左栏（账户与文件夹树）。**没有右栏**——前一版的右栏「AI 面板」
+    // （摘要 / 回复建议 / 问答）按 P3-6 删除了：邮件 AI 后端在 M2，没有后端可接的
+    // 面板只能靠演示文案撑着。详见 `pages/mail.rs` 模块头的处置表。
+    let email_sidebar = email.read(cx).sidebar_state();
 
     // 顶栏前导留白按活跃路由登记的内容区左缘算：概览整页通栏（不登记，搜索框贴顶栏左缘），
     // 工具箱登记自己的内容区左缘（随侧栏宽度变化），搜索框与它对齐。
@@ -654,7 +762,9 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
             Icon::new(DuckIcon::SquareTerminal),
             ssh,
         )
-        .with_label_fn(|cx| SharedString::from(tr(cx, "SSH 终端"))),
+        .with_label_fn(|cx| SharedString::from(tr(cx, "SSH 终端")))
+        .with_sidebar(ssh_sidebar)
+        .with_right_sidebar(move |cx| ssh_right_view.read(cx).render_right_sidebar(cx)),
         ShellRoute::new(
             DATABASE_ROUTE,
             "duck-route-database",
@@ -663,7 +773,20 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
             Icon::new(DuckIcon::Database),
             database,
         )
-        .with_label_fn(|cx| SharedString::from(tr(cx, "数据库"))),
+        .with_label_fn(|cx| SharedString::from(tr(cx, "数据库")))
+        .with_sidebar(db_sidebar)
+        .with_right_sidebar(move |cx| db_right_view.read(cx).render_right_sidebar(cx)),
+        ShellRoute::new(
+            REDIS_ROUTE,
+            "duck-route-redis",
+            // 占位：真实文案由下方 `with_label_fn` 按语言解析，此处不会被渲染。
+            "Redis",
+            Icon::new(DuckIcon::DatabaseZap),
+            redis,
+        )
+        .with_label_fn(|cx| SharedString::from(tr(cx, "Redis")))
+        .with_sidebar(redis_sidebar)
+        .with_right_sidebar(move |cx| redis_right_view.read(cx).render_right_sidebar(cx)),
         ShellRoute::new(
             PROJECTS_ROUTE,
             "duck-route-projects",
@@ -681,7 +804,20 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
             Icon::new(DuckIcon::Bot),
             assistant,
         )
-        .with_label_fn(|cx| SharedString::from(tr(cx, "AI 助手"))),
+        .with_label_fn(|cx| SharedString::from(tr(cx, "AI 助手")))
+        .with_sidebar(assistant_sidebar)
+        .with_right_sidebar(move |cx| assistant_right_view.read(cx).render_right_sidebar(cx)),
+        // 邮箱：活动栏最末一条（`⌘8`），现有 ⌘1–⌘7 不动。
+        ShellRoute::new(
+            EMAIL_ROUTE,
+            "duck-route-email",
+            // 占位：真实文案由下方 `with_label_fn` 按语言解析，此处不会被渲染。
+            "Email",
+            Icon::new(DuckIcon::Mail),
+            email,
+        )
+        .with_label_fn(|cx| SharedString::from(tr(cx, "邮箱")))
+        .with_sidebar(email_sidebar),
     ];
 
     let actions = activity_actions(cx);
