@@ -30,7 +30,15 @@ manifest, and source files are retained from the published package.
 - `src/ansi.rs` adds `Handler::input_text` with a scalar default. The ANSI
   performer forwards text spans and complete ASCII line batches, retaining the
   final printable character as `preceding_char` for REP sequences.
+- `src/ansi.rs` adds the `b"133"` arm to `osc_dispatch`, handing the
+  sub-parameters to a new `Handler::shell_mark` (default: no-op). This is the one
+  deliberate exception to "no parsing behavior": the parser owns the OSC dispatch
+  table, so an unlisted selector (`133`) is dropped before any consumer can see
+  it — there is no other layer at which shell integration could be observed. The
+  arm interprets nothing: it forwards `params[1..]` verbatim, and all `OSC 133`
+  semantics live in `alacritty_terminal`, not here.
 - Focused tests cover batch dispatch boundaries and scalar compatibility.
 
 Do not add parsing behavior or terminal semantics to this fork. Its only local
-responsibility is carrying printable spans across the existing parser boundary.
+responsibility is carrying printable spans across the existing parser boundary,
+plus that single verbatim OSC dispatch arm described above.

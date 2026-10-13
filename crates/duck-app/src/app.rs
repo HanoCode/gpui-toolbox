@@ -16,12 +16,12 @@ use gpui_component::{Icon, Root};
 
 use crate::pages::{
     ASSISTANT_ROUTE, AssistantPage, Clear, CloseTab, CopySelection, DATABASE_ROUTE, DatabasePage,
-    DeleteToLineEnd, DeleteToLineStart, DeleteWordForward, EMAIL_ROUTE, MailPage, MoveToLineEnd,
-    MoveToLineStart, NewTab, OVERVIEW_ROUTE, OverviewPage, PROJECTS_ROUTE, PasteFromClipboard,
-    PlaceholderPage, REDIS_ROUTE, RedisPage, SSH_ROUTE, ScrollLineDown, ScrollLineUp,
-    ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, SelectAll, SendCtrlC, SendTab,
-    SendTabPrev, SplitPane, TOOLBOX_ROUTE, TerminalPage, ToolboxPage, ZoomIn, ZoomOut, ZoomReset,
-    open_licenses, open_logs, open_plugin_center, open_settings,
+    DeleteToLineEnd, DeleteToLineStart, DeleteWordForward, EMAIL_ROUTE, Find, MailPage,
+    MoveToLineEnd, MoveToLineStart, NewTab, OVERVIEW_ROUTE, OverviewPage, PROJECTS_ROUTE,
+    PasteFromClipboard, PlaceholderPage, REDIS_ROUTE, RedisPage, SSH_ROUTE, ScrollLineDown,
+    ScrollLineUp, ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, SelectAll, SendCtrlC,
+    SendTab, SendTabPrev, SplitPane, TOOLBOX_ROUTE, TerminalPage, ToolboxPage, ZoomIn, ZoomOut,
+    ZoomReset, open_licenses, open_logs, open_plugin_center, open_settings,
 };
 use crate::settings::AuxWindow;
 use crate::top_bar::TopBarSearch;
@@ -375,6 +375,10 @@ pub fn install(cx: &mut App) {
         // 主流终端的一致键位；此前只写在设置页的快捷键说明里，一条都没绑。
         KeyBinding::new(&format!("{modifier}-t"), NewTab, Some("Terminal")),
         KeyBinding::new(&format!("{modifier}-w"), CloseTab, Some("Terminal")),
+        // —— 缓冲区搜索 ——
+        // `⌘F` 在 `gpui_base::Root` 里没有绑定（核对过 root.rs 的默认表），
+        // 绑在 `"Terminal"` 只是为了让焦点在终端画布上时命中。
+        KeyBinding::new(&format!("{modifier}-f"), Find, Some("Terminal")),
     ]);
     // —— 数据库页 ——
     // 绑在页面自己的 `"Database"` 上下文（`pages::db::bind_keys`）：焦点在 SQL 编辑器里时
@@ -382,6 +386,11 @@ pub fn install(cx: &mut App) {
     // `⌘↵` / `⌘S` / `⌘⇧⌫`。三条键在 `gpui_base::Root` 的默认表里都不存在
     // （见 `gpui-base/src/input` 的 `KeyBinding` 清单，已逐条核对）。
     crate::pages::bind_db_keys(cx);
+    // —— 邮箱页 ——
+    // 同样绑在页面自己的 `"Mail"` 上下文（`pages::mail::bind_keys`）：`⌘N` 在
+    // `gpui_base::Root` 的默认表里不存在（该表只有 `cmd-c`，已逐条核对），全仓也
+    // 没有别的动作占它，所以这条只在邮箱页有焦点时生效，不会与别处抢。
+    crate::pages::bind_mail_keys(cx);
     duck_command::refresh_menus(cx);
     actions::install_stateless_handlers(cx);
 
@@ -681,17 +690,20 @@ pub(crate) fn observe_system_appearance(window: &Window) {
         .detach();
 }
 
-/// 构造 shell：概览 / 工具箱 / SSH 终端 / 数据库 / Redis / AI 助手六条已实现路由
-/// + 2 条功能占位路由（项目管理 / 邮箱），以及活动栏底部的外观切换与设置动作。
+/// 构造 shell：概览 / 工具箱 / SSH 终端 / 数据库 / Redis / AI 助手 / 邮箱七条已实现
+/// 路由 + 1 条功能占位路由（项目管理），以及活动栏底部的外观切换与设置动作。
 ///
 /// 路由一旦登记，活动栏按钮、`⌘n` 键位、原生菜单项、命令面板条目会**同时**出现
-/// （四输出面派生自同一份动作清单）。占位路由曾按 P2-4 整体移除，现按用户要求
-/// 恢复入口：点开是「功能正在建设中」的空白页，各模块落地后换掉视图即可
-/// （SSH 终端与数据库页即按这条路径从占位页换成了真实页面）。
+/// （四输出面派生自同一份动作清单）。项目管理页曾按 P2-4 整体移除，现按用户要求
+/// 恢复入口：点开是「功能正在建设中」的空白页，该模块落地后换掉视图即可
+/// （SSH 终端、数据库、AI 助手、邮箱四页即按这条路径从占位页换成了真实页面）。
 fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
     let overview = cx.new(|_| OverviewPage::new());
     let toolbox = cx.new(ToolboxPage::new);
     let ssh = cx.new(|cx| TerminalPage::new(window, cx));
+    // 终端页动作（新建标签 / 分屏 / 字号 / 清屏 / 新建连接 / 打开 SFTP）的处理器需要
+    // 页面实体，而 `ssh` 会被 `routes` move 走 —— 这里先留一份弱引用给它。
+    let ssh_for_actions = ssh.downgrade();
     let database = cx.new(|cx| DatabasePage::new(window, cx));
     let redis = cx.new(|cx| RedisPage::new(window, cx));
     let projects = cx.new(|_| PlaceholderPage::new("项目管理", DuckIcon::Kanban));
@@ -856,6 +868,8 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
     });
     // 依赖 shell 的动作（面板 / 路由 / 侧栏）在窗口视图就绪后挂上处理器。
     actions::install_shell_handlers(cx, &shell);
+    // 终端页动作：对象是 `TerminalPage` 而不是 shell，所以单独挂。
+    actions::install_terminal_handlers(cx, &ssh_for_actions);
     // 登记主窗内两个关键视图：深链接 / 拖放 / 命令行唤起都从窗口之外触发，
     // 靠它们才能「切路由」与「打开工具」（见 `navigate_to` / `open_tool`）。
     Desktop::remember_main_views(cx, &shell, &toolbox_for_jump);

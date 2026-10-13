@@ -24,13 +24,21 @@ tracing.workspace = true
 async-imap.workspace = true
 mail-parser.workspace = true
 
+# MIME **构造**（发信带附件时的 multipart/mixed）。只在 `compose.rs` 里用，且只取
+# `mime::{MimePart, BodyPart}` 这类低层类型 —— 头部仍由 `compose.rs` 自建。
+# `default-features = false` 的理由见根 `Cargo.toml`（关掉 `gethostname`，零新增传递依赖）。
+mail-builder.workspace = true
+
 # TLS：与全仓同一套 rustls + ring，信任链用编译进二进制的 `webpki-roots`，
 # 不走系统钥匙串（与更新器 / 插件出网 / duck-db 同一份根集）。
 rustls.workspace = true
 tokio-rustls.workspace = true
 webpki-roots.workspace = true
 
-# tokio 只在 `runtime.rs` 里出现。feature 按需：多线程 runtime + 宏 + 同步原语
+# tokio 出现在两处：`runtime.rs`（自管 runtime）与 `proto/imap.rs`（连接层直接用
+# `tokio::net::TcpStream` 与 `tokio::time::timeout`，`async-imap` 的会话就跑在这条
+# 连接上）。**公共 API 上没有 tokio 派生类型**——协议层的流类型别名是 `pub(crate)`。
+# feature 按需：多线程 runtime + 宏 + 同步原语
 # + 定时器（超时/退避）+ TCP + 异步读写（rustls 握手）+ 文件（附件落盘）。
 tokio = { workspace = true, features = [
     "rt-multi-thread",
@@ -45,6 +53,13 @@ tokio = { workspace = true, features = [
 futures-util.workspace = true
 # 内联图（CID → `data:`）与 IMAP 的 base64 正文解码。
 base64.workspace = true
+
+# OAuth2（`oauth.rs`）：PKCE 的 SHA-256 与随机串走 `ring`（全仓单一 crypto 库），
+# 令牌交换 / 刷新走 `ureq`（阻塞式，喂给后台执行器）。两者**都已在依赖图内**
+# （`ring` 由 `duck-platform::vault`、`ureq` 由 `duck-db` / `duck-update` 等引入），
+# 这里只是提成直依赖，**零新增下载**。
+ring.workspace = true
+ureq.workspace = true
 
 [lints]
 workspace = true

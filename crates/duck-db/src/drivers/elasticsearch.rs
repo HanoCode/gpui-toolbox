@@ -47,6 +47,18 @@
 //! 分页走 `from` + `size`，因此受 `index.max_result_window`（缺省 10000）限制；
 //! 翻过头服务端会明确报 `Result window is too large`——本条驱动**原样透出**，不吞。
 //!
+//! # 过滤：查询 DSL，不是 `WHERE`
+//!
+//! 表浏览的过滤条件（[`TableFilter`]）在这里翻译成 ES 的查询 DSL：等值 `term`、
+//! 不等 `bool.must_not` + `term`、比较 `range`、`LIKE` → `wildcard`（`%`→`*`、`_`→`?`，
+//! 字面量里的 `*` `?` `\` 先转义）、`IS [NOT] NULL` → `exists` 的正反；多条之间取 `AND`
+//! （`bool.must`）。值一律走 JSON 编码（见 [`encode`]），不存在字符串拼接，注入无从谈起。
+//!
+//! ⚠️ **不做"类型不可查就悄悄丢掉"的过滤**。排序那条能静默按类型过滤，是因为 `order_by`
+//! 由调用方按主键自动生成——丢掉是自己修自己的问题；而过滤条件是用户一条一条点出来的，
+//! 丢掉等于把条件吃掉、结果与看到的条件对不上话。所以照实发出去：`text` 字段上的
+//! `wildcard` / `term`（默认没开 fielddata）会由服务端报错，这条驱动原样透出。
+//!
 //! # 只读档是客户端拦截
 //!
 //! Elasticsearch 没有"会话只读"开关（与 SQL Server 同理），所以只读是驱动在请求进网
@@ -73,8 +85,8 @@ use serde_json::{Map, Value as Json};
 use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
-    BatchOutcome, CatalogTable, CellEdit, InsertRow, OrderBy, PkValues, RowCount, TableIndex,
-    TableKind, TableRef, url_encode,
+    BatchOutcome, CatalogTable, CellEdit, FilterOp, InsertRow, OrderBy, PkValues, RowCount,
+    TableFilter, TableIndex, TableKind, TableRef, url_encode,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -527,6 +539,19 @@ impl ElasticsearchConnection {
     /// Elasticsearch 的索引是平铺的，没有 database / schema 这一层（见模块文档）。
     /// 返回空列表而不是编造一个假名字：界面的命名空间下拉只在条目 > 1 时才渲染，
     /// 空清单正好让它消失。
+    /// Elasticsearch 没有「库」这一层：索引名就是顶层命名。恒空。
+    ///
+    /// 返回空而不是造一个假名字：上层据此不画「数据库」节点（见 `Session.databases`
+    /// 的用法），界面就不会出现一个点了没反应的空下拉。
+    pub fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        Ok(Vec::new())
+    }
+
+    /// 无库可切：索引名直接写在语句里。空操作。
+    pub fn use_database(&mut self, _name: &str) -> Result<(), DbError> {
+        Ok(())
+    }
+
     pub fn list_schemas(&mut self) -> Result<Vec<String>, DbError> {
         Ok(Vec::new())
     }
@@ -558,16 +583,21 @@ impl ElasticsearchConnection {
     /// 列清单来自 mapping（与 [`Self::table_columns`] 同一份），所以网格的列是稳定的；
     /// 排序按列类型过滤（`_id` 不可排，见模块文档），过滤后为空退回 `_doc`。
     /// 多取一条探测「还有下一页」，而不是靠「正好 limit 条」猜。
+    ///
+    /// `filters` 非空时换成真正的查询 DSL（见模块文档「过滤」），不再恒发 `match_all`；
+    /// 命中的是**过滤后**的文档集合，`from` / `size` 随之作用于该集合。
     pub fn table_page(
         &mut self,
         table: &TableRef,
         limit: usize,
         offset: u64,
         order_by: &[OrderBy],
+        filters: &[TableFilter],
     ) -> Result<ResultSet, DbError> {
         let columns = self.table_columns(table)?;
+        let types = self.column_types(table);
         let body = serde_json::json!({
-            "query": { "match_all": {} },
+            "query": filter_clause(filters, &types)?,
             "from": offset,
             "size": limit.saturating_add(1),
             "sort": sort_clause(order_by, &columns),
@@ -1190,6 +1220,138 @@ fn sort_clause(order_by: &[OrderBy], columns: &[Column]) -> Json {
     } else {
         Json::Array(entries)
     }
+}
+
+/// 过滤子句（**纯函数**，脱开连接单测）。
+///
+/// ES 没有 SQL 的 `WHERE`，改翻成查询 DSL（见模块文档「过滤」）。没有条件时仍返回
+/// `match_all`——让调用方少一个分支，也保持「恒有一个 `query`」的请求形状。
+fn filter_clause(
+    filters: &[TableFilter],
+    types: &HashMap<String, String>,
+) -> Result<Json, DbError> {
+    let mut must: Vec<Json> = Vec::with_capacity(filters.len());
+    for filter in filters {
+        // 列名去空白后必须非空：空列名会拼出 `term: {"": …}` 这种无意义的子句，
+        // 服务端多半按「零命中」处理——那是最难发现的一类错，就地拒掉。
+        let column = filter.column.trim();
+        if column.is_empty() {
+            return Err(DbError::Query("filter column must not be empty".into()));
+        }
+        let type_name = types.get(column).map(String::as_str);
+        must.push(match filter.op {
+            FilterOp::Eq => term_clause(column, filter_value(filter, type_name)?),
+            // 不等 = 「不是这个值」，用 must_not 包一层（`term` 本身只有正面语义）。
+            FilterOp::NotEq => not_clause(term_clause(column, filter_value(filter, type_name)?)),
+            FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte => {
+                let key = match filter.op {
+                    FilterOp::Gt => "gt",
+                    FilterOp::Gte => "gte",
+                    FilterOp::Lt => "lt",
+                    _ => "lte",
+                };
+                let bounds = Json::Object(Map::from_iter([(
+                    key.to_owned(),
+                    filter_value(filter, type_name)?,
+                )]));
+                Json::Object(Map::from_iter([(
+                    "range".to_owned(),
+                    Json::Object(Map::from_iter([(column.to_owned(), bounds)])),
+                )]))
+            }
+            FilterOp::Like => {
+                let pattern = filter
+                    .value
+                    .as_deref()
+                    .ok_or_else(|| missing_value(filter))?;
+                let spec = Json::Object(Map::from_iter([(
+                    "value".to_owned(),
+                    Json::String(like_to_wildcard(pattern)),
+                )]));
+                Json::Object(Map::from_iter([(
+                    "wildcard".to_owned(),
+                    Json::Object(Map::from_iter([(column.to_owned(), spec)])),
+                )]))
+            }
+            // `IS NULL` 在 ES 里的对应物是「这个字段没有值」——`exists` 的反面。
+            // 注意 ES 把显式的 `null` 也当作「不存在」（不索引 null），语义正好对上。
+            FilterOp::IsNull => not_clause(exists_clause(column)),
+            FilterOp::IsNotNull => exists_clause(column),
+        });
+    }
+    if must.is_empty() {
+        return Ok(serde_json::json!({ "match_all": {} }));
+    }
+    Ok(Json::Object(Map::from_iter([(
+        "bool".to_owned(),
+        Json::Object(Map::from_iter([("must".to_owned(), Json::Array(must))])),
+    )])))
+}
+
+/// 单个字段的 `term` 子句。
+fn term_clause(column: &str, value: Json) -> Json {
+    Json::Object(Map::from_iter([(
+        "term".to_owned(),
+        Json::Object(Map::from_iter([(column.to_owned(), value)])),
+    )]))
+}
+
+/// 单个字段的 `exists` 子句。
+fn exists_clause(column: &str) -> Json {
+    Json::Object(Map::from_iter([(
+        "exists".to_owned(),
+        Json::Object(Map::from_iter([(
+            "field".to_owned(),
+            Json::String(column.to_owned()),
+        )])),
+    )]))
+}
+
+/// 把一个子句取反（`bool.must_not`，单个元素）。
+fn not_clause(clause: Json) -> Json {
+    Json::Object(Map::from_iter([(
+        "bool".to_owned(),
+        Json::Object(Map::from_iter([(
+            "must_not".to_owned(),
+            Json::Array(vec![clause]),
+        )])),
+    )]))
+}
+
+/// 过滤条件的值 → JSON 值（缺值时给出带列名的报错）。
+fn filter_value(filter: &TableFilter, type_name: Option<&str>) -> Result<Json, DbError> {
+    let value = filter
+        .value
+        .as_deref()
+        .ok_or_else(|| missing_value(filter))?;
+    bind_value(Some(value), type_name)
+}
+
+/// 「这个操作符需要一个值，但没给」的统一报错。
+fn missing_value(filter: &TableFilter) -> DbError {
+    DbError::Query(format!("filter on {:?} needs a value", filter.column))
+}
+
+/// SQL `LIKE` 模式 → ES `wildcard` 模式。
+///
+/// `%` → `*`（任意长度）、`_` → `?`（单个字符），与 SQL 的语义逐字对应；用户模式里
+/// **本来就是通配符的 `*` `?` `\` 先转义**，否则一个字面量星号会变成通配、把过滤结果
+/// 悄悄放宽。`REGEX_ESCAPES` 那种「正则元字符」清单在这里不适用——wildcard 只有三个
+/// 元字符，多转义会有反效果。
+fn like_to_wildcard(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    for ch in pattern.chars() {
+        match ch {
+            '%' => out.push('*'),
+            '_' => out.push('?'),
+            '*' | '?' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// 一个 JSON 单元格 → 统一值模型（按 mapping 类型名分派）。
@@ -1864,6 +2026,120 @@ mod tests {
             &columns,
         );
         assert_eq!(mixed, serde_json::json!([{"ts": "desc"}, {"tag": "asc"}]));
+    }
+
+    /// 过滤：无条件退回 `match_all`，有条件拼成 `bool.must` 且**值走 JSON 编码**。
+    #[test]
+    fn filters_become_query_dsl() {
+        let types = HashMap::from([
+            ("tag".to_owned(), "keyword".to_owned()),
+            ("score".to_owned(), "long".to_owned()),
+            ("ts".to_owned(), "date".to_owned()),
+        ]);
+
+        // 无条件是 `match_all`（保持「恒有一个 query」的请求形状）。
+        assert_eq!(
+            filter_clause(&[], &types).expect("无条件"),
+            serde_json::json!({ "match_all": {} })
+        );
+
+        // 等值 / 不等 / 比较 / LIKE / IS [NOT] NULL 各一档，顺序即 `must` 的顺序。
+        let clause = filter_clause(
+            &[
+                TableFilter::new("tag", FilterOp::Eq, "rust"),
+                TableFilter::new("score", FilterOp::Gte, "9"),
+                TableFilter::new("tag", FilterOp::Like, "a%b_"),
+                TableFilter::null("ts", FilterOp::IsNotNull),
+            ],
+            &types,
+        )
+        .expect("合法过滤");
+        assert_eq!(
+            clause,
+            serde_json::json!({
+                "bool": {
+                    "must": [
+                        {"term": {"tag": "rust"}},
+                        {"range": {"score": {"gte": 9}}},
+                        {"wildcard": {"tag": {"value": "a*b?"}}},
+                        {"exists": {"field": "ts"}},
+                    ]
+                }
+            })
+        );
+
+        // 不等取反；IS NULL 是 exists 的反面。
+        let negated = filter_clause(
+            &[
+                TableFilter::new("tag", FilterOp::NotEq, "old"),
+                TableFilter::null("ts", FilterOp::IsNull),
+            ],
+            &types,
+        )
+        .expect("合法过滤");
+        assert_eq!(
+            negated,
+            serde_json::json!({
+                "bool": {
+                    "must": [
+                        {"bool": {"must_not": [{"term": {"tag": "old"}}]}},
+                        {"bool": {"must_not": [{"exists": {"field": "ts"}}]}},
+                    ]
+                }
+            })
+        );
+    }
+
+    /// 过滤的注入面：值是用户输入，必须原样落在 JSON 字符串里，不进 DSL 结构。
+    #[test]
+    fn filter_values_are_never_interpreted_as_dsl() {
+        let types = HashMap::from([("tag".to_owned(), "keyword".to_owned())]);
+        let clause = filter_clause(
+            &[TableFilter::new(
+                "tag",
+                FilterOp::Eq,
+                "\"}],\"match_all\":{},\"x\":{\"a\":\"",
+            )],
+            &types,
+        )
+        .expect("合法过滤");
+        // 整串仍是一个 `term` 的值——没有任何一层被顶开。
+        let must = clause
+            .get("bool")
+            .and_then(|value| value.get("must"))
+            .and_then(Json::as_array)
+            .expect("bool.must");
+        assert_eq!(must.len(), 1);
+        assert_eq!(
+            must[0]
+                .get("term")
+                .and_then(|value| value.get("tag"))
+                .and_then(Json::as_str),
+            Some("\"}],\"match_all\":{},\"x\":{\"a\":\"")
+        );
+    }
+
+    /// 过滤的输入校验：空列名、缺值、以及 `LIKE` 的缺值都要**当场报错**。
+    #[test]
+    fn filters_reject_empty_columns_and_missing_values() {
+        let types = HashMap::new();
+        assert!(filter_clause(&[TableFilter::new("  ", FilterOp::Eq, "x")], &types).is_err());
+        assert!(filter_clause(&[TableFilter::null("a", FilterOp::Eq)], &types).is_err());
+        assert!(filter_clause(&[TableFilter::null("a", FilterOp::Like)], &types).is_err());
+        // `IS NULL` / `IS NOT NULL` 不需要值。
+        assert!(filter_clause(&[TableFilter::null("a", FilterOp::IsNull)], &types).is_ok());
+    }
+
+    /// `LIKE` → `wildcard`：`%`/`_` 是通配，用户自己的元字符先转义。
+    #[test]
+    fn like_patterns_become_wildcards() {
+        assert_eq!(like_to_wildcard("a%b"), "a*b");
+        assert_eq!(like_to_wildcard("a_b"), "a?b");
+        // 用户输入的字面星号 / 问号 / 反斜杠不能变成通配。
+        assert_eq!(like_to_wildcard("100*"), "100\\*");
+        assert_eq!(like_to_wildcard("a?b"), "a\\?b");
+        assert_eq!(like_to_wildcard("a\\b"), "a\\\\b");
+        assert_eq!(like_to_wildcard("no wildcards"), "no wildcards");
     }
 
     /// 路径取值：嵌套对象、数组、缺字段。

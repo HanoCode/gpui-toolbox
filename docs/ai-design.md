@@ -176,8 +176,14 @@ pub const TEMPLATES: &[ProviderTemplate] = &[ /* 见下表 */ ];
   **拉取 `/models` 自动发现**放 M2（`oxideterm-ai/providers/discovery*.rs` 有完整参考）。
 - **URL 回退**：M2 加入「`{base}/chat/completions` 与 `{base}/v1/chat/completions` 互试」逻辑
   （用户常漏填 `/v1`）——`oxideterm-ai/src/streaming/openai.rs` 有该逻辑。
-- **Anthropic / Gemini 原生协议**：接口留出（`provider` 模块按 `protocol` 字段分派），
-  M1 不实现，UI 上该二模板**灰显并说明「M2 接入」**——不做「静默按 OpenAI 协议发过去然后失败」。
+- **Anthropic 原生协议**：**已实现（2026-10-13）**，见 `crates/duck-ai/src/anthropic.rs`。
+  `provider` 按 `protocol_of(profile)`（由 `template_id` 推导，**不给档案加字段**——`ProviderProfile`
+  的字面量构造点横跨三个 crate，加字段要全部同步）分派到原生 `POST /v1/messages`：
+  鉴权 `x-api-key` + `anthropic-version`、`system` 提顶层、`max_tokens` 必填、工具结果落
+  `user` 消息的 `tool_result` 块、工具 schema 用 `input_schema`、流式用具名事件
+  （`message_start` / `content_block_delta` / `message_delta` …）累积。模板随之从「灰显」转为**可选中**。
+- **Gemini 原生协议**：仍未实现。`is_available()` 为 false → 不出现在模板下拉里；
+  即使手写 kv 造出 gemini 档案，请求也拿到明确的 `Unsupported`，**不静默走 OpenAI 协议发出去**。
 
 ### 4.4 配置与凭据（厂商设置放「设置」页）
 
@@ -399,7 +405,7 @@ pub struct ToolOutcome {
 | --- | --- | --- |
 | **M1 可用** | `duck-ai` crate（`wire` / `sse` / `provider` / `secret` / `agent` / `store`，**不含 `tool` / `kb`**）+ `pages/assistant.rs`（三栏、流式、Markdown、多会话、持久化）+ 设置页 AI 分类（厂商 CRUD、凭据、默认模型）+ 登记 12 处 + i18n | **「新建会话 → 提问 → 逐字出字 → 重启后仍在」全链路通**；`cargo test -p duck-ai` 覆盖 `sse` 解析与模板解析（含脏数据用例）；Ctrl 级取消可用 |
 | **M2 工具与检索** | `tool.rs`（协议 + 注册表 + 分级截断 + 审批闸门）+ 四个工具（`read_file` / `list_dir` / `search_kb` / `run_sql_readonly`）+ `kb.rs`（FTS5 索引与检索）+ 思考块折叠 + 工具调用卡片 + 模型列表自动发现 | 提问能触发工具调用并展示卡片；只读 SQL 自动执行进结果网格、写语句退回编辑器；知识库能索引指定目录并返回带出处的片段 |
-| **M3 深度集成** | 全局「问 AI」（选中文本 / 报错信息 → 新会话）、停止 / 重试 / 编辑重发、`ai.db` 纳入备份导出、Anthropic / Gemini 原生协议、日志索引、多模型对比 | 从任意页面把选中内容一键送入 AI；备份能带走会话历史 |
+| **M3 深度集成** | 全局「问 AI」（选中文本 / 报错信息 → 新会话）、停止 / 重试 / 编辑重发、`ai.db` 纳入备份导出、Gemini 原生协议（Anthropic 已于 2026-10-13 落地）、日志索引、多模型对比 | 从任意页面把选中内容一键送入 AI；备份能带走会话历史 |
 
 **风险提示（诚实口径）**：M1 的难点集中在 §4.1 的流式通路（本仓无先例，`terminal_canvas`
 的轮询范式是最近似的参考，但它不是流式文本）；M2 的难点是审批闸门与 `duck-db::sqlintel`
@@ -458,8 +464,9 @@ pub struct ToolOutcome {
 3. **多了一个 kv 键 `ai_config_rev`**。原设计用 `providers` 的 `PartialEq` 判断
    「设置页改过没有」，但**只补一个 API key 不会让档案集合变化**；版本号让助手页
    每帧只比一个整数。
-4. **模板下拉只列 `is_available()` 的模板**。Anthropic / Gemini 若可选中、可保存，
-   要到第一次发请求才失败——正是 §4.3 点名不许的静默失败。
+4. **模板下拉只列 `is_available()` 的模板**。「可选中、可保存，却要到第一次发请求才失败」
+   正是 §4.3 点名不许的静默失败。**2026-10-13 更新**：Anthropic 原生协议落地后
+   `is_available()` 已含它，故它**出现在下拉里**；Gemini 仍未实现，仍被这条过滤掉。
 5. **`MessageScroller` 的行渲染改用 `TextView::markdown(id, …)`**，不用便利函数
    `markdown(…)`：后者以 `ElementId::CodeLocation` 为 id，同一处代码渲染的每一行会撞 id。
 
@@ -469,7 +476,8 @@ pub struct ToolOutcome {
   **本轮暂缓的原因**：`crates/duck-app/src/pages/db.rs` 正被另一会话持续改写
   （mtime 以秒为单位变化，且已在用 `render_ai_bar`），两者共面，此时改 `duck-db/src/ai.rs`
   会与其在编成果互冲。**这是一处明确的技术债，不是遗漏。**
-- **M2 / M3 全部内容**（工具系统、FTS5 知识库、Anthropic / Gemini 原生协议）。
+- **M2 / M3 全部内容**（工具系统、FTS5 知识库、**Gemini** 原生协议；
+  Anthropic 原生协议已于 2026-10-13 落地，见 §4.3）。
 - **真机验证清单**（无头测不到，只能手跑）：
   1. 流式逐字输出时 `MessageScroller` 是否稳在底部（§8 第 5 条）；
   2. 中文输入法在输入框里的组合串是否会被流式 notify 打断；
@@ -534,11 +542,70 @@ pub struct ToolOutcome {
 
 ### 10.4 未完成（下一轮）
 
-- **`run_sql_readonly`（§4.6 的第四个工具）暂缓**。它需要**活着的数据库会话**，
-  而会话句柄在 `DatabasePage` 内部，`duck-db/src/config.rs` 的 `ConnectionConfig` 只有元数据，
-  没有可查的会话注册表。等 `db.rs` 收口后与下一项一起接。
-- **`duck-db::ai` 收敛为 `duck-ai` 的薄适配层**（§4.9，登记清单第 10、11 项）。
-  仍与并发会话共面（`db.rs`、`duck-db/src/drivers/*` 正被另一会话改写），继续暂缓。
+- ~~**`run_sql_readonly`（§4.6 的第四个工具）暂缓**~~ **已落地，见 §11.1**。
+- ~~**`duck-db::ai` 收敛为 `duck-ai` 的薄适配层**~~ **已落地，见 §11.1**。
 - **M3**：全局「问 AI」、停止 / 重试 / 编辑重发、`ai.db` 纳入备份、
-  Anthropic / Gemini 原生协议、日志索引、多模型对比。
+  **Gemini** 原生协议（Anthropic 已于 2026-10-13 落地）、日志索引、多模型对比。
 - **真机验证**：§9.3 的四条仍然有效（无头测不到）。
+
+---
+
+## 11. 落地状态（M2 补充轮：第四个工具 + 重试退避 + 上下文压缩）
+
+> §10 的三条未完成项在本轮收口。**未完成项照旧写在 §11.4。**
+
+### 11.1 已落地
+
+| 落点 | 内容 |
+| --- | --- |
+| `crates/duck-app/src/ai_tools.rs`（扩） | `run_sql_readonly`——§4.6 的第四个只读工具（三个只读工具 → 四个）；**会话目录**（见 11.2-1）；`render_exec_outcome` 把 `ExecOutcome` 折成 `ToolDetail::Table`，无结果集时**如实说明** `no rows returned (N statement(s) run)` | 
+| `crates/duck-app/src/pages/db.rs`（外科手术 4 行） | 连接成功后 `publish_sql_session`、`close_tab` 后 `retract_sql_session`；摘掉 `ReadOnlySession` 三处 `#[allow(dead_code)]` | 
+| `crates/duck-ai/src/provider.rs`（扩） | `RetryPolicy`（默认 3 次 / 500ms 起 / 8s 封顶）+ `is_retryable` + `wait_backoff`；`stream_chat_with_retry` / `complete_with_usage_with_retry`；7 个单测 | 
+| `crates/duck-ai/src/compaction.rs`（新） | 上下文压缩：`CompactionPolicy` / `CompactionReport` / `compact_in_place`；10 个单测 | 
+| `crates/duck-ai/src/agent.rs`（扩） | `ChatOptions::compaction` / `TurnOutcome::compaction` / `AgentOutcome::compaction`；每轮 merge | 
+| `crates/duck-app/src/pages/assistant.rs`（扩） | 状态栏新增「已压缩较早上下文（省略 {} 条消息 / 裁剪 {} 条工具结果）」 | 
+
+### 11.2 关键实测结论（写下来免得下次重踩）
+
+1. **⚠️ 工具层拿不到 gpui `Global`，会话目录必须用 `OnceLock<Mutex<BTreeMap>>`**。
+   工具在 `background_executor` 的后台线程上 `run`，那里**没有 `cx`**，所以
+   `db.rs` 里 `DbOpGate` 那种 `Global` 范式在 `ai_tools.rs` 里用不了。
+2. **⚠️ 会话句柄用「闭包」而不是抬可见性**：`type SqlRunner = Arc<dyn Fn(&str, usize) -> Result<ExecOutcome, DbError> + Send + Sync + 'static>`。
+   把 `pages::db::ReadOnlySession` 抬成 `pub` 也能通，但那是为工具层破页面封装；
+   闭包句柄既保住封装，也让目录的键取自句柄自己的 `id()`——**键与句柄不会漂移**。
+3. **⚠️ 流式重试必须有「已提交」标志**：`stream_chat_once(..., committed: &mut bool)`，
+   `*committed = true` 放在 `sink(AiEvent::Started)` **之前**。
+   语义：**已开始吐内容后失败一律不重试**（否则会重复输出），直接 `Err` 上抛；
+   只有「还没吐任何东西」的瞬时失败才退避重试。
+4. **退避必须可取消且不能睡死**：`wait_backoff` 把延迟切成 **50ms 分片**，每片查一次
+   `AtomicBool`；取消即返回 `false`。`duck-ai` **零 tokio** 纪律不变（用 `thread::sleep`）。
+5. **上下文压缩第一步不丢消息条数**：先裁「近端窗口之外」「过长（> `tool_result_min_chars`）」的
+   `role == Tool` 消息**中段**（保头 + 尾 + `[... N characters omitted ...]`）。
+   因为**不改消息条数 ⇒ 天然不破坏 `ToolUse` / `ToolResult` 配对**。
+   第二步才丢整段，且切点必须落在 `is_balanced_cut`（ToolUse / ToolResult 计数相等）上。
+6. **`Thinking` 不计入 token 预算**（不回灌给模型，占预算会白白挤掉有效上下文）。
+7. **压缩作用在历史副本上**：`run_turn_with` 对 `messages.to_vec()` 压缩，
+   **调用方历史与库里历史保持原样**——否则一次压缩就把用户的历史改掉了。
+
+### 11.3 相对设计文档的**偏离**（都是有理由的）
+
+1. **§4.6 的「按语句证明只读 → 自动放行」落在了内核而不是审批闸门**：写权限的闸门是
+   `duck-db` 的 `execute_read_only`（先 `split_statements`，**任一条语句证明不了只读就整段不执行**），
+   工具因此可以整档标 `ToolRisk::ReadOnly`。模型最多读到用户已连库里的数据——属用户自己主动打开的资源。
+2. **`run_sql_readonly` 在无工作目录时也注册**：不带 `connection` 参数时**回连接清单而不是报错**，
+   用来引导模型选一个。这是「无连接 ≠ 不能用工具」。
+3. **压缩预算暂为常量**（`CompactionPolicy::default()`），未做成设置项。
+4. **首版压缩不调 LLM 做摘要**：只做「裁旧工具结果 + 丢最旧平衡段 + 显式省略说明」，
+   语义损失靠 `[Note: …]` 与 `[... N characters omitted ...]` 标记**可解释、可回溯**。
+5. **重试策略暂不可配**：`RetryPolicy::default()` 硬编码在两个薄包装里；
+   `*_with_retry` 变体已公开，将来要可配只需调用点传参，不必改内核。
+
+### 11.4 未完成（下一轮）
+
+- **重试/压缩暴露到设置页**：需要新增 `AiSettings` 字段（`Option` + `#[serde(default)]`）。
+- **客户端 token 估算**、**@文件引用**、**工具审批确认 UI**、**代码块复制**、
+  **`ai.db` 纳入备份**、**Gemini 原生协议**（Anthropic 已于 2026-10-13 落地）。
+- **真机验证**：§9.3 的四条仍然有效（无头测不到）。
+- ⚠️ **`duck-ai` 的 KB 测试有跨秒共享临时目录的竞态**（`kb.rs` 的 `seeded_index()` 用
+  `now_secs()` 命名目录，4 个测试并行会撞进同一个目录 → 偶发 `search` 返回空）。
+  已定位并派修，**修复后须连跑 10 次验证**（修偶发问题不能靠跑一次绿）。

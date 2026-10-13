@@ -327,21 +327,50 @@ fn run_plugin_tool(tool_id: &str, window: &mut Window, cx: &mut App) {
     // 真正生效的是「清单声明 ∩ 用户授予」——在派发前算好并随任务带走：
     // 后台闭包是 `'static` 的，读不到 `cx`。
     let granted = granted_capabilities(cx, &manifest.id);
+    // 审计要的两个事实（跑的是谁、插件 id）在**派发前**取好：后台闭包是 `'static` 的。
+    // 插件能读文件、能出网，它是这张表里唯一一个「跑的是别人写的代码」的类别 ——
+    // 记下来才知道某次网络请求 / 文件写入是哪次点击放出去的。
+    let plugin_id = manifest.id.clone();
     let execution = cx.background_executor().spawn(async move {
         duck_plugin_js::run_tool(&dir, &data_dir, &manifest, &granted, &tool_id_for_run, "")
     });
     cx.spawn(async move |cx| {
         let result = execution.await;
         cx.update(move |cx| {
-            crate::update::on_notify_window(cx, move |window, cx| match result {
-                Ok(outcome) => emit_outcome(name, outcome, window, cx),
-                Err(error) => {
-                    tracing::warn!(tool = %tool_id_for_log, %error, "plugin tool execution failed");
-                    duck_components::notify::error(
-                        trf(cx, "插件执行失败：{}", &[&error.to_string()]),
-                        window,
-                        cx,
-                    );
+            crate::update::on_notify_window(cx, move |window, cx| {
+                // 译好的工具名先落局部变量：`record_event` 要可变借 `cx`，
+                // 参数里再套一个 `trf(cx, …)` 会同时借两次（E0502）。
+                let tool = tr(cx, name);
+                match result {
+                    Ok(outcome) => {
+                        let detail = trf(cx, "调用插件工具：{}", &[tool]);
+                        crate::audit::record_event(
+                            cx,
+                            crate::audit::AuditKind::Plugin,
+                            crate::audit::action::INVOKE,
+                            crate::audit::AuditOutcome::Ok,
+                            &plugin_id,
+                            detail,
+                        );
+                        emit_outcome(name, outcome, window, cx);
+                    }
+                    Err(error) => {
+                        tracing::warn!(tool = %tool_id_for_log, %error, "plugin tool execution failed");
+                        let detail = trf(cx, "插件执行失败：{}", &[&error.to_string()]);
+                        crate::audit::record_event(
+                            cx,
+                            crate::audit::AuditKind::Plugin,
+                            crate::audit::action::INVOKE,
+                            crate::audit::AuditOutcome::Failed,
+                            &plugin_id,
+                            detail,
+                        );
+                        duck_components::notify::error(
+                            trf(cx, "插件执行失败：{}", &[&error.to_string()]),
+                            window,
+                            cx,
+                        );
+                    }
                 }
             });
         });

@@ -279,6 +279,54 @@ pub(crate) struct StoredProfile {
     /// 不随数据导出走）——把数据库文件拷到别的机器读不出任何口令。
     #[serde(default)]
     pub(crate) password: Option<String>,
+    /// 端口转发（`-L` / `-R` / `-D`），按用户添加的顺序。
+    #[serde(default)]
+    pub(crate) forwards: Vec<StoredForward>,
+    /// 是否把本机 ssh-agent 转发给远端（OpenSSH `ForwardAgent`）。
+    ///
+    /// 与 [`Self::auth`] 是**两件事**：`auth` 决定「本机→远端这一跳怎么证明身份」，
+    /// 本项决定「**远端**能不能用本机 agent 里的密钥」（从跳板机再连第三台机器时用）。
+    /// 所以它与认证方式正交，任何一种认证都能开。
+    #[serde(default)]
+    pub(crate) agent_forwarding: bool,
+}
+
+/// 一条端口转发的**持久化形态**（随连接档案落 `kv: ssh_profiles`）。
+///
+/// 端口一律存字符串而不是 `u16`：旧存档 / 手改过的 JSON 里可能是空串或
+/// `"abc"`，用 `u16` 会让**整份档案读不出来**（一个字段坏掉 = 用户的连接列表
+/// 集体消失）。解析失败在这里退化成「这一条转发不生效」，与其他字段同一套容错。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StoredForward {
+    /// 方向（[`duck_ssh::ForwardKind::value`]）：`local` / `remote` / `dynamic`。
+    #[serde(default)]
+    pub(crate) kind: String,
+    /// 绑定地址（留空用 ssh 默认）。
+    #[serde(default)]
+    pub(crate) bind: String,
+    /// 绑定 / SOCKS 端口。
+    #[serde(default)]
+    pub(crate) bind_port: String,
+    /// 目标地址（动态转发不用）。
+    #[serde(default)]
+    pub(crate) host: String,
+    /// 目标端口（动态转发不用）。
+    #[serde(default)]
+    pub(crate) host_port: String,
+}
+
+/// 由持久化形态还原成内核的转发配置；方向认不出、端口解析不出时返回 `None`
+///（丢掉这一条，**不猜**成某一种方向）。
+#[must_use]
+pub(crate) fn forward_from_stored(stored: &StoredForward) -> Option<duck_ssh::PortForward> {
+    let kind = duck_ssh::ForwardKind::from_value(&stored.kind)?;
+    Some(duck_ssh::PortForward {
+        kind,
+        bind: stored.bind.trim().to_owned(),
+        bind_port: stored.bind_port.trim().parse().unwrap_or(0),
+        host: stored.host.trim().to_owned(),
+        host_port: stored.host_port.trim().parse().unwrap_or(0),
+    })
 }
 
 /// 连接档案的存储键。
@@ -293,10 +341,11 @@ pub(crate) const LOCAL_SHELL_ID: &str = "local-shell";
 /// 不翻译，只有内置项要走查表（见 [`group_views`]）。
 pub(crate) const LOCAL_SHELL_LABEL: &str = "本地 shell";
 
-/// 连接分组的固定骨架。
+/// 连接分组的**内置**骨架。
 ///
-/// 分组**是产品结构不是用户数据**（不做「自建分组」这层复杂度）：三档固定，
-/// 用户档案按 `group` 字段落位。缺省分组是「生产环境」，与新建弹窗的默认选中一致。
+/// 内置三档固定（用户档案按 `group` 字段落位，缺省「生产环境」）；在此之外，
+/// 档案里出现过的其他 `group` 值会派生成**自定义分组**（见 [`group_views`]）——
+/// 分组名是用户数据不是文案，原样显示、不进 i18n。
 pub(crate) const GROUP_DEFS: [(&str, &str, DuckIcon); 3] = [
     ("prod", "生产环境", DuckIcon::Layers),
     ("staging", "测试环境", DuckIcon::Layers),
@@ -319,6 +368,21 @@ pub(crate) fn save_profiles(cx: &App, profiles: &[StoredProfile]) {
     }
 }
 
+/// 把一条档案移进指定分组（左栏「拖连接换分组」的落点）。
+///
+/// 找不到档案或本就在目标分组时返回 `false`（无事发生，界面也不用重绘）；
+/// 返回 `true` 表示确有迁移，调用方负责落盘。
+pub(crate) fn move_profile_to_group(profiles: &mut [StoredProfile], id: &str, group: &str) -> bool {
+    let Some(profile) = profiles.iter_mut().find(|profile| profile.id == id) else {
+        return false;
+    };
+    if profile.group == group {
+        return false;
+    }
+    profile.group = group.to_owned();
+    true
+}
+
 /// 由持久化档案派生认证细节文案（i18n 源串）。
 fn auth_detail(profile: &StoredProfile) -> String {
     match AuthKind::from_value(&profile.auth) {
@@ -332,9 +396,11 @@ fn auth_detail(profile: &StoredProfile) -> String {
 /// 一个连接分组。
 pub(crate) struct Group {
     /// 分组标识（折叠态与新建连接的落点都用它）。
-    pub(crate) id: &'static str,
-    /// 分组名（i18n 源串）。
-    pub(crate) label: &'static str,
+    ///
+    /// 自定义分组没有静态 id：**分组名即 id**（用户数据不翻译，名字就是身份）。
+    pub(crate) id: String,
+    /// 分组显示名（已就绪，调用方直接用；内置组在这里完成 i18n）。
+    pub(crate) label: String,
     /// 分组图标。
     pub(crate) icon: DuckIcon,
     /// 组内连接。
@@ -381,16 +447,33 @@ pub(crate) fn local_shell_view() -> Connection {
     }
 }
 
-/// 连接清单视图：固定分组骨架 + 真实档案。
+/// 档案里出现过的**自定义**分组名（不在 [`GROUP_DEFS`] 内），按首次出现排序。
+///
+/// 分组的存在性由档案派生：一条连接都没有的自定义分组不留尸体 ——
+/// 它本来就只因为「有连接落在这里」而存在。
+#[must_use]
+pub(crate) fn custom_group_names(profiles: &[StoredProfile]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for profile in profiles {
+        if GROUP_DEFS.iter().all(|(id, _, _)| *id != profile.group)
+            && !names.iter().any(|name| name == &profile.group)
+        {
+            names.push(profile.group.clone());
+        }
+    }
+    names
+}
+
+/// 连接清单视图：内置分组骨架 + 自定义分组 + 真实档案。
 ///
 /// **入参就是真源**（页面的 `profiles` 字段）——本函数只做「贴标签 + 塞内置项」，
 /// 不碰存储、不碰状态。
 ///
-/// `lang` 只用来翻译**内置项**的名字：用户自己取的名字（`profile.label`）是数据、
-/// 不是文案，跟着语言变才是 bug。
+/// 内置组的名字走 i18n；自定义分组的名字是用户数据（`profile.group` 原文），
+/// 跟着语言变才是 bug —— 与连接名同一套口径。
 #[must_use]
 pub(crate) fn group_views(profiles: &[StoredProfile], lang: Lang) -> Vec<Group> {
-    GROUP_DEFS
+    let mut views: Vec<Group> = GROUP_DEFS
         .into_iter()
         .map(|(id, label, icon)| {
             let mut items: Vec<Connection> = profiles
@@ -405,13 +488,27 @@ pub(crate) fn group_views(profiles: &[StoredProfile], lang: Lang) -> Vec<Group> 
                 items.insert(0, shell);
             }
             Group {
-                id,
-                label,
+                id: id.to_owned(),
+                label: t(lang, label).to_owned(),
                 icon,
                 items,
             }
         })
-        .collect()
+        .collect();
+    // 自定义分组排在内置组后面：内置三档是产品骨架，位置不因用户数据漂移。
+    for name in custom_group_names(profiles) {
+        views.push(Group {
+            items: profiles
+                .iter()
+                .filter(|profile| profile.group == name)
+                .map(connection_view)
+                .collect(),
+            id: name.clone(),
+            label: name,
+            icon: DuckIcon::Layers,
+        });
+    }
+    views
 }
 
 /// SFTP / 目录浏览的面板侧别。
@@ -445,9 +542,15 @@ impl Side {
         matches!(self, Self::Local)
     }
 
-    /// 主目录。本地取 `$HOME`；远端在 SFTP 会话建立后由远端上报
-    ///（`Session::cwd()`），**未连接时是空串** —— 空串即「没有可浏览的目录」，
-    /// 界面据此走未连接态，不会把用户导到一个不存在的路径上。
+    /// 主目录。本地取 `$HOME`；远端**返回空串**。
+    ///
+    /// 远端家目录只有远端自己知道（`root` 与 `deploy` 不是同一个），我们不猜：
+    /// 空串表示「远端目录尚未确定」，由列举那条路在远端展开 `~`
+    ///（`duck_ssh::list_dir` 的前导脚本），远端再把 `pwd -P` 的结果报回来，
+    /// 面板随即换成绝对路径（见 `TerminalPage::apply_remote_listing`）——
+    /// 此前的注释写的是「由 `Session::cwd()` 上报」，代码里从来没有这个上报。
+    /// 空串同时也是所有远端写操作的前置检查（见 `run_remote_mutation` 的调用点）：
+    /// 路径没确定就不该拿一个猜的目录去 `mkdir` / `rm`。
     pub(crate) fn home(self) -> String {
         match self {
             Self::Local => std::env::var("HOME").unwrap_or_else(|_| "/".to_owned()),
@@ -699,10 +802,14 @@ pub(crate) struct Transfer {
     pub(crate) name: String,
     /// 进度（0..=1）。
     ///
-    /// **只有 0 和 1 两个取值**：`scp` 不报中间进度，而插值画一个「看起来在动」
-    /// 的进度条就是编数据 —— 用户会据此判断「还有多久」，那是个假答案。
-    /// 真正带进度的传输要换 `sftp` 协议自己分块收发（M3 的后续项）。
+    /// 由 `done / total` 算出来（`total` 未知时恒为 0，界面显示「不确定」）。
+    /// 真字节数来自**轮询落点大小**：上传时问远端的 `wc -c` / `du -sk`，
+    /// 下载时问本地文件的长度 —— `scp` 自己不报进度，但落点是单调增长的。
     pub(crate) progress: f32,
+    /// 本次传输的总字节数；`None` = 量不到（分母未知），进度按「不确定」显示。
+    pub(crate) total: Option<u64>,
+    /// 已传输的字节数（最近一次轮询到的落点大小）。
+    pub(crate) done: u64,
     /// 状态。
     pub(crate) state: TransferState,
     /// 是否上传（决定箭头方向）。
@@ -712,12 +819,27 @@ pub(crate) struct Transfer {
 }
 
 /// 一次传输的状态。
+///
+/// 流转路径（终态是 `Done` / `Cancelled` / `Failed`）：
+///
+/// ```text
+/// Queued ──▶ Active ──▶ Done
+///              │  └──▶ Failed ──(重试)──▶ Active
+///              └──(取消)──▶ Cancelling ──▶ Cancelled
+/// ```
+///
+/// `Cancelling` 是**真的在等进程退出**（`scp` 被 `kill` 后要几十毫秒才落地），
+/// 不是装饰态：界面据此把「取消」按钮换成不可点的「取消中」，避免连点。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransferState {
     /// 已入队，还没开始。
     Queued,
-    /// 正在传。
-    Running,
+    /// 正在传（进度轮询在跑）。
+    Active,
+    /// 已请求取消，等 `scp` 进程退出。
+    Cancelling,
+    /// 已取消（用户主动终止）。
+    Cancelled,
     /// 传完。
     Done,
     /// 失败了（网络断、远端满、没权限），原因见 `Transfer::reason`。
@@ -729,10 +851,60 @@ impl TransferState {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Queued => "排队中",
-            Self::Running => "传输中",
+            Self::Active => "传输中",
+            Self::Cancelling => "取消中",
+            Self::Cancelled => "已取消",
             Self::Done => "已完成",
             Self::Failed => "失败",
         }
+    }
+
+    /// 是否在进行中（进度轮询 / 可取消）。
+    pub(crate) const fn is_active(self) -> bool {
+        matches!(self, Self::Active | Self::Cancelling)
+    }
+
+    /// 是否终态（不会再变）。
+    pub(crate) const fn is_terminal(self) -> bool {
+        matches!(self, Self::Cancelled | Self::Done | Self::Failed)
+    }
+
+    /// 一次状态迁移是否合法（**迁移表的唯一出处**，纯函数、可单测）。
+    ///
+    /// 合法路径：
+    ///
+    /// ```text
+    /// Queued ─▶ Active ─▶ Done
+    ///    │         ├──▶ Failed ─(重试)─▶ Queued
+    ///    └──▶ Failed
+    ///              └──(取消)──▶ Cancelling ─▶ Cancelled
+    /// ```
+    ///
+    /// 恒等（`from == to`）一律算合法：重复落同一状态是无害的空操作，界面每帧也可能
+    /// 重放同一个结论。**非法迁移只记一条 warn 仍照常应用**（见 `mark_transfer`）——
+    /// 状态机在这里是「软校验」：宁可状态照常前进，也不让它卡死在一个不动的格子上。
+    pub(crate) const fn can_transition_to(self, next: Self) -> bool {
+        if matches!(
+            (self, next),
+            (Self::Queued, Self::Queued)
+                | (Self::Active, Self::Active)
+                | (Self::Cancelling, Self::Cancelling)
+                | (Self::Cancelled, Self::Cancelled)
+                | (Self::Done, Self::Done)
+                | (Self::Failed, Self::Failed)
+        ) {
+            return true;
+        }
+        matches!(
+            (self, next),
+            (Self::Queued, Self::Active)
+                | (Self::Queued, Self::Failed)
+                | (Self::Active, Self::Done)
+                | (Self::Active, Self::Failed)
+                | (Self::Active, Self::Cancelling)
+                | (Self::Cancelling, Self::Cancelled)
+                | (Self::Failed, Self::Queued)
+        )
     }
 }
 
@@ -863,6 +1035,14 @@ mod tests {
             group: "prod".to_owned(),
             remember: false,
             password: None,
+            forwards: vec![StoredForward {
+                kind: "local".to_owned(),
+                bind: String::new(),
+                bind_port: "8080".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                host_port: "80".to_owned(),
+            }],
+            agent_forwarding: true,
         };
         let json = serde_json::to_string(&[profile]).expect("序列化");
         let back: Vec<StoredProfile> = serde_json::from_str(&json).expect("反序列化");
@@ -870,6 +1050,128 @@ mod tests {
         assert_eq!(back[0].id, "prod-01");
         assert_eq!(back[0].group, "prod");
         assert_eq!(back[0].password, None);
+        assert_eq!(back[0].forwards.len(), 1);
+        assert_eq!(back[0].forwards[0].bind_port, "8080");
+        assert!(back[0].agent_forwarding, "开关要跟着档案往返");
+
+        // 旧存档里根本没有这个键：必须读成 `false`（默认关），而不是整份档案读不出来
+        // ——「升级一次丢光连接列表」是这类新增字段最容易出的事故。
+        let legacy = r#"[{"id":"old","label":"old","host":"h","port":"22","user":"u",
+            "auth":"key","key_file":"","group":"prod","remember":false,"forwards":[]}]"#;
+        let restored: Vec<StoredProfile> = serde_json::from_str(legacy).expect("旧存档要能读");
+        assert_eq!(restored.len(), 1);
+        assert!(
+            !restored[0].agent_forwarding,
+            "缺键时必须默认关（转发是「把身份借出去」的能力，缺省绝不能是开）"
+        );
+    }
+
+    #[test]
+    fn move_profile_to_group_only_moves_when_needed() {
+        let mut profiles = vec![StoredProfile {
+            id: "prod-01".to_owned(),
+            group: "prod".to_owned(),
+            ..StoredProfile::default()
+        }];
+
+        // 找不到档案：无事发生。
+        assert!(!move_profile_to_group(&mut profiles, "missing", "staging"));
+        // 拖回原组：no-op，不产生伪变更。
+        assert!(!move_profile_to_group(&mut profiles, "prod-01", "prod"));
+        // 正常迁移。
+        assert!(move_profile_to_group(&mut profiles, "prod-01", "staging"));
+        assert_eq!(profiles[0].group, "staging");
+
+        // 迁到**自定义分组**（分组名即 id，没有静态骨架约束）。
+        assert!(move_profile_to_group(&mut profiles, "prod-01", "预发布"));
+        assert_eq!(profiles[0].group, "预发布");
+    }
+
+    #[test]
+    fn custom_groups_derive_from_profiles_in_first_seen_order() {
+        let profile = |id: &str, group: &str| StoredProfile {
+            id: id.to_owned(),
+            group: group.to_owned(),
+            ..StoredProfile::default()
+        };
+
+        // 自定义组按**首次出现顺序**去重；内置三档不算自定义。
+        let profiles = vec![
+            profile("a", "预发布"),
+            profile("b", "prod"),
+            profile("c", "预发布"),
+            profile("d", "客户 X"),
+        ];
+        assert_eq!(custom_group_names(&profiles), vec!["预发布", "客户 X"]);
+
+        // 内置 id 一个字都不能漏进自定义列表（否则左栏会出现重复分组）。
+        let only_builtin = vec![
+            profile("a", "prod"),
+            profile("b", "staging"),
+            profile("c", "local"),
+        ];
+        assert!(custom_group_names(&only_builtin).is_empty());
+    }
+
+    #[test]
+    fn group_views_append_custom_groups_after_builtin_three() {
+        let profiles = vec![
+            StoredProfile {
+                id: "a".to_owned(),
+                group: "客户 X".to_owned(),
+                ..StoredProfile::default()
+            },
+            StoredProfile {
+                id: "b".to_owned(),
+                group: "prod".to_owned(),
+                ..StoredProfile::default()
+            },
+        ];
+        let groups = group_views(&profiles, Lang::Zh);
+        // 内置三档在前（位置不因用户数据漂移），自定义组在后。
+        assert_eq!(groups.len(), 4);
+        assert_eq!(groups[0].id, "prod");
+        assert_eq!(groups[1].id, "staging");
+        assert_eq!(groups[2].id, "local");
+        assert_eq!(groups[3].id, "客户 X");
+        // 自定义组的显示名就是用户原文（不翻译），id 与名字同一份。
+        assert_eq!(groups[3].label, "客户 X");
+        assert_eq!(groups[3].items.len(), 1);
+        assert_eq!(groups[0].items.len(), 1);
+    }
+
+    #[test]
+    fn forward_parsing_drops_unknown_or_broken_rows() {
+        // 方向认不出 → 整条丢掉，不猜。
+        let unknown = StoredForward {
+            kind: "tunnel".to_owned(),
+            bind_port: "8080".to_owned(),
+            ..StoredForward::default()
+        };
+        assert!(forward_from_stored(&unknown).is_none());
+
+        // 端口坏掉 → 解析成 0，`Target::validate` 会在连接前拦下并说明原因。
+        let broken = StoredForward {
+            kind: "local".to_owned(),
+            bind_port: "abc".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            host_port: "80".to_owned(),
+            ..StoredForward::default()
+        };
+        let forward = forward_from_stored(&broken).expect("方向合法就该还原");
+        assert_eq!(forward.bind_port, 0);
+        assert!(forward.validate().is_err());
+
+        // 合法的一条原样还原。
+        let good = StoredForward {
+            kind: "dynamic".to_owned(),
+            bind: "127.0.0.1".to_owned(),
+            bind_port: "1080".to_owned(),
+            ..StoredForward::default()
+        };
+        let forward = forward_from_stored(&good).expect("动态转发");
+        assert_eq!(forward.kind, duck_ssh::ForwardKind::Dynamic);
+        assert_eq!(forward.spec(), "127.0.0.1:1080");
     }
 
     #[test]
@@ -882,6 +1184,8 @@ mod tests {
         assert!(!back[0].remember);
         // 口令密文字段同样可缺（旧存档本来就没有）。
         assert_eq!(back[0].password, None);
+        // 端口转发同理：旧存档没有这一项时读到空表，而不是整份读不出来。
+        assert!(back[0].forwards.is_empty());
     }
 
     #[test]
@@ -901,5 +1205,57 @@ mod tests {
         assert_eq!(listing.entries[1].size, "1 B");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 传输状态机的合法迁移逐条钉住（含重试回 `Queued`、取消两支、恒等）。
+    #[test]
+    fn transfer_state_transitions_follow_the_documented_machine() {
+        use TransferState::{Active, Cancelled, Cancelling, Done, Failed, Queued};
+
+        // 正常路径：入队 → 传输 → 完成。
+        assert!(Queued.can_transition_to(Active));
+        assert!(Active.can_transition_to(Done));
+        // 失败与重试：Active → Failed →（重试）→ Queued → Active。
+        assert!(Active.can_transition_to(Failed));
+        assert!(Failed.can_transition_to(Queued));
+        assert!(Queued.can_transition_to(Active));
+        // 取消链：Active → Cancelling → Cancelled；入队即失败（起不来）也合法。
+        assert!(Active.can_transition_to(Cancelling));
+        assert!(Cancelling.can_transition_to(Cancelled));
+        assert!(Queued.can_transition_to(Failed));
+        // 恒等是空操作，一律合法（界面可能每帧重放同一结论）。
+        for state in [Queued, Active, Cancelling, Cancelled, Done, Failed] {
+            assert!(state.can_transition_to(state), "{state:?} 恒等应合法");
+        }
+        // 非法：终态不能再动，取消中不能跳回 Active，Cancelled 不能变 Done。
+        assert!(!Done.can_transition_to(Active));
+        assert!(!Cancelled.can_transition_to(Active));
+        assert!(!Cancelling.can_transition_to(Active));
+        assert!(!Cancelling.can_transition_to(Done));
+        assert!(!Queued.can_transition_to(Done));
+        assert!(!Failed.can_transition_to(Done));
+    }
+
+    #[test]
+    fn transfer_state_active_and_terminal_branches() {
+        use TransferState::{Active, Cancelled, Cancelling, Done, Failed, Queued};
+
+        // `is_active`：只有传输中与取消中为真（取消中仍是「在途」，进度轮询还在跑）。
+        assert!(Active.is_active());
+        assert!(Cancelling.is_active());
+        for state in [Queued, Cancelled, Done, Failed] {
+            assert!(!state.is_active(), "{state:?} 不应算进行中");
+        }
+        // `is_terminal`：三个终态；Cancelling / Active 不是。
+        assert!(Cancelled.is_terminal());
+        assert!(Done.is_terminal());
+        assert!(Failed.is_terminal());
+        for state in [Queued, Active, Cancelling] {
+            assert!(!state.is_terminal(), "{state:?} 不是终态");
+        }
+        // 每个变体都有非空文案（i18n 源串的兜底检查）。
+        for state in [Queued, Active, Cancelling, Cancelled, Done, Failed] {
+            assert!(!state.label().is_empty(), "{state:?} 缺文案");
+        }
     }
 }

@@ -2,7 +2,8 @@
 //!
 //! 参考实现与取舍见 `docs/ai-design.md`。本 crate 的边界：
 //!
-//! - 只认「OpenAI 兼容协议」这一套（多厂商模板差异仅在 `base_url`）。
+//! - 认两套 wire 协议：**OpenAI 兼容**（多厂商模板差异仅在 `base_url`）与
+//!   **Anthropic 原生 Messages API**（[`anthropic`]）；Gemini 留了接口但未实现。
 //! - 只做同步阻塞调用；流式靠 `ureq` 的 `Body::as_reader()` 阻塞读，
 //!   **线程由调用方起**（本 crate 自己不开线程、不建 runtime）。
 //! - 不依赖 `duck-db` / `duck-redis` / `duck-term` 等引擎 crate；工具（tool use）
@@ -14,19 +15,25 @@
 //! | --- | --- |
 //! | [`wire`] | 消息 / 内容块 / 工具调用 / 流式事件的 wire 类型（serde，可单测） |
 //! | [`sse`] | SSE 行解析 + 流式增量累积（含 `ToolCallAccumulator`，纯函数，可单测） |
-//! | [`provider`] | 厂商模板目录 + OpenAI 兼容流式实现 + 非流式便捷方法 |
+//! | [`provider`] | 厂商模板目录 + OpenAI 兼容流式实现 + 非流式便捷方法 + 协议分派 |
+//! | [`anthropic`] | Anthropic 原生 Messages API（请求体 / 具名 SSE 事件 / 非流式） |
 //! | [`secret`] | API key 加密存取（转发 `duck_platform::vault`，密文进厂商档案） |
 //! | [`store`] | 会话持久化（自管 `ai.db`，不碰 `duck-store` 表结构） |
 //! | [`tool`] | 工具协议 / 注册表 / 分级截断 / 风险分级（**实现由上层注册**） |
 //! | [`kb`] | 本地知识库：FTS5 索引与检索（含 CJK 预分词） |
 //! | [`agent`] | 多轮驱动的取消句柄、工具循环与审批闸门 |
+//! | [`compaction`] | 上下文预算与压缩（裁旧工具结果 + 丢最旧整段，保持工具配对） |
+//! | [`tokens`] | 上下文规模的启发式估算（**不是**精确 tokenizer，只报量级） |
 
 pub mod agent;
+pub mod anthropic;
+pub mod compaction;
 pub mod kb;
 pub mod provider;
 pub mod secret;
 pub mod sse;
 pub mod store;
+pub mod tokens;
 pub mod tool;
 pub mod wire;
 
@@ -34,12 +41,16 @@ pub use agent::{
     AgentEvent, AgentOptions, AgentOutcome, Approval, ChatOptions, RunHandle, TurnOutcome,
     run_agent, run_turn,
 };
+pub use anthropic::{AnthropicAccumulator, DEFAULT_MAX_TOKENS, messages_url};
+pub use compaction::{CompactionPolicy, CompactionReport, compact, compact_in_place};
 pub use kb::{IndexProgress, IndexReport, KbHit, KbIndex, KbSource, KbStats};
 pub use provider::{
-    ChatRequest, Protocol, ProviderProfile, ProviderTemplate, TEMPLATES, chat_url, complete,
-    stream_chat, template,
+    ChatRequest, Protocol, ProviderProfile, ProviderTemplate, RetryPolicy, TEMPLATES, chat_url,
+    complete, complete_with_usage, complete_with_usage_with_retry, is_retryable, list_models,
+    models_url, parse_models, protocol_of, stream_chat, stream_chat_with_retry, template,
 };
-pub use store::{AiStore, Conversation, StoredMessage};
+pub use store::{AiDbRestore, AiStore, Conversation, StoredMessage, TableRestore};
+pub use tokens::{estimate_conversation, estimate_message, estimate_messages, estimate_text};
 pub use tool::{
     Tool, ToolDetail, ToolOutcome, ToolRegistry, ToolRisk, ToolSpec, TruncationTier,
     truncate_tiered,
@@ -65,7 +76,7 @@ pub enum AiError {
     Secret(String),
     /// 调用方主动取消。
     Cancelled,
-    /// 明确不支持的能力（如 Anthropic / Gemini 原生协议、SSH 隧道）。
+    /// 明确不支持的能力（如 Gemini 原生协议、SSH 隧道）。
     Unsupported(String),
 }
 

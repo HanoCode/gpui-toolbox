@@ -2,8 +2,8 @@
 
 | 目录 | 上游 | 基线 | 来源 | 补丁 |
 | --- | --- | --- | --- | --- |
-| `alacritty-terminal/` | `alacritty_terminal` | **0.26.0**（MSRV 1.85.0，Apache-2.0） | 从 `temp/oxideterm`（oxideterm 的 vendored 副本）拷入 | 见目录内 `OXIDETERM_PATCHES.md`（ASCII 快路径 + 视口滚动单独上报 damage） |
-| `vte/` | `vte` | **0.15.0**（MSRV 1.62.1，Apache-2.0 OR MIT） | 同上 | 见目录内 `OXIDETERM_PATCHES.md` |
+| `alacritty-terminal/` | `alacritty_terminal` | **0.26.0**（MSRV 1.85.0，Apache-2.0） | 从 `temp/oxideterm`（oxideterm 的 vendored 副本）拷入 | 见目录内 `OXIDETERM_PATCHES.md`（ASCII 快路径 + 视口滚动单独上报 damage + 转发 `OSC 133` 标记与 `Grid::anchor` 锚点） |
+| `vte/` | `vte` | **0.15.0**（MSRV 1.62.1，Apache-2.0 OR MIT） | 同上 | 见目录内 `OXIDETERM_PATCHES.md`（ASCII 批量跨度 + `OSC 133` 原样转发到 `Handler::shell_mark`） |
 
 ## 与原版的差异
 

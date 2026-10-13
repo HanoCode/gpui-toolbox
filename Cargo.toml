@@ -258,6 +258,15 @@ vte = { version = "0.15.0", default-features = false, features = ["std", "ansi"]
 async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
 mail-parser = { version = "0.11", features = ["full_encoding"] }
 base64 = "0.22"
+# - `mail-builder 0.4`：**只用来装配 multipart/mixed 正文**（浏览器会把附件 base64
+#   折行、`Content-Disposition` 的非 ASCII 文件名要编码、boundary 要唯一），不碰头部
+#   ——头部仍由 `compose.rs` 自建（注入拒绝 / RFC 2047 / `Bcc` 不进头那几条硬口径都在
+#   那里）。`default-features = false`：默认特性 `gethostname` **只被
+#   `MessageBuilder::write_to` 的「没给 Message-ID 时自动生成」用到**，而本仓自己生成
+#   `Message-ID`（`compose::generate_message_id`）、且只调 `MimePart::write_part` ——
+#   关掉它即**零新增传递依赖**（否则会多拉一个 `gethostname`，见设计文档 §4.2）。
+#   许可证 `Apache-2.0 OR MIT`，可择 MIT 与全仓一致。
+mail-builder = { version = "0.4", default-features = false }
 
 # 全员共享的 lint 基线。各 crate 通过 `[lints] workspace = true` 显式启用。
 # 仅对明确有害的写法设 deny，其余保持默认，避免阻塞日常构建。
@@ -280,5 +289,9 @@ gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast", rev = "b8
 # 终端仿真内核：vendored（基线与差异记录见 vendor/README.md，升级必须同步该表）。
 alacritty_terminal = { path = "vendor/alacritty-terminal" }
 vte = { path = "vendor/vte" }
+# gpui-base：vendored（邮件正文排版补丁：TextMark 增加内联 color / font_size，
+# html 解析读取 style 属性——上游 0.7.x 的文档模型不解析任何内联 CSS，营销邮件
+# 因此「全部同字号同色」。基线与差异记录见 vendor/README.md，升级必须同步该表）。
+gpui-base = { path = "vendor/gpui-base" }
 # 注：compat/ 还提供 gpui-pre-web 与 gpui-pre-reqwest-client 替身，但本项目的
 # HTTP 客户端（gpui-pre-reqwest 0.12.15）在 patch 后随旧依赖图整体退出，二者无需声明。

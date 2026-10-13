@@ -2,16 +2,16 @@
 //!
 //! `ConnectionConfig::database` 即数据库文件路径（`:memory:` 允许）。
 
-use std::fmt::Write as _;
-
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
 
 use crate::cancel::CancelHandle;
 use crate::config::ConnectionConfig;
 use crate::drivers::{
-    CatalogTable, OrderBy, RowCount, TableIndex, TableKind, TableRef, order_by_clause,
-    quote_identifier, quote_qualified,
+    CatalogTable, DatabaseObject, InstanceFact, InstanceOverview, InstanceTable, InstanceView,
+    OrderBy, PlaceholderStyle, RowCount, TableFilter, TableForeignKey, TableIndex, TableKind,
+    TableRef, TableTrigger, human_bytes, order_by_clause, plain_filter_clause, quote_identifier,
+    quote_qualified,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -38,6 +38,72 @@ fn sqlite_reads(stmt: &str) -> bool {
 
 /// SQLite 里没给 schema 时的缺省数据库（`main` 是所有连接都有的那个）。
 const MAIN_SCHEMA: &str = "main";
+
+/// 布尔型 PRAGMA（`foreign_keys` / `query_only`）的展示值（英文，语言无关）。
+fn on_off(value: u64) -> String {
+    if value == 0 {
+        "OFF".to_owned()
+    } else {
+        "ON".to_owned()
+    }
+}
+
+/// 指标表的一行（`名字 — 值`）。
+fn kv_row(name: &str, value: &str) -> Vec<String> {
+    vec![name.to_owned(), value.to_owned()]
+}
+
+/// 从 `CREATE TRIGGER` 语句头部解析触发时机与事件（右栏「触发器」卡展示用）。
+///
+/// SQLite 不像 MySQL 那样把 `ACTION_TIMING` / `EVENT_MANIPULATION` 单列给出，
+/// 只能从建表 SQL 头部读。按**整词**匹配 `BEFORE` / `AFTER` / `INSTEAD OF` 与
+/// 其后的首个事件关键字；这是启发式（名字里恰好含这些词、或语句不是
+/// `CREATE TRIGGER` 开头的极端情形落空串），解析失败不影响数据本身。
+pub(crate) fn trigger_timing_event(sql: &str) -> (String, String) {
+    /// `kw` 在 `text` 里作为独立词出现的位置（两侧不得紧邻字母数字 / 下划线）。
+    fn find_keyword(text: &str, kw: &str) -> Option<usize> {
+        let mut from = 0;
+        while let Some(idx) = text[from..].find(kw) {
+            let start = from + idx;
+            let end = start + kw.len();
+            let before_ok = text[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+            let after_ok = text[end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+            if before_ok && after_ok {
+                return Some(start);
+            }
+            from = start + 1;
+        }
+        None
+    }
+
+    let lower = sql.to_ascii_lowercase();
+    // 语句头止于「ON 表名」；表名之后的正文里这些词没有意义。
+    let head = match lower.split_once(" on ") {
+        Some((head, _)) => head,
+        None => lower.as_str(),
+    };
+    let Some((pos, timing)) = ["instead of", "before", "after"]
+        .into_iter()
+        .filter_map(|kw| find_keyword(head, kw).map(|pos| (pos, kw)))
+        .min_by_key(|&(pos, _)| pos)
+    else {
+        return (String::new(), String::new());
+    };
+    let tail = &head[pos + timing.len()..];
+    // `UPDATE OF 列清单` 也归为 UPDATE（事件种类只到语句级）。
+    let event = ["insert", "update", "delete", "truncate"]
+        .into_iter()
+        .filter_map(|kw| find_keyword(tail, kw).map(|pos| (pos, kw)))
+        .min_by_key(|&(pos, _)| pos)
+        .map_or(String::new(), |(_, kw)| kw.to_ascii_uppercase());
+    (timing.to_ascii_uppercase(), event)
+}
 
 /// `pragma_xxx` 这类**表值函数**的两个参数：对象名 + schema。
 ///
@@ -114,7 +180,7 @@ impl SqliteConnection {
         for stmt in statements {
             if sqlite_reads(&stmt) {
                 // 读路径：结果集（可能零行）就是产出，不进 affected。
-                outcome.result = Some(self.query_one(&stmt, max_rows)?);
+                outcome.result = Some(self.query_one(&stmt, &[], max_rows)?);
             } else {
                 outcome.affected += u64::try_from(
                     self.conn
@@ -128,8 +194,31 @@ impl SqliteConnection {
         Ok(outcome)
     }
 
+    /// 分页读取（结果区「加载更多」走这里）：把语句包一层 `LIMIT/OFFSET`，
+    /// 从第 `offset` 行起取 `limit` 行；多取一行探测「还有下一页」。
+    ///
+    /// 语义与边界见 [`crate::drivers::Connection::execute_paged`]。
+    pub fn execute_paged(
+        &mut self,
+        sql: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<ResultSet, DbError> {
+        let inner = super::paged_inner_sql(sql)?;
+        let wrapped = super::wrap_paged_sql(&inner, offset, limit, '"')?;
+        self.query_one(&wrapped, &[], limit)
+    }
+
     /// 跑一条**单条**读语句并取结果集（`max_rows + 1` 探测截断）。
-    fn query_one(&self, stmt: &str, max_rows: usize) -> Result<ResultSet, DbError> {
+    ///
+    /// `params` 是按占位符顺序绑定的值（空 `Vec` = 无参数）；表浏览的过滤值走这里，
+    /// 一律以 `Value::Text` 送下去——SQLite 按列的亲和性（affinity）自行转换。
+    fn query_one(
+        &self,
+        stmt: &str,
+        params: &[rusqlite::types::Value],
+        max_rows: usize,
+    ) -> Result<ResultSet, DbError> {
         let mut prepared = self
             .conn
             .prepare(stmt)
@@ -156,7 +245,7 @@ impl SqliteConnection {
         let mut rows_out = Vec::new();
         let mut truncated = false;
         let mut rows = prepared
-            .query([])
+            .query(rusqlite::params_from_iter(params.iter()))
             .map_err(|err| DbError::Query(err.to_string()))?;
         while let Some(row) = rows.next().map_err(DbError::from)? {
             if rows_out.len() >= max_rows {
@@ -181,6 +270,23 @@ impl SqliteConnection {
     ///
     /// SQLite 没有「库 → schema → 表」三层，但 `ATTACH` 进来的库确实是分开的命名空间，
     /// 照实列出来比假装只有一层有用。
+    /// SQLite 的「库」就是 `main` / `temp` / 已 `ATTACH` 的那些数据库文件。
+    ///
+    /// 与 [`Self::list_schemas`] 完全同源（`pragma_database_list`）—— 在 SQLite 里
+    /// 这两层本来就是同一层，硬造一个「库清单」只会在界面上多出一份重复的下拉。
+    pub fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        self.list_schemas()
+    }
+
+    /// 切换「当前库」：SQLite **没有**这个动作。
+    ///
+    /// 一个连接对应一个文件，语句里的表名要么落在 `main`、要么由用户自己写
+    /// `ATTACH` 进来的名字前缀。本仓不给「隐式 ATTACH」——那等于替用户改查询
+    /// 的落点。所以这里刻意是空操作，把 `Applied` 语义留给上层。
+    pub fn use_database(&mut self, _name: &str) -> Result<(), DbError> {
+        Ok(())
+    }
+
     pub fn list_schemas(&mut self) -> Result<Vec<String>, DbError> {
         let mut prepared = self
             .conn
@@ -194,6 +300,163 @@ impl SqliteConnection {
             schemas.push(row.map_err(DbError::from)?);
         }
         Ok(schemas)
+    }
+
+    /// 读一条单值 PRAGMA 成字符串（`page_size` 这类整数与 `journal_mode` 这类文本都能取）。
+    ///
+    /// 走 `query_row` 而不是 `execute_batch`：这些 PRAGMA **返回值**才是要的东西，
+    /// 当设置语句发出去既看不见回执、又会真的改状态。
+    fn pragma_scalar(&self, name: &str) -> Result<String, DbError> {
+        self.conn
+            .query_row(&format!("PRAGMA {name}"), [], |row| {
+                Ok(match row.get_ref(0)? {
+                    ValueRef::Null => String::new(),
+                    ValueRef::Integer(value) => value.to_string(),
+                    ValueRef::Real(value) => value.to_string(),
+                    ValueRef::Text(value) => String::from_utf8_lossy(value).into_owned(),
+                    ValueRef::Blob(value) => format!("<{} bytes>", value.len()),
+                })
+            })
+            .map_err(|err| DbError::Query(err.to_string()))
+    }
+
+    /// 同 [`Self::pragma_scalar`]，但按 u64 解析（解析不出按 0，只用于展示）。
+    fn pragma_u64(&self, name: &str) -> Result<u64, DbError> {
+        Ok(self
+            .pragma_scalar(name)?
+            .trim()
+            .parse::<u64>()
+            .unwrap_or_default())
+    }
+
+    /// 本连接**已挂载**的数据库：`main` / `temp` / `ATTACH` 进来的（`pragma_database_list`）。
+    fn attached_databases(&self) -> Result<Vec<(String, String)>, DbError> {
+        let mut prepared = self
+            .conn
+            .prepare("SELECT name, file FROM pragma_database_list ORDER BY seq")
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        let rows = prepared
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(DbError::from)?);
+        }
+        Ok(out)
+    }
+
+    /// 实例概览：SQLite 没有服务端，「实例」就是这个数据库文件。
+    ///
+    /// 取的全是 `PRAGMA` 能给出的真实状态（页大小 / 页数 / 日志模式 / 编码 / 只读档），
+    /// **不编造**服务器版本与在线时长——`uptime` 恒 `None`（界面据此不画那一行），
+    /// `user` 恒空串（SQLite 没有用户体系，文件权限就是一切）。
+    pub fn instance_overview(&mut self) -> Result<InstanceOverview, DbError> {
+        let version = self.server_version()?;
+        let attached = self.attached_databases()?;
+        let file = attached
+            .iter()
+            .find(|(name, _)| name == MAIN_SCHEMA)
+            .map(|(_, file)| file.clone())
+            .unwrap_or_default();
+        let page_size = self.pragma_u64("page_size")?;
+        let page_count = self.pragma_u64("page_count")?;
+        Ok(InstanceOverview {
+            version,
+            database: file,
+            user: String::new(),
+            uptime: None,
+            facts: vec![
+                InstanceFact {
+                    name: "journal_mode".into(),
+                    value: self.pragma_scalar("journal_mode")?,
+                },
+                InstanceFact {
+                    name: "encoding".into(),
+                    value: self.pragma_scalar("encoding")?,
+                },
+                InstanceFact {
+                    name: "page_size".into(),
+                    value: page_size.to_string(),
+                },
+                InstanceFact {
+                    name: "page_count".into(),
+                    value: page_count.to_string(),
+                },
+                InstanceFact {
+                    name: "database_size".into(),
+                    value: human_bytes(page_size.saturating_mul(page_count)),
+                },
+                InstanceFact {
+                    name: "foreign_keys".into(),
+                    value: on_off(self.pragma_u64("foreign_keys")?),
+                },
+                InstanceFact {
+                    name: "read_only".into(),
+                    value: on_off(self.pragma_u64("query_only")?),
+                },
+                InstanceFact {
+                    name: "attached_databases".into(),
+                    value: attached.len().to_string(),
+                },
+            ],
+        })
+    }
+
+    /// 实例指标 / 检查器两张表。
+    ///
+    /// - **指标**：页级体量与缓存配置（都是 `PRAGMA` 实测值，不是估算）；
+    /// - **检查器**：本连接已挂载的数据库 —— SQLite 是**进程内**数据库，没有服务端
+    ///   会话列表，能「检查」的只有这条连接够得着哪些文件。这一条由界面按引擎解释，
+    ///   内核只给数据。
+    pub fn instance_table(&mut self, view: InstanceView) -> Result<InstanceTable, DbError> {
+        match view {
+            InstanceView::Metrics => {
+                let page_size = self.pragma_u64("page_size")?;
+                let page_count = self.pragma_u64("page_count")?;
+                let cache = self.pragma_scalar("cache_size")?;
+                // `cache_size` 为正 = 页数，为负 = KiB（SQLite 的符号约定）。
+                let cache_value = match cache.trim().parse::<i64>() {
+                    Ok(pages) if pages < 0 => format!("{} KiB", pages.unsigned_abs()),
+                    Ok(pages) => format!("{pages} pages"),
+                    Err(_) => cache,
+                };
+                let rows = vec![
+                    kv_row("page_size", &format!("{page_size} B")),
+                    kv_row("page_count", &page_count.to_string()),
+                    kv_row(
+                        "database_size",
+                        &human_bytes(page_size.saturating_mul(page_count)),
+                    ),
+                    kv_row(
+                        "freelist_count",
+                        &self.pragma_u64("freelist_count")?.to_string(),
+                    ),
+                    kv_row("cache_size", &cache_value),
+                    kv_row(
+                        "schema_version",
+                        &self.pragma_u64("schema_version")?.to_string(),
+                    ),
+                    kv_row(
+                        "user_version",
+                        &self.pragma_u64("user_version")?.to_string(),
+                    ),
+                ];
+                Ok(InstanceTable {
+                    columns: vec!["metric".into(), "value".into()],
+                    rows,
+                })
+            }
+            InstanceView::Processes => Ok(InstanceTable {
+                columns: vec!["attached_database".into(), "file".into()],
+                rows: self
+                    .attached_databases()?
+                    .into_iter()
+                    .map(|(name, file)| vec![name, file])
+                    .collect(),
+            }),
+        }
     }
 
     /// 某个命名空间的表 / 视图（`sqlite_master`，排除 sqlite_ 内部表）。
@@ -263,11 +526,18 @@ impl SqliteConnection {
         limit: usize,
         offset: u64,
         order_by: &[OrderBy],
+        filters: &[TableFilter],
     ) -> Result<ResultSet, DbError> {
         let quoted = quote_qualified(table, '"')?;
         let order = order_by_clause(order_by, '"')?;
-        let sql = format!("SELECT * FROM {quoted}{order} LIMIT {limit} OFFSET {offset}");
-        self.query_one(&sql, limit)
+        let (where_clause, values) = plain_filter_clause(filters, '"', PlaceholderStyle::Question)?;
+        let sql =
+            format!("SELECT * FROM {quoted}{where_clause}{order} LIMIT {limit} OFFSET {offset}");
+        let params: Vec<rusqlite::types::Value> = values
+            .into_iter()
+            .map(rusqlite::types::Value::Text)
+            .collect();
+        self.query_one(&sql, &params, limit)
     }
 
     /// 主键列名（`pragma_table_info` 的 `pk` 列：>0 即在主键里，数值是声明序）。
@@ -446,6 +716,133 @@ impl SqliteConnection {
         Ok(indexes)
     }
 
+    /// 一张表上的外键：`pragma_foreign_key_list` 按约束 `id` 分组（复合外键
+    /// 是同 `id` 的多行，`seq` 即列序）。
+    ///
+    /// SQLite 的外键没有约束名，[`TableForeignKey::name`] 落空串；
+    /// `to` 列为 NULL 表示隐式引用对方主键，落空串。
+    pub(crate) fn table_foreign_keys(
+        &mut self,
+        table: &TableRef,
+    ) -> Result<Vec<TableForeignKey>, DbError> {
+        let (name, schema) = pragma_target(table);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, \"table\", \"from\", \"to\", on_update, on_delete \
+                 FROM pragma_foreign_key_list(?1, ?2) ORDER BY id, seq",
+            )
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        let rows: Vec<(i64, String, String, Option<String>, String, String)> = stmt
+            .query_map(rusqlite::params![name, schema], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .map_err(|err| DbError::Query(err.to_string()))?
+            .collect::<Result<_, _>>()
+            .map_err(DbError::from)?;
+        drop(stmt);
+
+        // 已按 `id` 排序，同一约束的列必定连续。
+        let mut keys: Vec<TableForeignKey> = Vec::new();
+        for (id, ref_table, from, to, on_update, on_delete) in rows {
+            match keys.last_mut() {
+                Some(fk) if fk.name == format!("fk:{id}") => {
+                    fk.columns.push(from);
+                    fk.ref_columns.push(to.unwrap_or_default());
+                }
+                _ => keys.push(TableForeignKey {
+                    name: format!("fk:{id}"),
+                    columns: vec![from],
+                    ref_table,
+                    ref_columns: vec![to.unwrap_or_default()],
+                    on_update,
+                    on_delete,
+                }),
+            }
+        }
+        // 内部分组键 `fk:<id>` 不外泄——SQLite 没有真约束名。
+        for fk in &mut keys {
+            fk.name = String::new();
+        }
+        Ok(keys)
+    }
+
+    /// 一张表上的触发器：`sqlite_master` 里 `type = 'trigger'` 且 `tbl_name` 命中，
+    /// 时机 / 事件由建表 SQL 头部解析（[`trigger_timing_event`]）。
+    pub(crate) fn table_triggers(
+        &mut self,
+        table: &TableRef,
+    ) -> Result<Vec<TableTrigger>, DbError> {
+        let schema = table
+            .schema
+            .as_deref()
+            .filter(|schema| !schema.is_empty())
+            .unwrap_or("main");
+        let master = quote_qualified(&TableRef::in_schema(schema, "sqlite_master"), '"')?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT name, COALESCE(sql, '') FROM {master} \
+                 WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name"
+            ))
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map(rusqlite::params![table.name], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(|err| DbError::Query(err.to_string()))?
+            .collect::<Result<_, _>>()
+            .map_err(DbError::from)?;
+        drop(stmt);
+        Ok(rows
+            .into_iter()
+            .map(|(name, sql)| {
+                let (timing, event) = trigger_timing_event(&sql);
+                TableTrigger {
+                    name,
+                    timing,
+                    event,
+                }
+            })
+            .collect())
+    }
+
+    /// 一个数据库（`main` / 附加库）里的触发器清单，说明列 = 挂在哪张表上。
+    pub(crate) fn list_triggers(
+        &mut self,
+        schema: Option<&str>,
+    ) -> Result<Vec<DatabaseObject>, DbError> {
+        let schema = schema.filter(|schema| !schema.is_empty()).unwrap_or("main");
+        let master = quote_qualified(&TableRef::in_schema(schema, "sqlite_master"), '"')?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT name, tbl_name FROM {master} \
+                 WHERE type = 'trigger' ORDER BY name"
+            ))
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|err| DbError::Query(err.to_string()))?
+            .collect::<Result<_, _>>()
+            .map_err(DbError::from)?;
+        drop(stmt);
+        Ok(rows
+            .into_iter()
+            .map(|(name, table)| DatabaseObject {
+                name,
+                detail: Some(table),
+            })
+            .collect())
+    }
+
     /// 行数：SQLite 没有系统统计信息，只能 `COUNT(*)`（本地文件，代价可接受）。
     ///
     /// 视图同样可数（会真的把它跑一遍）；不可数的视图报错，由调用方 `.ok()` 掉。
@@ -588,45 +985,6 @@ fn update_cell_on(
         .execute(&sql, rusqlite::params_from_iter(params))
         .map_err(|err| DbError::Query(err.to_string()))?;
     Ok(u64::try_from(affected).unwrap_or_default())
-}
-
-/// 把值渲染成 CSV 字段（写侧需要引号转义时才加引号）。
-pub(crate) fn csv_field(text: &str, out: &mut String) {
-    if text.contains(',') || text.contains('"') || text.contains('\n') {
-        out.push('"');
-        for c in text.chars() {
-            if c == '"' {
-                out.push('"');
-            }
-            out.push(c);
-        }
-        out.push('"');
-    } else {
-        out.push_str(text);
-    }
-}
-
-/// 把结果集渲染成 CSV 文本（含表头行）。
-#[must_use]
-pub fn to_csv(result: &ResultSet) -> String {
-    let mut out = String::new();
-    for (index, column) in result.columns.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        csv_field(&column.name, &mut out);
-    }
-    out.push('\n');
-    for row in &result.rows {
-        for (index, cell) in row.iter().enumerate() {
-            if index > 0 {
-                out.push(',');
-            }
-            csv_field(&cell.render(), &mut out);
-        }
-        let _ = writeln!(out);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -982,7 +1340,7 @@ mod tests {
             .expect("查询")
             .result
             .expect("结果集");
-        let csv = to_csv(&result);
+        let csv = result.to_csv();
         assert!(csv.starts_with("id,名字\n"));
     }
 
@@ -1088,8 +1446,8 @@ mod tests {
         assert_eq!(pk, vec!["id".to_owned()]);
         let order: Vec<OrderBy> = pk.iter().map(OrderBy::asc).collect();
 
-        let page0 = conn.table_page(&table, 2, 0, &order).expect("第 1 页");
-        let page1 = conn.table_page(&table, 2, 2, &order).expect("第 2 页");
+        let page0 = conn.table_page(&table, 2, 0, &order, &[]).expect("第 1 页");
+        let page1 = conn.table_page(&table, 2, 2, &order, &[]).expect("第 2 页");
         let ids = |result: &ResultSet| -> Vec<String> {
             result
                 .rows
@@ -1101,12 +1459,167 @@ mod tests {
         assert_eq!(ids(&page1), vec!["c"], "第 2 页不能重复第 1 页的行");
 
         // 反证：不给稳定序时物理顺序是插入序（c / a / b），与上面不同。
-        let raw = conn.table_page(&table, 2, 0, &[]).expect("无稳定序");
+        let raw = conn.table_page(&table, 2, 0, &[], &[]).expect("无稳定序");
         assert_eq!(
             ids(&raw),
             vec!["c", "a"],
             "无 ORDER BY 时按物理顺序——这正是旧实现的翻页乱序"
         );
+    }
+
+    /// 表浏览过滤：算符、`IS NULL`、`LIKE` 都生效；值走绑定参数
+    /// （含引号的注入串只当普通文本，绝不进 SQL 文本）。
+    #[test]
+    fn table_page_filters_are_parameterised() {
+        use crate::drivers::{FilterOp, TableFilter};
+        let mut conn = SqliteConnection {
+            conn: Connection::open_in_memory().expect("内存库"),
+        };
+        conn.conn
+            .execute_batch(
+                "CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT, score INTEGER, note TEXT);
+                 INSERT INTO t VALUES (1, 'ada', 9, 'x'), (2, 'bob', 5, NULL), (3, 'cat', 7, 'z');",
+            )
+            .expect("建表");
+        let table = TableRef::bare("t");
+        let order = [OrderBy::asc("id")];
+        let mut ids = |filters: &[TableFilter]| -> Vec<String> {
+            conn.table_page(&table, 10, 0, &order, filters)
+                .expect("过滤分页")
+                .rows
+                .iter()
+                .map(|row| row[0].render().to_string())
+                .collect()
+        };
+
+        // 等值 / 比较 / 范围。
+        assert_eq!(ids(&[TableFilter::new("score", FilterOp::Eq, "5")]), ["2"]);
+        assert_eq!(
+            ids(&[TableFilter::new("score", FilterOp::Gte, "7")]),
+            ["1", "3"]
+        );
+        assert_eq!(ids(&[TableFilter::new("score", FilterOp::Lt, "6")]), ["2"]);
+        assert_eq!(
+            ids(&[TableFilter::new("name", FilterOp::NotEq, "ada")]),
+            ["2", "3"]
+        );
+        // 多条件是 AND。
+        assert_eq!(
+            ids(&[
+                TableFilter::new("score", FilterOp::Gte, "7"),
+                TableFilter::new("name", FilterOp::Like, "c%"),
+            ]),
+            ["3"]
+        );
+        // NULL 判定不占位：`IS NULL` 命中 NULL 行，`IS NOT NULL` 命中其余行。
+        assert_eq!(ids(&[TableFilter::null("note", FilterOp::IsNull)]), ["2"]);
+        assert_eq!(
+            ids(&[TableFilter::null("note", FilterOp::IsNotNull)]),
+            ["1", "3"]
+        );
+        // 值里的引号 / 分号只是文本，不改变语义（绑定参数）。
+        assert!(
+            ids(&[TableFilter::new(
+                "name",
+                FilterOp::Eq,
+                "x'; DROP TABLE t; --"
+            )])
+            .is_empty()
+        );
+        assert_eq!(ids(&[]).len(), 3, "空过滤 = 全表这一页");
+        // 过滤后翻页仍按稳定序：第 2 页从第 2 条命中开始。
+        let second = conn
+            .table_page(
+                &table,
+                1,
+                1,
+                &order,
+                &[TableFilter::new("score", FilterOp::Gte, "7")],
+            )
+            .expect("过滤翻页");
+        assert_eq!(second.rows[0][0].render(), "3");
+    }
+
+    /// 查询结果分页（[`SqliteConnection::execute_paged`]）：外层 `LIMIT/OFFSET` 包装、
+    /// 多取一行探测「还有下一页」、多语句一律拒绝。
+    #[test]
+    fn execute_paged_walks_the_result_in_windows() {
+        let mut conn = SqliteConnection {
+            conn: Connection::open_in_memory().expect("内存库"),
+        };
+        conn.conn
+            .execute_batch(
+                "CREATE TABLE t(id INTEGER);
+                 INSERT INTO t VALUES (1), (2), (3), (4), (5);",
+            )
+            .expect("建表");
+        let sql = "SELECT id FROM t ORDER BY id";
+        let mut page = |offset: u64, limit: usize| -> (Vec<String>, bool) {
+            let result = conn.execute_paged(sql, offset, limit).expect("分页");
+            let ids = result
+                .rows
+                .iter()
+                .map(|row| row[0].render().to_string())
+                .collect();
+            (ids, result.truncated)
+        };
+
+        assert_eq!(page(0, 2), (vec!["1".to_owned(), "2".to_owned()], true));
+        assert_eq!(page(2, 2), (vec!["3".to_owned(), "4".to_owned()], true));
+        // 最后一页：取到末行且后面没有了 → 不能再续拉。
+        assert_eq!(page(4, 2), (vec!["5".to_owned()], false));
+        // 越过末页：空结果、无更多。
+        assert_eq!(page(10, 2), (Vec::new(), false));
+
+        // 只接受单条语句：多语句批次没有「第 N 行起」的语义。
+        assert!(
+            conn.execute_paged("SELECT 1; SELECT 2", 0, 10).is_err(),
+            "多语句必须拒绝"
+        );
+    }
+
+    /// 只读执行（[`crate::drivers::Connection::execute_read_only`]）：写语句一条都不跑，
+    /// 只读语句走的是与手动执行**同一条**路径。
+    #[test]
+    fn read_only_execution_refuses_writes_outright() {
+        let mut wrapper = crate::drivers::Connection::Sqlite(SqliteConnection {
+            conn: Connection::open_in_memory().expect("内存库"),
+        });
+        // 建表是 DDL：证明不了只读 → 拒绝（连"试试看"都不给）。
+        assert!(
+            wrapper
+                .execute_read_only("CREATE TABLE t(a INTEGER)", 10)
+                .is_err()
+        );
+        // 走普通执行建表并塞两行（这条路径不受只读闸门约束）。
+        wrapper
+            .execute(
+                "CREATE TABLE t(a INTEGER); INSERT INTO t VALUES (1), (2);",
+                10,
+            )
+            .expect("建表");
+
+        let read = wrapper
+            .execute_read_only("SELECT a FROM t ORDER BY a", 10)
+            .expect("只读语句放行");
+        assert_eq!(read.result.expect("结果集").row_count(), 2);
+
+        // 写语句被拒，且**真的没执行**（再看一眼行数）。
+        assert!(wrapper.execute_read_only("DELETE FROM t", 10).is_err());
+        let after = wrapper
+            .execute_read_only("SELECT count(*) FROM t", 10)
+            .expect("只读语句放行");
+        assert_eq!(after.result.expect("结果集").rows[0][0].render(), "2");
+
+        // 混合批次整体拒绝：不做「能跑的跑、不能跑的跳过」。
+        assert!(
+            wrapper
+                .execute_read_only("SELECT 1; DROP TABLE t", 10)
+                .is_err()
+        );
+        // 空串 / 只有注释：一律拒绝，不静默返回空结果。
+        assert!(wrapper.execute_read_only("   ", 10).is_err());
+        assert!(wrapper.execute_read_only("-- 只有注释", 10).is_err());
     }
 
     /// 附加库（`ATTACH`）里的对象要能通过限定名访问：目录 / 列 / 主键 / 分页 / 行数
@@ -1149,7 +1662,7 @@ mod tests {
             vec!["x".to_owned()]
         );
         let page = conn
-            .table_page(&qualified, 10, 0, &[OrderBy::asc("x")])
+            .table_page(&qualified, 10, 0, &[OrderBy::asc("x")], &[])
             .expect("分页");
         assert_eq!(page.row_count(), 2);
         assert_eq!(
@@ -1162,5 +1675,172 @@ mod tests {
             quote_qualified(&qualified, '"').expect("合法"),
             "\"aux\".\"q\""
         );
+    }
+
+    /// 外键内省：单列 + 复合外键各一条，验证分组与动作列。
+    #[test]
+    fn foreign_keys_roundtrip() {
+        let conn = SqliteConnection {
+            conn: Connection::open_in_memory().expect("内存库"),
+        };
+        let mut conn = conn;
+        conn.conn
+            .execute_batch(
+                "CREATE TABLE parent(id INTEGER PRIMARY KEY, a TEXT, b TEXT, UNIQUE(a, b));
+                 CREATE TABLE child(
+                   id INTEGER PRIMARY KEY,
+                   p_id INTEGER REFERENCES parent(id) ON DELETE SET NULL,
+                   pa TEXT, pb TEXT,
+                   FOREIGN KEY(pa, pb) REFERENCES parent(a, b) ON UPDATE CASCADE
+                 );",
+            )
+            .expect("建表");
+        let mut keys = conn
+            .table_foreign_keys(&TableRef::bare("child"))
+            .expect("外键");
+        assert_eq!(keys.len(), 2);
+        // pragma 的约束顺序未指定，按内容找两条断言。
+        keys.sort_by_key(|fk| fk.columns.len());
+        let single = &keys[0];
+        let composite = &keys[1];
+        assert_eq!(single.name, ""); // SQLite 没有约束名
+        assert_eq!(single.ref_table, "parent");
+        assert_eq!(single.columns, vec!["p_id"]);
+        assert_eq!(single.ref_columns, vec!["id"]);
+        assert_eq!(single.on_delete, "SET NULL");
+        assert_eq!(composite.columns, vec!["pa", "pb"]);
+        assert_eq!(composite.ref_columns, vec!["a", "b"]);
+        assert_eq!(composite.on_update, "CASCADE");
+    }
+
+    /// 触发器内省：时机 / 事件从建表 SQL 头部解析。
+    #[test]
+    fn triggers_roundtrip() {
+        let conn = SqliteConnection {
+            conn: Connection::open_in_memory().expect("内存库"),
+        };
+        let mut conn = conn;
+        conn.conn
+            .execute_batch(
+                "CREATE TABLE t(id INTEGER PRIMARY KEY, n TEXT);
+                 CREATE VIEW v AS SELECT id, n FROM t;
+                 CREATE TRIGGER t_after_ins AFTER INSERT ON t
+                 BEGIN SELECT 1; END;
+                 CREATE TRIGGER t_before_upd BEFORE UPDATE OF n ON t
+                 BEGIN SELECT 2; END;
+                 CREATE TRIGGER v_instead_del INSTEAD OF DELETE ON v
+                 BEGIN SELECT 3; END;",
+            )
+            .expect("建表");
+        let triggers = conn.table_triggers(&TableRef::bare("t")).expect("触发器");
+        // `INSTEAD OF` 只能挂在视图上，不在 t 的清单里。
+        assert_eq!(triggers.len(), 2);
+        assert_eq!(triggers[0].name, "t_after_ins");
+        assert_eq!(triggers[0].timing, "AFTER");
+        assert_eq!(triggers[0].event, "INSERT");
+        assert_eq!(triggers[1].timing, "BEFORE");
+        assert_eq!(triggers[1].event, "UPDATE");
+        // 视图的触发器同样按表名取得到。
+        let view_triggers = conn.table_triggers(&TableRef::bare("v")).expect("触发器");
+        assert_eq!(view_triggers[0].timing, "INSTEAD OF");
+        assert_eq!(view_triggers[0].event, "DELETE");
+    }
+
+    /// 库级触发器清单：不筛表名，说明列 = 挂在哪张表上（含视图上的）。
+    #[test]
+    fn database_trigger_list() {
+        let conn = SqliteConnection {
+            conn: Connection::open_in_memory().expect("内存库"),
+        };
+        let mut conn = conn;
+        conn.conn
+            .execute_batch(
+                "CREATE TABLE t(id INTEGER PRIMARY KEY);
+                 CREATE VIEW v AS SELECT id FROM t;
+                 CREATE TRIGGER t_after_ins AFTER INSERT ON t BEGIN SELECT 1; END;
+                 CREATE TRIGGER v_instead_del INSTEAD OF DELETE ON v BEGIN SELECT 2; END;",
+            )
+            .expect("建表");
+        let objects = conn.list_triggers(None).expect("触发器清单");
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].name, "t_after_ins");
+        assert_eq!(objects[0].detail.as_deref(), Some("t"));
+        assert_eq!(objects[1].name, "v_instead_del");
+        assert_eq!(objects[1].detail.as_deref(), Some("v"));
+    }
+
+    /// 头部解析纯函数：整词匹配、正文里的关键字不干扰。
+    #[test]
+    fn trigger_head_parse() {
+        assert_eq!(
+            trigger_timing_event("CREATE TRIGGER x BEFORE INSERT ON t BEGIN SELECT 'on x'; END;"),
+            ("BEFORE".into(), "INSERT".into())
+        );
+        // 时机在名字之后也要找到（`before_x` 里 `before` 后跟 `_` 不算整词）。
+        assert_eq!(
+            trigger_timing_event("CREATE TRIGGER before_x AFTER DELETE ON t BEGIN END;"),
+            ("AFTER".into(), "DELETE".into())
+        );
+        // `UPDATE OF 列` 归为 UPDATE。
+        assert_eq!(
+            trigger_timing_event("create trigger a after update of n on t begin end;"),
+            ("AFTER".into(), "UPDATE".into())
+        );
+        // 不是建触发器语句 → 落空串。
+        assert_eq!(
+            trigger_timing_event("SELECT 1"),
+            (String::new(), String::new())
+        );
+    }
+
+    /// 实例级内省：概览取到版本与页级体量，指标/检查器两张表的口径各就各位。
+    #[test]
+    fn instance_insight() {
+        let mut conn = SqliteConnection {
+            conn: Connection::open_in_memory().expect("内存库"),
+        };
+        conn.conn
+            .execute_batch("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT);")
+            .expect("建表");
+
+        let overview = conn.instance_overview().expect("实例概览");
+        assert!(overview.version.contains("SQLite"), "{}", overview.version);
+        // SQLite 没有服务端：这两项必须是「空」而不是编造的值。
+        assert_eq!(overview.uptime, None);
+        assert!(overview.user.is_empty());
+        assert!(
+            overview.facts.iter().any(|fact| fact.name == "page_size"),
+            "缺 page_size：{:?}",
+            overview.facts
+        );
+        // 内存库的 `main` 没有文件路径 → `database` 为空串（不是伪路径）。
+        assert!(overview.database.is_empty());
+        assert_eq!(
+            overview
+                .facts
+                .iter()
+                .find(|fact| fact.name == "attached_databases")
+                .map(|fact| fact.value.as_str()),
+            Some("1") // 内存库只有 `main`
+        );
+
+        let metrics = conn.instance_table(InstanceView::Metrics).expect("指标");
+        assert_eq!(
+            metrics.columns,
+            vec!["metric".to_owned(), "value".to_owned()]
+        );
+        assert!(
+            metrics
+                .rows
+                .iter()
+                .any(|row| row[0] == "database_size" && !row[1].is_empty())
+        );
+
+        let processes = conn
+            .instance_table(InstanceView::Processes)
+            .expect("检查器");
+        assert_eq!(processes.columns.len(), 2);
+        assert_eq!(processes.rows.len(), 1);
+        assert_eq!(processes.rows[0][0], "main");
     }
 }

@@ -71,8 +71,8 @@ use mongodb::{Client, Collection, Cursor, IndexModel};
 use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
-    BatchOutcome, CatalogTable, CellEdit, InsertRow, OrderBy, PkValues, RowCount, TableIndex,
-    TableKind, TableRef,
+    BatchOutcome, CatalogTable, CellEdit, FilterOp, InsertRow, OrderBy, PkValues, RowCount,
+    TableFilter, TableIndex, TableKind, TableRef,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -271,6 +271,21 @@ impl MongoConnection {
         Ok(reply_to_outcome(&reply, max_rows))
     }
 
+    /// **切换会话的当前库** —— 与 [`Self::set_namespace`] 是同一件事。
+    ///
+    /// 单列一个方法只为跟其它引擎在 `Connection::switch_database` 里走同一个入口：
+    /// Mongo 的「当前库」本来就是客户端状态，落点已经在这里了。
+    pub fn use_database(&mut self, name: &str) {
+        self.set_namespace(Some(name));
+    }
+
+    /// **全部**库（含 `admin` / `config` / `local`）。
+    ///
+    /// 与 [`Self::list_schemas`] 同源：Mongo 里「库」就是顶层容器，没有 schema 这一层。
+    pub fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        self.list_schemas()
+    }
+
     /// 可选库清单。
     ///
     /// **不剔 `admin` / `config` / `local`**：它们是真实的库，`config` 里还有分片与
@@ -333,20 +348,16 @@ impl MongoConnection {
         limit: usize,
         offset: u64,
         order_by: &[OrderBy],
+        filters: &[TableFilter],
     ) -> Result<ResultSet, DbError> {
         let collection = self.collection_for(table)?;
         let sort = sort_document(order_by);
+        let filter = self.filter_document(table, filters)?;
         // 多取一条探测「还有下一页」，而不是靠「正好 limit 条」猜。
         let probe = i64::try_from(limit)
             .unwrap_or(i64::MAX - 1)
             .saturating_add(1);
-        let cursor = self.run(
-            collection
-                .find(doc! {})
-                .sort(sort)
-                .skip(offset)
-                .limit(probe),
-        )?;
+        let cursor = self.run(collection.find(filter).sort(sort).skip(offset).limit(probe))?;
         let (mut docs, truncated) = self.drain_capped(cursor, limit)?;
         docs.truncate(limit);
         let mut set = documents_to_result_set(&docs);
@@ -731,6 +742,55 @@ impl MongoConnection {
     ) -> Result<Bson, DbError> {
         let types = self.column_types(table).unwrap_or_default();
         bind_text(value, types.get(column).copied())
+    }
+
+    /// 表浏览的过滤条件 → 查询文档。
+    ///
+    /// 每条条件各成一个文档，多条用 `$and` 串起来 —— **不用同一个文档的多键**：
+    /// 同一列上两条条件（如 `age > 3` 且 `age < 9`）放进 `{age: …}` 里会互相覆盖。
+    /// 值按目标列的**样本类型**绑成 BSON（与改一格同源，走 [`Self::cell_to_bson`]
+    /// 用的那份 [`bind_text`]），`LIKE` 映射成 `$regex`（见 [`like_to_regex`]）。
+    fn filter_document(
+        &self,
+        table: &TableRef,
+        filters: &[TableFilter],
+    ) -> Result<Document, DbError> {
+        if filters.is_empty() {
+            return Ok(Document::new());
+        }
+        let types = self.column_types(table).unwrap_or_default();
+        let mut conditions = Vec::with_capacity(filters.len());
+        for filter in filters {
+            check_name("field", &filter.column)?;
+            let type_name = types.get(&filter.column).copied();
+            let value: Bson = match filter.op {
+                FilterOp::IsNull => Bson::Null,
+                FilterOp::IsNotNull => Bson::Document(doc! { "$ne": Bson::Null }),
+                op => {
+                    let bound = bind_text(filter.value.as_deref(), type_name)?;
+                    match op {
+                        FilterOp::Eq => bound,
+                        FilterOp::NotEq => Bson::Document(doc! { "$ne": bound }),
+                        FilterOp::Gt => Bson::Document(doc! { "$gt": bound }),
+                        FilterOp::Gte => Bson::Document(doc! { "$gte": bound }),
+                        FilterOp::Lt => Bson::Document(doc! { "$lt": bound }),
+                        FilterOp::Lte => Bson::Document(doc! { "$lte": bound }),
+                        FilterOp::Like => Bson::Document(
+                            doc! { "$regex": like_to_regex(filter.value.as_deref().unwrap_or_default()) },
+                        ),
+                        FilterOp::IsNull | FilterOp::IsNotNull => unreachable!("matched above"),
+                    }
+                }
+            };
+            let mut single = Document::new();
+            single.insert(filter.column.clone(), value);
+            conditions.push(single);
+        }
+        if conditions.len() == 1 {
+            Ok(conditions.pop().expect("length checked"))
+        } else {
+            Ok(doc! { "$and": Bson::Array(conditions.into_iter().map(Bson::Document).collect()) })
+        }
     }
 
     /// 把多格编辑按 **（列, 新值）** 分组，值相同的行合并成一条 `$or` 查询。
@@ -1122,6 +1182,30 @@ fn parse_id_text(text: &str) -> Bson {
         return Bson::ObjectId(id);
     }
     untyped_text_to_bson(text)
+}
+
+/// `LIKE` 模式 → 正则源串：`%` → `.*`、`_` → `.`，其余**正则元字符转义**
+/// （用户的模式是 LIKE 模式，不是正则 —— 不转义的话 `a.b` 会意外匹配 `axb`）。
+///
+/// 首尾补 `^` / `$`：MongoDB 的 `$regex` 默认是「包含匹配」，而 SQL 的 `LIKE`
+/// 要求整串匹配（通配符才放开对应位置）。
+fn like_to_regex(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() + 4);
+    out.push('^');
+    for ch in pattern.chars() {
+        match ch {
+            '%' => out.push_str(".*"),
+            '_' => out.push('.'),
+            other => {
+                if "^$.|?*+()[]{}".contains(other) {
+                    out.push('\\');
+                }
+                out.push(other);
+            }
+        }
+    }
+    out.push('$');
+    out
 }
 
 /// 24 位十六进制（ObjectId 的文本形态）。
@@ -1626,6 +1710,18 @@ mod tests {
             database: "shop".into(),
             ..ConnectionConfig::default()
         }
+    }
+
+    /// `LIKE` → `$regex`：通配符换成正则、正则元字符转义、首尾锚定。
+    #[test]
+    fn like_patterns_become_anchored_regexes() {
+        assert_eq!(like_to_regex("ada"), "^ada$");
+        assert_eq!(like_to_regex("a%"), "^a.*$");
+        assert_eq!(like_to_regex("%a_"), "^.*a.$");
+        // 正则元字符是**字面量**（用户写的是 LIKE 模式，不是正则）。
+        assert_eq!(like_to_regex("a.b"), "^a\\.b$");
+        assert_eq!(like_to_regex("(x)+"), "^\\(x\\)\\+$");
+        assert!(!like_to_regex("100%").contains("\\"));
     }
 
     /// 库名三级回落：**命令点名 → 档案记住的命名空间 → 档案里的默认库**；全空就是

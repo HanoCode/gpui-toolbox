@@ -49,6 +49,7 @@ duck_icons! {
     Check => "check",
     CheckboxCheck => "checkbox-check",
     CheckboxMinus => "checkbox-minus",
+    ChartLine => "chart-line",
     ChevronDown => "chevron-down",
     ChevronLeft => "chevron-left",
     ChevronRight => "chevron-right",
@@ -103,6 +104,7 @@ duck_icons! {
     Send => "send",
     Server => "server",
     Settings => "settings",
+    ShieldCheck => "shield-check",
     SlidersHorizontal => "sliders-horizontal",
     Sparkles => "sparkles",
     Square => "square",
@@ -110,6 +112,7 @@ duck_icons! {
     SquareTerminal => "square-terminal",
     Star => "star",
     Sun => "sun",
+    Table => "table",
     Tag => "tag",
     Trash2 => "trash-2",
     TriangleAlert => "triangle-alert",
@@ -152,6 +155,12 @@ impl AssetSource for ComponentAssets {
         {
             return Ok(Some(Cow::Borrowed(logo.bytes())));
         }
+        if let Some(logo) = crate::maillogos::MailLogo::ALL
+            .iter()
+            .find(|logo| logo.asset_path() == path)
+        {
+            return Ok(Some(Cow::Borrowed(logo.bytes())));
+        }
         Ok(DuckIcon::ALL
             .iter()
             .find(|icon| icon.asset_path() == path)
@@ -164,6 +173,11 @@ impl AssetSource for ComponentAssets {
             .map(|(name, _)| *name)
             .chain(
                 crate::dblogos::DatabaseLogo::ALL
+                    .iter()
+                    .map(|logo| logo.asset_path()),
+            )
+            .chain(
+                crate::maillogos::MailLogo::ALL
                     .iter()
                     .map(|logo| logo.asset_path()),
             )
@@ -195,6 +209,21 @@ mod tests {
         }
         assert!(ComponentAssets.load("duck/icons/nope.svg")?.is_none());
         Ok(())
+    }
+
+    #[test]
+    fn no_icon_has_a_malformed_self_closing_tag() {
+        // ⚠️ 曾经坏过 7 个（`at-sign` / `forward` / `inbox` / `pencil` / `reply` /
+        // `sparkles` / `tag`）：自闭合斜杠写成了 ` / />`，SVG 解析失败 → 图标渲染成
+        // 空白，而只查 `<svg` 前缀的老守卫照样绿。这里按字节扫这个坏模式。
+        for icon in DuckIcon::ALL {
+            let bytes = icon.bytes();
+            assert!(
+                !bytes.windows(5).any(|window| window == b" / />"),
+                "{icon:?}（{}）含坏的 self-closing 标签 ` / />`，渲染会是空白",
+                icon.asset_path()
+            );
+        }
     }
 
     #[test]

@@ -110,6 +110,20 @@ impl From<String> for TableRef {
     }
 }
 
+/// 切库（[`Connection::switch_database`]）的两种结局。
+///
+/// 分开两种而不是都回 `Ok(())`：PostgreSQL 的 `dbname` 是**建连参数**，在已建立的
+/// 会话上根本切不了（服务端没有这条语句）。让驱动回 `NeedsReconnect`、由握着档案与
+/// 口令的上层重连，好过在驱动侧假装修好了 —— 后者会留下一句「切了但 SQL 还打在旧库」
+/// 的静默错。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchOutcome {
+    /// 已在当前会话上生效。
+    Applied,
+    /// 本引擎只能在建连时决定库，调用方需要重建连接。
+    NeedsReconnect,
+}
+
 /// 目录里的一个对象。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogTable {
@@ -134,6 +148,19 @@ impl CatalogTable {
 
 /// 一格编辑的目标行定位：主键列名 → 该行原值（展示文本）。
 pub type PkValues = Vec<(String, String)>;
+
+/// 库级目录条目：不属于某张表的对象（触发器 / 事件 / 用户与权限）。
+///
+/// 统一用一个结构而不是三个：左栏树的分类节点只关心「名字 + 一行说明」，
+/// 再多的字段对树展示没有意义（触发器正文 / 事件定义要看得见的话走 SQL 编辑器）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseObject {
+    /// 名称（触发器名 / 事件名 / 用户名）。
+    pub name: String,
+    /// 一行说明：触发器是**挂在哪张表**上，用户是**登录属性**（MySQL 的 host、
+    /// PG 的 superuser / can login），事件是**调度状态**。给不出就 `None`。
+    pub detail: Option<String>,
+}
 
 /// 一次批量改格里的一格：定位（主键原值）+ 目标列 + 新值。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,8 +209,10 @@ pub enum TableKind {
     Table,
     /// 视图。
     View,
-    /// 函数 / 存储过程（PG `information_schema.routines`、MySQL 同）。
-    Routine,
+    /// 存储过程（MySQL `ROUTINE_TYPE='PROCEDURE'`、PG 同、SQL Server `type='P'`）。
+    Procedure,
+    /// 函数（MySQL `ROUTINE_TYPE='FUNCTION'`、PG 同、SQL Server `FN`/`IF`/`TF`）。
+    Function,
     /// 序列（PG 独有；MySQL / SQLite 无此概念）。
     Sequence,
 }
@@ -213,6 +242,38 @@ pub struct TableIndex {
     pub primary: bool,
 }
 
+/// 一张表上的一条外键（右栏「外键」卡的数据源）。
+///
+/// 复合外键（多列）把 `columns` / `ref_columns` 按声明顺序对齐存放。
+/// SQLite 的外键**没有约束名**（`pragma foreign_key_list` 不给），
+/// `name` 落空串，展示层以「指向哪张表」为主文案。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableForeignKey {
+    /// 约束名（SQLite 恒空串）。
+    pub name: String,
+    /// 本表的引用列（按声明顺序）。
+    pub columns: Vec<String>,
+    /// 被引用的表名。
+    pub ref_table: String,
+    /// 被引用的列（与 `columns` 按序对齐）。
+    pub ref_columns: Vec<String>,
+    /// 更新动作（`CASCADE` / `SET NULL` / `NO ACTION` …）。
+    pub on_update: String,
+    /// 删除动作（同上）。
+    pub on_delete: String,
+}
+
+/// 一张表上的一条触发器（右栏「触发器」卡的数据源）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableTrigger {
+    /// 触发器名。
+    pub name: String,
+    /// 触发时机（`BEFORE` / `AFTER` / `INSTEAD OF`；T-SQL 没有 `BEFORE`，只有后两者）。
+    pub timing: String,
+    /// 触发事件（`INSERT` / `UPDATE` / `DELETE` / `TRUNCATE`，可多个、逗号连接）。
+    pub event: String,
+}
+
 /// 一张表的行数**口径**：`COUNT(*)` 是精确值，系统统计是估算值。
 ///
 /// 两者展示文案不同（「1 234 行」vs「约 1 234 行」），所以类型上就分开，
@@ -239,6 +300,118 @@ impl RowCount {
     pub const fn is_estimate(self) -> bool {
         matches!(self, Self::Estimate(_))
     }
+}
+
+/// 实例概览里的一项「名字 — 值」。
+///
+/// 引擎之间**共有的**那一小撮（版本、启动时间、当前库…）由
+/// [`InstanceOverview::version`] 等字段直接承载；各引擎自己才有的那些
+/// （字符集、页大小、日志模式…）装进 [`InstanceOverview::facts`]，界面照原样列出来
+/// ——内核不替界面决定「哪些值得看」，也不做单位换算（换算要跟界面语言走）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceFact {
+    /// 项目名（引擎口径的原文，如 `journal_mode` / `Uptime`）。
+    pub name: String,
+    /// 当前值（原样字符串）。
+    pub value: String,
+}
+
+/// 实例概览：连的是哪台服务器、什么版本、跑了多久、有哪些库。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstanceOverview {
+    /// 服务器版本描述。
+    pub version: String,
+    /// 当前库（没选定库的引擎为空串）。
+    pub database: String,
+    /// 当前登录身份。
+    pub user: String,
+    /// 已运行时长（引擎能报才有；SQLite 无服务端，恒 `None`）。
+    pub uptime: Option<String>,
+    /// 其余键值项（引擎相关，顺序即展示顺序）。
+    pub facts: Vec<InstanceFact>,
+}
+
+/// 实例级内省要取的**哪张表**。
+///
+/// 两张表形态相同（表头 + 行），差别只在语义：指标是「数值」，检查器是「会话 / 对象」。
+/// 内核用同一个出口是为了让**引擎只实现一次取值**，也便于界面用同一套表格渲染。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceView {
+    /// 实例指标：连接数、命中率、事务量、体量这类可比较的数字。
+    Metrics,
+    /// 实例检查器：服务端会话 / 连接现状（SQLite 为连接已挂载的数据库）。
+    Processes,
+}
+
+impl InstanceView {
+    /// 出错的上下文描述（内核错误一律英文，见 `AGENTS.md`）。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Metrics => "instance metrics",
+            Self::Processes => "instance processes",
+        }
+    }
+}
+
+/// 实例级内省取回的**通用表**：表头 + 行。
+///
+/// 为什么不是强类型（`Vec<ServerProcess>` 之类）：七引擎的列集差异太大（MySQL 的
+/// `Command` / `Time`、PG 的 `wait_event`、SQLite 的 `file`），强类型要么每个引擎一个
+/// 结构体（界面就得写七套渲染），要么把列砍到交集（那就丢信息）。表头 + 行既保真
+/// 又只让界面写一套表格。
+///
+/// **不带「口径说明」这类散文**：内核不吐面向用户的文案（见 `AGENTS.md` 第 3 节：
+/// 内核不出中文，界面要提示由界面自己 `trf`）。引擎侧的解释一律由界面按引擎拼。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstanceTable {
+    /// 表头（与每行的列数等长）。
+    pub columns: Vec<String>,
+    /// 数据行。
+    pub rows: Vec<Vec<String>>,
+}
+
+impl InstanceTable {
+    /// 表里**数值型**的那些项（时间序列的纵轴来源）。
+    ///
+    /// 从同一张表里筛，不另开一份指标清单：加一项指标只改各驱动里那一处，时序与表格
+    /// 永远同源。筛法是「值能不能解析成 `f64`」——`database_size`（`8493 kB`）、
+    /// PG 命中率里的 `-` 这类**不是数**的项自然被排除：与其猜单位，不如让它们留在
+    /// 明细表里（界面上那两处一个画图、一个列清单，正好互补）。
+    ///
+    /// 顺序即表格顺序（引擎已按稳定序输出，别在这里重排）；键与值都**去掉首尾空白**
+    /// ——数值是 `parse` 前必须的，键跟着一起收口，免得同一个指标在序列里出现两个键。
+    #[must_use]
+    pub fn numeric(&self) -> Vec<InstanceMetric> {
+        let Some(key_index) = self.columns.iter().position(|column| column == "metric") else {
+            return Vec::new();
+        };
+        let Some(value_index) = self.columns.iter().position(|column| column == "value") else {
+            return Vec::new();
+        };
+        self.rows
+            .iter()
+            .filter_map(|row| {
+                let key = row.get(key_index)?.trim();
+                let value = row.get(value_index)?.trim().parse::<f64>().ok()?;
+                Some(InstanceMetric {
+                    key: key.to_owned(),
+                    value,
+                })
+            })
+            .collect()
+    }
+}
+
+/// 一条**数值型**实例指标（[`InstanceTable::numeric`] 的产出）。
+///
+/// 只有数值进来：时间序列的纵轴是数，字符串项（体量文案、字符集）没有坐标系可放。
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstanceMetric {
+    /// 指标名（引擎口径原文，如 `Threads_connected` / `numbackends`）。
+    pub key: String,
+    /// 采样值。
+    pub value: f64,
 }
 
 /// 一条已建立的连接。**全部方法阻塞**，调用方负责放到后台线程。
@@ -365,16 +538,80 @@ impl Connection {
         }
     }
 
-    /// 记住界面选中的命名空间（左栏的库 / schema 下拉换项时调）。
+    /// 记住界面选中的命名空间（schema 下拉换项时调）。
     ///
-    /// **只有 MongoDB 真的做点什么**：SQL 引擎的「当前库 / schema」是**服务端**状态
-    /// （`search_path`、当前库），驱动侧无从也无需改写——编辑器里的 SQL 该怎么解析由
-    /// 服务端决定，换下拉不会改写已写好的语句（其它工具同理）。而 MongoDB 的「当前库」
-    /// 是**客户端概念**，不告诉驱动，编辑器里的命令（`{"find": "users"}`）就会落在旧库
-    /// 或「未选定」上。其余引擎是空操作。
+    /// 只负责 **schema 这一层**（PG / MSSQL 库内的 `pg_namespace` / `sys.schemas`），
+    /// 且**只有 MongoDB 真的做点什么**：Mongo 没有 schema 层，「当前库」是客户端
+    /// 概念，不告诉驱动，编辑器里的命令（`{"find": "users"}`）就会落在旧库上。
+    ///
+    /// ⚠️ **「当前库」请走 [`Self::switch_database`]** —— 那个才真的改服务端会话。
+    /// 早期版本只在这里记一笔，理由是「当前库是服务端状态、驱动无从改写」，那句话
+    /// 对 `search_path` 成立、对「连上时没选库」的连接**不成立**：库名可留空建连的
+    /// 情况下，用户点了库却不发 `USE`，之后每条语句都会被服务端回
+    /// `No database selected` —— 界面「切了」、查询没切。
     pub fn set_namespace(&mut self, schema: Option<&str>) {
         if let Self::Mongo(conn) = self {
             conn.set_namespace(schema);
+        }
+    }
+
+    /// 切换会话的**当前库**。
+    ///
+    /// - [`SwitchOutcome::Applied`]：已经在会话上生效，后续语句会落在这个库上；
+    /// - [`SwitchOutcome::NeedsReconnect`]：本引擎在已建立的会话上切不了库
+    ///   （PostgreSQL 的 `dbname` 是建连参数），**调用方必须重建连接**——
+    ///   驱动侧拿不到口令，只能由上层带着档案重连。
+    ///
+    /// 库名不存在 / 无权限时不在这里兜底：交给服务端报错（MySQL `USE`、
+    /// T-SQL `USE` 都会自己拒），客户端「猜」只会把真因盖住。
+    pub fn switch_database(&mut self, name: &str) -> Result<SwitchOutcome, DbError> {
+        match self {
+            Self::Sqlite(conn) => {
+                conn.use_database(name)?;
+                Ok(SwitchOutcome::Applied)
+            }
+            // PG 的库是建连参数（`dbname=`），一个会话终身绑死，只能重连。
+            Self::Postgres(_) => Ok(SwitchOutcome::NeedsReconnect),
+            Self::Mysql(conn) => {
+                conn.use_database(name)?;
+                Ok(SwitchOutcome::Applied)
+            }
+            Self::ClickHouse(conn) => {
+                conn.use_database(name);
+                Ok(SwitchOutcome::Applied)
+            }
+            Self::SqlServer(conn) => {
+                conn.use_database(name)?;
+                Ok(SwitchOutcome::Applied)
+            }
+            Self::Mongo(conn) => {
+                conn.use_database(name);
+                Ok(SwitchOutcome::Applied)
+            }
+            Self::Elasticsearch(conn) => {
+                conn.use_database(name)?;
+                Ok(SwitchOutcome::Applied)
+            }
+        }
+    }
+
+    /// 这条连接上有**哪些库**（不是「有哪些 schema」——那是 [`Self::list_schemas`]）。
+    ///
+    /// 「连上了但什么都没看到」的根因就是这个问题的答案原先拿不到：库名可留空建连
+    /// 时，`list_schemas()` 对 PG / MSSQL 给的是**库内**的 schema（服务端在有默认库
+    /// 的前提下才给得出），对 MySQL 给的是剔过系统库的业务清单。用户最先想问的
+    /// 「这台服务器上有哪些库」，得由这里回答。
+    ///
+    /// Elasticsearch 没有库这一层，恒空（上层据此不画库节点）。
+    pub fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        match self {
+            Self::Sqlite(conn) => conn.list_databases(),
+            Self::Postgres(conn) => conn.list_databases(),
+            Self::Mysql(conn) => conn.list_databases(),
+            Self::ClickHouse(conn) => conn.list_databases(),
+            Self::SqlServer(conn) => conn.list_databases(),
+            Self::Mongo(conn) => conn.list_databases(),
+            Self::Elasticsearch(conn) => conn.list_databases(),
         }
     }
 
@@ -388,6 +625,100 @@ impl Connection {
             Self::SqlServer(conn) => conn.execute(sql, max_rows),
             Self::Mongo(conn) => conn.execute(sql, max_rows),
             Self::Elasticsearch(conn) => conn.execute(sql, max_rows),
+        }
+    }
+
+    /// 执行一段 SQL，且**每一条语句都必须被证明只读**；否则整体拒绝，一条都不跑。
+    ///
+    /// 这是给「上层替用户跑 SQL」的场景准备的闸门（`docs/ai-design.md` §10.4 的
+    /// `run_sql_readonly`）：AI 生成的语句不该只拦在界面上——界面可能被绕过、被改写，
+    /// 而这一层与 `execute` 是**同一条**执行路径，拦截点紧贴真正下发的地方。
+    ///
+    /// 与 [`crate::sqlintel::prove_read_only`] 的关系：那边给的是"这条语句能否被证明
+    /// 只读"（语法解析 + AST 判族），这里把它变成**执行前的一道硬闸**：
+    ///
+    /// - 一段里**任何**一条语句证明不了只读 → `Err(DbError::Unsupported)`，**一条都不执行**
+    ///   （不做"能跑的跑、不能跑的跳过"：那种半执行状态最难收拾）；
+    /// - 空串（或只有注释）同样按拒绝处理，不静默返回空结果；
+    /// - **带已知副作用**的语句（[`crate::sqlintel::has_write_side_effects`]：`nextval` /
+    ///   `setval` / `dblink*` / `pg_terminate_backend` / 取锁的 `SELECT … FOR UPDATE` 等）
+    ///   同样拒绝——它们是「读形状」却会改状态 / 阻塞他人，不属自动执行的安全集合；
+    /// - 证明只读的语句仍走 [`Connection::execute`]，因此行上限、截断、取消与超时
+    ///   全部与手动执行一致。
+    ///
+    /// ⚠️ 证明是**保守**的：解析不了的语句一律拿不到证明（宁可多拒一次，不可漏放一次）。
+    /// 需要"用户点头就能跑"的写操作请走 `execute` —— 那是另一条路，别放宽这里。
+    pub fn execute_read_only(
+        &mut self,
+        sql: &str,
+        max_rows: usize,
+    ) -> Result<ExecOutcome, DbError> {
+        let statements = crate::sqlintel::split_statements(sql);
+        if statements.is_empty() {
+            return Err(DbError::Unsupported("no statement to execute".into()));
+        }
+        if let Some(rejected) = statements
+            .iter()
+            .find(|stmt| !crate::sqlintel::prove_read_only(stmt))
+        {
+            return Err(DbError::Unsupported(format!(
+                "read-only execution refused a statement that is not provably read-only: {rejected}"
+            )));
+        }
+        // 第二道：只读形状但带副作用（改序列 / 取锁 / 后端控制…）也不自动跑。
+        if let Some(rejected) = statements
+            .iter()
+            .find(|stmt| crate::sqlintel::has_write_side_effects(stmt))
+        {
+            return Err(DbError::Unsupported(format!(
+                "read-only execution refused a statement with side effects: {rejected}"
+            )));
+        }
+        self.execute(sql, max_rows)
+    }
+
+    /// 分页**读取**一段 SQL：从第 `offset` 行起取 `limit` 行（结果区「加载更多」的内核原语）。
+    ///
+    /// 实现口径：把用户那条语句包进外层 `LIMIT/OFFSET`（各引擎按自己的语法拼，见各驱动的
+    /// `execute_paged`），并**多取一行**探测「还有没有下一页」——`truncated` = 本页之后
+    /// 仍有更多行。调用方据此决定「加载更多」按钮的可见性，因此它同时是**行上限提示**
+    /// 的判据：`truncated` 为真且有分页能力，才允许续拉。
+    ///
+    /// 三条边界（与 [`Self::execute`] 的分工）：
+    /// - **只服务读路径**：写路径仍走单事务（[`Self::execute`] / [`Self::apply_batch`]），
+    ///   本方法不参与任何写语义；
+    /// - **只接受单条语句**：多语句批次没有「第 N 行起」的语义，也避免重跑批次把写语句
+    ///   再执行一遍，直接 [`DbError::Unsupported`]；
+    /// - **能力判定单一来源**：能不能续拉只看 [`DatabaseKind::supports_paged_read`]，
+    ///   SQL Server / MongoDB / Elasticsearch 明确 [`DbError::Unsupported`]（界面据同一
+    ///   判据不提供「加载更多」，两边不再各写一套）。
+    ///
+    /// SQL Server 被归为不支持的理由：其 `OFFSET/FETCH` 强制 `ORDER BY`，而派生表又不能
+    /// 带 `ORDER BY`，外层只能 `ORDER BY (SELECT NULL)`——顺序不定会让翻页重复 / 漏行。
+    /// 与其返回可能错的页，不如显式拒绝（见 [`crate::drivers::mssql`]）。
+    ///
+    /// ⚠️ 结果顺序只有在语句自带**确定序**（`ORDER BY` 唯一键）时才稳定；不带确定序时
+    /// 翻页可能重复 / 漏行——与 [`Self::table_page`] 同一口径（`docs/database-design.md` §4.5）。
+    pub fn execute_paged(
+        &mut self,
+        sql: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<ResultSet, DbError> {
+        let kind = self.kind();
+        if !kind.supports_paged_read() {
+            return Err(paged_unsupported(kind.wire_name()));
+        }
+        match self {
+            Self::Sqlite(conn) => conn.execute_paged(sql, offset, limit),
+            Self::Postgres(conn) => conn.execute_paged(sql, offset, limit),
+            Self::Mysql(conn) => conn.execute_paged(sql, offset, limit),
+            Self::ClickHouse(conn) => conn.execute_paged(sql, offset, limit),
+            // 这几条已被上面的 `supports_paged_read()` 排除；显式写全保证穷尽、
+            // 且即便能力表与分发漂移也依然拒绝（fail-closed）。
+            Self::SqlServer(_) | Self::Mongo(_) | Self::Elasticsearch(_) => {
+                Err(paged_unsupported(kind.wire_name()))
+            }
         }
     }
 
@@ -427,6 +758,80 @@ impl Connection {
         }
     }
 
+    /// 一个命名空间里的**触发器**清单（名字 + 挂在哪张表上）。
+    ///
+    /// 没有触发器概念的引擎（ClickHouse / Mongo / ES）返回空清单——「没有」
+    /// 不是错误，左栏树直接不显示这个分类节点。
+    pub fn list_triggers(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        match self {
+            Self::Sqlite(conn) => conn.list_triggers(schema),
+            Self::Postgres(conn) => conn.list_triggers(schema),
+            Self::Mysql(conn) => conn.list_triggers(schema),
+            Self::SqlServer(conn) => conn.list_triggers(schema),
+            Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// 一个命名空间里的**事件**清单（MySQL `CREATE EVENT` 的那套调度对象）。
+    ///
+    /// 只有 MySQL 有独立的事件调度器；其余引擎恒空（PG 的「事件」是
+    /// LISTEN/NOTIFY，不是目录对象，不能混）。
+    pub fn list_events(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        match self {
+            Self::Mysql(conn) => conn.list_events(schema),
+            Self::Sqlite(_)
+            | Self::Postgres(_)
+            | Self::SqlServer(_)
+            | Self::ClickHouse(_)
+            | Self::Mongo(_)
+            | Self::Elasticsearch(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// 服务器级的**用户与登录**清单（名字 + 登录属性说明）。
+    ///
+    /// 立足服务器而不是某个库：MySQL 的 `mysql.user`、PG 的 `pg_roles`、
+    /// SQL Server 的 `sys.server_principals` 都是服务器范围的。SQLite 没有用户
+    /// 体系（文件级权限就是一切），恒空。
+    pub fn list_users(&mut self) -> Result<Vec<DatabaseObject>, DbError> {
+        match self {
+            Self::Mysql(conn) => conn.list_users(),
+            Self::Postgres(conn) => conn.list_users(),
+            Self::SqlServer(conn) => conn.list_users(),
+            Self::Sqlite(_) | Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    /// 实例概览：版本、当前库、登录身份、已运行时长，以及各引擎自己的键值项。
+    ///
+    /// 未实作引擎返回 `Unsupported`（不是空结果）——界面上这三个入口按
+    /// [`DatabaseKind::supports_instance_insight`] 决定画不画，走到这里说明是**绕过界面**
+    /// 的调用，如实报错比给一份空壳更有用。
+    pub fn instance_overview(&mut self) -> Result<InstanceOverview, DbError> {
+        match self {
+            Self::Sqlite(conn) => conn.instance_overview(),
+            Self::Postgres(conn) => conn.instance_overview(),
+            Self::Mysql(conn) => conn.instance_overview(),
+            Self::SqlServer(_) | Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => {
+                Err(instance_unsupported(self.kind()))
+            }
+        }
+    }
+
+    /// 实例级内省的两张表之一（指标 / 检查器）。
+    pub fn instance_table(&mut self, view: InstanceView) -> Result<InstanceTable, DbError> {
+        match self {
+            Self::Sqlite(conn) => conn.instance_table(view),
+            Self::Postgres(conn) => conn.instance_table(view),
+            Self::Mysql(conn) => conn.instance_table(view),
+            Self::SqlServer(_) | Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => {
+                Err(instance_unsupported(self.kind()))
+            }
+        }
+    }
+
     /// 一张表的列（名称 + 类型）。
     pub fn table_columns(&mut self, table: &TableRef) -> Result<Vec<Column>, DbError> {
         match self {
@@ -445,21 +850,25 @@ impl Connection {
     /// `order_by` 是**稳定序**的列（调用方传主键；空则不加 `ORDER BY`）。
     /// 不加稳定序的分页在 PG / MySQL 上会翻页重复或漏行——见
     /// `docs/database-design.md` §4.5。
+    ///
+    /// `filters` 是表浏览的过滤条件（空 = 不过滤）；值一律走绑定参数，见
+    /// [`TableFilter`]。
     pub fn table_page(
         &mut self,
         table: &TableRef,
         limit: usize,
         offset: u64,
         order_by: &[OrderBy],
+        filters: &[TableFilter],
     ) -> Result<ResultSet, DbError> {
         match self {
-            Self::Sqlite(conn) => conn.table_page(table, limit, offset, order_by),
-            Self::Postgres(conn) => conn.table_page(table, limit, offset, order_by),
-            Self::Mysql(conn) => conn.table_page(table, limit, offset, order_by),
-            Self::ClickHouse(conn) => conn.table_page(table, limit, offset, order_by),
-            Self::SqlServer(conn) => conn.table_page(table, limit, offset, order_by),
-            Self::Mongo(conn) => conn.table_page(table, limit, offset, order_by),
-            Self::Elasticsearch(conn) => conn.table_page(table, limit, offset, order_by),
+            Self::Sqlite(conn) => conn.table_page(table, limit, offset, order_by, filters),
+            Self::Postgres(conn) => conn.table_page(table, limit, offset, order_by, filters),
+            Self::Mysql(conn) => conn.table_page(table, limit, offset, order_by, filters),
+            Self::ClickHouse(conn) => conn.table_page(table, limit, offset, order_by, filters),
+            Self::SqlServer(conn) => conn.table_page(table, limit, offset, order_by, filters),
+            Self::Mongo(conn) => conn.table_page(table, limit, offset, order_by, filters),
+            Self::Elasticsearch(conn) => conn.table_page(table, limit, offset, order_by, filters),
         }
     }
 
@@ -630,6 +1039,38 @@ impl Connection {
         }
     }
 
+    /// 一张表上的外键（右栏「外键」卡）。
+    ///
+    /// 四条关系引擎（SQLite / PostgreSQL / MySQL / SQL Server）都给得出；
+    /// ClickHouse 声明了外键语法但**从不执行**、MongoDB / Elasticsearch 没有这个
+    /// 概念——三者恒返回空 `Vec`（「没有」而不是「不支持出错」，UI 直接不画卡）。
+    pub fn table_foreign_keys(
+        &mut self,
+        table: &TableRef,
+    ) -> Result<Vec<TableForeignKey>, DbError> {
+        match self {
+            Self::Sqlite(conn) => conn.table_foreign_keys(table),
+            Self::Postgres(conn) => conn.table_foreign_keys(table),
+            Self::Mysql(conn) => conn.table_foreign_keys(table),
+            Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => Ok(Vec::new()),
+            Self::SqlServer(conn) => conn.table_foreign_keys(table),
+        }
+    }
+
+    /// 一张表上的触发器（右栏「触发器」卡）。
+    ///
+    /// ClickHouse（物化视图不在此列）/ MongoDB / Elasticsearch 没有触发器概念，
+    /// 恒返回空 `Vec`。
+    pub fn table_triggers(&mut self, table: &TableRef) -> Result<Vec<TableTrigger>, DbError> {
+        match self {
+            Self::Sqlite(conn) => conn.table_triggers(table),
+            Self::Postgres(conn) => conn.table_triggers(table),
+            Self::Mysql(conn) => conn.table_triggers(table),
+            Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => Ok(Vec::new()),
+            Self::SqlServer(conn) => conn.table_triggers(table),
+        }
+    }
+
     /// 一张表的行数（口径见 [`RowCount`]）。
     pub fn table_row_count(&mut self, table: &TableRef) -> Result<RowCount, DbError> {
         match self {
@@ -676,6 +1117,107 @@ impl Connection {
     pub fn close(self) {}
 }
 
+/// 分页包装用的子查询别名（加引号后不会与用户的结果列名冲突）。
+pub(crate) const PAGE_ALIAS: &str = "__duck_page";
+
+/// 取分页包装的**内层语句**：校验「恰好一条语句」并取出其纯文本。
+///
+/// [`crate::sqlintel::split_statements`] 已按分号切分并逐条 `trim`，这里再兜一层
+/// 结尾分号（子查询里带分号是语法错误）。
+pub(crate) fn paged_inner_sql(sql: &str) -> Result<String, DbError> {
+    let statements = crate::sqlintel::split_statements(sql);
+    if statements.len() != 1 {
+        return Err(DbError::Unsupported(
+            "paged execution needs exactly one statement".into(),
+        ));
+    }
+    let inner = statements
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches(';')
+        .trim()
+        .to_owned();
+    if inner.is_empty() {
+        return Err(DbError::Unsupported("no statement to page".into()));
+    }
+    Ok(inner)
+}
+
+/// 分页探测行数：多取一行判断「还有下一页」。
+pub(crate) fn paged_probe(limit: usize) -> usize {
+    limit.saturating_add(1)
+}
+
+/// 把内层语句包成外层分页查询（`SELECT * FROM (<inner>) AS <alias> LIMIT n OFFSET m`）。
+///
+/// SQLite / PostgreSQL / MySQL / ClickHouse 共用这一种形态；SQL Server 的
+/// `OFFSET/FETCH` 语法不同（且强制要 `ORDER BY`），自己在驱动里拼。
+pub(crate) fn wrap_paged_sql(
+    inner: &str,
+    offset: u64,
+    limit: usize,
+    quote: char,
+) -> Result<String, DbError> {
+    let alias = quote_identifier(PAGE_ALIAS, quote)?;
+    let probe = paged_probe(limit);
+    Ok(format!(
+        "SELECT * FROM ({inner}) AS {alias} LIMIT {probe} OFFSET {offset}"
+    ))
+}
+
+/// 没有 SQL 分页能力的引擎统一给出的拒绝（英文原文，便于日志检索）。
+fn paged_unsupported(engine: &str) -> DbError {
+    DbError::Unsupported(format!("{engine} does not support paged SQL execution"))
+}
+
+/// 没有实例级内省的引擎统一给出的拒绝（英文原文，便于日志检索）。
+///
+/// 与 [`paged_unsupported`] 同一口径：能力判据在
+/// [`DatabaseKind::supports_instance_insight`]，界面据此不画入口；真被调到说明调用方
+/// 没查判据，如实报错而不是返回空表——空表会被界面渲染成「这台服务器什么都没有」。
+fn instance_unsupported(kind: DatabaseKind) -> DbError {
+    DbError::Unsupported(format!(
+        "{kind:?} does not support instance-level introspection"
+    ))
+}
+
+/// 字节数转人类可读（`1.5 MB`）。单位用十进制（数据库工具惯例），与语言无关。
+///
+/// 放在内核而不是界面：SQLite 与 PostgreSQL 的指标行里都要它（PG 自己有
+/// `pg_size_pretty`，但把两边的口径统一在这里，界面才不会出现「一个用 MB 一个用 MiB」）。
+pub(crate) fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// 秒数转人类可读（`3d 4h 5m`）。与 [`human_bytes`] 同一口径：语言无关的紧凑形式。
+pub(crate) fn human_duration_secs(seconds: u64) -> String {
+    let (days, rest) = (seconds / 86_400, seconds % 86_400);
+    let (hours, rest) = (rest / 3_600, rest % 3_600);
+    let (minutes, secs) = (rest / 60, rest % 60);
+    if days > 0 {
+        format!("{days}d {hours}h {minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {secs}s")
+    } else {
+        format!("{secs}s")
+    }
+}
+
 /// URL 查询串 / 路径成分编码（unreserved 原样，其余百分号编码）。
 ///
 /// 走 HTTP 的两条引擎（ClickHouse 的查询串、Elasticsearch 的索引名与路径）都靠它：
@@ -697,7 +1239,10 @@ pub(crate) fn url_encode(value: &str) -> String {
 /// 表名进 SQL 文本时的引号包裹（按引擎的引号字符）。
 /// 名字本身来自目录内省，不做 fuzzy 匹配；包含引擎引号字符的名字不合法，
 /// 直接拒绝——比生成被拆散的 SQL 强。
-pub(crate) fn quote_identifier(name: &str, quote: char) -> Result<String, DbError> {
+///
+/// `pub` 是因为**界面层也要拼 SQL 草稿**（结果集导出 INSERT、对象树「生成 SELECT」）——
+/// 那里的名字同样来自内省，必须走同一套引号规则，不能另写一份。
+pub fn quote_identifier(name: &str, quote: char) -> Result<String, DbError> {
     if name.contains(quote) || name.contains('\0') {
         return Err(DbError::Config(format!(
             "identifier contains quote char {quote}: {name}"
@@ -710,7 +1255,7 @@ pub(crate) fn quote_identifier(name: &str, quote: char) -> Result<String, DbErro
 ///
 /// 只给 `schema` 加引号而不给 `name` 加，是 SQL 注入面；整串一起加又会让
 /// `schema.name` 被当成**一个**标识符。逐段加是唯一正确的写法。
-pub(crate) fn quote_qualified(table: &TableRef, quote: char) -> Result<String, DbError> {
+pub fn quote_qualified(table: &TableRef, quote: char) -> Result<String, DbError> {
     let parts = table.parts();
     if parts.is_empty() {
         return Err(DbError::Config("table name is empty".into()));
@@ -720,6 +1265,197 @@ pub(crate) fn quote_qualified(table: &TableRef, quote: char) -> Result<String, D
         .map(|part| quote_identifier(part, quote))
         .collect::<Result<Vec<_>, _>>()
         .map(|quoted| quoted.join("."))
+}
+
+/// 表浏览的一档过滤算符。
+///
+/// 这一组是**跨引擎的最大公约数**：`=` / `!=` / `>` / `>=` / `<` / `<=` / `LIKE`
+/// 在五条 SQL 引擎上拼法一致（只差占位符风格），`IS NULL` / `IS NOT NULL` 不需要值。
+/// 引擎侧的差异（值的参数化方式、列要不要包 `CAST` / `toString`）落在各驱动的
+/// `table_page` 里，不在这层。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOp {
+    /// `=`
+    Eq,
+    /// `<>`
+    NotEq,
+    /// `>`
+    Gt,
+    /// `>=`
+    Gte,
+    /// `<`
+    Lt,
+    /// `<=`
+    Lte,
+    /// `LIKE`（值里的 `%` / `_` 由引擎解释，本层不转义——那会让用户没法写通配）。
+    Like,
+    /// `IS NULL`（不需要值）。
+    IsNull,
+    /// `IS NOT NULL`（不需要值）。
+    IsNotNull,
+}
+
+impl FilterOp {
+    /// 全部档位（顺序即界面下拉的展示顺序）。
+    pub const ALL: [Self; 9] = [
+        Self::Eq,
+        Self::NotEq,
+        Self::Gt,
+        Self::Gte,
+        Self::Lt,
+        Self::Lte,
+        Self::Like,
+        Self::IsNull,
+        Self::IsNotNull,
+    ];
+
+    /// 是否需要值（`IS NULL` / `IS NOT NULL` 不需要）。
+    #[must_use]
+    pub const fn needs_value(self) -> bool {
+        !matches!(self, Self::IsNull | Self::IsNotNull)
+    }
+
+    /// 值型算子对应的 SQL 算子文本；`IS NULL` / `IS NOT NULL` 返回 `None`
+    /// （它们由 [`filter_conditions`] 单独拼，不能写成 `col = ?`）。
+    #[must_use]
+    pub const fn sql_operator(self) -> Option<&'static str> {
+        match self {
+            Self::Eq => Some("="),
+            Self::NotEq => Some("<>"),
+            Self::Gt => Some(">"),
+            Self::Gte => Some(">="),
+            Self::Lt => Some("<"),
+            Self::Lte => Some("<="),
+            Self::Like => Some("LIKE"),
+            Self::IsNull | Self::IsNotNull => None,
+        }
+    }
+}
+
+/// 表浏览的一档过滤条件：列 + 算符 + 值。
+///
+/// ⚠️ **值永远不被拼进 SQL 文本**：各驱动把它作为绑定参数送下去（SQLite/MySQL `?`、
+/// PostgreSQL `$n`、SQL Server `@Pn`、ClickHouse 的 `{x:String}` URL 参数），
+/// 需要 `NULL` 判定时用 [`FilterOp::IsNull`] / [`FilterOp::IsNotNull`]（此时 `value` 为
+/// `None`），而不是把字面量 `NULL` 当值传。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableFilter {
+    /// 列名（未加引号的原名）。
+    pub column: String,
+    /// 算符。
+    pub op: FilterOp,
+    /// 值（展示文本）；`IS NULL` / `IS NOT NULL` 时为 `None`。
+    pub value: Option<String>,
+}
+
+impl TableFilter {
+    /// 一档带值的过滤。
+    #[must_use]
+    pub fn new(column: impl Into<String>, op: FilterOp, value: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            op,
+            value: Some(value.into()),
+        }
+    }
+
+    /// 一档不带值的过滤（只对 `IS NULL` / `IS NOT NULL` 有意义）。
+    #[must_use]
+    pub fn null(column: impl Into<String>, op: FilterOp) -> Self {
+        Self {
+            column: column.into(),
+            op,
+            value: None,
+        }
+    }
+}
+
+/// 绑定占位符的三种写法（值**只**经占位符进 SQL）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaceholderStyle {
+    /// `?`（SQLite / MySQL，按出现顺序绑定）。
+    Question,
+    /// `$n`（PostgreSQL，从 1 起）。
+    Dollar,
+    /// `@Pn`（SQL Server，从 1 起）。
+    At,
+}
+
+impl PlaceholderStyle {
+    /// 第 `index` 个值参数（`index` 从 1 起）的写法。
+    pub(crate) fn render(self, index: usize) -> String {
+        match self {
+            Self::Question => "?".to_owned(),
+            Self::Dollar => format!("${index}"),
+            Self::At => format!("@P{index}"),
+        }
+    }
+}
+
+/// 把一档档过滤条件拼成 `WHERE` 的各个条件片段与配套的绑定值。
+///
+/// 两个回调把「引擎差异」收进调用点，公共的那一半留在这里：
+/// - **列名一律逐段加引号**（`column_expr` 的返回值必须包含引号结果，通常是
+///   [`quote_identifier`] 的产物，个别引擎再包一层 `CAST(... AS TEXT)` / `toString(...)`）；
+/// - **值一律走占位符**（`value_expr` 给出第 `n` 个值在 SQL 里的写法，个别引擎再补
+///   `::text::<类型>` 这样的转型），返回值按出现顺序与占位符一一对应。
+///
+/// 返回 `(条件列表, 绑定值列表)`；`IS NULL` / `IS NOT NULL` 不占位、不进值列表，
+/// 所以序号只按**带值**的条件递增。
+pub(crate) fn filter_conditions(
+    filters: &[TableFilter],
+    column_expr: impl Fn(&str, FilterOp) -> Result<String, DbError>,
+    value_expr: impl Fn(usize, &TableFilter) -> String,
+) -> Result<(Vec<String>, Vec<String>), DbError> {
+    let mut conditions = Vec::with_capacity(filters.len());
+    let mut values = Vec::new();
+    for filter in filters {
+        if filter.column.trim().is_empty() {
+            return Err(DbError::Config("filter column is empty".into()));
+        }
+        let column = column_expr(&filter.column, filter.op)?;
+        match filter.op {
+            FilterOp::IsNull => conditions.push(format!("{column} IS NULL")),
+            FilterOp::IsNotNull => conditions.push(format!("{column} IS NOT NULL")),
+            op => {
+                let Some(value) = filter.value.as_deref() else {
+                    return Err(DbError::Config(format!(
+                        "filter on {} needs a value",
+                        filter.column
+                    )));
+                };
+                let index = values.len() + 1;
+                let placeholder = value_expr(index, filter);
+                let operator = op
+                    .sql_operator()
+                    .expect("value-bearing ops always have an operator");
+                conditions.push(format!("{column} {operator} {placeholder}"));
+                values.push(value.to_owned());
+            }
+        }
+    }
+    Ok((conditions, values))
+}
+
+/// 常见引擎的整段 `WHERE` 子句：列名按 `quote` 加引号、值按 `style` 给占位符。
+///
+/// 返回 `(" WHERE ...", 绑定值)`；过滤列表为空时返回 `("", 空)`（调用方据此不加子句）。
+/// PostgreSQL / SQL Server / ClickHouse 的形态差异（列转型、`LIKE` 包装）走
+/// [`filter_conditions`] 自己拼。
+pub(crate) fn plain_filter_clause(
+    filters: &[TableFilter],
+    quote: char,
+    style: PlaceholderStyle,
+) -> Result<(String, Vec<String>), DbError> {
+    if filters.is_empty() {
+        return Ok((String::new(), Vec::new()));
+    }
+    let (conditions, values) = filter_conditions(
+        filters,
+        |name, _op| quote_identifier(name, quote),
+        |index, _| style.render(index),
+    )?;
+    Ok((format!(" WHERE {}", conditions.join(" AND ")), values))
 }
 
 /// 分页 / 浏览的一档排序：列 + 方向。
@@ -819,6 +1555,39 @@ mod tests {
         assert!(quote_qualified(&bad, '"').is_err());
     }
 
+    /// 指标数值筛选：只有能解析成数的项进序列，文案项（体量 / 命中率里的 `-`）留在表里。
+    #[test]
+    fn numeric_metrics_keep_only_parsable_values() {
+        let table = InstanceTable {
+            columns: vec!["metric".into(), "value".into()],
+            rows: vec![
+                vec!["Threads_connected".into(), "12".into()],
+                vec!["Bytes_sent".into(), "1.5e6".into()],
+                vec!["database_size".into(), "8493 kB".into()],
+                vec!["hit_ratio".into(), "-".into()],
+                vec!["  spaced  ".into(), " 7 ".into()],
+            ],
+        };
+        let metrics = table.numeric();
+        assert_eq!(
+            metrics
+                .iter()
+                .map(|metric| (metric.key.as_str(), metric.value))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Threads_connected", 12.0),
+                ("Bytes_sent", 1_500_000.0),
+                ("spaced", 7.0),
+            ]
+        );
+        // 列名对不上（别的形态的表）→ 空序列，而不是瞎猜哪列是值。
+        let other = InstanceTable {
+            columns: vec!["key".into(), "val".into()],
+            rows: vec![vec!["a".into(), "1".into()]],
+        };
+        assert!(other.numeric().is_empty());
+    }
+
     /// `ORDER BY` 子句：空列表不产生子句；多档按序逗号连接、逐列加引号、降序带 `DESC`。
     #[test]
     fn order_by_building() {
@@ -832,6 +1601,105 @@ mod tests {
         assert!(order_by_clause(&bad, '"').is_err());
     }
 
+    /// 过滤子句：值只经占位符进 SQL，`IS NULL` 不占位、不递增序号，
+    /// 列名逐段加引号（含引号字符的列名直接拒绝）。
+    #[test]
+    fn filter_clause_never_inlines_values() {
+        let plain = plain_filter_clause(&[], '"', PlaceholderStyle::Question).expect("空");
+        assert_eq!(plain.0, "");
+        assert!(plain.1.is_empty());
+
+        let filters = vec![
+            TableFilter::new("name", FilterOp::Eq, "it's ' or 1=1 --"),
+            TableFilter::null("note", FilterOp::IsNull),
+            TableFilter::new("score", FilterOp::Gte, "9"),
+        ];
+        let (clause, values) =
+            plain_filter_clause(&filters, '"', PlaceholderStyle::Question).expect("合法");
+        assert_eq!(
+            clause,
+            " WHERE \"name\" = ? AND \"note\" IS NULL AND \"score\" >= ?"
+        );
+        // 值原样传给驱动绑定层，一个字符都没进 SQL 文本。
+        assert_eq!(values, vec!["it's ' or 1=1 --", "9"]);
+        assert!(!clause.contains("1=1"), "值绝不能出现在 SQL 文本里");
+
+        // PG / SQL Server 的编号占位符只按带值条件递增。
+        let (clause, _) =
+            plain_filter_clause(&filters, '"', PlaceholderStyle::Dollar).expect("合法");
+        assert!(clause.contains("\"name\" = $1"));
+        assert!(clause.contains("\"score\" >= $2"), "{clause}");
+        let (clause, _) = plain_filter_clause(&filters, '"', PlaceholderStyle::At).expect("合法");
+        assert!(clause.contains("\"score\" >= @P2"), "{clause}");
+
+        // 值型条件缺值 / 空列名都拒绝，不生成会被引擎当语法错拒的半截 SQL。
+        assert!(
+            plain_filter_clause(
+                &[TableFilter {
+                    column: "a".into(),
+                    op: FilterOp::Eq,
+                    value: None
+                }],
+                '"',
+                PlaceholderStyle::Question
+            )
+            .is_err()
+        );
+        assert!(
+            plain_filter_clause(
+                &[TableFilter::new("  ", FilterOp::Eq, "x")],
+                '"',
+                PlaceholderStyle::Question
+            )
+            .is_err()
+        );
+        // 含引号字符的列名拒绝（与 `quote_identifier` 同口径）。
+        assert!(
+            plain_filter_clause(
+                &[TableFilter::new("we\"ird", FilterOp::Eq, "x")],
+                '"',
+                PlaceholderStyle::Question
+            )
+            .is_err()
+        );
+    }
+
+    /// 算符表：值型算子有 SQL 算子，`IS NULL` / `IS NOT NULL` 没有且不需要值。
+    #[test]
+    fn filter_ops_are_complete() {
+        assert_eq!(FilterOp::ALL.len(), 9);
+        for op in FilterOp::ALL {
+            assert_eq!(op.needs_value(), op.sql_operator().is_some(), "{op:?}");
+        }
+        assert_eq!(FilterOp::Eq.sql_operator(), Some("="));
+        assert_eq!(FilterOp::NotEq.sql_operator(), Some("<>"));
+        assert_eq!(FilterOp::Like.sql_operator(), Some("LIKE"));
+        assert_eq!(FilterOp::IsNull.sql_operator(), None);
+        assert_eq!(FilterOp::IsNotNull.sql_operator(), None);
+    }
+
+    /// 分页包装：只接受单条语句、去掉结尾分号、外层 `LIMIT` 多取一行探测；
+    /// 多语句 / 空串直接拒绝（不生成会被引擎解析成半截的 SQL）。
+    #[test]
+    fn paged_wrapping_is_single_statement_only() {
+        let inner = paged_inner_sql("SELECT * FROM t;").expect("单条");
+        assert_eq!(inner, "SELECT * FROM t");
+        assert_eq!(paged_probe(10), 11);
+        assert_eq!(
+            wrap_paged_sql(&inner, 20, 10, '"').expect("合法"),
+            "SELECT * FROM (SELECT * FROM t) AS \"__duck_page\" LIMIT 11 OFFSET 20"
+        );
+        // MySQL 反引号别名。
+        assert!(
+            wrap_paged_sql(&inner, 0, 5, '`')
+                .expect("合法")
+                .contains("AS `__duck_page` LIMIT 6 OFFSET 0")
+        );
+        // 多语句 / 空串都拒绝。
+        assert!(paged_inner_sql("SELECT 1; SELECT 2").is_err());
+        assert!(paged_inner_sql("   ").is_err());
+    }
+
     /// URL 成分编码：unreserved 原样，`&` / `=` / 空格 / 非 ASCII 必须编码，
     /// 否则一个含 `&` 的库名就能往查询串里塞参数。
     #[test]
@@ -841,5 +1709,28 @@ mod tests {
         assert_eq!(url_encode("a&b=c"), "a%26b%3Dc");
         assert_eq!(url_encode("a/b"), "a%2Fb");
         assert_eq!(url_encode("我的库"), "%E6%88%91%E7%9A%84%E5%BA%93");
+    }
+
+    /// 人类可读换算：十进制单位（不是 1024 进位的 MiB），边界取整不丢档位。
+    #[test]
+    fn human_readable_units() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(999), "999 B");
+        assert_eq!(human_bytes(1024), "1.0 KB");
+        assert_eq!(human_bytes(1536), "1.5 KB");
+        assert_eq!(human_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GB");
+        // 超过最大单位后不再换档（TB 封顶，数值继续涨）。
+        assert_eq!(human_bytes(2048_u64 * 1024 * 1024 * 1024), "2.0 TB");
+        assert_eq!(
+            human_bytes(5120_u64 * 1024 * 1024 * 1024 * 1024),
+            "5120.0 TB"
+        );
+
+        assert_eq!(human_duration_secs(0), "0s");
+        assert_eq!(human_duration_secs(59), "59s");
+        assert_eq!(human_duration_secs(60), "1m 0s");
+        assert_eq!(human_duration_secs(3_600), "1h 0m");
+        assert_eq!(human_duration_secs(90_000), "1d 1h 0m");
     }
 }

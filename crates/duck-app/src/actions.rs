@@ -11,6 +11,7 @@ use duck_command::{ActionMeta, ActionSlot, install_app_handler, install_handler}
 use duck_components::DuckIcon;
 use duck_theme::{Appearance, ThemeMode, ThemePreference, active_theme, apply, tr, trf};
 
+use crate::pages::TerminalPage;
 use crate::pages::open_settings;
 
 /// 动作 id 常量（命令面板 / 菜单 / 快捷键共用同一套 id）。
@@ -49,6 +50,30 @@ pub mod ids {
     pub const HELP_OPEN_LOGS: &str = "help.open-logs";
     /// 退出应用。
     pub const APP_QUIT: &str = "app.quit";
+
+    // —— 终端页动作 ——
+    //
+    // 这些动作的**快捷键**绑在 `"Terminal"` 上下文里（见 `app::install` 的
+    // `cx.bind_keys([...])`）。刻意**不**在 `ActionMeta::keys` 里再声明一份：
+    // 那份会被 `duck_command::bind_all` 绑到全局上下文，`⌘K`（清屏）会与
+    // `palette.toggle` 直接撞车，`⌘T` / `⌘D` 也会在设置页等地方被误触发。
+    // 这里只做**命令面板可见性**：让它们能在面板里搜到、并可供菜单引用。
+    /// 新建终端标签（本地 shell）。
+    pub const TERMINAL_NEW_TAB: &str = "terminal.new-tab";
+    /// 分屏 / 取消分屏当前标签。
+    pub const TERMINAL_SPLIT_PANE: &str = "terminal.split-pane";
+    /// 增大终端字号。
+    pub const TERMINAL_ZOOM_IN: &str = "terminal.zoom-in";
+    /// 减小终端字号。
+    pub const TERMINAL_ZOOM_OUT: &str = "terminal.zoom-out";
+    /// 重置终端字号。
+    pub const TERMINAL_ZOOM_RESET: &str = "terminal.zoom-reset";
+    /// 清空当前窗格。
+    pub const TERMINAL_CLEAR: &str = "terminal.clear";
+    /// 新建连接（打开连接编辑器）。
+    pub const TERMINAL_NEW_CONNECTION: &str = "terminal.new-connection";
+    /// 打开 SFTP 面板。
+    pub const TERMINAL_OPEN_SFTP: &str = "terminal.open-sftp";
 
     // —— 标准菜单项：只出现在菜单栏的固定位置，不进命令面板 / 活动栏 ——
     //
@@ -203,7 +228,7 @@ pub fn declare_all(cx: &mut App) {
             keys: &["$mod-7"],
         },
     );
-    // 邮箱：入口先挂上，页面是「功能正在建设中」的空白页（`PlaceholderPage`）。
+    // 邮箱：真实页面（`MailPage`，见 `app.rs` 的 `duck-route-email`）。
     // 活动栏最末一条，键位接在 AI 助手之后（`⌘8`），现有 ⌘1–⌘7 不动。
     duck_command::declare(
         cx,
@@ -360,6 +385,126 @@ pub fn declare_all(cx: &mut App) {
         },
     );
 
+    // —— 终端（SSH 终端页的动作；此前只存在于键盘绑定里）——
+    //
+    // 关键词一律 ASCII（与上面几条占位路由同一条约定）：中文搜索词若写进
+    // `keywords` 就得为每个词各补一条英译，而标签本身已是搜索目标。
+    // 设计 §9 的口径是「一处登记，四处输出面同时生效」。这些动作原本只绑在
+    // `"Terminal"` 上下文（`app::install`），于是**命令面板里搜不到**，菜单也引用不了。
+    // 登记元数据后落进面板；键位仍由 `"Terminal"` 上下文那一份提供（见 `ids` 的说明）。
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::TERMINAL_NEW_TAB,
+            label: |cx| SharedString::from(tr(cx, "新建终端标签")),
+            keywords: &["new", "tab", "terminal", "shell"],
+            group: Some("终端"),
+            icon: Some(|_| Icon::new(DuckIcon::Plus)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::TERMINAL_SPLIT_PANE,
+            label: |cx| SharedString::from(tr(cx, "切换分屏")),
+            keywords: &["split", "pane", "columns"],
+            group: Some("终端"),
+            icon: Some(|_| Icon::new(DuckIcon::Columns2)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::TERMINAL_ZOOM_IN,
+            label: |cx| SharedString::from(tr(cx, "增大终端字号")),
+            keywords: &["zoom", "font", "larger", "increase"],
+            group: Some("终端"),
+            icon: Some(|_| Icon::new(DuckIcon::Plus)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::TERMINAL_ZOOM_OUT,
+            label: |cx| SharedString::from(tr(cx, "减小终端字号")),
+            keywords: &["zoom", "font", "smaller", "decrease"],
+            group: Some("终端"),
+            icon: Some(|_| Icon::new(DuckIcon::Minus)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::TERMINAL_ZOOM_RESET,
+            label: |cx| SharedString::from(tr(cx, "重置终端字号")),
+            keywords: &["zoom", "font", "reset"],
+            group: Some("终端"),
+            icon: Some(|_| Icon::new(DuckIcon::RotateCw)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::TERMINAL_CLEAR,
+            label: |cx| SharedString::from(tr(cx, "清屏")),
+            keywords: &["clear", "screen", "scrollback"],
+            group: Some("终端"),
+            icon: Some(|_| Icon::new(DuckIcon::Trash2)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::TERMINAL_NEW_CONNECTION,
+            label: |cx| SharedString::from(tr(cx, "新建连接")),
+            keywords: &["new", "connection", "ssh", "host"],
+            group: Some("终端"),
+            icon: Some(|_| Icon::new(DuckIcon::Server)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::TERMINAL_OPEN_SFTP,
+            label: |cx| SharedString::from(tr(cx, "打开 SFTP 面板")),
+            keywords: &["sftp", "files", "transfer", "upload"],
+            group: Some("终端"),
+            icon: Some(|_| Icon::new(DuckIcon::Folders)),
+            icon_color: None,
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+
     // —— 标准菜单项（关于 / 隐藏三件套 / 窗口控制）——
     //
     // 只登记元数据与键位：`slots: &[]` + `menu: None` 让它们**不**出现在命令面板与
@@ -483,6 +628,86 @@ pub fn install_shell_handlers(cx: &mut App, shell: &gpui::Entity<duck_shell::She
     });
 }
 
+/// 安装终端页的动作处理器。
+///
+/// 这些动作的操作对象是**终端页实体**（不是 shell），所以单独一个函数、在
+/// `build_main_window` 里拿到 `TerminalPage` 之后调用。每条都先切到 SSH 路由 ——
+/// 用户从命令面板触发「新建终端标签」时，如果当前停在设置页，动作生效了却看不见，
+/// 表现就是「点了没反应」。
+///
+/// 处理器收弱引用：主窗关掉后终端页应当自然失效，而不是被全局注册表钉住不释放。
+pub fn install_terminal_handlers(cx: &mut App, terminal: &gpui::WeakEntity<TerminalPage>) {
+    install_handler(cx, ids::TERMINAL_NEW_TAB, {
+        let terminal = terminal.clone();
+        move |_window, cx| {
+            crate::app::navigate_to(cx, crate::pages::SSH_ROUTE);
+            if let Some(page) = terminal.upgrade() {
+                page.update(cx, |page, cx| page.new_local_tab(cx));
+            }
+        }
+    });
+    install_handler(cx, ids::TERMINAL_SPLIT_PANE, {
+        let terminal = terminal.clone();
+        move |_window, cx| {
+            crate::app::navigate_to(cx, crate::pages::SSH_ROUTE);
+            if let Some(page) = terminal.upgrade() {
+                page.update(cx, |page, cx| page.toggle_split(cx));
+            }
+        }
+    });
+    install_handler(cx, ids::TERMINAL_ZOOM_IN, {
+        let terminal = terminal.clone();
+        move |_window, cx| {
+            if let Some(page) = terminal.upgrade() {
+                page.update(cx, |page, cx| page.nudge_font_size(1., cx));
+            }
+        }
+    });
+    install_handler(cx, ids::TERMINAL_ZOOM_OUT, {
+        let terminal = terminal.clone();
+        move |_window, cx| {
+            if let Some(page) = terminal.upgrade() {
+                page.update(cx, |page, cx| page.nudge_font_size(-1., cx));
+            }
+        }
+    });
+    install_handler(cx, ids::TERMINAL_ZOOM_RESET, {
+        let terminal = terminal.clone();
+        move |_window, cx| {
+            if let Some(page) = terminal.upgrade() {
+                page.update(cx, |page, cx| page.reset_font_size(cx));
+            }
+        }
+    });
+    install_handler(cx, ids::TERMINAL_CLEAR, {
+        let terminal = terminal.clone();
+        move |_window, cx| {
+            crate::app::navigate_to(cx, crate::pages::SSH_ROUTE);
+            if let Some(page) = terminal.upgrade() {
+                page.update(cx, |page, cx| page.clear_active(cx));
+            }
+        }
+    });
+    install_handler(cx, ids::TERMINAL_NEW_CONNECTION, {
+        let terminal = terminal.clone();
+        move |window, cx| {
+            crate::app::navigate_to(cx, crate::pages::SSH_ROUTE);
+            if let Some(page) = terminal.upgrade() {
+                page.update(cx, |page, cx| page.open_new_connection(window, cx));
+            }
+        }
+    });
+    install_handler(cx, ids::TERMINAL_OPEN_SFTP, {
+        let terminal = terminal.clone();
+        move |window, cx| {
+            crate::app::navigate_to(cx, crate::pages::SSH_ROUTE);
+            if let Some(page) = terminal.upgrade() {
+                page.update(cx, |page, cx| page.open_sftp_for_current(window, cx));
+            }
+        }
+    });
+}
+
 /// 退出应用：先把待写数据落盘，再结束事件循环。
 ///
 /// 抽成函数而不是写在处理器里，是因为托盘也要走这条路——托盘菜单里那个「退出」
@@ -541,6 +766,45 @@ mod tests {
             }
             let keys = duck_command::keybindings_for(cx, ids::ROUTE_DATABASE);
             assert!(!keys.is_empty(), "数据库页要有默认键位（设计稿定的是 ⌘4）");
+        });
+    }
+
+    /// 终端页的动作必须能从命令面板搜到（设计 §9 的「四处输出面同时生效」）。
+    ///
+    /// 这些动作原本只存在于 `"Terminal"` 上下文的键盘绑定里 —— 键按下去有效，
+    /// 但**面板里搜不到、菜单也引用不了**。这条钉住的是「登记进 ActionMeta」这一步
+    /// 没有回退（回退的表现是面板里少了一批终端命令，肉眼很难注意到）。
+    #[gpui::test]
+    fn terminal_actions_are_searchable_from_the_palette(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            duck_command::install(cx);
+            declare_all(cx);
+        });
+        cx.update(|cx| {
+            let terminal_ids = [
+                ids::TERMINAL_NEW_TAB,
+                ids::TERMINAL_SPLIT_PANE,
+                ids::TERMINAL_ZOOM_IN,
+                ids::TERMINAL_ZOOM_OUT,
+                ids::TERMINAL_ZOOM_RESET,
+                ids::TERMINAL_CLEAR,
+                ids::TERMINAL_NEW_CONNECTION,
+                ids::TERMINAL_OPEN_SFTP,
+            ];
+            for id in terminal_ids {
+                let meta = metas(cx)
+                    .iter()
+                    .find(|meta| meta.id == id)
+                    .unwrap_or_else(|| panic!("终端动作 {id} 必须已声明"));
+                assert!(
+                    meta.slots.contains(&ActionSlot::Palette),
+                    "{id} 必须进命令面板，否则只能靠按键到达"
+                );
+                assert!(
+                    !meta.keywords.is_empty(),
+                    "{id} 要有搜索词，否则面板里只能靠中文全名匹配"
+                );
+            }
         });
     }
 }

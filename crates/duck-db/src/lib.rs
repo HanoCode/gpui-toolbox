@@ -32,8 +32,12 @@ pub mod config;
 pub mod csv;
 pub mod drivers;
 pub mod error;
+pub mod hooks;
+pub mod plan;
+pub mod proxy;
 pub mod result;
 pub mod sqlintel;
+pub mod ssm;
 
 /// 第三方连接档案导入（DBeaver / TablePlus）。
 pub mod import;
@@ -44,13 +48,23 @@ pub use cancel::{CancelHandle, CancelTimer};
 pub use config::{ConnectionConfig, DatabaseKind, EnvTag, SshTunnelConfig, TlsMode};
 pub use csv::parse_csv;
 pub use drivers::{
-    BatchOutcome, CatalogTable, CellEdit, Connection, InsertRow, OrderBy, PkValues, RowCount,
-    TableIndex, TableKind, TableRef,
+    BatchOutcome, CatalogTable, CellEdit, Connection, DatabaseObject, FilterOp, InsertRow,
+    InstanceFact, InstanceMetric, InstanceOverview, InstanceTable, InstanceView, OrderBy, PkValues,
+    RowCount, SwitchOutcome, TableFilter, TableForeignKey, TableIndex, TableKind, TableRef,
+    TableTrigger, quote_identifier, quote_qualified,
 };
 pub use error::DbError;
-pub use result::{Column, ExecOutcome, ResultSet, Value};
-pub use sqlintel::{
-    EditTarget, ExplainSkip, FormattedSql, covers_columns, edit_target, explain_sql, format_sql,
-    risk_of_statements, split_statements,
+pub use hooks::{
+    ConnectionHook, ConnectionHooks, DEFAULT_HOOK_TIMEOUT_SECS, HookAction, HookContext,
+    HookFailure, HookOutcome, HookPhase, HookReport, HookStatus, run_hook, run_phase,
 };
+pub use plan::{PlanNode, PlanTree, parse_plan};
+pub use proxy::{ProxyConfig, ProxyKind, ProxyTunnel, ProxyTunnelSpec};
+pub use result::{BinaryEncoding, Column, ExecOutcome, ResultSet, Value, tsv_field};
+pub use sqlintel::{
+    EditTarget, ExplainSkip, FormattedSql, covers_columns, edit_target, explain_sql,
+    explain_sql_for, fingerprint, format_sql, normalize_for_fingerprint, risk_of_statements,
+    split_statements,
+};
+pub use ssm::{SsmConfig, SsmTunnel, SsmTunnelSpec};
 pub use tunnel::{SshTunnel, SshTunnelSpec};

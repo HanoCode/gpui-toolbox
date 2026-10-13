@@ -118,6 +118,35 @@ pub fn update_connection(
     Ok(())
 }
 
+/// 编辑账户：档案字段整体更新（编辑弹窗的落库点）。**不动口令与凭据**。
+///
+/// `provider` / `auth_kind` / `mail_protocol` 保持原值：编辑是改连接参数，不是
+/// 换协议——改协议是「删了重加」的事。
+pub fn update_profile(conn: &Connection, id: i64, account: &NewAccount) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE accounts
+         SET email = ?2, display_name = ?3, username = ?4,
+             imap_host = ?5, imap_port = ?6, smtp_host = ?7, smtp_port = ?8,
+             settings_json = ?9
+         WHERE id = ?1",
+        params![
+            id,
+            account.email,
+            account.display_name,
+            account.username,
+            account.imap_host,
+            account.imap_port,
+            account.smtp_host,
+            account.smtp_port,
+            encode_settings(account.security)
+        ],
+    )?;
+    if n == 0 {
+        return Err(MailError::NotFound(format!("account {id}")));
+    }
+    Ok(())
+}
+
 /// 写同步状态。`error` 为 `None` 时清空失败原因。
 pub fn set_sync_state(
     conn: &Connection,
@@ -305,6 +334,41 @@ mod tests {
         let got = get(&conn, id).unwrap();
         assert_eq!(got.imap_host, "imap.new.com");
         assert_eq!(got.security, ConnectionSecurity::StartTls);
+    }
+
+    #[test]
+    fn update_profile_rewrites_every_editable_field() {
+        let conn = mem();
+        let id = insert(&conn, &sample("old@example.com")).unwrap();
+        let mut edited = sample("new@example.com");
+        edited.display_name = Some("新名".into());
+        edited.username = "login@other.com".into();
+        edited.imap_host = "imap.new.com".into();
+        edited.imap_port = 143;
+        edited.smtp_host = "smtp.new.com".into();
+        edited.smtp_port = 587;
+        edited.security = ConnectionSecurity::StartTls;
+        update_profile(&conn, id, &edited).unwrap();
+
+        let got = get(&conn, id).unwrap();
+        assert_eq!(got.email, "new@example.com");
+        assert_eq!(got.display_name.as_deref(), Some("新名"));
+        assert_eq!(got.username, "login@other.com");
+        assert_eq!(got.imap_host, "imap.new.com");
+        assert_eq!(got.imap_port, 143);
+        assert_eq!(got.smtp_host, "smtp.new.com");
+        assert_eq!(got.smtp_port, 587);
+        assert_eq!(got.security, ConnectionSecurity::StartTls);
+        // 编辑是改参数不是换协议：provider / auth_kind 保持原值。
+        assert_eq!(got.provider, Provider::Imap);
+        assert_eq!(got.auth_kind, AuthKind::Password);
+        // 编辑后的新地址不再与另一账户冲突（换址后的查重由 `accounts::update` 做）。
+        assert!(get_by_email(&conn, "new@example.com").unwrap().is_some());
+        // 不存在的主键报 NotFound，而不是静默成功。
+        assert!(matches!(
+            update_profile(&conn, 999, &edited),
+            Err(MailError::NotFound(_))
+        ));
     }
 
     #[test]

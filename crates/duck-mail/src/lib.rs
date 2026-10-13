@@ -8,7 +8,7 @@
 //!   ▼
 //! duck-mail（本 crate：accounts / db / proto / mime / sync / search / ai）
 //!   ▼
-//! duck-platform::{secret,paths}   async-imap / mail-parser / rusqlite
+//! duck-platform::{secret,paths}   async-imap / mail-parser / mail-builder / rusqlite
 //! ```
 //!
 //! # 硬约束
@@ -16,42 +16,80 @@
 //! 1. **零 gpui**：本 crate 不依赖 `gpui` / `duck-components` / `duck-store` / `duck-db`。
 //!    与 `duck-db` / `duck-redis` / `duck-ai` 同纪律——内核可被 CLI、未来独立窗口或
 //!    插件宿主复用。
-//! 2. **tokio 不外泄**：`tokio::` 只出现在 [`runtime`]，且不出现在任何 `pub fn` 签名里。
+//! 2. **tokio 不外泄**：直接用 `tokio::` 的只有两处——[`runtime`]（自管 runtime）与
+//!    [`proto::imap`]（连接层用 `tokio::net::TcpStream` 与 `tokio::time::timeout`，
+//!    `async-imap` 的会话就跑在这条连接上）。**公共 API 上没有 tokio 派生类型**：
+//!    协议层那两个流类型别名是 `pub(crate)`，`pub fn` 的签名里也不出现 `tokio::`。
 //! 3. **口令不进 SQLite**：凭据一律走 [`accounts`] → `duck-platform::secret`。
 //! 4. **写路径单事务**：多语句写一律 `MailDb::write_tx`。
 //!
-//! # 这一版（M1）到什么程度
+//! # 这一版到什么程度
 //!
-//! 已落地：账户 CRUD + 凭据加密、本地库与迁移、文件夹 / 线程列表 / 正文的存储 API、
-//! IMAP 连接与拉取、MIME 解码、增量同步（UID 水位）、FTS5 检索。
+//! **已落地**
 //!
-//! 未落地（M2+）：发信（SMTP）、动作队列与撤销、会话合并、OAuth2、JMAP / Gmail 专用
-//! 通道、AI 摘要与起草、联系人 / 日历。设计文档 §6 有分期表。
+//! - M1：账户 CRUD + 凭据加密、本地库与迁移、文件夹 / 线程列表 / 正文的存储 API、
+//!   IMAP 连接与拉取、MIME 解码（含 CID 内联与远程图片闸门）、增量同步（UID 水位 +
+//!   窗口内旗标对账 + UID 集合删除对账）、FTS5 检索（含条件查询语言）。
+//! - M1.5（无新依赖）：IMAP **写方向**（`UID STORE` / `UID COPY` / `UID MOVE` 与无 MOVE
+//!   时的三步回退 / `UID EXPUNGE`，含 CAPABILITY 能力位）、动作队列（`pending_actions`
+//!   5 态状态机 + 乐观更新 + 撤销宽限期）、标签仓储。[`MailCore`] 的旗标 / 移动 / 删除 /
+//!   标签门面与 [`MailCore::flush_pending`] 补发。
+//! - M2 第一批：**发信**（手写 SMTP 与 `compose` 头部装配，刻意未引 `lettre`）、
+//!   **附件另存**（整封取回 + MIME 解码 + 落盘，见 [`sync::download_attachment`]）。
+//! - M2 第二批：**发信带附件**（[`OutgoingAttachment`]）。`multipart/mixed` 的**正文**
+//!   改由 `mail-builder` 装配（`MimePart`），**头部与单部件路径仍手写**——取舍写在
+//!   `compose.rs` 模块头。`default-features = false`，故仍是零新增传递依赖。
+//! - M2 第三批：**常驻同步 actor**（[`MailCore::start_sync_actor`]）：per-account
+//!   `SELECT` → `IDLE` 等待 → 变更触发增量同步；无 `IDLE` 能力时降级 `NOOP` 轮询；
+//!   断线退避重连；应用退出 / 账户移除时**干净停止**。**附件按 IMAP 节下载**
+//!   （`BODY.PEEK[<section>]`）落应用管理目录（0600），落点校验 + 文件名清洗。
+//!
+//! **未落地（M2+）**：草稿自动保存与推送服务器 `\Drafts`、签名 / 发件身份、写回
+//! 「已发送」、会话合并、OAuth2 的**浏览器授权流程**（协议件已落地，见 [`oauth`]）、
+//! JMAP / Gmail 专用通道、AI 摘要与起草、联系人 / 日历。设计文档 §6 有分期表。
 
 pub mod accounts;
+pub mod compose;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod events;
 pub mod mime;
 pub mod models;
+pub mod oauth;
+pub mod presets;
 pub mod proto;
+pub mod queue;
 pub mod runtime;
 pub mod secrets;
 pub mod sync;
+pub mod threading;
 
 use std::sync::{Mutex, OnceLock, mpsc};
 
 pub use config::MailPaths;
+pub use db::repo::queue::{ActionState, PendingAction};
 pub use error::{MailError, Result};
 pub use events::MailEvent;
 pub use models::{
-    Account, AttachmentMeta, AuthKind, ConnectionSecurity, ConnectionTestResult, Folder,
-    FolderRole, MessageDetail, MessageSummary, NewAccount, Provider, SyncState,
+    Account, AttachmentMeta, AuthKind, ConnectionSecurity, ConnectionTestResult, DraftMode,
+    DraftSummary, Folder, FolderRole, Label, MessageDetail, MessageSummary, NewAccount, Provider,
+    SyncState,
 };
+pub use oauth::{Endpoints, Pkce, Redirect, TokenSet};
+pub use proto::smtp::{SmtpCaps, SmtpConfig, smtp_data_payload};
+pub use queue::ActionKind;
 pub use secrets::Secrets;
+pub use sync::AttachmentSaved;
+
+/// 一轮后台预取的封数上限（[`MailCore::sync_account`] 收尾时会按它跑一次）。
+pub use sync::PREFETCH_BODY_LIMIT;
+
+pub use compose::{Draft, Mailbox, OutgoingAttachment};
+pub use db::repo::drafts::{DraftAttachmentRef, DraftRecord};
 
 use db::MailDb;
+use proto::smtp::SmtpSession;
 use runtime::MailRuntime;
 
 /// 邮箱模块的门面：**宿主（`duck-app`）只需要面对这一个类型**。
@@ -80,6 +118,19 @@ impl MailCore {
     pub fn open_with_secrets(paths: MailPaths, secrets: Secrets) -> Result<Self> {
         paths.ensure()?;
         let db = MailDb::open(paths.db_path())?;
+        // **启动清理悬挂的 `fetching`**：上一次运行在拉正文途中被杀掉（崩溃 / 强退 /
+        // 断电）会留下永远停在 `fetching` 的行——没有任何任务在跑，界面却永远显示
+        // 「正在下载正文」，而原子抢占（只认 `none`）又让它们再也抢不动，那封邮件就
+        // 彻底拉不到正文了。这里统一退回 `none`，让它们重新可被抢占。
+        //
+        // 放在 `open`（每次启动一次）而不是同步循环里：后者会把**正在进行**的拉取
+        // 一起误伤。失败不致命（真的库坏了，后面任何操作都会报出来），只记日志。
+        // 参考 Flectar `lib.rs:485-497` 的同一处兜底。
+        match db.write_tx(|tx| db::repo::messages::reset_stale_body_fetches(tx)) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(recovered = n, "reset orphaned mail body fetches"),
+            Err(error) => tracing::debug!(%error, "resetting orphaned body fetches failed"),
+        }
         Ok(Self {
             paths,
             db,
@@ -157,9 +208,29 @@ impl MailCore {
 
     /// 删除账户。
     pub fn remove_account(&self, account_id: i64) -> Result<()> {
+        // 先把常驻 actor 停掉，再删库——否则 actor 会在账户已经不存在之后
+        // 继续按老凭据连服务器（直到下一轮才失败退出）。
+        self.stop_sync_actor(account_id);
         accounts::remove(&self.db, &self.secrets, account_id)?;
         self.emit(MailEvent::AccountsChanged);
         Ok(())
+    }
+
+    /// 编辑账户（服务器参数 / 显示信息）。**口令留空 = 保持现有口令**。
+    ///
+    /// 连接参数可能变了，actor 必须按新档案重连：先停、写完档案再拉起。写失败
+    /// 也要把 actor 恢复——保存失败不该连累同步停摆。
+    pub fn update_account(&self, account_id: i64, new: &NewAccount) -> Result<()> {
+        self.stop_sync_actor(account_id);
+        let result = accounts::update(&self.db, &self.secrets, account_id, new);
+        let stopped = result.is_ok();
+        if let Err(error) = self.start_sync_actor(account_id) {
+            tracing::warn!(account_id, %error, "failed to restart the sync actor after update");
+        }
+        if stopped {
+            self.emit(MailEvent::AccountsChanged);
+        }
+        result
     }
 
     /// 测试一个尚未保存的账户配置能否连上（添加向导的「测试连接」按钮）。
@@ -171,6 +242,9 @@ impl MailCore {
             security: new.security,
             username: new.username.clone(),
             password: new.password.clone(),
+            // `NewAccount` 只有口令一条路：OAuth2 账户不走「测试连接」这个入口
+            // （它要先有令牌，见 `oauth` 模块）。
+            auth: AuthKind::Password,
         };
         let report = self
             .runtime()?
@@ -189,12 +263,33 @@ impl MailCore {
             security: account.security,
             username: account.username.clone(),
             password,
+            auth: account.auth_kind,
         };
         let report = self
             .runtime()?
             .spawn(async move { proto::imap::probe(cfg).await })
             .wait()?;
         Ok(report)
+    }
+
+    /// 测试一次**编辑中的**账户配置（编辑弹窗的「测试连接」）。
+    ///
+    /// 与 [`Self::test_connection`] 的差别只有一处：口令留空时取**已存凭据**——
+    /// 编辑态的语义是「改服务器参数、口令保持不变」，用户不该被逼着把口令再敲一遍
+    /// 才能测连接。
+    pub fn test_account_update(
+        &self,
+        account_id: i64,
+        new: &NewAccount,
+    ) -> Result<ConnectionTestResult> {
+        if new.password.is_empty() {
+            let mut probe = new.clone();
+            probe.password =
+                accounts::load_password(&self.secrets, account_id)?.unwrap_or_default();
+            self.test_connection(&probe)
+        } else {
+            self.test_connection(new)
+        }
     }
 
     // ---- 文件夹 / 邮件（读） ----
@@ -227,23 +322,281 @@ impl MailCore {
         sync::fetch_body(self, message_id)
     }
 
+    /// 后台预取：把某账户**收件箱**里最新的、还没拉过正文的若干封正文抓下来，返回
+    /// 成功拉取的封数（阻塞；调用方负责放进 `background_executor`）。
+    ///
+    /// 一轮同步收尾时内核自己会跑一次（见 [`sync::prefetch_bodies`] 的说明与
+    /// [`PREFETCH_BODY_LIMIT`]）。这个公开入口是给宿主在别处补一次用的——例如用户
+    /// 切到某个账户、或刚把「默认正文形态」改成 HTML 而本地正文还空着的时候。
+    ///
+    /// **best-effort**：单封失败即结束本轮，不返回错误（返回的是已成功的封数）。
+    pub fn prefetch_bodies(&self, account_id: i64, limit: i64) -> Result<usize> {
+        sync::prefetch_bodies(self, account_id, limit)
+    }
+
+    /// 把一个附件另存到 `dest`（阻塞；调用方负责放进 `background_executor`）。
+    ///
+    /// `dest` 是**完整的目标文件路径**（不是目录）——由界面调
+    /// `duck_platform::save_file` 让用户自己选落点。内部**两步走**：先按 IMAP 节
+    /// （`BODY.PEEK[<section>]`）取回部件、写入应用管理目录（0600）并回写
+    /// `attachments.file_path`，再把缓存拷到 `dest`。缓存命中（文件在、字节数与清单
+    /// 一致）时纯本地拷贝、不连网；拿不到可靠段号时降级整封取回 + MIME 解码。
+    /// 细节（段号从哪来、序号如何复核、上限与路径校验）见 [`sync::download_attachment`]。
+    pub fn download_attachment(
+        &self,
+        attachment_id: i64,
+        dest: &std::path::Path,
+    ) -> Result<sync::AttachmentSaved> {
+        sync::download_attachment(self, attachment_id, dest)
+    }
+
     /// 同步一个账户（阻塞；调用方负责放进 `background_executor`）。
     pub fn sync_account(&self, account_id: i64) -> Result<sync::SyncReport> {
         sync::sync_account(self, account_id)
     }
 
+    // ---- 常驻同步 actor（IDLE 推送 + 自动重连）----
+
+    /// 启动一个账户的常驻同步 actor。
+    ///
+    /// # 语义
+    ///
+    /// - **非阻塞**：只把 actor 投进 runtime 就返回（`&self`，可在 UI 线程直接调）；
+    /// - **幂等**：同一账户已经在跑时直接返回，不会叠出第二条 IDLE 长连接；
+    /// - **自动重连**：连接出错按退避重连（5s 起、5min 封顶），不必宿主操心。
+    ///
+    /// actor 的工作循环（见 [`sync`] 模块的 actor 段）：先跑一轮增量同步（复用既有
+    /// 同步函数），再 `SELECT` 关注文件夹进入 IDLE；收到变更 / 到 max-idle 就触发一轮
+    /// 增量；服务端不支持 IDLE 时降级为 `NOOP` 保活 + 定时轮询。
+    ///
+    /// 停止：账户移除时 [`Self::remove_account`] 会自动停；应用退出时调
+    /// [`Self::stop_all_sync_actors`]。
+    pub fn start_sync_actor(&self, account_id: i64) -> Result<()> {
+        if self.runtime()?.has_resident(account_id) {
+            return Ok(());
+        }
+        sync::spawn_account_actor(self, account_id)
+    }
+
+    /// 停掉一个账户的常驻同步 actor。幂等（没在跑时是空操作）。
+    pub fn stop_sync_actor(&self, account_id: i64) {
+        if let Some(rt) = self.runtime.get() {
+            rt.stop_resident(account_id);
+        }
+    }
+
+    /// 停掉**所有**账户的常驻同步 actor（应用退出时调）。
+    pub fn stop_all_sync_actors(&self) {
+        if let Some(rt) = self.runtime.get() {
+            rt.stop_all_residents();
+        }
+    }
+
     /// 全文检索，返回命中的邮件主键。
+    ///
+    /// 只给主键是 FTS5 的形态（无 content 表，读不出列值）；界面要的是列表行，
+    /// 用 [`Self::search_messages`] 一步拿全。
     pub fn search(&self, query: &str, limit: i64) -> Result<Vec<i64>> {
         self.db
             .read(|conn| db::repo::search::search(conn, query, limit))
     }
 
+    /// 全文检索，直接返回可渲染的列表行（按相关度排序）。
+    ///
+    /// 列表行跨文件夹——检索本来就是全账号的，界面不必先选文件夹再搜。
+    /// 索引里已经不存在的 rowid（邮件被别的设备删了）会被跳过，不报错。
+    pub fn search_messages(&self, query: &str, limit: i64) -> Result<Vec<MessageSummary>> {
+        self.db.read(|conn| {
+            let ids = db::repo::search::search(conn, query, limit)?;
+            db::repo::messages::list_by_ids(conn, &ids)
+        })
+    }
+
     /// 标一封邮件已读 / 未读。
+    ///
+    /// 走动作队列：本地立刻生效，远端在撤销宽限期后补发。签名保留给既有调用方
+    /// （`open_message` 的「打开即已读」）；账户由邮件行反查，调用方不必知道它。
     pub fn set_message_read(&self, message_id: i64, is_read: bool) -> Result<()> {
         self.db.write_tx(|tx| {
-            let detail = db::repo::messages::get_detail(tx, message_id)?;
-            db::repo::messages::set_flags(tx, message_id, is_read, detail.is_starred)
+            let account_id = db::repo::messages::location(tx, message_id)?.account_id;
+            let request = if is_read {
+                queue::Request::MarkRead
+            } else {
+                queue::Request::MarkUnread
+            };
+            queue::enqueue(tx, account_id, message_id, request)?;
+            Ok(())
         })
+    }
+
+    // ---- 动作队列（M1.5：写方向） ----
+
+    /// 标一封邮件已读 / 未读（入队），返回动作主键（供撤销条用）。
+    pub fn set_read(&self, account_id: i64, message_id: i64, read: bool) -> Result<i64> {
+        let request = if read {
+            queue::Request::MarkRead
+        } else {
+            queue::Request::MarkUnread
+        };
+        self.db
+            .write_tx(|tx| queue::enqueue(tx, account_id, message_id, request))
+    }
+
+    /// 加 / 去旗标（星标），返回动作主键。
+    pub fn set_starred(&self, account_id: i64, message_id: i64, starred: bool) -> Result<i64> {
+        let request = if starred {
+            queue::Request::Star
+        } else {
+            queue::Request::Unstar
+        };
+        self.db
+            .write_tx(|tx| queue::enqueue(tx, account_id, message_id, request))
+    }
+
+    /// 把一封邮件移到另一个文件夹（`folder_id` 是本地文件夹主键），返回动作主键。
+    pub fn move_message(&self, account_id: i64, message_id: i64, folder_id: i64) -> Result<i64> {
+        self.db.write_tx(|tx| {
+            queue::enqueue(
+                tx,
+                account_id,
+                message_id,
+                queue::Request::Move { folder_id },
+            )
+        })
+    }
+
+    /// 删除一封邮件（有垃圾箱则移入，否则就地销毁），返回动作主键。
+    pub fn delete_message(&self, account_id: i64, message_id: i64) -> Result<i64> {
+        self.db
+            .write_tx(|tx| queue::enqueue(tx, account_id, message_id, queue::Request::Delete))
+    }
+
+    /// 给邮件打标签，返回动作主键。
+    pub fn label_add(&self, account_id: i64, message_id: i64, label_id: i64) -> Result<i64> {
+        self.db.write_tx(|tx| {
+            queue::enqueue(
+                tx,
+                account_id,
+                message_id,
+                queue::Request::LabelAdd { label_id },
+            )
+        })
+    }
+
+    /// 摘掉邮件的某个标签，返回动作主键。
+    pub fn label_remove(&self, account_id: i64, message_id: i64, label_id: i64) -> Result<i64> {
+        self.db.write_tx(|tx| {
+            queue::enqueue(
+                tx,
+                account_id,
+                message_id,
+                queue::Request::LabelRemove { label_id },
+            )
+        })
+    }
+
+    /// 某账户待补发的动作（按入队顺序）。
+    pub fn pending_actions(&self, account_id: i64) -> Result<Vec<PendingAction>> {
+        self.db
+            .read(|conn| db::repo::queue::list(conn, account_id, Some(ActionState::Pending)))
+    }
+
+    /// 撤销一条待补发的动作。只在仍 `pending` 时返回 `true`。
+    pub fn undo_pending(&self, action_id: i64) -> Result<bool> {
+        self.db.write_tx(|tx| queue::undo(tx, action_id))
+    }
+
+    /// 按入队顺序把某账户到点的动作补发到服务器，返回成功条数（阻塞；调用方放后台线程）。
+    pub fn flush_pending(&self, account_id: i64) -> Result<usize> {
+        queue::flush_pending(self, account_id)
+    }
+
+    // ---- 发信（SMTP）----
+
+    /// 发一封信（**同步阻塞**；调用方放后台线程）。
+    ///
+    /// 走 SMTP 直发，**不进动作队列**：队列的语义是「先在本地生效、稍后补发远端」，
+    /// 而发信没有「本地生效」这一半（本模块没有本地发件箱），失败就该当场把原因
+    /// 告诉用户，而不是悄悄排队重试。
+    ///
+    /// 发件身份取自档案（`smtp_host` / `smtp_port` / `security` / 用户名 + 口令）；
+    /// 收件人取自 [`compose::envelope_recipients`]（**含密送**）；`draft` 里
+    /// `date_unix` / `message_id` 留空时由 [`compose::Draft::stamp`] 补上。
+    pub fn send(&self, account_id: i64, draft: &compose::Draft) -> Result<()> {
+        let runtime = self.runtime()?;
+        let core = self.clone();
+        let draft = draft.clone();
+        runtime
+            .spawn(async move { send_inner(&core, account_id, &draft).await })
+            .wait()?
+    }
+
+    // ---- 草稿（本地）----
+
+    /// 新建或改存一条草稿，返回本地行号（`messages.id`）。
+    ///
+    /// `record.id == None` → 新建；`Some(id)` → 改存那一行——**必须是本账户的草稿**，
+    /// 否则 `NotFound`（一个错传的 id 绝不能把真邮件改坏）。
+    ///
+    /// ⚠️ 附件只记**路径**、不记字节：表结构给的就是 `file_path`。重开草稿时才读盘，
+    /// 文件被挪走就少一个附件（要不要提示由界面决定）。见 [`db::repo::drafts`] 模块头。
+    pub fn save_draft(&self, record: &db::repo::drafts::DraftRecord) -> Result<i64> {
+        let now = compose::now_unix();
+        self.db
+            .write_tx(|tx| db::repo::drafts::save(tx, record, now))
+    }
+
+    /// 草稿箱列表（按最后保存时间倒序）。
+    pub fn list_drafts(&self, account_id: i64) -> Result<Vec<DraftSummary>> {
+        self.db
+            .read(|conn| db::repo::drafts::list(conn, account_id))
+    }
+
+    /// 草稿条数。侧栏角标用它——草稿的 `folder_id` 是 NULL，落不进 `folders` 的计数。
+    pub fn draft_count(&self, account_id: i64) -> Result<i64> {
+        self.db
+            .read(|conn| db::repo::drafts::count(conn, account_id))
+    }
+
+    /// 读回一条草稿（含附件路径引用与 `In-Reply-To` / `References`）。
+    pub fn load_draft(
+        &self,
+        account_id: i64,
+        draft_id: i64,
+    ) -> Result<db::repo::drafts::DraftRecord> {
+        self.db
+            .read(|conn| db::repo::drafts::load(conn, account_id, draft_id))
+    }
+
+    /// 删一条草稿。`false` = 这行不存在、或不是这个账户的草稿（不是错误）。
+    pub fn delete_draft(&self, account_id: i64, draft_id: i64) -> Result<bool> {
+        self.db
+            .write(|conn| db::repo::drafts::delete(conn, account_id, draft_id))
+    }
+
+    // ---- 标签 ----
+
+    /// 某账户可见的标签（自己的账户级 + 全部全局级）。
+    pub fn labels(&self, account_id: i64) -> Result<Vec<Label>> {
+        self.db
+            .read(|conn| db::repo::labels::list_for_account(conn, account_id))
+    }
+
+    /// 建一个账户级标签，返回主键（同名复用）。
+    pub fn label_create(&self, account_id: i64, name: &str, color: &str) -> Result<i64> {
+        queue::create_label(self, account_id, name, color)
+    }
+
+    /// 某邮件已贴的标签。
+    pub fn labels_for_message(&self, message_id: i64) -> Result<Vec<Label>> {
+        self.db
+            .read(|conn| db::repo::labels::labels_for_message(conn, message_id))
+    }
+
+    /// 某个标签下的邮件（左栏「标签」选中后的列表）。
+    pub fn messages_by_label(&self, label_id: i64, limit: i64) -> Result<Vec<MessageSummary>> {
+        self.db
+            .read(|conn| db::repo::messages::list_by_label(conn, label_id, limit))
     }
 }
 
@@ -252,6 +605,52 @@ impl std::fmt::Debug for MailCore {
         f.debug_struct("MailCore")
             .field("db", &self.paths.db_path())
             .finish_non_exhaustive()
+    }
+}
+
+/// [`MailCore::send`] 的异步体：拿凭据 → 建 SMTP 会话 → 发信 → 道别。
+async fn send_inner(core: &MailCore, account_id: i64, draft: &compose::Draft) -> Result<()> {
+    let (account, password) = accounts::load_with_password(core.db(), core.secrets(), account_id)?;
+
+    let recipients = compose::envelope_recipients(draft);
+    if recipients.is_empty() {
+        return Err(MailError::Config("no recipients to send to".into()));
+    }
+
+    // 补信头元数据（`Date` / `Message-ID`）——必须在装配**之前**，因为装配
+    // 会把它们写进头部。
+    let mut draft = draft.clone();
+    draft.stamp(compose::now_unix());
+    let message = compose::build_message(&draft)?;
+
+    let cfg = SmtpConfig {
+        host: account.smtp_host.clone(),
+        port: account.smtp_port,
+        security: account.security,
+        username: account.username.clone(),
+        password,
+        auth: account.auth_kind,
+        client_name: ehlo_domain(&draft.from.address),
+    };
+
+    let mut session = SmtpSession::connect(&cfg).await?;
+    let outcome = session
+        .send(&draft.from.address, &recipients, &message)
+        .await;
+    // 无论成败都发 `QUIT`：失败时直接丢连接会让服务端留一条半开会话。
+    // `quit` 自己吞掉错误，所以这里不会把真正的失败原因盖掉。
+    session.quit().await;
+    outcome
+}
+
+/// `EHLO` 里自报的域名：取发件地址的域名。
+///
+/// 自报一个**不存在**的域名会让一部分严格的反垃圾服务器直接拒收，所以用发件域
+/// （这也是绝大多数客户端的做法）；地址里没有 `@` 时才回落到 `localhost`。
+fn ehlo_domain(from_address: &str) -> String {
+    match from_address.split_once('@') {
+        Some((_, domain)) if !domain.trim().is_empty() => domain.trim().to_owned(),
+        _ => "localhost".to_owned(),
     }
 }
 
@@ -363,6 +762,77 @@ mod tests {
 
     fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn search_messages_hydrates_hits_into_list_rows() {
+        let (core, dir) = core("search");
+        let account = core
+            .add_account(&NewAccount {
+                email: "s@example.com".into(),
+                display_name: None,
+                username: "s@example.com".into(),
+                imap_host: "h".into(),
+                imap_port: 993,
+                smtp_host: "smtp".into(),
+                smtp_port: 465,
+                security: ConnectionSecurity::Tls,
+                password: "p".into(),
+            })
+            .unwrap();
+        let folder = core
+            .db()
+            .write_tx(|tx| {
+                db::repo::folders::upsert(
+                    tx,
+                    account,
+                    &db::repo::folders::FolderUpsert {
+                        name: "INBOX".into(),
+                        delimiter: None,
+                        role: FolderRole::Inbox,
+                        uidvalidity: Some(1),
+                        uidnext: Some(2),
+                    },
+                )
+            })
+            .unwrap();
+        let message = core
+            .db()
+            .write_tx(|tx| {
+                db::repo::messages::upsert_envelope(
+                    tx,
+                    account,
+                    folder,
+                    &db::repo::messages::EnvelopeRow {
+                        uid: 1,
+                        subject: "Quarterly report".into(),
+                        date: 1,
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        core.db()
+            .write_tx(|tx| {
+                db::repo::search::index_message(
+                    tx,
+                    message,
+                    "Quarterly report",
+                    "a@example.com",
+                    "",
+                    "budget",
+                )
+            })
+            .unwrap();
+
+        // 命中的主键要**变成能直接渲染的列表行**（跨文件夹、按相关度序）。
+        let hits = core.search_messages("report", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, message);
+        assert_eq!(hits[0].subject, "Quarterly report");
+        assert!(core.search_messages("nothing", 10).unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -22,7 +22,7 @@ use duck_components::{
 use duck_plugin::{Capabilities, Capability};
 use duck_plugin_registry::PluginStatus;
 use duck_shell::AuxiliaryWindowView;
-use duck_theme::{Lang, active_theme, tr, trf};
+use duck_theme::{Lang, UnderMinute, active_theme, tr, tr_relative_time, trf};
 use duck_tools::ToolCategory;
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
@@ -1600,16 +1600,12 @@ fn format_size(bytes: u64) -> String {
 }
 
 /// 把秒数说成「刚刚 / N 分钟前 / N 小时前 / N 天前」。
+///
+/// 分档逻辑已下沉到 `duck-theme` 的格式化层（[`tr_relative_time`]）——本仓原先在
+/// 这里、`duck-shell::notifications`、`redis.rs` 各写了一遍，且三处的英文复数都是错的
+/// （`1 minutes ago`）。「不满一分钟」取「刚刚」档，与通知中心口径一致。
 fn format_age(seconds: u64, cx: &App) -> String {
-    if seconds < 60 {
-        tr(cx, "刚刚").to_string()
-    } else if seconds < 3600 {
-        trf(cx, "{} 分钟前", &[&(seconds / 60).to_string()]).to_string()
-    } else if seconds < 86_400 {
-        trf(cx, "{} 小时前", &[&(seconds / 3600).to_string()]).to_string()
-    } else {
-        trf(cx, "{} 天前", &[&(seconds / 86_400).to_string()]).to_string()
-    }
+    tr_relative_time(cx, seconds as i64, UnderMinute::JustNow)
 }
 
 /// 顶栏入口按钮：语言切换左侧的插件中心入口（图标 + 文字，样式对齐 language_switch）。

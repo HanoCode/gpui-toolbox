@@ -141,6 +141,31 @@ pub fn remove(db: &MailDb, secrets: &Secrets, account_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 编辑账户：档案整体更新；**口令留空 = 保持现有口令**（编辑服务器参数时没理由
+/// 逼用户把口令再敲一遍），非空则覆盖凭据。
+pub fn update(db: &MailDb, secrets: &Secrets, account_id: i64, new: &NewAccount) -> Result<()> {
+    validate(new)?;
+
+    // 邮箱查重：别的账户占了目标地址就挡下（编辑会改 email，比新增时多一步
+    // 「排除自己」）。不用 let-chain（MSRV 1.85，1.88 才稳定）。
+    let taken_by_other = db
+        .read(|conn| repo::accounts::get_by_email(conn, new.email.trim()))?
+        .is_some_and(|existing| existing.id != account_id);
+    if taken_by_other {
+        return Err(MailError::Config(format!(
+            "account for {} already exists",
+            new.email.trim()
+        )));
+    }
+
+    db.write_tx(|tx| repo::accounts::update_profile(tx, account_id, new))?;
+    if !new.password.is_empty() {
+        store_password(secrets, account_id, &new.password)?;
+    }
+    tracing::info!(account_id, email = %new.email, "mail account updated");
+    Ok(())
+}
+
 /// 全部账户。
 pub fn list(db: &MailDb) -> Result<Vec<Account>> {
     db.read(repo::accounts::list)

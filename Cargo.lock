@@ -1828,6 +1828,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tray-icon",
+ "ureq",
  "winresource",
 ]
 
@@ -1859,6 +1860,7 @@ name = "duck-db"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "duck-ai",
  "duck-platform",
  "futures-util",
  "mongodb",
@@ -1887,7 +1889,9 @@ dependencies = [
  "base64 0.22.1",
  "duck-platform",
  "futures-util",
+ "mail-builder",
  "mail-parser",
+ "ring",
  "rusqlite",
  "rustls 0.23.45",
  "serde",
@@ -1895,6 +1899,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.6",
  "tracing",
+ "ureq",
  "webpki-roots",
 ]
 
@@ -4456,6 +4461,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "mail-builder"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "900998f307338c4013a28ab14d760b784067324b164448c6d98a89e44810473b"
 
 [[package]]
 name = "mail-parser"

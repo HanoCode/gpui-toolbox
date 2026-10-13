@@ -197,6 +197,38 @@ pub struct KbIndex {
     conn: Connection,
 }
 
+/// 建好 `kb_*` 三张表（幂等）。
+///
+/// 单独抽出来是给 [`crate::store`] 的整库还原用：会话与知识库索引**同库异表**
+/// （见本文件 `open_default` 的说明），还原快照时要保证 `kb_*` 也在目标库里，
+/// 否则搬进来的索引行无处安放。
+pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), AiError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS kb_sources (
+             id TEXT PRIMARY KEY,
+             label TEXT NOT NULL,
+             path TEXT NOT NULL,
+             fingerprint TEXT NOT NULL DEFAULT '',
+             files INTEGER NOT NULL DEFAULT 0,
+             chunks INTEGER NOT NULL DEFAULT 0,
+             indexed_at INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks USING fts5(
+             source_id UNINDEXED,
+             path UNINDEXED,
+             heading,
+             body,
+             tokenize = 'unicode61 remove_diacritics 2'
+         );
+         CREATE TABLE IF NOT EXISTS kb_meta (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL
+         );",
+    )
+    .map_err(|error| AiError::Storage(format!("create kb schema failed: {error}")))?;
+    Ok(())
+}
+
 impl KbIndex {
     /// 打开（或创建）指定路径的库，并保证表结构就绪。
     pub fn open(path: &Path) -> Result<Self, AiError> {
@@ -222,29 +254,7 @@ impl KbIndex {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, AiError> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS kb_sources (
-                 id TEXT PRIMARY KEY,
-                 label TEXT NOT NULL,
-                 path TEXT NOT NULL,
-                 fingerprint TEXT NOT NULL DEFAULT '',
-                 files INTEGER NOT NULL DEFAULT 0,
-                 chunks INTEGER NOT NULL DEFAULT 0,
-                 indexed_at INTEGER NOT NULL DEFAULT 0
-             );
-             CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks USING fts5(
-                 source_id UNINDEXED,
-                 path UNINDEXED,
-                 heading,
-                 body,
-                 tokenize = 'unicode61 remove_diacritics 2'
-             );
-             CREATE TABLE IF NOT EXISTS kb_meta (
-                 key TEXT PRIMARY KEY,
-                 value TEXT NOT NULL
-             );",
-        )
-        .map_err(|error| AiError::Storage(format!("create kb schema failed: {error}")))?;
+        ensure_schema(&conn)?;
         Ok(Self { conn })
     }
 
@@ -330,8 +340,13 @@ impl KbIndex {
     /// 索引一个来源。
     ///
     /// **增量**：先只走 metadata 算指纹（不读文件内容），与库里记录一致就整体跳过。
-    /// 指纹变了就整源重建——块级增量需要 per-file 表，而知识库本身
-    /// **可重建且不参与备份**（§4.7），整源重扫的代价远低于维护第二张表的复杂度。
+    /// 指纹变了就整源重建——块级增量需要 per-file 表，而知识库是**可重建的派生数据**，
+    /// 整源重扫的代价远低于维护第二张表的复杂度。
+    ///
+    /// ⚠️ **索引与会话同库异表**（同一个 `ai.db`，见 [`KbIndex::open_default`]），
+    /// 所以应用备份 `ai.db` 时索引会**被一起带走**：「可重建」的含义是*不需要*备份它，
+    /// 不是*不在*包里。包里的来源路径是出包那台机器上的绝对路径，换机器后可能指向不存在
+    /// 的位置——那时重新索引即可（沿用的是本函数这条整源重建路径）。
     pub fn index_source(
         &mut self,
         source: &KbSource,
@@ -867,6 +882,7 @@ fn fingerprint_of(files: &[ScannedFile]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU64;
 
     #[test]
     fn cjk_tokenization_splits_han_characters() {
@@ -957,9 +973,24 @@ mod tests {
         assert_eq!(snippet, "hello world");
     }
 
+    /// 进程内唯一的临时目录后缀。
+    ///
+    /// ⚠️ 不能只用 `now_secs()`：同一秒内并行的多个测试会撞进同一个目录，而
+    /// `fs::write` 是「截断 + 写入」两步——先拿到 `O_TRUNC` 空文件的测试会索引到 0 个块，
+    /// `search_finds_chinese_substrings` 就会偶发失败（`--workspace` 下已复现）。
+    fn unique_suffix() -> String {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        format!("{}-{seq}-{nanos}", std::process::id())
+    }
+
     fn seeded_index() -> KbIndex {
         let mut index = KbIndex::open_in_memory().unwrap();
-        let dir = std::env::temp_dir().join(format!("duck-kb-{}", now_secs()));
+        let dir = std::env::temp_dir().join(format!("duck-kb-{}", unique_suffix()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("guide.md"),
@@ -1000,7 +1031,7 @@ mod tests {
     #[test]
     fn incremental_index_skips_unchanged_sources() {
         let mut index = KbIndex::open_in_memory().unwrap();
-        let dir = std::env::temp_dir().join(format!("duck-kb-inc-{}", now_secs()));
+        let dir = std::env::temp_dir().join(format!("duck-kb-inc-{}", unique_suffix()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.md"), "# 主题\n内容内容\n").unwrap();
         let source = KbSource::new(&dir);
@@ -1029,7 +1060,7 @@ mod tests {
     #[test]
     fn indexing_an_empty_directory_is_an_error_not_a_silent_success() {
         let mut index = KbIndex::open_in_memory().unwrap();
-        let dir = std::env::temp_dir().join(format!("duck-kb-empty-{}", now_secs()));
+        let dir = std::env::temp_dir().join(format!("duck-kb-empty-{}", unique_suffix()));
         std::fs::create_dir_all(&dir).unwrap();
         let outcome =
             index.index_source(&KbSource::new(&dir), &AtomicBool::new(false), &mut |_| {});

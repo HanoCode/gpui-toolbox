@@ -8,10 +8,12 @@ mod ai;
 mod ai_tools;
 mod app;
 mod assets;
+mod audit;
 mod backup;
 mod deeplink;
 mod diagnostics;
 mod hotkey;
+mod http_client;
 mod language_switch;
 mod market;
 mod pages;
@@ -110,6 +112,9 @@ fn main() {
 
     let application = application()
         .with_assets(assets::DesktopAssets)
+        // gpui 的桌面装配路径默认 `NullHttpClient`（见 `http_client` 模块头）：
+        // 不接上它，正文里的远程图片会全部加载失败。
+        .with_http_client(std::sync::Arc::new(http_client::UreqHttpClient::new()))
         .with_quit_mode(QuitMode::Explicit);
 
     // 深链接：应用**已经在跑**时，系统把 URL 直接送到这里，不会再起一个进程。

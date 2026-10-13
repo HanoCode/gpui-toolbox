@@ -47,6 +47,11 @@ tray-icon.workspace = true
 anyhow = "1"
 lsp-types = "=0.97.0"
 
+# gpui 的 HTTP 客户端（src/http_client.rs，远程图片走它）：
+# gpui 桌面装配默认 NullHttpClient；trait 来自 gpui::http_client（re-export），
+# 传输层用已在依赖图内的 ureq（不把 reqwest 请回来，见根 Cargo.toml §patch 注释）。
+ureq.workspace = true
+
 # 构建脚本依赖：winresource 本体跨平台可编译；非 Windows 目标由 build.rs 里的
 # `CARGO_CFG_WINDOWS` 运行期短路。不能按 target 门控——build.rs 在所有宿主上
 # 都要能编译，门控会让 macOS 构建直接失败。

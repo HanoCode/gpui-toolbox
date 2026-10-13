@@ -13,7 +13,7 @@ use bitflags::bitflags;
 use log::{debug, trace};
 use unicode_width::UnicodeWidthChar;
 
-use crate::event::{Event, EventListener};
+use crate::event::{Event, EventListener, ShellMark};
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
 use crate::selection::{Selection, SelectionRange, SelectionType};
@@ -2502,6 +2502,34 @@ impl<T: EventListener> Handler for Term<T> {
     fn text_area_size_chars(&mut self) {
         let text = format!("\x1b[8;{};{}t", self.screen_lines(), self.columns());
         self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+
+    #[inline]
+    fn shell_mark(&mut self, params: &[&[u8]]) {
+        let Some(selector) = params.first().and_then(|param| param.first()).copied() else {
+            return;
+        };
+
+        let mark = match selector {
+            b'A' => ShellMark::PromptStart,
+            b'B' => ShellMark::PromptEnd,
+            b'C' => ShellMark::OutputStart,
+            b'D' => ShellMark::CommandFinished(
+                params
+                    .get(1)
+                    .and_then(|raw| std::str::from_utf8(raw).ok())
+                    .and_then(|text| text.trim().parse::<i32>().ok()),
+            ),
+            // Unknown selectors are ignored rather than guessed at: the agreement only defines
+            // the four above, and a wrong guess would paint a mark we cannot explain.
+            _ => return,
+        };
+
+        // Anchor the mark now, at parse time: this is the only moment at which the cursor is
+        // still standing on the line the shell meant.
+        let anchor = self.grid.anchor(self.grid.cursor.point.line);
+
+        self.event_proxy.send_event(Event::ShellMark { anchor, mark });
     }
 }
 

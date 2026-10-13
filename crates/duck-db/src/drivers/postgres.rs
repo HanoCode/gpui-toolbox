@@ -26,12 +26,22 @@ use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme
 use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
-    CatalogTable, OrderBy, PkValues, RowCount, TableIndex, TableKind, TableRef, order_by_clause,
-    quote_identifier, quote_qualified,
+    CatalogTable, DatabaseObject, FilterOp, InstanceFact, InstanceOverview, InstanceTable,
+    InstanceView, OrderBy, PkValues, PlaceholderStyle, RowCount, TableFilter, TableForeignKey,
+    TableIndex, TableKind, TableRef, TableTrigger, filter_conditions, human_duration_secs,
+    order_by_clause, quote_identifier, quote_qualified,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
 use crate::sqlintel::{StmtKind, prove_read_only, split_statements};
+
+/// 实例概览的一项（名字 = 引擎口径原文，值 = 原样字符串）。
+fn fact(name: &str, value: String) -> InstanceFact {
+    InstanceFact {
+        name: name.to_owned(),
+        value,
+    }
+}
 
 /// 一条 PostgreSQL 连接。
 pub struct PostgresConnection {
@@ -239,6 +249,21 @@ impl PostgresConnection {
         Ok(outcome)
     }
 
+    /// 分页读取（结果区「加载更多」走这里）：把语句包一层 `LIMIT/OFFSET`，
+    /// 从第 `offset` 行起取 `limit` 行；多取一行探测「还有下一页」。
+    ///
+    /// 语义与边界见 [`crate::drivers::Connection::execute_paged`]。
+    pub fn execute_paged(
+        &mut self,
+        sql: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<ResultSet, DbError> {
+        let inner = super::paged_inner_sql(sql)?;
+        let wrapped = super::wrap_paged_sql(&inner, offset, limit, '"')?;
+        self.query_one(&wrapped, limit)
+    }
+
     /// 跑一条读语句并取结果集（文本协议，`max_rows + 1` 探测截断）。
     fn query_one(&mut self, stmt: &str, max_rows: usize) -> Result<ResultSet, DbError> {
         let messages = self.client.simple_query(stmt).map_err(DbError::from)?;
@@ -296,6 +321,27 @@ impl PostgresConnection {
         Ok(row.get::<_, Option<String>>(0).unwrap_or_default())
     }
 
+    /// **全部**库（可连接、非模板的那些）。
+    ///
+    /// ⚠️ PostgreSQL **没有** `USE <db>`：一个会话终身绑在建连时那个 `dbname` 上，
+    /// 切库只能重连。所以这里只负责**列出**；真要切，由上层拿这份清单重建连接
+    ///（`Connection::switch_database` 对 PG 回 `NeedsReconnect`）。
+    pub fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT datname FROM pg_database \
+                 WHERE datallowconn AND NOT datistemplate \
+                 ORDER BY datname",
+                &[],
+            )
+            .map_err(DbError::from)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.get::<_, Option<String>>(0))
+            .collect())
+    }
+
     /// 可选 schema 清单：`pg_namespace` 剔除系统 schema 与 `information_schema`。
     pub fn list_schemas(&mut self) -> Result<Vec<String>, DbError> {
         let rows = self
@@ -342,21 +388,27 @@ impl PostgresConnection {
             });
         }
 
-        // 函数 / 存储过程：`information_schema.routines` 的 `routine_type` 区分两者，
-        // 但对「找得到、能调用」这件事来说没差别，统一归 [`TableKind::Routine`]。
+        // 存储过程 / 函数：`information_schema.routines` 的 `routine_type` 区分两者
+        //（`PROCEDURE` / `FUNCTION`），左栏树按两棵分类节点展示。
         let routines = self
             .client
             .query(
-                "SELECT routine_name FROM information_schema.routines \
+                "SELECT routine_name, routine_type FROM information_schema.routines \
                  WHERE routine_schema = $1 \
                  ORDER BY lower(routine_name)",
                 &[&schema],
             )
             .map_err(DbError::from)?;
         for row in routines {
+            let name: String = row.get(0);
+            let kind = if row.get::<_, String>(1) == "PROCEDURE" {
+                TableKind::Procedure
+            } else {
+                TableKind::Function
+            };
             tables.push(CatalogTable {
-                name: row.get::<_, String>(0),
-                kind: TableKind::Routine,
+                name,
+                kind,
                 schema: Some(schema.clone()),
             });
         }
@@ -442,14 +494,94 @@ impl PostgresConnection {
         limit: usize,
         offset: u64,
         order_by: &[OrderBy],
+        filters: &[TableFilter],
     ) -> Result<ResultSet, DbError> {
         let quoted = quote_qualified(table, '"')?;
         let order = order_by_clause(order_by, '"')?;
-        let sql = format!("SELECT * FROM {quoted}{order} LIMIT {limit} OFFSET {offset}");
-        self.query_one(&sql, limit)
+        if filters.is_empty() {
+            let sql = format!("SELECT * FROM {quoted}{order} LIMIT {limit} OFFSET {offset}");
+            return self.query_one(&sql, limit);
+        }
+        // 有过滤时**必须走扩展协议**（值要绑定成 `$n`），而 `simple_query` 的文本协议
+        // 拿不到任意类型的行——所以这里把投影显式 `::text` 出来（`simple_query` 路径
+        // 本来也是「一切都当文本」，两种口径一致），列名用 `AS` 保回来。
+        let columns = self.table_columns(table)?;
+        let types = self.column_sql_types(table).unwrap_or_default();
+        let projection = columns
+            .iter()
+            .map(|column| {
+                let quoted_column = quote_identifier(&column.name, '"')?;
+                Ok(format!("{quoted_column}::text AS {quoted_column}"))
+            })
+            .collect::<Result<Vec<_>, DbError>>()?
+            .join(", ");
+        let (conditions, values) = filter_conditions(
+            filters,
+            |name, op| {
+                let quoted_column = quote_identifier(name, '"')?;
+                let known = types.contains_key(&name.to_lowercase());
+                // 拿到列类型才能做有类型的比较（`col = $1::text::integer` 能走索引）；
+                // `LIKE` 与「类型未知」两种情形退回文本比较。
+                Ok(if op == FilterOp::Like || !known {
+                    format!("CAST({quoted_column} AS TEXT)")
+                } else {
+                    quoted_column
+                })
+            },
+            |index, filter| {
+                // 占位符编号走中性的 `$n` 渲染（从 1 起），与其它驱动同一套编号规则。
+                let placeholder = PlaceholderStyle::Dollar.render(index);
+                let known = types.contains_key(&filter.column.to_lowercase());
+                if filter.op == FilterOp::Like || !known {
+                    format!("{placeholder}::text")
+                } else {
+                    format!(
+                        "{placeholder}::text::{}",
+                        types[&filter.column.to_lowercase()]
+                    )
+                }
+            },
+        )?;
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        let sql = format!(
+            "SELECT {projection} FROM {quoted}{where_clause}{order} LIMIT {limit} OFFSET {offset}"
+        );
+        let refs = as_sql_params(&values);
+        let rows = self
+            .client
+            .query(sql.as_str(), &refs)
+            .map_err(DbError::from)?;
+        let mut rows_out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut cells = Vec::with_capacity(columns.len());
+            for index in 0..columns.len() {
+                cells.push(
+                    match row
+                        .try_get::<_, Option<String>>(index)
+                        .map_err(DbError::from)?
+                    {
+                        Some(text) => Value::Text(text),
+                        None => Value::Null,
+                    },
+                );
+            }
+            rows_out.push(cells);
+        }
+        Ok(ResultSet {
+            columns,
+            rows: rows_out,
+            truncated: false,
+        })
     }
 
     /// 主键列名（指定 schema 的主键约束列，按声明序）。
+    ///
+    /// JOIN 必须带上 `table_name`：约束名只保证**表内**唯一，同 schema 跨表
+    /// 同名约束（如手工命名的 `pk`）会把别表的主键列混进来。
     pub fn table_primary_key(&mut self, table: &TableRef) -> Result<Vec<String>, DbError> {
         let schema = table.schema.as_deref();
         let rows = self
@@ -459,6 +591,7 @@ impl PostgresConnection {
                  JOIN information_schema.key_column_usage kcu \
                    ON tc.constraint_name = kcu.constraint_name \
                   AND tc.table_schema = kcu.table_schema \
+                  AND tc.table_name = kcu.table_name \
                  WHERE tc.constraint_type = 'PRIMARY KEY' \
                    AND tc.table_schema = COALESCE($2, current_schema()) AND tc.table_name = $1 \
                  ORDER BY kcu.ordinal_position",
@@ -685,6 +818,268 @@ impl PostgresConnection {
         ))
     }
 
+    /// 一张表上的外键：`pg_constraint`（`contype = 'f'`）+ 两侧
+    /// `unnest(...) WITH ORDINALITY` 对齐列序（复合外键的 `conkey` / `confkey`
+    /// 等长、按序号一一对应）；动作码经 [`pg_fk_action`] 翻成标准文案。
+    pub fn table_foreign_keys(
+        &mut self,
+        table: &TableRef,
+    ) -> Result<Vec<TableForeignKey>, DbError> {
+        let schema = table.schema.as_deref();
+        let rows = self
+            .client
+            .query(
+                "SELECT con.conname, a.attname, ref.relname, ra.attname, con.confupdtype, con.confdeltype \
+                 FROM pg_constraint con \
+                 JOIN pg_class t ON t.oid = con.conrelid \
+                 JOIN pg_namespace n ON n.oid = t.relnamespace \
+                 JOIN pg_class ref ON ref.oid = con.confrelid \
+                 JOIN unnest(con.conkey) WITH ORDINALITY AS ck(attnum, ord) ON true \
+                 JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ck.attnum \
+                 JOIN unnest(con.confkey) WITH ORDINALITY AS rf(attnum, ord) ON rf.ord = ck.ord \
+                 JOIN pg_attribute ra ON ra.attrelid = con.confrelid AND ra.attnum = rf.attnum \
+                 WHERE con.contype = 'f' AND t.relname = $1 \
+                   AND n.nspname = COALESCE($2, current_schema()) \
+                 ORDER BY con.conname, ck.ord",
+                &[&table.name, &schema],
+            )
+            .map_err(DbError::from)?;
+        // 已按 `conname` 排序，同一约束的列必定连续。
+        let mut keys: Vec<TableForeignKey> = Vec::new();
+        for row in &rows {
+            let name: String = row.get(0);
+            let column: String = row.get(1);
+            let ref_table: String = row.get(2);
+            let ref_column: String = row.get(3);
+            let on_update: i8 = row.get(4);
+            let on_delete: i8 = row.get(5);
+            match keys.last_mut() {
+                Some(fk) if fk.name == name => {
+                    fk.columns.push(column);
+                    fk.ref_columns.push(ref_column);
+                }
+                _ => keys.push(TableForeignKey {
+                    name,
+                    columns: vec![column],
+                    ref_table,
+                    ref_columns: vec![ref_column],
+                    on_update: pg_fk_action(on_update).to_owned(),
+                    on_delete: pg_fk_action(on_delete).to_owned(),
+                }),
+            }
+        }
+        Ok(keys)
+    }
+
+    /// 一张表上的触发器：`pg_trigger` 剔系统内建（`tgisinternal`），时机与事件
+    /// 由 `tgtype` 位图经 [`pg_trigger_type`] 解出。
+    pub fn table_triggers(&mut self, table: &TableRef) -> Result<Vec<TableTrigger>, DbError> {
+        let schema = table.schema.as_deref();
+        let rows = self
+            .client
+            .query(
+                "SELECT t.tgname, t.tgtype FROM pg_trigger t \
+                 JOIN pg_class c ON c.oid = t.tgrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE NOT t.tgisinternal AND c.relname = $1 \
+                   AND n.nspname = COALESCE($2, current_schema()) \
+                 ORDER BY t.tgname",
+                &[&table.name, &schema],
+            )
+            .map_err(DbError::from)?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let name: String = row.get(0);
+                let tgtype: i16 = row.get(1);
+                let (timing, event) = pg_trigger_type(tgtype);
+                TableTrigger {
+                    name,
+                    timing,
+                    event,
+                }
+            })
+            .collect())
+    }
+
+    /// 一个 schema 里的触发器清单：`pg_trigger` 剔内部触发器（`tgisinternal`，
+    /// 那是约束 / 分区自带的车间件，不是用户建的），说明列 = 挂在哪张表上。
+    pub fn list_triggers(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT t.tgname, c.relname FROM pg_trigger t \
+                 JOIN pg_class c ON c.oid = t.tgrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE NOT t.tgisinternal \
+                   AND n.nspname = COALESCE($1, current_schema()) \
+                 ORDER BY t.tgname",
+                &[&schema],
+            )
+            .map_err(DbError::from)?;
+        Ok(rows
+            .iter()
+            .map(|row| DatabaseObject {
+                name: row.get(0),
+                detail: Some(row.get(1)),
+            })
+            .collect())
+    }
+
+    /// 用户与角色清单：`pg_roles`（比 `pg_user` 多涵角色），说明列 = 登录属性。
+    pub fn list_users(&mut self) -> Result<Vec<DatabaseObject>, DbError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT rolname, rolsuper, rolcanlogin FROM pg_roles ORDER BY rolname",
+                &[],
+            )
+            .map_err(DbError::from)?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let superuser: bool = row.get(1);
+                let can_login: bool = row.get(2);
+                let flags = match (superuser, can_login) {
+                    (true, _) => "superuser",
+                    (false, true) => "can login",
+                    (false, false) => "no login",
+                };
+                DatabaseObject {
+                    name: row.get(0),
+                    detail: Some(flags.to_owned()),
+                }
+            })
+            .collect())
+    }
+
+    /// 实例概览：版本 / 当前库 / 登录身份 / 在线时长 / 库体量 / 编码等服务器级事实。
+    ///
+    /// 在线时长在 **SQL 里算成秒**再交给 [`human_duration_secs`] 拼——不把
+    /// `to_char` 的格式串摊到 SQL 里：那串引号嵌套在 Rust 字符串里极难读，改起来也容易错。
+    pub fn instance_overview(&mut self) -> Result<InstanceOverview, DbError> {
+        let version = self.server_version()?;
+        let row = self
+            .client
+            .query_one(
+                "SELECT current_database(), current_user, \
+                        pg_postmaster_start_time()::timestamp(0)::text, \
+                        EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time()))::bigint, \
+                        pg_size_pretty(pg_database_size(current_database())), \
+                        current_setting('server_encoding'), \
+                        current_setting('TimeZone'), \
+                        current_setting('max_connections'), \
+                        (SELECT count(*) FROM pg_database WHERE datallowconn)::text",
+                &[],
+            )
+            .map_err(DbError::from)?;
+        let uptime_secs: i64 = row.get(3);
+        Ok(InstanceOverview {
+            version,
+            database: row.get(0),
+            user: row.get(1),
+            uptime: Some(human_duration_secs(uptime_secs.max(0).unsigned_abs())),
+            facts: vec![
+                fact("started_at", row.get::<_, String>(2)),
+                fact("database_size", row.get::<_, String>(4)),
+                fact("server_encoding", row.get::<_, String>(5)),
+                fact("timezone", row.get::<_, String>(6)),
+                fact("max_connections", row.get::<_, String>(7)),
+                fact("databases", row.get::<_, String>(8)),
+            ],
+        })
+    }
+
+    /// 实例指标 / 检查器两张表。
+    ///
+    /// - **指标**：`pg_stat_database` 里当前库的那一行（事务量、块读写、命中率、临时文件）；
+    /// - **检查器**：`pg_stat_activity`（含本连接自己那一条——它也是真实会话，
+    ///   隐掉反而让人以为「连接数对不上」）。
+    pub fn instance_table(&mut self, view: InstanceView) -> Result<InstanceTable, DbError> {
+        match view {
+            InstanceView::Metrics => {
+                let row = self
+                    .client
+                    .query_one(
+                        "SELECT numbackends::text, xact_commit::text, xact_rollback::text, \
+                                blks_read::text, blks_hit::text, \
+                                COALESCE(round(100.0 * blks_hit \
+                                    / NULLIF(blks_hit + blks_read, 0), 2)::text, '-'), \
+                                tup_returned::text, tup_fetched::text, tup_inserted::text, \
+                                tup_updated::text, tup_deleted::text, \
+                                conflicts::text, deadlocks::text, \
+                                temp_files::text, pg_size_pretty(temp_bytes), \
+                                pg_size_pretty(pg_database_size(current_database())) \
+                         FROM pg_stat_database WHERE datname = current_database()",
+                        &[],
+                    )
+                    .map_err(DbError::from)?;
+                const METRICS: [&str; 16] = [
+                    "numbackends",
+                    "xact_commit",
+                    "xact_rollback",
+                    "blks_read",
+                    "blks_hit",
+                    "blks_hit_ratio_%",
+                    "tup_returned",
+                    "tup_fetched",
+                    "tup_inserted",
+                    "tup_updated",
+                    "tup_deleted",
+                    "conflicts",
+                    "deadlocks",
+                    "temp_files",
+                    "temp_bytes",
+                    "database_size",
+                ];
+                let rows = METRICS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| vec![(*name).to_owned(), row.get::<_, String>(index)])
+                    .collect();
+                Ok(InstanceTable {
+                    columns: vec!["metric".into(), "value".into()],
+                    rows,
+                })
+            }
+            InstanceView::Processes => {
+                let rows = self
+                    .client
+                    .query(
+                        "SELECT pid::text, COALESCE(usename, ''), \
+                                COALESCE(client_addr::text, ''), COALESCE(datname, ''), \
+                                COALESCE(state, ''), \
+                                COALESCE(EXTRACT(EPOCH FROM (now() - query_start))::bigint::text, ''), \
+                                COALESCE(wait_event_type || ':' || wait_event, ''), \
+                                COALESCE(left(query, 200), '') \
+                         FROM pg_stat_activity \
+                         ORDER BY query_start DESC NULLS LAST, pid",
+                        &[],
+                    )
+                    .map_err(DbError::from)?;
+                Ok(InstanceTable {
+                    columns: [
+                        "pid",
+                        "user",
+                        "client",
+                        "database",
+                        "state",
+                        "elapsed_s",
+                        "wait",
+                        "query",
+                    ]
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+                    rows: rows
+                        .iter()
+                        .map(|row| (0..8).map(|index| row.get::<_, String>(index)).collect())
+                        .collect(),
+                })
+            }
+        }
+    }
+
     /// 批量参数化插入：每行一条 INSERT（占位符数固定），**单事务**提交；`None` 写 `NULL`。
     pub fn insert_rows(
         &mut self,
@@ -813,6 +1208,47 @@ fn delete_row_with(
     run(&sql, &refs).map_err(DbError::from)
 }
 
+/// `pg_constraint.confupdtype` / `confdeltype` 的单字符动作码 → 标准文案
+/// （文档口径见 `pg_constraint` 的列说明；未知码保守落 `NO ACTION`）。
+fn pg_fk_action(code: i8) -> &'static str {
+    match u8::try_from(code) {
+        Ok(b'c') => "CASCADE",
+        Ok(b'n') => "SET NULL",
+        Ok(b'd') => "SET DEFAULT",
+        Ok(b'r') => "RESTRICT",
+        _ => "NO ACTION",
+    }
+}
+
+/// `pg_trigger.tgtype` 位图 → (时机, 事件清单)。
+///
+/// 位定义（`pg_trigger.h`）：ROW=1、BEFORE=2、INSERT=4、DELETE=8、UPDATE=16、
+/// TRUNCATE=32、INSTEAD=64。既非 `INSTEAD` 也非 `BEFORE` 的都落 `AFTER`
+/// （服务端就是这么解释的，不是「未知」）。
+fn pg_trigger_type(tgtype: i16) -> (String, String) {
+    let timing = if tgtype & 64 != 0 {
+        "INSTEAD OF"
+    } else if tgtype & 2 != 0 {
+        "BEFORE"
+    } else {
+        "AFTER"
+    };
+    let mut events: Vec<&'static str> = Vec::new();
+    if tgtype & 4 != 0 {
+        events.push("INSERT");
+    }
+    if tgtype & 8 != 0 {
+        events.push("DELETE");
+    }
+    if tgtype & 16 != 0 {
+        events.push("UPDATE");
+    }
+    if tgtype & 32 != 0 {
+        events.push("TRUNCATE");
+    }
+    (timing.to_owned(), events.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,6 +1258,45 @@ mod tests {
             .iter()
             .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
             .collect()
+    }
+
+    /// 外键动作码：五种码 + 未知码的落点。
+    #[test]
+    fn fk_action_codes_map_to_standard_words() {
+        assert_eq!(pg_fk_action(b'c' as i8), "CASCADE");
+        assert_eq!(pg_fk_action(b'n' as i8), "SET NULL");
+        assert_eq!(pg_fk_action(b'd' as i8), "SET DEFAULT");
+        assert_eq!(pg_fk_action(b'r' as i8), "RESTRICT");
+        assert_eq!(pg_fk_action(b'a' as i8), "NO ACTION");
+        assert_eq!(pg_fk_action(0), "NO ACTION");
+    }
+
+    /// `tgtype` 位图：单事件、多事件、INSTEAD OF、缺省 AFTER。
+    #[test]
+    fn trigger_type_bits_decode() {
+        // BEFORE INSERT = 2 | 4
+        assert_eq!(
+            pg_trigger_type(2 | 4),
+            ("BEFORE".to_owned(), "INSERT".to_owned())
+        );
+        // AFTER DELETE（AFTER 位不存在，缺省）= 8
+        assert_eq!(
+            pg_trigger_type(8),
+            ("AFTER".to_owned(), "DELETE".to_owned())
+        );
+        // INSTEAD OF UPDATE = 64 | 16
+        assert_eq!(
+            pg_trigger_type(64 | 16),
+            ("INSTEAD OF".to_owned(), "UPDATE".to_owned())
+        );
+        // 多事件按固定顺序拼接 = INSERT | DELETE | UPDATE | TRUNCATE（含 ROW 位）
+        assert_eq!(
+            pg_trigger_type(1 | 4 | 8 | 16 | 32),
+            (
+                "AFTER".to_owned(),
+                "INSERT, DELETE, UPDATE, TRUNCATE".to_owned()
+            )
+        );
     }
 
     /// 改格 SQL：有类型走 `::text::<类型>`（让参数当 TEXT 收），无类型退裸参数。

@@ -580,6 +580,19 @@ pub fn field_error(text: impl Into<SharedString>, cx: &App) -> Div {
         .child(text.into())
 }
 
+/// 字段成功提示：12px 成功绿。与 [`field_error`] 对称——测试通过、校验通过这类
+/// 「值得停下看一眼」的正向结论要有色彩语义，落回中性说明色就和旁边的字段说明
+/// 没有区别了。绿与「已连接 / 已完成」状态点同源（`extended().success`）。
+pub fn field_success(text: impl Into<SharedString>, cx: &App) -> Div {
+    let theme = active_theme(cx);
+    let xs = theme.tokens().typography.xs;
+    div()
+        .text_size(xs.size)
+        .line_height(xs.line_height)
+        .text_color(theme.extended().colors.success)
+        .child(text.into())
+}
+
 /// 标准字段：标签 → 控件 → 可选错误 / 说明。标签与控件、控件与说明间距 6px
 ///（`spacing.xs + spacing.xxs`，即「一个控件内部」的紧密度）。
 ///

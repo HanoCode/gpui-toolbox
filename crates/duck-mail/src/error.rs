@@ -6,6 +6,13 @@
 //!
 //! [`MailError::code`] 给出稳定的、语言无关的短标识，宿主可据此选本地化文案，
 //! 不必匹配 `Display` 的字符串。
+//!
+//! ⚠️ **这条约定不是靠自觉**：`duck-theme` 的守卫
+//! `every_chinese_literal_is_translated` 会扫本 crate 的每一个字符串字面量，本 crate
+//! 里没有 EN 表可登记，所以任何中文详情都会让 `cargo test -p duck-theme` 直接红。
+//! 唯一豁免的是 [`crate::models`] 的 IMAP 文件夹别名表（`NON_UI_SOURCES`，理由是
+//! 「一个字节都不会渲染」）；错误详情**不在**豁免范围——它会经
+//! `error.to_string()` 进通知条。
 
 use std::fmt;
 

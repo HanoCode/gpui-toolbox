@@ -20,14 +20,14 @@ use std::time::Duration;
 use duck_ai::{IndexProgress, KbIndex, KbSource, KbStats};
 use duck_components::{
     ButtonVariant, ControlExt, DuckIcon, LOGO_ASSET_PATH, NavItem, beta_badge, body_text, button,
-    content, dropdown_select, meta_text, nav_list, notify, option_row, option_row_stacked,
-    settings_section, switch_control, title_text, toolbar_action_button,
+    content, dropdown_select, meta_text, nav_list, notify, option_group, option_row,
+    option_row_stacked, settings_section, switch_control, title_text, toolbar_action_button,
 };
 use duck_shell::AuxiliaryWindowView;
 use duck_theme::{
     Appearance, BuiltinThemeId, Density, FONT_SIZE_RANGE, FONT_SIZES, Lang, Locale, NAV_GAP_RANGE,
-    SidebarSide, ThemeMode, ThemePreference, accent_from_rgb, active_theme, default_accent, t, tr,
-    trf, update_appearance,
+    SidebarSide, ThemeMode, ThemePreference, UnderMinute, accent_from_rgb, active_theme,
+    default_accent, t, tr, tr_relative_time, trf, update_appearance,
 };
 use duck_tools::ToolRegistry;
 use duck_tools::settings as tool_settings;
@@ -91,6 +91,15 @@ const THEME_PREVIEW_SIDEBAR_WIDTH: f32 = 28.;
 const THEME_PREVIEW_BAR_HEIGHT: f32 = 3.;
 /// 强调色色点直径。
 const COLOR_DOT_SIZE: f32 = 28.;
+
+/// 审计流水每列的固定宽度（px）。
+///
+/// 固定而不是让内容撑：流水是要**竖着扫**的（「哪几行是连接」「哪几行失败了」），
+/// 列宽随内容浮动会让同名字段落在不同的水平位置上，扫视就断了。
+const AUDIT_TIME_WIDTH: f32 = 84.;
+const AUDIT_KIND_WIDTH: f32 = 72.;
+const AUDIT_ACTION_WIDTH: f32 = 88.;
+const AUDIT_OUTCOME_WIDTH: f32 = 76.;
 
 /// 可选强调色（预设色点）。首项即默认强调色，与 `duck_theme::DEFAULT_ACCENT_RGB` 同源。
 const ACCENTS: [u32; 6] = [
@@ -266,12 +275,54 @@ fn pruned_message(removed: usize, cx: &App) -> SharedString {
 /// 一个 MiB 的字节数。只用于把 [`duck_platform`] 的日志上限常量写成给人看的话。
 const MIB: u64 = 1024 * 1024;
 
+/// 分类页在导航里的分组。
+///
+/// 分组只影响**侧栏怎么排版**（组标题 + 一段导航列表），不影响搜索：搜索跨全部组，
+/// 命中的组才显示出来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageGroup {
+    /// 应用级：界面与交互本身。
+    General,
+    /// 能力：工具、插件、AI。
+    Capability,
+    /// 模块：终端 / 数据库 / 邮箱 / Redis 各自的偏好。
+    Module,
+    /// 系统：日志、数据、关于。
+    System,
+}
+
+impl PageGroup {
+    /// 导航顺序（同时决定组标题的展示顺序）。
+    const ALL: [Self; 4] = [Self::General, Self::Capability, Self::Module, Self::System];
+
+    /// 组标题（中文源串，渲染时按当次语言 `tr`）。
+    const fn title(self) -> &'static str {
+        match self {
+            Self::General => "通用",
+            Self::Capability => "能力",
+            Self::Module => "模块",
+            Self::System => "系统",
+        }
+    }
+
+    /// 导航列表元素 id 用的稳定短名。
+    const fn key(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Capability => "capability",
+            Self::Module => "module",
+            Self::System => "system",
+        }
+    }
+}
+
 /// 分类页描述（导航与搜索索引共用）。
 struct SettingsPageSpec {
     key: &'static str,
     title: &'static str,
     description: &'static str,
     icon: DuckIcon,
+    group: PageGroup,
 }
 
 /// 日志分类的 key。
@@ -286,6 +337,15 @@ const DATA_PAGE: &str = "data";
 /// AI 分类的 key（规格表与渲染分支同源）。
 const AI_PAGE: &str = "ai";
 
+/// 「终端」模块页的 key（规格表与渲染分支同源）。
+const TERMINAL_PAGE: &str = "terminal";
+/// 「数据库」模块页的 key（规格表与渲染分支同源）。
+const DATABASE_PAGE: &str = "database";
+/// 「邮箱」模块页的 key（规格表与渲染分支同源）。
+const MAIL_PAGE: &str = "email";
+/// 「Redis」模块页的 key（规格表与渲染分支同源）。
+const REDIS_PAGE: &str = "redis";
+
 /// 分类清单（顺序即导航顺序）。
 const PAGES: &[SettingsPageSpec] = &[
     SettingsPageSpec {
@@ -293,54 +353,98 @@ const PAGES: &[SettingsPageSpec] = &[
         title: "外观",
         description: "主题与配色",
         icon: DuckIcon::SlidersHorizontal,
+        group: PageGroup::General,
     },
     SettingsPageSpec {
         key: "behavior",
         title: "行为",
         description: "列表、确认与开机启动",
         icon: DuckIcon::Zap,
-    },
-    SettingsPageSpec {
-        key: "tools",
-        title: "工具",
-        description: "工具启停与工具级设置",
-        icon: DuckIcon::Box,
-    },
-    SettingsPageSpec {
-        key: "plugins",
-        title: "插件",
-        description: "市场源与已安装插件",
-        icon: DuckIcon::Library,
-    },
-    SettingsPageSpec {
-        key: AI_PAGE,
-        title: "AI",
-        description: "模型厂商、密钥与生成参数",
-        icon: DuckIcon::Bot,
+        group: PageGroup::General,
     },
     SettingsPageSpec {
         key: "notify",
         title: "通知",
         description: "应用内与系统通知通道",
         icon: DuckIcon::Bell,
+        group: PageGroup::General,
+    },
+    SettingsPageSpec {
+        key: "tools",
+        title: "工具",
+        description: "工具启停与工具级设置",
+        icon: DuckIcon::Box,
+        group: PageGroup::Capability,
+    },
+    SettingsPageSpec {
+        key: "plugins",
+        title: "插件",
+        description: "市场源与已安装插件",
+        icon: DuckIcon::Library,
+        group: PageGroup::Capability,
+    },
+    SettingsPageSpec {
+        key: AI_PAGE,
+        title: "AI",
+        description: "模型厂商、密钥与生成参数",
+        icon: DuckIcon::Bot,
+        group: PageGroup::Capability,
+    },
+    SettingsPageSpec {
+        key: TERMINAL_PAGE,
+        title: "终端",
+        description: "字号、回滚与会话行为",
+        icon: DuckIcon::SquareTerminal,
+        group: PageGroup::Module,
+    },
+    SettingsPageSpec {
+        key: DATABASE_PAGE,
+        title: "数据库",
+        description: "查询上限与新连接默认值",
+        icon: DuckIcon::Database,
+        group: PageGroup::Module,
+    },
+    SettingsPageSpec {
+        key: MAIL_PAGE,
+        title: "邮箱",
+        description: "通知、正文形态与列表条数",
+        icon: DuckIcon::Mail,
+        group: PageGroup::Module,
+    },
+    SettingsPageSpec {
+        key: REDIS_PAGE,
+        title: "Redis",
+        description: "键扫描与会话",
+        icon: DuckIcon::DatabaseZap,
+        group: PageGroup::Module,
     },
     SettingsPageSpec {
         key: LOGS_PAGE,
         title: "日志",
         description: "日志文件与运行记录",
         icon: DuckIcon::FileText,
+        group: PageGroup::System,
+    },
+    SettingsPageSpec {
+        key: crate::audit::AUDIT_PAGE,
+        title: "审计日志",
+        description: "连接、查询与写入的流水",
+        icon: DuckIcon::ShieldCheck,
+        group: PageGroup::System,
     },
     SettingsPageSpec {
         key: DATA_PAGE,
         title: "数据",
         description: "备份、恢复与重置",
         icon: DuckIcon::Archive,
+        group: PageGroup::System,
     },
     SettingsPageSpec {
         key: "about",
         title: "关于",
         description: "版本、更新与发布记录",
         icon: DuckIcon::Info,
+        group: PageGroup::System,
     },
 ];
 
@@ -487,6 +591,16 @@ struct AiDraft {
     /// 清空它就是「清除密钥」的明确意图——与终端页的连接口令同一个口径
     /// （那里也是解密回显，见 `pages/terminal.rs::apply_password`）。
     api_key: Entity<InputState>,
+    /// 从服务端 `GET /models` 拉到的模型清单（空 = 还没拉，或拉失败）。
+    ///
+    /// 与模板自带的 `default_models` **分开存**：那份是离线兜底，这份是权威清单。
+    /// 拉到了就优先展示，但拉失败不该把兜底一起清掉 —— 断网时用户还得能挑模型。
+    live_models: Vec<String>,
+    /// 正在拉取清单。用来防连点，也给提示文案一个「进行中」的态。
+    models_loading: bool,
+    /// 拉取失败的原因（空 = 没有）。与 `error` 分开：它只说清单拉不到，
+    /// 不该挡住「保存档案」这件事。
+    models_error: Option<SharedString>,
     /// 保存被拒的原因（空 = 没有）。
     error: Option<SharedString>,
 }
@@ -594,6 +708,23 @@ pub struct SettingsWindowView {
     #[allow(dead_code)]
     _font_subscription: Subscription,
 
+    /// 「审计日志」页：按类别筛选（`None` = 全部）。
+    audit_kind: Option<SharedString>,
+    /// 「审计日志」页：只看失败 / 被拦 / 被取消。
+    audit_problems_only: bool,
+    /// 「审计日志」页：只看某一次错误（点主窗状态栏的错误徽标进来时自动带上）。
+    ///
+    /// 用 `SharedString` 而不是 `String`：它同时是那一行筛选提示的渲染内容。
+    audit_trace: Option<SharedString>,
+    /// 「审计日志」页：保留条数的快照（构造时从 `kv` 读一次，改档位时同步落盘）。
+    audit_keep: usize,
+    /// 「审计日志」页：当前筛选下的记录快照。
+    ///
+    /// 为什么快照而不是每帧查库：这一页在筛选没变时**每帧渲染的都是同一批行**，
+    /// 而查一次要走读连接 + `LIMIT 200` 的排序；快照把开销压到「筛选变了才查」。
+    /// 代价是它不会自己变新，所以进页 / 改筛选 / 点刷新都要显式 [`Self::reload_audit`]。
+    audit_rows: Vec<duck_store::AuditRow>,
+
     /// 「AI」页的厂商档案快照（`kv` 读入；本页写，写完立刻回读刷新）。
     ai_providers: Vec<duck_ai::ProviderProfile>,
     /// 「AI」页的生成参数快照（同上）。
@@ -603,12 +734,15 @@ pub struct SettingsWindowView {
     /// **必须缓存**：`secret::available()` 会真读一次系统存储，而这一页每帧都要
     /// 拿它决定凭据输入框的可用态。快照在进页与每次保存后刷新（见 [`Self::ai_reload`]）。
     ai_secure_available: bool,
-    /// 生成参数三个控件（温度 / 最大输出 / 系统提示词）。
+    /// 生成参数四个控件（温度 / 最大输出 / 最大工具轮次 / 系统提示词）。
     ///
     /// 常驻而不是按需建：这一页是「改完点保存」的形态，控件一旦被销毁，
     /// 用户没保存的输入就没了。
     ai_temperature: Entity<InputState>,
     ai_max_tokens: Entity<InputState>,
+    ai_max_rounds: Entity<InputState>,
+    /// 上下文预算（字符数）；`0` = 关闭压缩。
+    ai_compaction_budget: Entity<InputState>,
     ai_system_prompt: Entity<TextareaState>,
     /// 上次读到的配置版本号（`kv: ai_config_rev`）。变了就重读快照。
     ai_revision: u64,
@@ -658,7 +792,7 @@ impl SettingsWindowView {
                 cx.notify();
             }
         });
-        // AI 页的三个生成参数控件：初值取当前快照，之后只在「保存」时回写。
+        // AI 页的四个生成参数控件：初值取当前快照，之后只在「保存」时回写。
         let ai_settings = ai::load_settings(cx);
         let ai_temperature = cx.new(|cx| {
             InputState::new(window, cx)
@@ -669,6 +803,16 @@ impl SettingsWindowView {
             InputState::new(window, cx)
                 .placeholder(tr(cx, "接口默认"))
                 .default_value(ai::max_tokens_text(&ai_settings))
+        });
+        let ai_max_rounds = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(tr(cx, "默认 8"))
+                .default_value(ai::max_rounds_text(&ai_settings))
+        });
+        let ai_compaction_budget = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(tr(cx, "默认 96000"))
+                .default_value(ai::compaction_budget_text(&ai_settings))
         });
         let ai_system_prompt = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -698,11 +842,20 @@ impl SettingsWindowView {
             launcher_opens_main_window: settings::launcher_opens_main_window(cx),
             _hotkey_blur: hotkey_blur,
             _font_subscription: font_subscription,
+            // 审计页的筛选默认全空（= 最近一批记录）；带 trace 的跳转由
+            // `apply_pending_page` 在渲染前填上。
+            audit_kind: None,
+            audit_problems_only: false,
+            audit_trace: None,
+            audit_keep: crate::audit::keep_limit(cx),
+            audit_rows: Vec::new(),
             ai_providers: ai::load_providers(cx),
             ai_settings,
             ai_secure_available: ai::secure_storage_available(),
             ai_temperature,
             ai_max_tokens,
+            ai_max_rounds,
+            ai_compaction_budget,
             ai_system_prompt,
             ai_revision: ai::revision(cx),
             ai_draft: None,
@@ -884,7 +1037,7 @@ impl SettingsWindowView {
     /// 于是「跳过去了但停在别的页」；所以跳转时一并清空搜索词。
     fn focus_page(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         if PAGES.iter().any(|page| page.key == target.page) {
-            self.selected = SharedString::from(target.page);
+            self.select_page(SharedString::from(target.page), cx);
         }
         if let Some(tool) = target.tool {
             self.selected_tool = Some(SharedString::from(tool));
@@ -894,11 +1047,59 @@ impl SettingsWindowView {
         cx.notify();
     }
 
+    /// 切换分类。进「审计日志」时顺带刷一次列表快照。
+    ///
+    /// 收口成一处是因为快照**不会自己变新**：两条切页路径（点侧栏、外部投递跳转）
+    /// 只要有一条忘了刷，那一页就会显示上一次进来时的旧内容 —— 而那种错看起来
+    /// 像是「审计没记下来」，比空列表更容易误导。
+    fn select_page(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        self.selected = key;
+        // 审计页**每次**切到它都重查：它的内容是流水、快照不会自己变新，
+        // 而「再点一下当前这个导航项」在审计页上就是很自然的「刷新」动作 ——
+        // 对着选中项早退会把它变成一次空转。
+        if self.selected == crate::audit::AUDIT_PAGE {
+            self.reload_audit(cx);
+        }
+    }
+
+    /// 按当前筛选重查审计记录，刷新快照。
+    ///
+    /// ⚠️ 审计的写是**去抖**的（400ms）：不 flush 就查，刚记下的那条可能还没落盘。
+    /// 所以这里先落盘再读 —— 这一页的读只有「进页 / 改筛选 / 点刷新」三个时机，
+    /// 一次 flush 的代价换来的是「看到的永远是完整流水」。
+    fn reload_audit(&mut self, cx: &mut Context<Self>) {
+        duck_store::flush(cx);
+        self.audit_rows = crate::audit::query(cx, &self.audit_filter());
+    }
+
+    /// 当前筛选条件。三项各自独立：类别、只看问题、只看某一次错误。
+    fn audit_filter(&self) -> duck_store::AuditFilter {
+        duck_store::AuditFilter {
+            kind: self.audit_kind.as_ref().map(|kind| kind.to_string()),
+            problems_only: self.audit_problems_only,
+            trace_id: self.audit_trace.as_ref().map(|trace| trace.to_string()),
+            scope: None,
+            limit: duck_store::AuditFilter::DEFAULT_LIMIT,
+        }
+    }
+
     /// 取走外部投递的跳转请求（工具箱工作区「在设置中打开」）。
     ///
     /// 在 `render` 开头调用，且早于 `visible_pages` / 正文渲染：同一帧里就切到目标
     /// 分类，不会先闪一下旧页面。没有请求时零开销。
     fn apply_pending_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 主窗的错误徽标投递的「只看这一次错误」：与分类跳转同一条路子，先取先得。
+        // ⚠️ 即使跳转还没到（`Target` 为空），也要把 trace 取走 —— 否则它会一直挂在槽里，
+        // 下一次用户自己点开审计页时莫名其妙地被筛上。
+        if let Some(trace) = crate::audit::take_pending_trace(cx) {
+            self.selected = SharedString::from(crate::audit::AUDIT_PAGE);
+            self.audit_kind = None;
+            self.audit_problems_only = false;
+            self.audit_trace = Some(SharedString::from(trace));
+            // 走 `select_page` 的话会在 `selected` 已经是审计页时提前返回 ——
+            // 而这条路径**每次都要重查**（筛选刚被改成了「就这一次」）。
+            self.reload_audit(cx);
+        }
         if let Some(target) = Target::take(cx) {
             self.focus_page(target, window, cx);
         }
@@ -921,9 +1122,13 @@ impl SettingsWindowView {
         visible
     }
 
-    /// 左侧分类导航：搜索框 + 导航列表（chrome 底 + hairline 右缘）。
+    /// 左侧分类导航：搜索框 + **按分组**的导航列表（chrome 底 + hairline 右缘）。
+    ///
+    /// 分组只决定排版：每组一条组标题 + 一段 [`nav_list`]。列表本身不适合放非导航行
+    ///（`duck-components/src/kit.rs:383`），所以组标题留在列表之外自己画。
     ///
     /// 分类切换的选中底是滑动高亮块（与 shell 活动栏同一动效），图标色随之淡变。
+    /// 高亮块按**组内下标**定位，所以每组各用自己的 `nav_list` id。
     fn render_sidebar(
         &self,
         pages: &[&'static SettingsPageSpec],
@@ -933,37 +1138,62 @@ impl SettingsWindowView {
         let tokens = theme.tokens().clone();
         let extended = theme.extended().clone();
 
-        let items: Vec<NavItem> = pages
-            .iter()
-            .map(|page| {
-                NavItem::new(
-                    SharedString::from(format!("settings-nav-{}", page.key)),
-                    SharedString::from(tr(cx, page.title)),
-                    page.icon,
-                )
-            })
-            .collect();
-        let selected = pages.iter().position(|page| self.selected == page.key);
-        let targets: Vec<&'static SettingsPageSpec> = pages.to_vec();
-        let this = cx.entity().downgrade();
-        let nav = nav_list(
-            "settings-nav",
-            items,
-            selected,
-            move |index, _, cx| {
-                let Some(page) = targets.get(index) else {
-                    return;
-                };
-                let key = SharedString::from(page.key);
-                if let Ok(()) = this.update(cx, |this, cx| {
-                    if this.selected != key {
-                        this.selected = key.clone();
+        let mut groups: Vec<AnyElement> = Vec::new();
+        for group in PageGroup::ALL {
+            let members: Vec<&'static SettingsPageSpec> = pages
+                .iter()
+                .copied()
+                .filter(|page| page.group == group)
+                .collect();
+            // 搜索把整组过滤光时连组标题一起收起，不留一个空壳。
+            if members.is_empty() {
+                continue;
+            }
+            let items: Vec<NavItem> = members
+                .iter()
+                .map(|page| {
+                    NavItem::new(
+                        SharedString::from(format!("settings-nav-{}", page.key)),
+                        SharedString::from(tr(cx, page.title)),
+                        page.icon,
+                    )
+                })
+                .collect();
+            let selected = members.iter().position(|page| self.selected == page.key);
+            let targets: Vec<&'static SettingsPageSpec> = members.clone();
+            let this = cx.entity().downgrade();
+            let nav = nav_list(
+                SharedString::from(format!("settings-nav-{}", group.key())),
+                items,
+                selected,
+                move |index, _, cx| {
+                    let Some(page) = targets.get(index) else {
+                        return;
+                    };
+                    let key = SharedString::from(page.key);
+                    if let Ok(()) = this.update(cx, |this, cx| {
+                        // 不判「是不是当前项」：审计页要能靠再点一下刷新，
+                        // 而重绘一次本来就是点击该有的事（分类没变时零成本）。
+                        this.select_page(key.clone(), cx);
                         cx.notify();
-                    }
-                }) {}
-            },
-            cx,
-        );
+                    }) {}
+                },
+                cx,
+            );
+            groups.push(
+                v_flex()
+                    .w_full()
+                    .gap(tokens.spacing.xxs)
+                    .child(
+                        div()
+                            .px(tokens.spacing.sm)
+                            .pb(tokens.spacing.xxs)
+                            .child(meta_text(tr(cx, group.title()), cx)),
+                    )
+                    .child(nav)
+                    .into_any_element(),
+            );
+        }
 
         v_flex()
             .flex_none()
@@ -989,8 +1219,9 @@ impl SettingsWindowView {
                 v_flex()
                     .flex_1()
                     .min_h_0()
+                    .gap(tokens.spacing.sm)
                     .overflow_y_scrollbar()
-                    .child(nav),
+                    .children(groups),
             )
     }
 
@@ -1093,6 +1324,13 @@ impl SettingsWindowView {
             // 数据页整块搬去了 `pages::data`：它只读 kv、不需要视图状态，
             // 留在这里只会让本就过长的本文件再胖一圈。
             DATA_PAGE => super::data::body(cx),
+            // 模块页同理（`pages::module_settings`）：它们只读写 kv，不需要视图状态，
+            // 拼成 `Div` 交给本页渲染即可。
+            TERMINAL_PAGE => super::module_settings::terminal_body(cx),
+            DATABASE_PAGE => super::module_settings::database_body(cx),
+            MAIL_PAGE => super::module_settings::mail_body(cx),
+            REDIS_PAGE => super::module_settings::redis_body(cx),
+            crate::audit::AUDIT_PAGE => self.audit_body(cx),
             // 更新相关的整块已并入「关于」页（原独立分类页已废除）。
             _ => self.about_body(cx),
         }
@@ -2529,15 +2767,43 @@ impl SettingsWindowView {
             .into_any_element(),
         );
 
-        let presets: Vec<(SharedString, SharedString)> = template
-            .map(|entry| {
-                entry
-                    .default_models
-                    .iter()
-                    .map(|model| (SharedString::from(*model), SharedString::from(*model)))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // 下拉里的候选：拉到了服务端清单就用它，否则回落模板自带的那几个。
+        let live = !draft.live_models.is_empty();
+        let presets: Vec<(SharedString, SharedString)> = if live {
+            draft
+                .live_models
+                .iter()
+                .map(|model| {
+                    (
+                        SharedString::from(model.clone()),
+                        SharedString::from(model.clone()),
+                    )
+                })
+                .collect()
+        } else {
+            template
+                .map(|entry| {
+                    entry
+                        .default_models
+                        .iter()
+                        .map(|model| (SharedString::from(*model), SharedString::from(*model)))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let model_hint: SharedString = if draft.models_loading {
+            SharedString::from(tr(cx, "正在拉取模型清单…"))
+        } else if let Some(error) = draft.models_error.clone() {
+            error
+        } else if live {
+            SharedString::from(trf(
+                cx,
+                "已拉到 {} 个模型。",
+                &[&draft.live_models.len().to_string()],
+            ))
+        } else {
+            SharedString::from(tr(cx, "直接填模型名；从「预置模型」里挑一个会覆盖当前值。"))
+        };
         let mut model_controls = h_flex()
             .w_full()
             .items_center()
@@ -2549,14 +2815,28 @@ impl SettingsWindowView {
                         .aria_label(tr(cx, "模型"))
                         .w_full(),
                 ),
+            )
+            .child(
+                // 端点填错 / 密钥不对，这里一次就能看出来 —— 不必等到发第一句对话。
+                button(
+                    "duck-settings-ai-fetch-models",
+                    tr(cx, "拉取模型"),
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, _window, cx| this.ai_fetch_models(cx))),
             );
         if !presets.is_empty() {
-            // `current` 故意写成选项里没有的字符串：按钮上就显示「预置模型」这个标签，
-            // 而不是某个已选项——它是一个动作而不是一个状态。
+            // `current` 故意写成选项里没有的字符串：按钮上就显示标签本身
+            //（「预置模型」/「服务端清单」），而不是某个已选项 —— 它是一个动作而不是一个状态。
             model_controls = model_controls.child(dropdown_select(
                 "duck-settings-ai-model-preset",
                 presets,
-                SharedString::from(tr(cx, "预置模型")),
+                SharedString::from(if live {
+                    tr(cx, "服务端清单")
+                } else {
+                    tr(cx, "预置模型")
+                }),
                 cx.processor(|this, value: SharedString, window, cx| {
                     this.ai_fill_model(value.as_ref(), window, cx);
                 }),
@@ -2564,13 +2844,8 @@ impl SettingsWindowView {
             ));
         }
         rows.push(
-            option_row_stacked(
-                tr(cx, "模型"),
-                Some(tr(cx, "直接填模型名；从「预置模型」里挑一个会覆盖当前值。").into()),
-                model_controls,
-                cx,
-            )
-            .into_any_element(),
+            option_row_stacked(tr(cx, "模型"), Some(model_hint), model_controls, cx)
+                .into_any_element(),
         );
 
         if needs_key {
@@ -2746,6 +3021,38 @@ impl SettingsWindowView {
             cx,
         );
 
+        let max_rounds_row = option_row(
+            tr(cx, "最大工具轮次"),
+            Some(tr(cx, "一次问答内最多允许的连续工具调用轮数；留空用默认值 8。").into()),
+            div().w(px(AI_FIELD_WIDTH)).child(
+                Input::new(&self.ai_max_rounds)
+                    .control(cx)
+                    .aria_label(tr(cx, "最大工具轮次"))
+                    .w_full(),
+            ),
+            cx,
+        );
+
+        // 上下文预算：**既说清代价、也不假装它是精确值**。关掉压缩 = 长会话可能超窗；
+        // 调太小 = 更早丢历史。两个方向都由用户明知代价地选。
+        let compaction_row = option_row(
+            tr(cx, "上下文预算"),
+            Some(
+                tr(
+                    cx,
+                    "整段历史超过这个字符数就开始压缩：先裁旧工具结果，再丢最早的消息。留空用默认值 96000；填 0 表示关闭压缩，长会话可能因此超出模型的上下文窗口。",
+                )
+                .into(),
+            ),
+            div().w(px(AI_FIELD_WIDTH)).child(
+                Input::new(&self.ai_compaction_budget)
+                    .control(cx)
+                    .aria_label(tr(cx, "上下文预算"))
+                    .w_full(),
+            ),
+            cx,
+        );
+
         // 多行输入框：`ControlExt` 只管单行 `Input`，所以外观（圆角 / 描边 / 底色）
         // 照助手页输入区那套自己拼一遍，两处的视觉才一致。
         let prompt_row = option_row_stacked(
@@ -2789,6 +3096,8 @@ impl SettingsWindowView {
                 provider_row.into_any_element(),
                 temperature_row.into_any_element(),
                 max_tokens_row.into_any_element(),
+                max_rounds_row.into_any_element(),
+                compaction_row.into_any_element(),
                 prompt_row.into_any_element(),
                 save_row.into_any_element(),
             ],
@@ -3353,6 +3662,9 @@ impl SettingsWindowView {
             base_url: base_url_input,
             model: model_input,
             api_key: api_key_input,
+            live_models: Vec::new(),
+            models_loading: false,
+            models_error: None,
             error: None,
         });
         cx.notify();
@@ -3403,6 +3715,73 @@ impl SettingsWindowView {
             state.set_value(model.to_owned(), window, cx)
         });
         cx.notify();
+    }
+
+    /// 「拉取模型」：向 `GET {base_url}/models` 要一次服务端的权威清单。
+    ///
+    /// 用的是**表单里当前的值**（端点、密钥，都还没保存）—— 这正是在保存档案之前
+    /// 确认「端点写错没有、密钥对不对」的时机。测的就是真正会走的那条路。
+    ///
+    /// 阻塞式 HTTP 走**后台执行器**，与终端页「测试连接」同一条纪律：
+    /// 在渲染线程上发请求会把整个界面冻住一次网络往返。
+    fn ai_fetch_models(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.ai_draft.as_ref() else {
+            return;
+        };
+        if draft.models_loading {
+            return;
+        }
+        let template_id = draft.template_id.clone();
+        let profile = duck_ai::ProviderProfile {
+            id: draft.id.clone().unwrap_or_default(),
+            template_id: template_id.clone(),
+            name: draft.name.read(cx).value().to_string(),
+            base_url: draft.base_url.read(cx).value().trim().to_owned(),
+            // 清单端点与模型名无关，但结构体要求非空 —— 填个占位，不去动用户的输入。
+            model: String::new(),
+            is_local: duck_ai::template(&template_id).is_some_and(|entry| entry.is_local),
+            api_key: None,
+        };
+        let api_key = draft.api_key.read(cx).value().to_string();
+        let Some(draft) = self.ai_draft.as_mut() else {
+            return;
+        };
+        draft.models_loading = true;
+        draft.models_error = None;
+        cx.notify();
+
+        let task = cx
+            .background_executor()
+            .spawn(async move { duck_ai::list_models(&profile, &api_key, 20) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            // 后台线程只负责发请求；回主线程才动状态。
+            // 窗口在等待期间关掉时 `update` 会失败，这时没什么可做的 —— 丢掉即可。
+            let _ = this.update(cx, |this, cx| {
+                let Some(draft) = this.ai_draft.as_mut() else {
+                    return;
+                };
+                draft.models_loading = false;
+                match result {
+                    Ok(models) => {
+                        draft.models_error = None;
+                        draft.live_models = models;
+                    }
+                    Err(error) => {
+                        // 失败就把这份清单丢掉：留着上一次的结果会让用户以为
+                        // 自己看的是刚拉到的。模板兜底仍在（另一份字段）。
+                        draft.live_models.clear();
+                        draft.models_error = Some(SharedString::from(trf(
+                            cx,
+                            "拉取失败：{}",
+                            &[&error.to_string()],
+                        )));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 保存草稿。
@@ -3505,10 +3884,23 @@ impl SettingsWindowView {
             notify::error(tr(cx, "最大输出要是正整数"), window, cx);
             return;
         };
+        let Some(max_tool_rounds) = ai::parse_max_rounds(&self.ai_max_rounds.read(cx).value())
+        else {
+            notify::error(tr(cx, "最大工具轮次要不小于 1 的整数"), window, cx);
+            return;
+        };
+        let Some(compaction_max_chars) =
+            ai::parse_compaction_budget(&self.ai_compaction_budget.read(cx).value())
+        else {
+            notify::error(tr(cx, "上下文预算要是不小于 0 的整数"), window, cx);
+            return;
+        };
         let system_prompt = self.ai_system_prompt.read(cx).value().to_string();
 
         self.ai_settings.temperature = temperature;
         self.ai_settings.max_tokens = max_tokens;
+        self.ai_settings.max_tool_rounds = max_tool_rounds;
+        self.ai_settings.compaction_max_chars = compaction_max_chars;
         self.ai_settings.system_prompt = system_prompt;
         ai::save_settings(cx, &self.ai_settings);
         notify::success(tr(cx, "生成参数已保存"), window, cx);
@@ -3687,6 +4079,334 @@ impl SettingsWindowView {
             ],
             cx,
         ))
+    }
+
+    // ── 审计日志 ──────────────────────────────────────────────────────────
+    //
+    // 这一页只做两件事：**缩范围**（筛选）与**看流水**（列表）。没有编辑、没有删除 ——
+    // 唯一的破坏性动作是「清空」，而它自己也会在清空后立刻记一笔（见下面那段）。
+
+    /// 「审计日志」页：筛选 + 流水列表。
+    fn audit_body(&self, cx: &mut Context<Self>) -> Div {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens().clone();
+        let extended = theme.extended().clone();
+
+        // 类别下拉：首项「全部」用空串当值（`AuditFilter.kind = None` 的界面形态）。
+        let mut kind_options: Vec<(SharedString, SharedString)> = vec![(
+            SharedString::from(""),
+            SharedString::from(tr(cx, "全部类别")),
+        )];
+        kind_options.extend(crate::audit::AuditKind::ALL.into_iter().map(|kind| {
+            (
+                SharedString::from(kind.key()),
+                SharedString::from(kind.label(cx)),
+            )
+        }));
+        let current_kind = self
+            .audit_kind
+            .clone()
+            .unwrap_or_else(|| SharedString::from(""));
+        let kind_row = option_row(
+            tr(cx, "类别"),
+            Some(tr(cx, "连接、查询、写入这类事件各自成一行流水。").into()),
+            dropdown_select(
+                "duck-settings-audit-kind",
+                kind_options,
+                current_kind,
+                // `dropdown_select` 的回调是**按值**收 `SharedString`，所以走 `processor`
+                //（`listener` 给的是 `&E`，形状对不上）。
+                cx.processor(|this, value: SharedString, _, cx| {
+                    this.audit_kind = (!value.is_empty()).then(|| value.clone());
+                    this.reload_audit(cx);
+                    cx.notify();
+                }),
+                cx,
+            ),
+            cx,
+        );
+
+        let problems_row = option_row(
+            tr(cx, "只看问题"),
+            Some(
+                tr(
+                    cx,
+                    "成功以外的记录（失败、被拦下、已取消）。被拦下不是错误，是策略生效。",
+                )
+                .into(),
+            ),
+            switch_control(
+                "duck-settings-audit-problems",
+                self.audit_problems_only,
+                cx.listener(|this, on: &bool, _, cx| {
+                    this.audit_problems_only = *on;
+                    this.reload_audit(cx);
+                    cx.notify();
+                }),
+            ),
+            cx,
+        );
+
+        // 「只看这一次」只在**有**关联 id 时出现：它是外部投递进来的筛选（点主窗错误徽标），
+        // 不是一个常驻条件 —— 常驻一个空的输入框会让人以为「这一栏还能筛别的」。
+        let trace_row = self.audit_trace.as_ref().map(|trace| {
+            option_row(
+                tr(cx, "关联 id"),
+                Some(tr(cx, "只看这一次错误。同一个 id 也会出现在那条失败提示里。").into()),
+                h_flex()
+                    .items_center()
+                    .gap(tokens.spacing.sm)
+                    .child(meta_text(trace.clone(), cx))
+                    .child(
+                        button(
+                            "duck-settings-audit-trace-clear",
+                            tr(cx, "清除"),
+                            ButtonVariant::Secondary,
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.audit_trace = None;
+                            this.reload_audit(cx);
+                            cx.notify();
+                        })),
+                    ),
+                cx,
+            )
+            .into_any_element()
+        });
+
+        let keep_options: Vec<(SharedString, SharedString)> = crate::audit::AUDIT_KEEP_CHOICES
+            .iter()
+            .map(|keep| {
+                (
+                    SharedString::from(keep.to_string()),
+                    SharedString::from(trf(cx, "{} 条", &[&keep.to_string()])),
+                )
+            })
+            .collect();
+        let keep_row = option_row(
+            tr(cx, "保留条数"),
+            Some(
+                tr(
+                    cx,
+                    "超出上限的旧记录会被自动删除，调小会立刻生效；要长期留证就把上限调大。",
+                )
+                .into(),
+            ),
+            dropdown_select(
+                "duck-settings-audit-keep",
+                keep_options,
+                SharedString::from(self.audit_keep.to_string()),
+                cx.processor(|this, value: SharedString, _, cx| {
+                    // 下拉回传的是档位的稳定值（条数字符串）；非法值理论上来不了，丢掉即可。
+                    let Ok(keep) = value.as_ref().parse::<usize>() else {
+                        return;
+                    };
+                    crate::audit::set_keep_limit(cx, keep);
+                    // 落盘 + 裁剪都是去抖的：顺序必须是「先让它们做完，再读列表」，
+                    // 否则读到的还是按旧上限裁过的结果。
+                    duck_store::flush(cx);
+                    this.audit_keep = crate::audit::keep_limit(cx);
+                    this.reload_audit(cx);
+                    cx.notify();
+                }),
+                cx,
+            ),
+            cx,
+        );
+
+        let clear_row = option_row(
+            tr(cx, "清空"),
+            Some(
+                tr(
+                    cx,
+                    "删掉全部流水。清空本身也会记一笔 —— 否则「谁把痕迹擦了」就查不出来了。",
+                )
+                .into(),
+            ),
+            button(
+                "duck-settings-audit-clear",
+                tr(cx, "清空审计"),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                let count = this.audit_rows.len();
+                if !duck_platform::confirm(
+                    tr(cx, "清空审计日志？"),
+                    &trf(
+                        cx,
+                        "当前筛选下的 {} 条记录会全部删除（整个表都会清空，不只是筛出来的这些）。",
+                        &[&count.to_string()],
+                    ),
+                ) {
+                    return;
+                }
+                duck_store::audit_clear(cx);
+                // 清空后立刻记一笔：同批里「清空」先于写入执行，所以这一条不会被自己擦掉。
+                crate::audit::record(
+                    cx,
+                    duck_store::AuditEntry::new(
+                        crate::audit::AuditKind::Query.key(),
+                        crate::audit::action::CLEAR,
+                        duck_store::AuditOutcome::Ok,
+                        "",
+                        trf(cx, "清空审计日志（原有 {} 条）", &[&count.to_string()]),
+                    ),
+                );
+                // 这一笔的 `detail` 是中文：它由**界面**产生、只给人看，不参与筛选与比较
+                // （筛选走 kind / action / outcome / trace 这些英文键）。
+                this.reload_audit(cx);
+                cx.notify();
+                duck_components::notify::success(tr(cx, "审计日志已清空"), window, cx);
+            })),
+            cx,
+        );
+
+        let mut filter_rows: Vec<AnyElement> =
+            vec![kind_row.into_any_element(), problems_row.into_any_element()];
+        filter_rows.extend(trace_row);
+        filter_rows.push(keep_row.into_any_element());
+        filter_rows.push(clear_row.into_any_element());
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap(tokens.spacing.xl)
+            .child(settings_section(
+                Some(tr(cx, "筛选").into()),
+                filter_rows,
+                cx,
+            ))
+            .child(settings_section(
+                Some(tr(cx, "流水").into()),
+                [if self.audit_rows.is_empty() {
+                    Self::audit_empty_state(self.audit_filter().is_empty(), self.audit_keep, cx)
+                        .into_any_element()
+                } else {
+                    option_group(
+                        self.audit_rows
+                            .iter()
+                            .map(|row| Self::audit_row(row, &extended, &tokens, cx)),
+                        cx,
+                    )
+                    .into_any_element()
+                }],
+                cx,
+            ))
+    }
+
+    /// 空态：分清「一条都没有」与「筛出来是空的」。
+    ///
+    /// 这两种空必须说不同的话：前者说明审计还没记下任何事（或刚被清空），
+    /// 后者说明筛选太窄 —— 一句「暂无记录」会把用户引向错误的方向。
+    fn audit_empty_state(filtered: bool, keep: usize, cx: &App) -> AnyElement {
+        if filtered {
+            content::empty_state(
+                DuckIcon::ListFilter,
+                tr(cx, "没有符合条件的记录"),
+                Some(tr(cx, "放宽筛选，或清掉「只看问题 / 关联 id」再看看。").into()),
+                None,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            content::empty_state(
+                DuckIcon::ShieldCheck,
+                tr(cx, "还没有记录"),
+                Some(
+                    trf(
+                        cx,
+                        "连接、执行语句、写入、浏览与插件调用都会记在这里（最多保留 {} 条）。",
+                        &[&keep.to_string()],
+                    )
+                    .into(),
+                ),
+                None,
+                cx,
+            )
+            .into_any_element()
+        }
+    }
+
+    /// 流水的一行：时间 · 类别 · 动作 · 结果 · 摘要（+ 关联 id）。
+    ///
+    /// 列宽固定而不是流式：流水是**要竖着扫**的（找「哪几行是连接」），
+    /// 让每列跟着内容走会让相同的字段落在不同的水平位置上，扫视就断了。
+    fn audit_row(
+        row: &duck_store::AuditRow,
+        extended: &duck_theme::ExtendedTokens,
+        tokens: &duck_theme::SemanticThemeTokens,
+        cx: &App,
+    ) -> AnyElement {
+        let now = duck_store::now_seconds();
+        let when = tr_relative_time(cx, now - row.at, UnderMinute::Seconds);
+        let kind = crate::audit::AuditKind::from_key(&row.kind)
+            .map_or_else(|| row.kind.clone(), |kind| kind.label(cx).to_owned());
+        // 结果色分四档：被拦下走警示色（策略生效，不是故障），取消走三级文字
+        //（用户自己按的，最不需要被强调）。
+        let color = match duck_store::AuditOutcome::from_key(&row.outcome) {
+            Some(duck_store::AuditOutcome::Ok) => extended.colors.success,
+            Some(duck_store::AuditOutcome::Failed) => extended.colors.status_failed,
+            Some(duck_store::AuditOutcome::Blocked) => extended.colors.warning,
+            _ => extended.colors.text_tertiary,
+        };
+
+        let mut detail = h_flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(tokens.spacing.sm)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(body_text(row.detail.clone(), cx)),
+            );
+        if !row.trace_id.is_empty() {
+            detail = detail.child(content::accent_tag(row.trace_id.clone(), cx));
+        }
+
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap(tokens.spacing.md)
+            .px(tokens.spacing.lg)
+            .py(tokens.spacing.xs)
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(AUDIT_TIME_WIDTH))
+                    .child(meta_text(when, cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(AUDIT_KIND_WIDTH))
+                    .child(meta_text(kind, cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(AUDIT_ACTION_WIDTH))
+                    .child(meta_text(crate::audit::action_label(&row.action, cx), cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(AUDIT_OUTCOME_WIDTH))
+                    .child(content::status_cell(
+                        color,
+                        crate::audit::outcome_label(&row.outcome, cx),
+                        cx,
+                    )),
+            )
+            .child(detail)
+            .into_any_element()
     }
 
     /// 横幅档位的中文标签（`kv` 里存的是 [`notify::BannerLevel::wire`]）。

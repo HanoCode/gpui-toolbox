@@ -7,6 +7,8 @@ mod licenses;
 mod logs;
 mod mail;
 mod mail_data;
+// 设置页「模块」分组：终端 / 数据库 / 邮箱 / Redis 的偏好页。
+mod module_settings;
 mod onboarding;
 mod overview;
 mod placeholder;
@@ -28,6 +30,8 @@ pub(crate) use db::bind_keys as bind_db_keys;
 pub use licenses::open_licenses;
 pub use logs::{open_logs, prune_now, spawn_pruner};
 pub use mail::MailPage;
+// 邮箱页同理：键位绑在页面自己的 `"Mail"` 上下文里（`⌘N` → 撰写）。
+pub(crate) use mail::bind_keys as bind_mail_keys;
 pub use onboarding::{done as onboarding_done, open_onboarding};
 pub use overview::OverviewPage;
 pub use placeholder::PlaceholderPage;
@@ -37,7 +41,7 @@ pub use settings::{open_settings, open_settings_at};
 pub use terminal::TerminalPage;
 // 键位注册在 `app::install`（`cx.bind_keys`），动作类型要从这里跨出去给 app.rs 用。
 pub(crate) use terminal_canvas::{
-    Clear, CloseTab, CopySelection, DeleteToLineEnd, DeleteToLineStart, DeleteWordForward,
+    Clear, CloseTab, CopySelection, DeleteToLineEnd, DeleteToLineStart, DeleteWordForward, Find,
     MoveToLineEnd, MoveToLineStart, NewTab, PasteFromClipboard, ScrollLineDown, ScrollLineUp,
     ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, SelectAll, SendCtrlC, SendTab,
     SendTabPrev, SplitPane, ZoomIn, ZoomOut, ZoomReset,

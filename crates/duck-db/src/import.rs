@@ -33,7 +33,7 @@ pub enum ImportError {
     NotJson,
     /// 是 JSON，但形状既不像 DBeaver 也不像 TablePlus。
     Unrecognised,
-    /// 认出来了，但一条都没有本仓支持的引擎（Oracle / SQL Server / MongoDB 会被跳过）。
+    /// 认出来了，但一条都没有本仓支持的引擎（Oracle / Redis / DynamoDB 之类会被跳过）。
     NoSupportedConnections,
 }
 
@@ -140,7 +140,11 @@ fn from_tableplus(root: &Json) -> Option<Vec<ConnectionConfig>> {
     Some(vec![config])
 }
 
-/// 引擎名 → 本仓支持的档位；认不出来（Oracle / SQL Server / MongoDB / Redis …）返回 `None`。
+/// 引擎名 → 本仓支持的档位；认不出来（Oracle / Redis / DynamoDB …）返回 `None`。
+///
+/// 覆盖 [`DatabaseKind::ALL`] 的**全部七档**：DBeaver 的 provider 多数是引擎的小写名
+/// （`clickhouse` / `sqlserver` / `mongodb` / `elasticsearch`），SQL Server 另收 `mssql`
+/// 这个常见别名。
 fn kind_of_provider(provider: &str) -> Option<DatabaseKind> {
     // DBeaver 的 `driver` 形如 `postgres-jdbc-42`，只取第一段比对。
     let provider = provider.split('-').next().unwrap_or(provider);
@@ -148,16 +152,29 @@ fn kind_of_provider(provider: &str) -> Option<DatabaseKind> {
         "postgresql" | "postgres" => Some(DatabaseKind::Postgres),
         "mysql" | "mariadb" => Some(DatabaseKind::Mysql),
         "sqlite" => Some(DatabaseKind::Sqlite),
+        "clickhouse" => Some(DatabaseKind::ClickHouse),
+        "sqlserver" | "mssql" => Some(DatabaseKind::SqlServer),
+        "mongodb" => Some(DatabaseKind::Mongo),
+        "elasticsearch" => Some(DatabaseKind::Elasticsearch),
         _ => None,
     }
 }
 
-/// TablePlus 的 `Driver` 取值（`PostgreSQL` / `MySQL` / `MariaDB` / `SQLite` …）。
+/// TablePlus 的 `Driver` 取值（`PostgreSQL` / `MySQL` / `MariaDB` / `SQLite` /
+/// `ClickHouse` / `SQL Server` / `MongoDB` / `Elasticsearch` …）。
+///
+/// 与人读的名字比对：`SQL Server` 带空格，先去掉全部空格再小写化，`MSSQL` / `Mongo`
+/// 这类别名一并收下。覆盖 [`DatabaseKind::ALL`] 的全部七档。
 fn kind_of_tableplus_driver(driver: &str) -> Option<DatabaseKind> {
-    match driver.to_ascii_lowercase().as_str() {
+    let driver = driver.to_ascii_lowercase().replace(' ', "");
+    match driver.as_str() {
         "postgresql" | "postgres" => Some(DatabaseKind::Postgres),
         "mysql" | "mariadb" => Some(DatabaseKind::Mysql),
         "sqlite" => Some(DatabaseKind::Sqlite),
+        "clickhouse" => Some(DatabaseKind::ClickHouse),
+        "sqlserver" | "mssql" => Some(DatabaseKind::SqlServer),
+        "mongodb" | "mongo" => Some(DatabaseKind::Mongo),
+        "elasticsearch" => Some(DatabaseKind::Elasticsearch),
         _ => None,
     }
 }
@@ -328,10 +345,55 @@ mod tests {
             Err(ImportError::NoSupportedConnections)
         );
         // TablePlus 的壳子但引擎不支持 —— 形状认得出，是「没有支持的连接」。
+        // （Redis 由独立的 `duck-redis` 模块负责，不在本 crate 的 db 引擎矩阵内。）
         assert_eq!(
-            import_third_party(r#"{"Driver":"MongoDB","Host":"mongo"}"#),
+            import_third_party(r#"{"Driver":"Redis","Host":"cache"}"#),
             Err(ImportError::NoSupportedConnections)
         );
+    }
+
+    /// 七档引擎都能从两家的档案里认出来。
+    ///
+    /// 回归护栏：映射表曾经只认 postgresql / mysql / mariadb / sqlite，ClickHouse /
+    /// SQL Server / MongoDB / Elasticsearch 的档案会被整份当作「不支持的引擎」跳过。
+    #[test]
+    fn every_supported_engine_maps_from_both_sources() {
+        // DBeaver：`provider` 是引擎的小写名；SQL Server 常见 `sqlserver-jdbc-*`（取第一段）。
+        let dbeaver = r#"{"connections":{
+          "a":{"provider":"clickhouse","configuration":{"host":"ch","port":"8123"}},
+          "b":{"provider":"sqlserver-jdbc-42","configuration":{"host":"mssql","port":"1433"}},
+          "c":{"provider":"mongodb","configuration":{"host":"mongo","port":"27017"}},
+          "d":{"provider":"elasticsearch","configuration":{"host":"es","port":"9200"}}
+        }}"#;
+        let (source, connections) = import_third_party(dbeaver).expect("DBeaver 四档都应认得");
+        assert_eq!(source, ImportSource::DBeaver);
+        assert_eq!(connections.len(), 4, "四条都要导入，不能跳过任何一条");
+        let kinds: Vec<DatabaseKind> = connections.iter().map(|cfg| cfg.kind).collect();
+        for expected in [
+            DatabaseKind::ClickHouse,
+            DatabaseKind::SqlServer,
+            DatabaseKind::Mongo,
+            DatabaseKind::Elasticsearch,
+        ] {
+            assert!(kinds.contains(&expected), "{expected:?} 应当被导入");
+        }
+
+        // TablePlus：`Driver` 是人读的名字（`SQL Server` 带空格），一份文件一条。
+        for (driver, expected) in [
+            ("ClickHouse", DatabaseKind::ClickHouse),
+            ("SQL Server", DatabaseKind::SqlServer),
+            ("MSSQL", DatabaseKind::SqlServer),
+            ("MongoDB", DatabaseKind::Mongo),
+            ("Elasticsearch", DatabaseKind::Elasticsearch),
+        ] {
+            let json = format!(r#"{{"Driver":"{driver}","Host":"db.local","Port":1}}"#);
+            let (source, connections) = import_third_party(&json).expect("TablePlus 应认得");
+            assert_eq!(source, ImportSource::TablePlus);
+            assert_eq!(
+                connections[0].kind, expected,
+                "{driver} 应映射成 {expected:?}"
+            );
+        }
     }
 
     /// JDBC 串的各种形状（含 sqlite 的本地路径与带查询串的 URL）。

@@ -9,12 +9,45 @@ use mysql::prelude::Queryable as _;
 use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
-    CatalogTable, OrderBy, RowCount, TableIndex, TableKind, TableRef, order_by_clause,
+    CatalogTable, DatabaseObject, InstanceFact, InstanceOverview, InstanceTable, InstanceView,
+    OrderBy, PlaceholderStyle, RowCount, TableFilter, TableForeignKey, TableIndex, TableKind,
+    TableRef, TableTrigger, human_duration_secs, order_by_clause, plain_filter_clause,
     quote_identifier, quote_qualified,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
 use crate::sqlintel::{StmtKind, prove_read_only, split_statements};
+
+/// 实例指标要展示的 `SHOW GLOBAL STATUS` 项——**顺序即展示顺序**。
+///
+/// 只挑「看一眼能判断服务器忙不忙、稳不稳」的那些：连接与线程、请求量、慢查询与
+/// 临时表、流量、InnoDB 缓冲池命中与锁等待。全量三千多项是给监控系统抓的，不是给人看的。
+const METRIC_WHITELIST: [&str; 16] = [
+    "Uptime",
+    "Threads_connected",
+    "Threads_running",
+    "Connections",
+    "Aborted_connects",
+    "Queries",
+    "Questions",
+    "Slow_queries",
+    "Created_tmp_tables",
+    "Created_tmp_disk_tables",
+    "Bytes_received",
+    "Bytes_sent",
+    "Innodb_buffer_pool_read_requests",
+    "Innodb_buffer_pool_reads",
+    "Innodb_row_lock_waits",
+    "Table_locks_waited",
+];
+
+/// 实例概览的一项（名字 = 引擎口径原文，值 = 原样字符串）。
+fn fact(name: &str, value: String) -> InstanceFact {
+    InstanceFact {
+        name: name.to_owned(),
+        value,
+    }
+}
 
 /// 一条 MySQL 连接。
 pub struct MysqlConnection {
@@ -123,6 +156,59 @@ fn map_value(raw: &mysql::Value, is_decimal: bool) -> Value {
     }
 }
 
+/// 把一条查询结果收成 [`ResultSet`]（文本协议与二进制协议共用一份映射）。
+///
+/// 截断判定在**取到下一行之后**：`max_rows` 行已满且还有行，才算「被截断」——
+/// 这正是「多取一条」的探测口径。
+fn map_query_result<T: mysql::prelude::Protocol>(
+    result: mysql::QueryResult<'_, '_, '_, T>,
+    max_rows: usize,
+) -> Result<ResultSet, DbError> {
+    let columns: Vec<Column> = result
+        .columns()
+        .as_ref()
+        .iter()
+        .map(|col| Column {
+            name: col.name_str().into_owned(),
+            type_name: column_type_name(col.column_type()).to_owned(),
+        })
+        .collect();
+    // 定点数绝不进 `f64`：这两类列的值按字符串承载（`Value::Decimal`）。
+    let decimal_flags: Vec<bool> = result
+        .columns()
+        .as_ref()
+        .iter()
+        .map(|col| {
+            matches!(
+                col.column_type(),
+                mysql::consts::ColumnType::MYSQL_TYPE_NEWDECIMAL
+                    | mysql::consts::ColumnType::MYSQL_TYPE_DECIMAL
+            )
+        })
+        .collect();
+
+    let mut rows_out = Vec::new();
+    let mut truncated = false;
+    for row in result {
+        let row = row.map_err(DbError::from)?;
+        if rows_out.len() >= max_rows {
+            truncated = true;
+            break;
+        }
+        let mut cells = Vec::with_capacity(columns.len());
+        for (index, is_decimal) in decimal_flags.iter().enumerate() {
+            let raw = row.as_ref(index).cloned().unwrap_or(mysql::Value::NULL);
+            cells.push(map_value(&raw, *is_decimal));
+        }
+        rows_out.push(cells);
+    }
+    Ok(ResultSet {
+        columns,
+        rows: rows_out,
+        truncated,
+    })
+}
+
 impl MysqlConnection {
     /// 建连。
     pub(crate) fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self, DbError> {
@@ -178,7 +264,7 @@ impl MysqlConnection {
         for stmt in statements {
             let read = prove_read_only(&stmt) || crate::sqlintel::classify(&stmt) == StmtKind::Read;
             if read {
-                outcome.result = Some(self.query_one(&stmt, max_rows)?);
+                outcome.result = Some(self.query_one(&stmt, mysql::Params::Empty, max_rows)?);
             } else {
                 let result = self.conn.query_iter(&stmt)?;
                 outcome.affected += result.affected_rows();
@@ -188,51 +274,38 @@ impl MysqlConnection {
         Ok(outcome)
     }
 
-    /// 跑一条读语句并取结果集（`max_rows + 1` 探测截断）。
-    fn query_one(&mut self, stmt: &str, max_rows: usize) -> Result<ResultSet, DbError> {
-        let result = self.conn.query_iter(stmt)?;
-        let columns: Vec<Column> = result
-            .columns()
-            .as_ref()
-            .iter()
-            .map(|col| Column {
-                name: col.name_str().into_owned(),
-                type_name: column_type_name(col.column_type()).to_owned(),
-            })
-            .collect();
-        let decimal_flags: Vec<bool> = result
-            .columns()
-            .as_ref()
-            .iter()
-            .map(|col| {
-                matches!(
-                    col.column_type(),
-                    mysql::consts::ColumnType::MYSQL_TYPE_NEWDECIMAL
-                        | mysql::consts::ColumnType::MYSQL_TYPE_DECIMAL
-                )
-            })
-            .collect();
+    /// 分页读取（结果区「加载更多」走这里）：把语句包一层 `LIMIT/OFFSET`，
+    /// 从第 `offset` 行起取 `limit` 行；多取一行探测「还有下一页」。
+    ///
+    /// 语义与边界见 [`crate::drivers::Connection::execute_paged`]。
+    pub fn execute_paged(
+        &mut self,
+        sql: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<ResultSet, DbError> {
+        let inner = super::paged_inner_sql(sql)?;
+        let wrapped = super::wrap_paged_sql(&inner, offset, limit, '`')?;
+        self.query_one(&wrapped, mysql::Params::Empty, limit)
+    }
 
-        let mut rows_out = Vec::new();
-        let mut truncated = false;
-        for row in result {
-            let row = row.map_err(DbError::from)?;
-            if rows_out.len() >= max_rows {
-                truncated = true;
-                break;
-            }
-            let mut cells = Vec::with_capacity(columns.len());
-            for (index, is_decimal) in decimal_flags.iter().enumerate() {
-                let raw = row.as_ref(index).cloned().unwrap_or(mysql::Value::NULL);
-                cells.push(map_value(&raw, *is_decimal));
-            }
-            rows_out.push(cells);
+    /// 跑一条读语句并取结果集（`max_rows + 1` 探测截断）。
+    ///
+    /// `params` 为空时**照旧走文本协议**（`query_iter`，与加过滤之前逐字节一致）；
+    /// 带过滤值时只能走参数化路径（`exec_iter`，二进制协议）——值一律以 `Bytes` 绑定。
+    fn query_one(
+        &mut self,
+        stmt: &str,
+        params: mysql::Params,
+        max_rows: usize,
+    ) -> Result<ResultSet, DbError> {
+        if matches!(params, mysql::Params::Empty) {
+            let result = self.conn.query_iter(stmt)?;
+            map_query_result(result, max_rows)
+        } else {
+            let result = self.conn.exec_iter(stmt, params)?;
+            map_query_result(result, max_rows)
         }
-        Ok(ResultSet {
-            columns,
-            rows: rows_out,
-            truncated,
-        })
     }
 
     /// 可选 schema 清单（MySQL 里 schema 与库同义）。
@@ -252,6 +325,42 @@ impl MysqlConnection {
             }
         }
         Ok(schemas)
+    }
+
+    /// **切换会话的当前库**（`COM_INIT_DB`）。
+    ///
+    /// 为什么必须真发这条：连接时库名可以留空（`build_opts` 不发 `COM_INIT_DB`，
+    /// 服务器侧 `DATABASE()` 回 `NULL`）。此后用户就算在左栏点了某个库，若只把
+    /// 名字记在客户端，编辑器里跑一句 `SELECT * FROM t` 仍会服务端报
+    /// `No database selected` —— 界面「切了」，查询没切。dbx / DBeaver 的
+    /// 库节点点击都真的改服务端会话，这里对齐。
+    pub fn use_database(&mut self, name: &str) -> Result<(), DbError> {
+        // 反引号是标识符引用符，名字里带反引号时必须双写，否则整条语句被拆成两半。
+        let escaped = name.replace('`', "``");
+        self.conn
+            .query_iter(format!("USE `{escaped}`"))?
+            .for_each(|_| {});
+        Ok(())
+    }
+
+    /// **全部**库（含四个系统库）。
+    ///
+    /// 与 [`Self::list_schemas`] 的分工：那个给的是「业务对象浏览」用的清单
+    ///（剔掉 `mysql` / `sys` / `information_schema` / `performance_schema`），
+    /// 这里是「连接上有哪些库」的全量读数 —— 用户连上还没选库时最先想问的
+    /// 就是这道题，dbx 的库树也是全量。
+    pub fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        let mut names = Vec::new();
+        let result = self.conn.query_iter(
+            "SELECT schema_name FROM information_schema.schemata ORDER BY schema_name",
+        )?;
+        for row in result {
+            let row = row.map_err(DbError::from)?;
+            if let Some(mysql::Value::Bytes(bytes)) = row.as_ref(0) {
+                names.push(String::from_utf8_lossy(bytes.as_slice()).into_owned());
+            }
+        }
+        Ok(names)
     }
 
     /// 把「当前库」解析成一个具体名字（`None` 时问一次服务端）。
@@ -298,22 +407,223 @@ impl MysqlConnection {
             });
         }
 
+        // 存储过程 / 函数：`routine_type` 分得清（`PROCEDURE` / `FUNCTION`），
+        // 左栏树要按两棵分类节点展示，不能混在一起。
         let routines = self.conn.exec_iter(
-            "SELECT routine_name FROM information_schema.routines \
+            "SELECT routine_name, routine_type FROM information_schema.routines \
              WHERE routine_schema = ? ORDER BY lower(routine_name)",
             (&schema,),
         )?;
         for row in routines {
             let row = row.map_err(DbError::from)?;
-            if let Some(mysql::Value::Bytes(bytes)) = row.as_ref(0) {
-                tables.push(CatalogTable {
-                    name: String::from_utf8_lossy(bytes.as_slice()).into_owned(),
-                    kind: TableKind::Routine,
-                    schema: Some(schema.clone()),
-                });
+            let name = Self::text_at(&row, 0);
+            if name.is_empty() {
+                continue;
             }
+            let kind = if Self::text_at(&row, 1) == "PROCEDURE" {
+                TableKind::Procedure
+            } else {
+                TableKind::Function
+            };
+            tables.push(CatalogTable {
+                name,
+                kind,
+                schema: Some(schema.clone()),
+            });
         }
         Ok(tables)
+    }
+
+    /// 触发器清单：`information_schema.TRIGGERS`，说明列 = 挂在哪张表上。
+    pub fn list_triggers(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        let schema = self.resolve_schema(schema)?;
+        let mut objects = Vec::new();
+        let result = self.conn.exec_iter(
+            "SELECT trigger_name, event_object_table FROM information_schema.triggers \
+             WHERE trigger_schema = ? ORDER BY lower(trigger_name)",
+            (&schema,),
+        )?;
+        for row in result {
+            let row = row.map_err(DbError::from)?;
+            let name = Self::text_at(&row, 0);
+            if name.is_empty() {
+                continue;
+            }
+            objects.push(DatabaseObject {
+                name,
+                detail: Some(Self::text_at(&row, 1)),
+            });
+        }
+        Ok(objects)
+    }
+
+    /// 事件清单：`information_schema.EVENTS`，说明列 = 调度状态（ENABLED / DISABLED…）。
+    pub fn list_events(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        let schema = self.resolve_schema(schema)?;
+        let mut objects = Vec::new();
+        let result = self.conn.exec_iter(
+            "SELECT event_name, status FROM information_schema.events \
+             WHERE event_schema = ? ORDER BY lower(event_name)",
+            (&schema,),
+        )?;
+        for row in result {
+            let row = row.map_err(DbError::from)?;
+            let name = Self::text_at(&row, 0);
+            if name.is_empty() {
+                continue;
+            }
+            objects.push(DatabaseObject {
+                name,
+                detail: Some(Self::text_at(&row, 1)),
+            });
+        }
+        Ok(objects)
+    }
+
+    /// 用户清单：`mysql.user`（`user` + `host` 共同决定一个账号）。
+    ///
+    /// 查系统表需要读权限；取不到（权限不足）就让上层拿空清单——树少一个
+    /// 分类节点，不该把整条连接判死。
+    pub fn list_users(&mut self) -> Result<Vec<DatabaseObject>, DbError> {
+        let mut objects = Vec::new();
+        let result = self.conn.exec_iter(
+            "SELECT user, host FROM mysql.user ORDER BY lower(user), host",
+            (),
+        )?;
+        for row in result {
+            let row = row.map_err(DbError::from)?;
+            let name = Self::text_at(&row, 0);
+            if name.is_empty() {
+                continue;
+            }
+            objects.push(DatabaseObject {
+                name,
+                detail: Some(Self::text_at(&row, 1)),
+            });
+        }
+        Ok(objects)
+    }
+
+    /// 实例概览：版本 / 当前库 / 登录身份 / 在线时长 / 服务器标识与字符集。
+    pub fn instance_overview(&mut self) -> Result<InstanceOverview, DbError> {
+        let version = self.server_version()?;
+        let head = self.query_text_row(
+            "SELECT COALESCE(DATABASE(), ''), CURRENT_USER(), @@hostname, @@port, \
+                    @@character_set_server, @@collation_server, @@max_connections",
+            7,
+        )?;
+        let get = |index: usize| head.get(index).cloned().unwrap_or_default();
+        let uptime = self
+            .status_value("Uptime")
+            .parse::<u64>()
+            .ok()
+            .map(human_duration_secs);
+        let databases = self
+            .query_text_row("SELECT COUNT(*) FROM information_schema.SCHEMATA", 1)?
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        Ok(InstanceOverview {
+            version,
+            database: get(0),
+            user: get(1),
+            uptime: uptime.clone(),
+            facts: vec![
+                fact("uptime", uptime.unwrap_or_default()),
+                fact("hostname", get(2)),
+                fact("port", get(3)),
+                fact("character_set_server", get(4)),
+                fact("collation_server", get(5)),
+                fact("max_connections", get(6)),
+                fact("databases", databases),
+            ],
+        })
+    }
+
+    /// 实例指标 / 检查器两张表。
+    ///
+    /// - **指标**：`SHOW GLOBAL STATUS` 里**白名单**的那些项（不是全量几千行——全量里
+    ///   九成是 InnoDB 的细粒度计数器，摊在界面上没法看）；
+    /// - **检查器**：`SHOW FULL PROCESSLIST`（含本连接自己那一条）。
+    pub fn instance_table(&mut self, view: InstanceView) -> Result<InstanceTable, DbError> {
+        match view {
+            InstanceView::Metrics => {
+                let mut values: Vec<(String, String)> = Vec::new();
+                for row in self.conn.query_iter("SHOW GLOBAL STATUS")? {
+                    let row = row.map_err(DbError::from)?;
+                    let name = Self::text_at(&row, 0);
+                    if METRIC_WHITELIST.contains(&name.as_str()) {
+                        values.push((name, Self::text_at(&row, 1)));
+                    }
+                }
+                // 按白名单顺序输出：`SHOW GLOBAL STATUS` 的返回序不保证稳定，
+                // 照抄会让同一台服务器每次打开的指标顺序都不一样。
+                let rows = METRIC_WHITELIST
+                    .iter()
+                    .filter_map(|name| {
+                        values
+                            .iter()
+                            .find(|(key, _)| key == name)
+                            .map(|(key, value)| vec![key.clone(), value.clone()])
+                    })
+                    .collect();
+                Ok(InstanceTable {
+                    columns: vec!["metric".into(), "value".into()],
+                    rows,
+                })
+            }
+            InstanceView::Processes => {
+                let mut rows = Vec::new();
+                for row in self.conn.query_iter("SHOW FULL PROCESSLIST")? {
+                    let row = row.map_err(DbError::from)?;
+                    rows.push(
+                        (0..8)
+                            .map(|index| Self::text_at(&row, index))
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Ok(InstanceTable {
+                    columns: [
+                        "id", "user", "host", "database", "command", "time", "state", "query",
+                    ]
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+                    rows,
+                })
+            }
+        }
+    }
+
+    /// 跑一条查询并把**第一行**的前 `columns` 列取成字符串（没有行则回空 `Vec`）。
+    ///
+    /// 用它而不是「先拿 `Row` 再逐列取」：`mysql::Row` 借自 `QueryResult` 那个临时值，
+    /// 出了语句就被释放（E0716）。当场取成 owned 字符串才留得住。
+    fn query_text_row(&mut self, sql: &str, columns: usize) -> Result<Vec<String>, DbError> {
+        // `next()` 而不是 `for`：这些内省语句都只回一行，循环体里必然 `return`，
+        // 写成循环会被 clippy 判成 `never_loop`（而且确实没有第二趟）。
+        let row = self
+            .conn
+            .query_iter(sql)?
+            .next()
+            .transpose()
+            .map_err(DbError::from)?;
+        let Some(row) = row else {
+            return Ok(Vec::new());
+        };
+        Ok((0..columns)
+            .map(|index| Self::text_at(&row, index))
+            .collect())
+    }
+
+    /// 一条 `SHOW GLOBAL STATUS LIKE '…'` 的值（取不到回落空串）。
+    ///
+    /// `name` 只传本文件里的常量，不接用户输入——`LIKE` 的引号是字符串拼接，不参数化。
+    fn status_value(&mut self, name: &str) -> String {
+        self.query_text_row(&format!("SHOW GLOBAL STATUS LIKE '{name}'"), 2)
+            .ok()
+            .and_then(|cells| cells.get(1).cloned())
+            .unwrap_or_default()
     }
 
     /// 一张表的列（参数化查询）。
@@ -355,14 +665,32 @@ impl MysqlConnection {
         limit: usize,
         offset: u64,
         order_by: &[OrderBy],
+        filters: &[TableFilter],
     ) -> Result<ResultSet, DbError> {
         let quoted = quote_qualified(table, '`')?;
         let order = order_by_clause(order_by, '`')?;
-        let sql = format!("SELECT * FROM {quoted}{order} LIMIT {limit} OFFSET {offset}");
-        self.query_one(&sql, limit)
+        let (where_clause, values) = plain_filter_clause(filters, '`', PlaceholderStyle::Question)?;
+        let sql =
+            format!("SELECT * FROM {quoted}{where_clause}{order} LIMIT {limit} OFFSET {offset}");
+        // 值一律以 `Bytes`（即文本）绑定：MySQL 按列的隐式转换规则自己转。
+        let params = if values.is_empty() {
+            mysql::Params::Empty
+        } else {
+            mysql::Params::Positional(
+                values
+                    .into_iter()
+                    .map(|value| mysql::Value::Bytes(value.into_bytes()))
+                    .collect(),
+            )
+        };
+        self.query_one(&sql, params, limit)
     }
 
     /// 主键列名（指定库的主键约束列，按声明序）。
+    ///
+    /// ⚠️ JOIN 必须带上 `TABLE_NAME`：MySQL 的主键约束名**一律叫 `PRIMARY`**，
+    /// 只按名字 + schema 关联会把同库**所有**有主键的表都连进来（混入别表的
+    /// 主键列 → 翻页 `ORDER BY` 一个不存在的列，服务端报 1054）。
     pub fn table_primary_key(&mut self, table: &TableRef) -> Result<Vec<String>, DbError> {
         let schema = table.schema.as_deref();
         let result = self
@@ -372,6 +700,7 @@ impl MysqlConnection {
                  JOIN information_schema.KEY_COLUMN_USAGE kcu \
                    ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
                   AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA \
+                  AND tc.TABLE_NAME = kcu.TABLE_NAME \
                  WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' \
                    AND tc.TABLE_SCHEMA = COALESCE(?, DATABASE()) AND tc.TABLE_NAME = ? \
                  ORDER BY kcu.ORDINAL_POSITION",
@@ -556,6 +885,87 @@ impl MysqlConnection {
             return Ok(RowCount::Estimate(estimate));
         }
         Err(DbError::Query(format!("table not found: {table}")))
+    }
+
+    /// `information_schema` 的文本列取值（NULL / 非文本统一落空串）。
+    fn text_at(row: &mysql::Row, index: usize) -> String {
+        match row.as_ref(index) {
+            Some(mysql::Value::Bytes(bytes)) => String::from_utf8_lossy(bytes).into_owned(),
+            _ => String::new(),
+        }
+    }
+
+    /// 一张表上的外键：`KEY_COLUMN_USAGE`（带被引用表 / 列）联
+    /// `REFERENTIAL_CONSTRAINTS`（更新 / 删除动作），按约束名分组。
+    pub fn table_foreign_keys(
+        &mut self,
+        table: &TableRef,
+    ) -> Result<Vec<TableForeignKey>, DbError> {
+        let schema = table.schema.as_deref();
+        let result = self.conn.exec_iter(
+            "SELECT kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME, kcu.REFERENCED_TABLE_NAME, \
+                    kcu.REFERENCED_COLUMN_NAME, rc.UPDATE_RULE, rc.DELETE_RULE \
+             FROM information_schema.KEY_COLUMN_USAGE kcu \
+             JOIN information_schema.REFERENTIAL_CONSTRAINTS rc \
+               ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA \
+              AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
+             WHERE kcu.TABLE_SCHEMA = COALESCE(?, DATABASE()) AND kcu.TABLE_NAME = ? \
+               AND kcu.REFERENCED_TABLE_NAME IS NOT NULL \
+             ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION",
+            (schema, table.name.as_str()),
+        )?;
+        let mut rows: Vec<mysql::Row> = Vec::new();
+        for row in result {
+            rows.push(row.map_err(DbError::from)?);
+        }
+        // 已按 `CONSTRAINT_NAME` 排序，同一约束的列必定连续。
+        let mut keys: Vec<TableForeignKey> = Vec::new();
+        for row in &rows {
+            let name = Self::text_at(row, 0);
+            let column = Self::text_at(row, 1);
+            let ref_table = Self::text_at(row, 2);
+            let ref_column = Self::text_at(row, 3);
+            let on_update = Self::text_at(row, 4);
+            let on_delete = Self::text_at(row, 5);
+            match keys.last_mut() {
+                Some(fk) if fk.name == name => {
+                    fk.columns.push(column);
+                    fk.ref_columns.push(ref_column);
+                }
+                _ => keys.push(TableForeignKey {
+                    name,
+                    columns: vec![column],
+                    ref_table,
+                    ref_columns: vec![ref_column],
+                    on_update,
+                    on_delete,
+                }),
+            }
+        }
+        Ok(keys)
+    }
+
+    /// 一张表上的触发器：`information_schema.TRIGGERS` 的
+    /// `ACTION_TIMING` / `EVENT_MANIPULATION` 是现成的两列（SQLite 才要解析）。
+    pub fn table_triggers(&mut self, table: &TableRef) -> Result<Vec<TableTrigger>, DbError> {
+        let schema = table.schema.as_deref();
+        let result = self.conn.exec_iter(
+            "SELECT TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION \
+             FROM information_schema.TRIGGERS \
+             WHERE EVENT_OBJECT_SCHEMA = COALESCE(?, DATABASE()) AND EVENT_OBJECT_TABLE = ? \
+             ORDER BY TRIGGER_NAME",
+            (schema, table.name.as_str()),
+        )?;
+        let mut triggers: Vec<TableTrigger> = Vec::new();
+        for row in result {
+            let row = row.map_err(DbError::from)?;
+            triggers.push(TableTrigger {
+                name: Self::text_at(&row, 0),
+                timing: Self::text_at(&row, 1),
+                event: Self::text_at(&row, 2),
+            });
+        }
+        Ok(triggers)
     }
 
     /// 一张表的建表 DDL（`SHOW CREATE TABLE` 原文；限定名逐段加反引号）。

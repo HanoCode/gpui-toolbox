@@ -55,7 +55,7 @@ use duck_redis::{
     RedisValue, ServerFeatures, SlowlogEntry, WRITE_UNLOCK_SECS, build_tree_with_depth,
     confirm_kind, is_destructive, parse_info_sections, should_auto_expand,
 };
-use duck_theme::{active_theme, tf, tr, trf};
+use duck_theme::{UnderMinute, active_theme, tf, tr, tr_relative_time, trf};
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, InteractiveElement as _,
     IntoElement, ParentElement, Render, Role, ScrollHandle, SharedString, Stateful,
@@ -77,8 +77,11 @@ const SIDEBAR_WIDTH_RANGE: RangeInclusive<f32> = 184.0..=340.0;
 const SIDEBAR_DEFAULT_WIDTH: f32 = 236.;
 /// 键列表行高：与 `typography.sm` 的 18px 行高同源。
 const KEY_ROW_HEIGHT: f32 = 24.;
-/// 一次 `SCAN` 的 `COUNT`（也是「继续加载」每次追加的目标量）。
-const SCAN_PAGE: usize = 500;
+/// 一次 `SCAN` 的 `COUNT` 的**出厂默认**（也是「继续加载」每次追加的目标量）。
+///
+/// 用户可在「设置 → Redis」里改这一档（`terminal` 同款：模块偏好单键 JSON）；
+/// 连接档案里的 `scan_count` 仍然逐连接优先。
+pub(super) const SCAN_PAGE: usize = 500;
 /// 集合类值一页取多少元素。
 const VALUE_PAGE: usize = 200;
 /// 本地最多保留的键数：防止在大键空间上无限堆积（超出后停止追加并提示收窄过滤）。
@@ -1021,11 +1024,15 @@ impl RedisPage {
             .map_or(AccessMode::ReadWrite, |gate| gate.mode())
     }
 
-    /// 本次会话的 `SCAN COUNT`：连接档案里的覆盖值优先，否则用界面默认档。
-    fn scan_page_size(&self) -> usize {
+    /// 本次会话的 `SCAN COUNT`：连接档案里的覆盖值优先，否则用设置页里的全局档
+    ///（未设置时回落到 [`SCAN_PAGE`]）。
+    fn scan_page_size(&self, cx: &App) -> usize {
         self.active_config()
             .and_then(|cfg| cfg.scan_count)
-            .map_or(SCAN_PAGE, |count| count as usize)
+            .map_or_else(
+                || super::module_settings::redis_settings(cx).scan_page as usize,
+                |count| count as usize,
+            )
     }
 
     // ------------------------------------------------------------------
@@ -2009,7 +2016,7 @@ impl RedisPage {
             Some(pattern)
         };
         let type_filter = self.type_filter;
-        let page_size = self.scan_page_size();
+        let page_size = self.scan_page_size(cx);
         self.keys.clear();
         self.selected = None;
         self.detail = None;
@@ -2079,7 +2086,7 @@ impl RedisPage {
             Some(pattern)
         };
         let type_filter = self.type_filter;
-        let page_size = self.scan_page_size();
+        let page_size = self.scan_page_size(cx);
 
         self.spawn_redis(
             cx,
@@ -3250,17 +3257,12 @@ fn now_secs() -> i64 {
 ///
 /// **刻意不做绝对时间**：本仓不引时区库，硬凑一个 UTC 字符串会让人误以为是本地时间。
 /// 而「这条慢日志是刚发生的还是陈年老账」才是真正要回答的问题，相对时间更直接。
+///
+/// 分档逻辑在 `duck-theme` 的格式化层（[`relative_time`]）。这里取**秒档**——
+/// 慢日志要能区分「刚发生」与「几秒前」，而通知中心那两处取的是「刚刚」档。
 fn relative_age(timestamp: i64, now: i64, cx: &App) -> String {
     let delta = now.saturating_sub(timestamp).max(0);
-    if delta < 60 {
-        trf(cx, "{} 秒前", &[&delta.to_string()])
-    } else if delta < 3_600 {
-        trf(cx, "{} 分钟前", &[&(delta / 60).to_string()])
-    } else if delta < 86_400 {
-        trf(cx, "{} 小时前", &[&(delta / 3_600).to_string()])
-    } else {
-        trf(cx, "{} 天前", &[&(delta / 86_400).to_string()])
-    }
+    tr_relative_time(cx, delta, UnderMinute::Seconds)
 }
 
 /// 字节数的人类可读形态（内存面板用）。

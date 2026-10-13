@@ -105,11 +105,7 @@ impl Palette {
                 // 6×6×6 色立方：每轴 0 / 95 / 135 / 175 / 215 / 255。
                 let n = index - 16;
                 let steps = [0u8, 95, 135, 175, 215, 255];
-                rgb([
-                    steps[n / 36],
-                    steps[(n % 36) / 6],
-                    steps[n % 6],
-                ])
+                rgb([steps[n / 36], steps[(n % 36) / 6], steps[n % 6]])
             }
             232..=255 => {
                 // 24 级灰阶：8 + 10·k。
@@ -171,8 +167,14 @@ mod tests {
     #[test]
     fn named_slots_map_to_theme_colors() {
         let palette = Palette::light();
-        assert_eq!(palette.resolve(INDEX_FOREGROUND), Some(rgb(palette.foreground)));
-        assert_eq!(palette.resolve(INDEX_BACKGROUND), Some(rgb(palette.background)));
+        assert_eq!(
+            palette.resolve(INDEX_FOREGROUND),
+            Some(rgb(palette.foreground))
+        );
+        assert_eq!(
+            palette.resolve(INDEX_BACKGROUND),
+            Some(rgb(palette.background))
+        );
         assert_eq!(palette.resolve(INDEX_CURSOR), Some(rgb(palette.cursor)));
     }
 

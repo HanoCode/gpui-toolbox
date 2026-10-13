@@ -496,6 +496,13 @@ pub trait Handler {
     /// OSC to set window title.
     fn set_title(&mut self, _: Option<String>) {}
 
+    /// Shell integration mark (`OSC 133`).
+    ///
+    /// `params` is everything after the `133` selector, split on `;` — e.g. `[b"A"]` for
+    /// `ESC ] 133 ; A ST` and `[b"D", b"0"]` for `ESC ] 133 ; D ; 0 ST`. The parser does not
+    /// interpret them: which marks exist, and what their payload means, is up to the handler.
+    fn shell_mark(&mut self, _params: &[&[u8]]) {}
+
     /// Set the cursor style.
     fn set_cursor_style(&mut self, _: Option<CursorStyle>) {}
 
@@ -1566,6 +1573,10 @@ where
 
             // Reset text cursor color.
             b"112" => self.handler.reset_color(NamedColor::Cursor as usize),
+
+            // Shell integration (`OSC 133`): the semantics belong to the consumer, so all
+            // this layer does is hand the sub-parameters over verbatim.
+            b"133" => self.handler.shell_mark(&params[1..]),
 
             _ => unhandled(params),
         }

@@ -1,4 +1,4 @@
-<!-- duck-licenses: components=958 texts=460 expressions=42 -->
+<!-- duck-licenses: components=959 texts=460 expressions=42 -->
 # 第三方开源许可
 
 本文件由 `sbin/licenses.py` 依据 `Cargo.lock` 与本机 cargo 缓存生成，**请勿手工编辑**。
@@ -6,7 +6,7 @@
 - 重新生成：`python3 sbin/licenses.py`
 - 校验是否最新：`python3 sbin/licenses.py --check`
 
-- 统计：**958** 个第三方组件，**42** 种许可声明，**460** 份许可全文（按内容去重）。
+- 统计：**959** 个第三方组件，**42** 种许可声明，**460** 份许可全文（按内容去重）。
 - 口径：`Cargo.lock` 中所有带 `source` 的依赖（crates.io 与 git 两路）；本仓库自身的 crate 不在列，其版权见仓库根 `LICENSE`（MIT）。
 
 ## 许可分布
@@ -15,7 +15,7 @@
 | --- | --- |
 | MIT OR Apache-2.0 | 428 |
 | MIT | 223 |
-| Apache-2.0 OR MIT | 76 |
+| Apache-2.0 OR MIT | 77 |
 | MIT/Apache-2.0 | 48 |
 | Apache-2.0 | 40 |
 | Zlib OR Apache-2.0 OR MIT | 19 |
@@ -448,6 +448,7 @@
 | macro_magic_core | 0.5.1 | MIT | crates.io | [131](#text-131) |
 | macro_magic_core_macros | 0.5.1 | MIT | crates.io | [131](#text-131) |
 | macro_magic_macros | 0.5.1 | MIT | crates.io | [131](#text-131) |
+| mail-builder | 0.4.4 | Apache-2.0 OR MIT | crates.io | — |
 | mail-parser | 0.11.9 | Apache-2.0 OR MIT | crates.io | — |
 | malloc_buf | 0.0.6 | MIT | crates.io | — |
 | manyhow | 0.11.4 | MIT OR Apache-2.0 | crates.io | [251](#text-251) [345](#text-345) |

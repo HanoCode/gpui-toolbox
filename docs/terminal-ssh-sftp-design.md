@@ -249,9 +249,14 @@ zed 的 `Terminal` 内核通过 `alacritty_terminal::tty::Pty` 读写（`crates/
 
 **因此 §6 的 M2 清单大幅缩水**：认证四件套、`~/.ssh/config` 解析、跳板机、主机密钥确认，**全部改为「继承系统 OpenSSH」**；主机密钥走系统 `~/.ssh/known_hosts`，fail-closed 且**不替用户决定**。自研部分只剩 `crates/duck-ssh` 一层薄封装（构造 argv + 跑进程 + 解析结果），**零依赖、不认识 gpui 与 duck-term**。
 
-**代价（如实记下）**：需要机器上有 `ssh` / `scp`（macOS / Linux 自带；Windows 10+ 需「可选功能 → OpenSSH 客户端」）。缺失时 `duck_ssh::probe()` 如实报告、界面禁用入口，**不静默失败**。另外**刻意不做自动重连**：认证失败 / 主机密钥不匹配重连一百次也不会好，自动重试只会把真实错误刷出屏幕 —— 改为画布上一条「连接已断开 + 重新连接」的横条，由用户决定。
+**代价（如实记下）**：需要机器上有 `ssh` / `scp`（macOS / Linux 自带；Windows 10+ 需「可选功能 → OpenSSH 客户端」）。缺失时 `duck_ssh::probe()` 如实报告、界面禁用入口，**不静默失败**。
 
-**仍未做的（M4 之后）**：端口转发（`-L`/`-R`/`-D`）、多跳 `ProxyJump` 链的可视化配置、会话录制。
+> ⚠️ **订正（2026-10-13）**：原文此处写「**刻意不做自动重连**」，与代码不符 —— 断线重连**已落地**（`docs/module-gap-analysis.md` §7 的 G-CONN-1）。形态＝**手动重连**（`RespawnPlan` 重放 argv + 网格尺寸）**＋带护栏的自动重连**：退避 2s 起、×2 封顶 60s、最多 5 次、**认证 / 主机密钥类不重试**、连接存活 ≥10s 才把尝试计数清零（`crates/duck-app/src/pages/terminal_canvas.rs` 的 `AutoReconnect` / `reconnect_after_disconnect`，纯数据、可单测）。
+>
+> 原设计里那条顾虑（「重试一百次也不会好，只会把真实错误刷出屏幕」）**没有被丢掉，而是内化成了护栏**：不可重试的错误类直接落 `Stopped`，手动「重新连接」横条照旧保留。
+
+**仍未做的（M4 之后）**：多跳 `ProxyJump` 链的**可视化配置**（运行时已由系统 `ssh` 继承 `~/.ssh/config`，缺的是链式编辑器）、会话录制。
+> ⚠️ **订正（2026-10-13）**：原列的**端口转发已做** —— 内核 `crates/duck-ssh/src/target.rs`（`ForwardKind::Local/Remote/Dynamic → -L/-R/-D`，独立 argv 不走 `-o`，单测 `port_forward_specs_follow_openssh_syntax`）＋界面 `crates/duck-app/src/pages/terminal_dialogs.rs` 的转发行与档案持久化。
 
 ---
 
@@ -743,3 +748,48 @@ controlpath "/tmp/a b/x.sock"                                            # 带�
 补了 `⌘C` / `⌘V` / `⌘A` / `⌘T` / `⌘W` 五个绑定，B 表见 §8.4。⚠️ `⌘C` / `⌘A` / `⌘W` 在 `gpui-base` 的 `"Root"` 上下文里**已有全局绑定**（`Copy` / `SelectAll` / `Close`），所以必须绑在**更深的 `"Terminal"`** 上才拿得回来 —— 与 `Tab`、非 macOS 的 `Ctrl-C` 同一类问题。
 
 右侧栏的「快捷键」列表同日改成只列**真的绑了**的键，与 `app::install` 的绑定表逐条对应（此前那版列了三个一条都没绑的键）。
+
+## 17. 2026-10-12 追记（五）：鼠标 / 焦点 / 超链接，以及 known_hosts 告警
+
+### 17.1 鼠标上报（`duck-term/src/mouse.rs`，366 行 / 9 单测）
+
+`MouseButton` / `MouseAction` / `MouseModifiers` / `reports_mouse` / `reports_motion` / `encode`。协议档：`MOUSE_MODE`（1000/1002/1003）、SGR 扩展（1006）、UTF-8（1005）、经典 `CSI M`。**Shift 作逃逸键**——按住 Shift 强制本地选择，不再上报给远端。
+
+### 17.2 焦点上报（`duck-term/src/focus.rs`）
+
+`reports_focus(mode)` / `encode(focused, mode) -> Option<Vec<u8>>`（`\x1b[I` / `\x1b[O`）。远端程序（vim / tmux）靠它切换「有焦点」的渲染变体。
+
+### 17.3 超链接只在按 ⌘ 时才认
+
+理由是**否则会毁掉拖选**：裸点击既可能是「点链接」也可能是「选文字」的开端，只有修饰键能区分。
+
+### 17.4 known_hosts：只加告警，不写库、不改 `StrictHostKeyChecking`
+
+**裁决**：交给系统 `~/.ssh/known_hosts` 与用户自己的 `StrictHostKeyChecking`，**不替用户决定**。所以本模块**不写** `~/.ssh/known_hosts`、**不改** `StrictHostKeyChecking`、**不新增依赖**（`duck-ssh` 仍零依赖）。
+
+**取「事后识别」而不是「提前探测」**：边界要的是「**因主机密钥被拒**」这个事件，只有 OpenSSH 打在屏幕上的字能给出它；提前 `ssh-keygen -F` 探测只能得到「库里已有记录」，对每次连一台正常已知主机都会响 = 噪声，而且会引入**一段不受 known_hosts 保护的探测连接**。上一轮的 `duck_ssh::host_key_status` 因此降为**佐证**用（判断此前是否信任过这台主机）。
+
+**判定表**：
+
+| 屏幕信号 | known_hosts 记录 | 结果 |
+| --- | --- | --- |
+| 无任何告警 | 任意 | **不出声** |
+| `REMOTE HOST IDENTIFICATION HAS CHANGED` 横幅 | 任意（含哈希化 = `Unknown`） | Changed 告警（横幅本身即证明此前有记录） |
+| 吊销文案 或 记录 `@revoked` | — | Revoked 告警（**反对直接删记录**，先找服务提供方确认新密钥） |
+| 仅 `Host key verification failed` | `Known` | Mismatch 告警（提示 `ssh-keygen -R <host>`） |
+| 仅 `Host key verification failed` | `Unknown` | **不出声**（首次连接 TOFU，交 OpenSSH 自己决定） |
+
+**落点**：
+- `crates/duck-term/src/session.rs:614` `Session::buffer_contains(&str)`——整块网格（含回滚区）正则子串匹配的**阻塞加锁**版本。刻意**不复用** `search_matches`（它走 `try_with_term`）：退出判定是一次性的，**一次抢不到锁就把安全告警丢掉不可接受**。
+- `crates/duck-app/src/pages/terminal.rs:867` `TerminalPage::ssh_endpoint(session_id)`（+ 私有 `endpoint_of(kind, owner)`）：会话键 → 所属连接 id 的归属口径**与 `ensure_sessions` 完全一致**（主窗格 = 标签 id；分屏看 `split_owner`），只读档案的 host/port，**不解密口令**。
+- `crates/duck-app/src/pages/terminal_canvas.rs:2019-2131`：`HOST_KEY_CHANGED_MARKER` / `HOST_KEY_VERIFY_FAILED_MARKER` / `HOST_KEY_REVOKED_MARKER`、`HostKeySignals`、`HostKeyNotice{Changed,Revoked,Mismatch}`、`scan_host_key_signals()`、纯函数 `host_key_notice(signals, status)`、`ssh_keygen_target(host,port)`、`host_key_notice_text()`。
+- `:399-466` `poll_sessions`：SSH 会话 `ChildExit` 时置标记，**在 `drain_events` 之外**扫描屏幕信号（避免与事件队列锁纠缠）。
+- `:506-530`：解析主机 → `duck_ssh::host_key_status()` → 判定 → 命中推 `notify::sticky`，固定 key `terminal-host-key-<host>:<port>`（同主机反复触发只占一条）；Changed = `Error`，Revoked / Mismatch = `Warning`。投递走 `crate::update::on_notify_window`（poller 任务里没有 `window`）。
+
+**未覆盖 / 存疑（如实记录，均为「表现为沉默、不误报」的保守退化）**：
+1. **SFTP 路径未接**：`duck_ssh::{exec, list_dir, scp}` 的失败（`SshError::Failed` 带 stderr）同样可能出现 `Host key verification failed`，那是另一条集成线。
+2. **GUI 端到端无实测**：需要「已在 known_hosts、且密钥已变」的真实服务器才能观察到告警，本环境无此条件。**判定 + 文案 + `ssh-keygen` 写法有单测**；屏幕扫描与通知投递两段无自动化覆盖。
+3. `known_hosts::status` **只读 `$HOME/.ssh/known_hosts`**：`UserKnownHostsFile` / 系统级 / `known_hosts2` 都不覆盖 → 会判成 `Unknown` → 沉默（不影响「密钥已变」路径，那条靠横幅，与记录来源无关）。
+4. **依赖 OpenSSH 英文原文**：OpenSSH 官方不做 gettext 本地化，一般认为稳定；被包装脚本替换时表现为沉默。
+5. **极窄终端**（< 40 列）横幅可能折行导致扫不到。
+6. `ControlMaster` 复用已握手成功的 master 时本次不再打印告警 → 沉默。

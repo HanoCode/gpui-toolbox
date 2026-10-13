@@ -29,8 +29,9 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt as _};
 use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
-    CatalogTable, OrderBy, PkValues, RowCount, TableIndex, TableKind, TableRef, order_by_clause,
-    quote_identifier, quote_qualified,
+    CatalogTable, DatabaseObject, FilterOp, OrderBy, PkValues, PlaceholderStyle, RowCount,
+    TableFilter, TableForeignKey, TableIndex, TableKind, TableRef, TableTrigger, filter_conditions,
+    order_by_clause, quote_identifier, quote_qualified,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -474,6 +475,24 @@ impl MssqlConnection {
         Ok(outcome)
     }
 
+    /// 分页读取：**不支持**（显式拒绝，不返回可能错的页）。
+    ///
+    /// SQL Server 的 `OFFSET/FETCH` **强制要求 `ORDER BY`**，而派生表又不能带 `ORDER BY`，
+    /// 外层只能 `ORDER BY (SELECT NULL)`——顺序不定会让翻页重复 / 漏行。与其返回一份
+    /// 看似正常、实则可能重复 / 漏行的页，不如按「不支持」处理。与 MongoDB /
+    /// Elasticsearch 同口径；能力判据单一来源见
+    /// [`crate::config::DatabaseKind::supports_paged_read`]（界面据同一判据不出「加载更多」）。
+    ///
+    /// 需要确定序的分页浏览请走 [`Self::table_page`]（它把稳定序摆在最外层）。
+    pub fn execute_paged(
+        &mut self,
+        _sql: &str,
+        _offset: u64,
+        _limit: usize,
+    ) -> Result<ResultSet, DbError> {
+        Err(super::paged_unsupported("SQL Server"))
+    }
+
     /// 只读档拦截：写语句在**进引擎之前**就拒（这条引擎没有服务端兜底）。
     fn ensure_writable(&self) -> Result<(), DbError> {
         read_only_guard(self.read_only)
@@ -528,11 +547,14 @@ impl MssqlConnection {
             };
             objects.push(CatalogTable {
                 name: name.clone(),
+                // `P` / `PC` 是存储过程（普通 / CLR），`FN` / `IF` / `TF` 是函数
+                //（标量 / 内联表值 / 多语句表值）。
                 kind: match kind.as_str() {
                     "U" => TableKind::Table,
                     "V" => TableKind::View,
                     "SO" => TableKind::Sequence,
-                    _ => TableKind::Routine,
+                    "P" | "PC" => TableKind::Procedure,
+                    _ => TableKind::Function,
                 },
                 schema: Some(schema.clone()),
             });
@@ -541,6 +563,34 @@ impl MssqlConnection {
     }
 
     /// 可选的 schema 清单（剔掉固定的内置角色 schema）。
+    /// **切换会话的当前库**（T-SQL `USE <db>`）。
+    ///
+    /// 同 MySQL 的道理：库名可留空建连（落到登录名的默认库，通常是 `master`），
+    /// 之后左栏点了别的库必须真的切会话，否则后续语句仍打在 `master` 上。
+    /// 服务器自己会校验权限与库是否存在，错了就报错 —— 不要在客户端「猜」。
+    pub fn use_database(&mut self, name: &str) -> Result<(), DbError> {
+        // `]` 是标识符转义符，名字里带 `]` 时必须双写。
+        let escaped = name.replace(']', "]]");
+        self.execute_write(&format!("USE [{escaped}]"), &[])?;
+        Ok(())
+    }
+
+    /// **全部**库（当前登录有权限访问的那些）。
+    pub fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        let (_, rows, _) = self.select(
+            "SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1 ORDER BY name",
+            &[],
+            usize::MAX,
+        )?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| match row.first() {
+                Some(Value::Text(name)) => Some(name.clone()),
+                _ => None,
+            })
+            .collect())
+    }
+
     pub fn list_schemas(&mut self) -> Result<Vec<String>, DbError> {
         let (_, rows, _) = self.select(
             "SELECT name FROM sys.schemas \
@@ -617,6 +667,7 @@ impl MssqlConnection {
         limit: usize,
         offset: u64,
         order_by: &[OrderBy],
+        filters: &[TableFilter],
     ) -> Result<ResultSet, DbError> {
         let quoted = quote_qualified(table, QUOTE)?;
         let order = order_by_clause(order_by, QUOTE)?;
@@ -625,10 +676,38 @@ impl MssqlConnection {
         } else {
             order
         };
+        // 值一律走 `@Pn` 绑定；`LIKE` 的左操作数显式 `CONVERT` 成字符串
+        // （`integer LIKE @P1` 在 SQL Server 上是类型错误），其余算子按参数的自然类型
+        // 由 TDS 隐式转换（`int = @P1` 会把 NVARCHAR 参数转成 int）。
+        let (conditions, values) = filter_conditions(
+            filters,
+            |name, op| {
+                let quoted_column = quote_identifier(name, QUOTE)?;
+                Ok(if op == FilterOp::Like {
+                    format!("CONVERT(NVARCHAR(4000), {quoted_column})")
+                } else {
+                    quoted_column
+                })
+            },
+            |index, _| PlaceholderStyle::At.render(index),
+        )?;
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
         let sql = format!(
-            "SELECT * FROM {quoted}{order} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
+            "SELECT * FROM {quoted}{where_clause}{order} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
         );
-        let (columns, rows, truncated) = self.select(&sql, &[], limit)?;
+        let params: Vec<Box<dyn tiberius::ToSql + Send>> = values
+            .into_iter()
+            .map(|value| Box::new(value) as Box<dyn tiberius::ToSql + Send>)
+            .collect();
+        let refs: Vec<&dyn tiberius::ToSql> = params
+            .iter()
+            .map(|param| param.as_ref() as &dyn tiberius::ToSql)
+            .collect();
+        let (columns, rows, truncated) = self.select(&sql, &refs, limit)?;
         Ok(ResultSet {
             columns,
             rows,
@@ -721,6 +800,154 @@ impl MssqlConnection {
             // 视图没有分区统计 → 用 `0`（调用方按「未知」展示）。
             _ => Ok(RowCount::Estimate(0)),
         }
+    }
+
+    /// 一张表上的外键：`sys.foreign_keys` + `sys.foreign_key_columns`，按约束名
+    /// 分组（已按 `constraint_column_id` 排序，列序即声明序）。
+    ///
+    /// 动作描述列（`update_referential_action_desc`）的取值形如 `NO_ACTION` /
+    /// `SET_NULL`，[`mssql_action`] 把下划线翻回空格。
+    pub fn table_foreign_keys(
+        &mut self,
+        table: &TableRef,
+    ) -> Result<Vec<TableForeignKey>, DbError> {
+        let schema = self.resolve_schema(table.schema.as_deref());
+        let (_, rows, _) = self.select(
+            "SELECT fk.name, pc.name, rt.name, rc.name, \
+                    fk.update_referential_action_desc, fk.delete_referential_action_desc \
+             FROM sys.foreign_keys fk \
+             JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id \
+             JOIN sys.tables pt ON pt.object_id = fk.parent_object_id \
+             JOIN sys.schemas s ON s.schema_id = pt.schema_id \
+             JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id \
+               AND pc.column_id = fkc.parent_column_id \
+             JOIN sys.tables rt ON rt.object_id = fkc.referenced_object_id \
+             JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id \
+               AND rc.column_id = fkc.referenced_column_id \
+             WHERE s.name = @P1 AND pt.name = @P2 \
+             ORDER BY fk.name, fkc.constraint_column_id",
+            &[&schema.as_str(), &table.name.as_str()],
+            usize::MAX,
+        )?;
+        let mut keys: Vec<TableForeignKey> = Vec::new();
+        for row in &rows {
+            let Some(Value::Text(name)) = row.first() else {
+                continue;
+            };
+            let text = |index: usize| match row.get(index) {
+                Some(Value::Text(value)) => value.clone(),
+                _ => String::new(),
+            };
+            let (column, ref_table, ref_column) = (text(1), text(2), text(3));
+            let on_update = mssql_action(&text(4));
+            let on_delete = mssql_action(&text(5));
+            match keys.last_mut() {
+                Some(fk) if fk.name == *name => {
+                    fk.columns.push(column);
+                    fk.ref_columns.push(ref_column);
+                }
+                _ => keys.push(TableForeignKey {
+                    name: name.clone(),
+                    columns: vec![column],
+                    ref_table,
+                    ref_columns: vec![ref_column],
+                    on_update,
+                    on_delete,
+                }),
+            }
+        }
+        Ok(keys)
+    }
+
+    /// 一张表上的触发器：`sys.triggers`（`is_instead_of_trigger` 定时机——
+    /// T-SQL 没有 `BEFORE`，非 INSTEAD 的都是 AFTER）联 `sys.trigger_events`
+    /// 取事件（一个触发器多事件是多行）。
+    pub fn table_triggers(&mut self, table: &TableRef) -> Result<Vec<TableTrigger>, DbError> {
+        let schema = self.resolve_schema(table.schema.as_deref());
+        let (_, rows, _) = self.select(
+            "SELECT tr.name, tr.is_instead_of_trigger, te.type_desc \
+             FROM sys.triggers tr \
+             JOIN sys.tables pt ON pt.object_id = tr.parent_id \
+             JOIN sys.schemas s ON s.schema_id = pt.schema_id \
+             JOIN sys.trigger_events te ON te.object_id = tr.object_id \
+             WHERE s.name = @P1 AND pt.name = @P2 \
+             ORDER BY tr.name, te.type_desc",
+            &[&schema.as_str(), &table.name.as_str()],
+            usize::MAX,
+        )?;
+        let mut triggers: Vec<TableTrigger> = Vec::new();
+        for row in &rows {
+            let Some(Value::Text(name)) = row.first() else {
+                continue;
+            };
+            let instead = matches!(row.get(1), Some(Value::Bool(true)));
+            let event = match row.get(2) {
+                Some(Value::Text(event)) => event.clone(),
+                _ => String::new(),
+            };
+            let timing = if instead { "INSTEAD OF" } else { "AFTER" };
+            match triggers.last_mut() {
+                Some(trigger) if trigger.name == *name => {
+                    trigger.event = format!("{}, {}", trigger.event, event);
+                }
+                _ => triggers.push(TableTrigger {
+                    name: name.clone(),
+                    timing: timing.to_owned(),
+                    event,
+                }),
+            }
+        }
+        Ok(triggers)
+    }
+
+    /// 一个 schema 里的触发器清单：`sys.triggers`，说明列 = 挂在哪张表上。
+    pub fn list_triggers(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        let schema = self.resolve_schema(schema);
+        let (_, rows, _) = self.select(
+            "SELECT tr.name, pt.name FROM sys.triggers tr \
+             JOIN sys.tables pt ON pt.object_id = tr.parent_id \
+             JOIN sys.schemas s ON s.schema_id = pt.schema_id \
+             WHERE s.name = @P1 \
+             ORDER BY tr.name",
+            &[&schema.as_str()],
+            usize::MAX,
+        )?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                let (Some(Value::Text(name)), Some(Value::Text(table))) = (row.first(), row.get(1))
+                else {
+                    return None;
+                };
+                Some(DatabaseObject {
+                    name: name.clone(),
+                    detail: Some(table.clone()),
+                })
+            })
+            .collect())
+    }
+
+    /// 登录与服务器角色：`sys.server_principals`，说明列 = 类型（SQL 登录 / Windows 登录 / 服务器角色）。
+    pub fn list_users(&mut self) -> Result<Vec<DatabaseObject>, DbError> {
+        let (_, rows, _) = self.select(
+            "SELECT name, type_desc FROM sys.server_principals \
+             WHERE name NOT LIKE '##%' ORDER BY name",
+            &[],
+            usize::MAX,
+        )?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                let (Some(Value::Text(name)), Some(Value::Text(kind))) = (row.first(), row.get(1))
+                else {
+                    return None;
+                };
+                Some(DatabaseObject {
+                    name: name.clone(),
+                    detail: Some(kind.clone()),
+                })
+            })
+            .collect())
     }
 
     /// 一张表的建表 DDL。
@@ -1058,6 +1285,15 @@ fn insert_sql(
     Ok((sql, params))
 }
 
+/// `sys.foreign_keys` 动作描述列（`NO_ACTION` / `SET_NULL` / `SET_DEFAULT` /
+/// `CASCADE` / `RESTRICT`）→ 空格分隔的标准文案；空值落空串。
+fn mssql_action(desc: &str) -> String {
+    match desc {
+        "" => String::new(),
+        _ => desc.replace('_', " "),
+    }
+}
+
 /// 取消一条正在跑的语句所需的全部内容（`KILL` 必须另开一条连接发）。
 #[derive(Clone)]
 pub(crate) struct KillTarget {
@@ -1102,6 +1338,15 @@ impl MssqlConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 外键动作描述：下划线翻空格、空值落空串。
+    #[test]
+    fn fk_action_desc_normalizes_underscores() {
+        assert_eq!(mssql_action("NO_ACTION"), "NO ACTION");
+        assert_eq!(mssql_action("SET_NULL"), "SET NULL");
+        assert_eq!(mssql_action("CASCADE"), "CASCADE");
+        assert_eq!(mssql_action(""), "");
+    }
 
     /// 类型名拼装：Unicode 长度要除以 2、`(max)` 由负长度表达、decimal 带精度。
     #[test]
@@ -1205,12 +1450,15 @@ mod tests {
             "U" => TableKind::Table,
             "V" => TableKind::View,
             "SO" => TableKind::Sequence,
-            _ => TableKind::Routine,
+            "P" | "PC" => TableKind::Procedure,
+            _ => TableKind::Function,
         };
         assert_eq!(kind_of("U"), TableKind::Table);
         assert_eq!(kind_of("V"), TableKind::View);
-        assert_eq!(kind_of("P"), TableKind::Routine);
-        assert_eq!(kind_of("TF"), TableKind::Routine);
+        assert_eq!(kind_of("P"), TableKind::Procedure);
+        assert_eq!(kind_of("PC"), TableKind::Procedure);
+        assert_eq!(kind_of("FN"), TableKind::Function);
+        assert_eq!(kind_of("TF"), TableKind::Function);
         assert_eq!(kind_of("SO"), TableKind::Sequence);
     }
 

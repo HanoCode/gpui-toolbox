@@ -37,9 +37,18 @@ source files are retained from the published package.
 - `src/term/mod.rs` reports accumulated full-viewport upward scrolling separately
   from incompatible full damage. This adds no work to printable-cell writes and
   lets OxideTerm reuse retained snapshot rows after ordinary output scrolling.
+- `src/term/mod.rs` implements `Handler::shell_mark` (`OSC 133`), anchoring the
+  mark at parse time and forwarding it as `Event::ShellMark`. Parsing only: which
+  marks exist and how they are drawn is the consumer's business.
+- `src/event.rs` adds `ShellMark` and the `Event::ShellMark { anchor, mark }`
+  variant.
+- `src/grid/mod.rs` adds `anchor_base`/`anchor`: the grid's line numbers are
+  relative and shift on every scroll, so `line + anchor_base()` is the
+  scroll-invariant index such a mark has to be stored under.
 - Differential tests compare the batch and scalar paths across wrapping,
   scrolling, history, styles, Unicode, DEC charset, insert mode, and wide-cell
   overlap.
 
 Do not expand this fork into a replacement grid or scrollback implementation.
-Its only local responsibility is the proven common-case ASCII write path.
+Its only local responsibility is the proven common-case ASCII write path, plus
+forwarding shell integration marks (again forwarding, not semantics).

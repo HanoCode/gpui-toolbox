@@ -7,6 +7,10 @@
 //! repo 只管「一条 SQL 怎么写」。
 
 pub mod accounts;
+pub mod drafts;
 pub mod folders;
+pub mod labels;
 pub mod messages;
+pub mod queue;
 pub mod search;
+pub mod threads;

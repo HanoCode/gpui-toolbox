@@ -51,6 +51,13 @@ pub enum Event {
     /// New terminal content available.
     Wakeup,
 
+    /// Shell integration mark (`OSC 133`).
+    ///
+    /// `anchor` is the mark's position in the scroll-invariant coordinate space produced by
+    /// [`Grid::anchor`](crate::grid::Grid::anchor) — plain grid lines are *relative* and shift
+    /// with every scroll, so a mark stored as a line number would drift onto other output.
+    ShellMark { anchor: i64, mark: ShellMark },
+
     /// Terminal bell ring.
     Bell,
 
@@ -59,6 +66,23 @@ pub enum Event {
 
     /// Child process exited.
     ChildExit(ExitStatus),
+}
+
+/// A shell integration mark, as emitted with `OSC 133`.
+///
+/// `OSC 133` is an informal agreement between the shell and the terminal: the shell brackets
+/// each command with these marks so the terminal knows where prompts, input and output begin
+/// and end. Only the four selectors below are defined by the agreement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellMark {
+    /// `A` — the prompt starts.
+    PromptStart,
+    /// `B` — the prompt ends and the user's input begins.
+    PromptEnd,
+    /// `C` — the command was submitted; output starts.
+    OutputStart,
+    /// `D;<exit>` — the command finished, with its exit status when the shell reported one.
+    CommandFinished(Option<i32>),
 }
 
 impl Debug for Event {
@@ -75,6 +99,7 @@ impl Debug for Event {
             Event::MouseCursorDirty => write!(f, "MouseCursorDirty"),
             Event::ResetTitle => write!(f, "ResetTitle"),
             Event::Wakeup => write!(f, "Wakeup"),
+            Event::ShellMark { anchor, mark } => write!(f, "ShellMark({anchor}, {mark:?})"),
             Event::Bell => write!(f, "Bell"),
             Event::Exit => write!(f, "Exit"),
             Event::ChildExit(status) => write!(f, "ChildExit({status:?})"),

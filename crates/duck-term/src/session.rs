@@ -4,19 +4,23 @@
 //! 网格、滚动位置、选择、光标都在 [`Term`] 里，事件循环线程独占写入，UI 线程按需加锁读。
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 
-use alacritty_terminal::event::{Event, EventListener, Notify, WindowSize};
+use alacritty_terminal::event::{
+    Event, EventListener, Notify, ShellMark as TermShellMark, WindowSize,
+};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Point, Side};
+use alacritty_terminal::index::{Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Config as TermConfig, Term, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Handler, Rgb};
@@ -25,6 +29,13 @@ use crate::palette::{COLOR_COUNT, Palette};
 
 /// 一次轮询最多取走的事件数：防止某个刷屏进程把 UI 线程卡在事件处理里。
 const MAX_EVENTS_PER_DRAIN: usize = 512;
+
+/// 最多保留多少条 shell 集成标记。
+///
+/// 标记只服务于「屏幕上看得见的那一段」：超过回滚缓冲的行本来就滚到看不见的地方了，
+/// 留着一份会随会话时长线性增长的表毫无意义。给一个比常见回滚缓冲（几千行）宽松的
+/// 上限，超出就丢最旧的。
+const SHELL_MARK_LIMIT: usize = 4096;
 
 /// 单元格尺寸（逻辑像素）。由渲染层按字体度量算出后交给内核 —— 内核不认识字体，
 /// 只知道「一格多大」，PTY 的 `TIOCSWINSZ` 需要像素值来做 `SIGWINCH` 语义。
@@ -85,6 +96,77 @@ pub enum ClipboardKind {
     Selection,
 }
 
+/// 选区的**粒度**：鼠标按下时由宿主按手势决定（拖拽 / Alt 拖拽 / 双击 / 三击）。
+///
+/// 宿主只负责「这一次点按是哪种手势」，边界怎么算全部交给内核 ——
+/// 宽字符尾格、软换行、回滚区行号这些规则在 `Term` 里已实现并测过。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionKind {
+    /// 逐格（只收被完整覆盖的格子）。
+    Simple,
+    /// 矩形块选（终端表格 / 列对齐数据）。
+    Block,
+    /// 按词 / 语义边界（先试括号配对，再向两侧扩到词首词尾）。
+    Word,
+    /// 整行。
+    Line,
+}
+
+impl SelectionKind {
+    /// 映射到内核的选择类型。
+    pub(crate) const fn to_selection_type(self) -> SelectionType {
+        match self {
+            Self::Simple => SelectionType::Simple,
+            Self::Block => SelectionType::Block,
+            Self::Word => SelectionType::Semantic,
+            Self::Line => SelectionType::Lines,
+        }
+    }
+}
+
+/// 屏幕上一条**点得动**的链接，连同它占的格子。
+///
+/// 「占哪几格」由内核算：一条链接可能被软换行切成两行，宿主渲染时只按行比对列区间，
+/// 不必自己重做回绕判断。同一行上出现两次同一个 URL 时，两处的高亮范围**互不影响** ——
+/// 这是逐格算出来的，不是「全屏找同 URI」。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TermLink {
+    /// 点开时交给系统的目标。
+    pub target: crate::links::LinkTarget,
+    /// 高亮范围：每个网格行一段**闭**列区间（左闭右闭）。跨行回绕时会有多段。
+    pub ranges: Vec<(i32, std::ops::RangeInclusive<usize>)>,
+}
+
+/// Shell 集成标记（`OSC 133`）。
+///
+/// `OSC 133` 是 shell 与终端之间的一条**约定**：shell 把每条命令用这几个标记夹起来，
+/// 终端因此知道提示符、用户输入与命令输出各自从哪里开始。它靠 shell 侧的一段脚本
+/// （bash 的 `PROMPT_COMMAND` / zsh 的 `precmd`+`preexec`，或现成的
+/// `shell-integration` 脚本）发出 —— 没装脚本的会话就一条标记都没有，
+/// 这与「终端不认识这些标记」是两回事，所以功能缺席时不该报错。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellMark {
+    /// `A` —— 提示符开始。
+    PromptStart,
+    /// `B` —— 提示符结束，用户输入开始。
+    PromptEnd,
+    /// `C` —— 命令已提交，输出开始。
+    OutputStart,
+    /// `D;<exit>` —— 命令结束。`None` = shell 没报退出码（不是「成功」）。
+    CommandFinished(Option<i32>),
+}
+
+/// 一条标记在**滚动不变**坐标系里的位置。
+///
+/// 网格行号是相对的：每滚一行，所有行号一起减一。标记必须跟着**内容**走，
+/// 所以这里存的是锚点（见 `alacritty_terminal::grid::Grid::anchor`），
+/// 取用时才按当前的滚动量换算回行号。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StoredShellMark {
+    anchor: i64,
+    mark: ShellMark,
+}
+
 /// 需要交给 UI 线程处理的事件。
 ///
 /// **刻意保持很小**：能由事件循环线程自己答的（设备属性应答、视口尺寸查询、调色板查询、
@@ -133,6 +215,9 @@ pub struct EventProxy {
     /// 待回填的 `OSC 52` 读请求：id → 把剪贴板文本编成转义序列的函数。
     pending_clipboard: Arc<Mutex<HashMap<u64, ClipboardFormatter>>>,
     next_request: Arc<AtomicU64>,
+    /// shell 集成标记（`OSC 133`）。与 [`Session`] 共享同一份表：标记在**解析那一刻**
+    /// 才落位，那发生在事件循环线程上，而读它的是渲染线程。
+    shell_marks: Arc<Mutex<VecDeque<StoredShellMark>>>,
 }
 
 type ClipboardFormatter = Arc<dyn Fn(&str) -> String + Sync + Send + 'static>;
@@ -231,6 +316,24 @@ impl EventListener for EventProxy {
                     kind: map_clipboard(kind),
                 }
             }
+
+            // shell 集成标记**不进** `SessionEvent`：它没有「只有 UI 线程才知道答案」的
+            // 成分，直接落进共享表即可（表本身就是为这条跨线程通道建的）。
+            Event::ShellMark { anchor, mark } => {
+                if let Ok(mut marks) = self.shell_marks.lock() {
+                    marks.push_back(StoredShellMark {
+                        anchor,
+                        mark: map_shell_mark(mark),
+                    });
+                    while marks.len() > SHELL_MARK_LIMIT {
+                        marks.pop_front();
+                    }
+                }
+                // 标记常常没有任何可见输出（`D` 就是纯控制序列），所以自己叫醒渲染，
+                // 否则「命令跑完 → 标记出现」这一步在界面上要等下一次输出才看得见。
+                let _ = self.events.send(SessionEvent::Wakeup);
+                return;
+            }
         };
 
         // UI 侧已经没了就静默丢弃：会话正在关闭。
@@ -243,6 +346,46 @@ fn map_clipboard(kind: alacritty_terminal::term::ClipboardType) -> ClipboardKind
         alacritty_terminal::term::ClipboardType::Selection => ClipboardKind::Selection,
         alacritty_terminal::term::ClipboardType::Clipboard => ClipboardKind::Clipboard,
     }
+}
+
+/// vendored 的标记类型 → 本 crate 的。存在的理由与 [`SessionEvent`] 相同：
+/// 上层不该被迫依赖 vendored crate 的名字。
+fn map_shell_mark(mark: TermShellMark) -> ShellMark {
+    match mark {
+        TermShellMark::PromptStart => ShellMark::PromptStart,
+        TermShellMark::PromptEnd => ShellMark::PromptEnd,
+        TermShellMark::OutputStart => ShellMark::OutputStart,
+        TermShellMark::CommandFinished(exit) => ShellMark::CommandFinished(exit),
+    }
+}
+
+/// 把标记序列折算成「哪些行要画命令标记、以及上一条命令的结果」。
+///
+/// 规则：**每条提示符开始（`A`）所在的行**出一道标记。颜色取**它之前最近一次**
+/// `D` 报出的退出码 —— `Some(0)` 成功、`Some(非零)` 失败、`None` 没结论
+///（shell 没报退出码，或这是会话里第一次提示符）。
+///
+/// 「用掉即清」是刻意的：留着上一次的结论会让**没有 `D` 的提示符**继承别人的结果，
+/// 那是一种会骗人的显示。
+///
+/// `marks` 允许乱序（锚点换算过来后仍可能因截断而缺项），函数内部按行号排一遍。
+#[must_use]
+pub fn prompt_bars(marks: &[(i32, ShellMark)]) -> Vec<(i32, Option<i32>)> {
+    let mut sorted: Vec<(i32, ShellMark)> = marks.to_vec();
+    sorted.sort_by_key(|(line, _)| *line);
+
+    let mut bars: Vec<(i32, Option<i32>)> = Vec::new();
+    let mut finished: Option<Option<i32>> = None;
+    for (line, mark) in sorted {
+        match mark {
+            ShellMark::CommandFinished(exit) => finished = Some(exit),
+            ShellMark::PromptStart => {
+                bars.push((line, finished.take().flatten()));
+            }
+            ShellMark::PromptEnd | ShellMark::OutputStart => {}
+        }
+    }
+    bars
 }
 
 /// 网格尺寸。`Term` 只需要这三个数。
@@ -284,6 +427,8 @@ pub struct Session {
     pending_clipboard: Arc<Mutex<HashMap<u64, ClipboardFormatter>>>,
     /// 回滚缓冲行数。构造后不变，`resize` 重建 `Dims` 时要带上它。
     scrollback: usize,
+    /// shell 集成标记（`OSC 133`），与 [`EventProxy`] 共享同一份表。
+    shell_marks: Arc<Mutex<VecDeque<StoredShellMark>>>,
 }
 
 impl Session {
@@ -309,6 +454,8 @@ impl Session {
         let palette = Arc::new(Mutex::new(Palette::default()));
         let dark = Arc::new(AtomicBool::new(true));
         let pending_clipboard = Arc::new(Mutex::new(HashMap::new()));
+        let shell_marks: Arc<Mutex<VecDeque<StoredShellMark>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
 
         let proxy = EventProxy {
             events: events_tx,
@@ -318,6 +465,7 @@ impl Session {
             dark: Arc::clone(&dark),
             pending_clipboard: Arc::clone(&pending_clipboard),
             next_request: Arc::new(AtomicU64::new(1)),
+            shell_marks: Arc::clone(&shell_marks),
         };
 
         let config = TermConfig {
@@ -351,6 +499,7 @@ impl Session {
             dark,
             pending_clipboard,
             scrollback,
+            shell_marks,
         })
     }
 
@@ -436,6 +585,18 @@ impl Session {
         ((packed >> 48) as u16, (packed >> 32) as u16)
     }
 
+    /// 当前终端模式位（鼠标上报、括号粘贴、备用屏……）。
+    ///
+    /// 宿主据此决定「这次鼠标事件该转给应用，还是自己做选择」—— 上报模式是
+    /// **应用运行时**开的（vim / htop / tmux 一进去就开），只能现问不能缓存。
+    /// 拿不到锁时按「空模式」处理（等同于「没要求上报」），让事件退回本地选择：
+    /// 鼠标事件是低频的用户输入，一次拿不到锁不值得把 UI 挂住等，更不能把事件丢了。
+    #[must_use]
+    pub fn term_mode(&self) -> TermMode {
+        self.try_with_term(|term| *term.mode())
+            .unwrap_or_else(TermMode::empty)
+    }
+
     /// 加锁读（并允许改）网格 —— 渲染层的主要入口。
     pub fn with_term<R>(&self, f: impl FnOnce(&mut Term<EventProxy>) -> R) -> R {
         f(&mut self.term.lock())
@@ -510,8 +671,27 @@ impl Session {
 
     /// 开始一次简单选区（鼠标按下）。`point` 是**网格坐标**（可带负行号＝回滚区）。
     pub fn select_start(&self, point: Point, side: Side) {
+        self.select_start_kind(point, side, SelectionKind::Simple);
+    }
+
+    /// 按**粒度**开始一次选区（鼠标按下时决定，之后拖拽沿用它）。
+    ///
+    /// 粒度的差别只在 `Term` 里的 `SelectionType` 上——而真正做边界计算的是
+    /// vendored alacritty 的 `Selection::to_range`：
+    ///
+    /// - [`SelectionKind::Simple`]：逐格，只收「被完整覆盖」的格子（`range_simple`）。
+    /// - [`SelectionKind::Block`]：矩形，每行取同一对列号（`range_block`）——
+    ///   终端里的表格、列对齐输出按列取用这个。
+    /// - [`SelectionKind::Word`]：先试**括号配对**（`bracket_search`），失败再按
+    ///   语义边界向两侧扩到词首/词尾（`semantic_search_left/right`）。于是
+    ///   「双击取一个字段 / 一段 URL / 一对引号里的内容」是同一个入口。
+    /// - [`SelectionKind::Line`]：整行（`line_search_left/right`），三击用。
+    ///
+    /// ⚠️ 宿主**不要**自己算词边界：宽字符、软换行、回滚区行号这些边界规则
+    /// 已在 `Term` 里实现并测过（见本模块选区小节的三条理由）。
+    pub fn select_start_kind(&self, point: Point, side: Side, kind: SelectionKind) {
         self.with_term(|term| {
-            term.selection = Some(Selection::new(SelectionType::Simple, point, side));
+            term.selection = Some(Selection::new(kind.to_selection_type(), point, side));
         });
     }
 
@@ -519,7 +699,31 @@ impl Session {
     /// 鼠标移动可能先于按下事件到达（快速拖拽），丢掉这一下会让拖选断掉。
     pub fn select_update(&self, point: Point, side: Side) {
         self.with_term(|term| match term.selection.as_mut() {
-            Some(selection) => selection.update(point, side),
+            Some(selection) => {
+                selection.update(point, side);
+                // —— 整格吸附（拖选「漏字段」的根治点）——
+                //
+                // vendored alacritty 的 `range_simple` / `range_block` 规则是
+                // 「**只有被完整覆盖**的格子才算选中」（`selection.rs` 模块文档原话），
+                // 端点格含不含由 `Side` 决定：`Side::Left` 在末端是**排除这一格**、
+                // `Side::Right` 在起点是**排除这一格**。
+                //
+                // 宿主按「指针落在格子的左半还是右半」给 `Side`（`cell_at`），于是
+                // 最自然的拖选手势 —— 从字符中间按下、在字符中间松开 —— 会正好
+                // 让**两个端点格都被排除**：选 `duck` 只剩中间的 `uc`，选一段路径
+                // 会丢掉开头与结尾的关键字符。用户描述的「选不准、容易漏字段」
+                // 就是这一条。
+                //
+                // 终端没有「半个格子高亮」这回事，整格吸附才是符合直觉的语义：
+                // **从哪一格按下、在哪一格松开，这两格都算在内**。`include_all()`
+                // 正是 alacritty 为这件事留的入口（"Expand selection sides to
+                // include all cells"）：它按点的先后把两侧端点摆正，因此左右两个
+                // 方向的拖选都成立（往左拖不会又被反过来各减一格）。
+                //
+                // 不放进 `select_start_kind`：单击（只 start、没有 update）必须仍旧
+                // 算「没有选区」，否则一次普通点击会把剪贴板冲成单个字符。
+                selection.include_all();
+            }
             None => term.selection = Some(Selection::new(SelectionType::Simple, point, side)),
         });
     }
@@ -537,11 +741,8 @@ impl Session {
                 term.selection = None;
                 return;
             }
-            let mut selection = Selection::new(
-                SelectionType::Lines,
-                Point::new(top, Column(0)),
-                Side::Left,
-            );
+            let mut selection =
+                Selection::new(SelectionType::Lines, Point::new(top, Column(0)), Side::Left);
             selection.update(Point::new(bottom, Column(columns - 1)), Side::Right);
             term.selection = Some(selection);
         });
@@ -573,6 +774,125 @@ impl Session {
                 .and_then(|selection| selection.to_range(term))
         })
         .flatten()
+    }
+
+    /// 某一格上的超链接 URI（应用用 `OSC 8` 标记过的格子才有）。
+    ///
+    /// `point` 是**网格坐标**（可带负行号 = 回滚区），与 [`Self::select_start`] 同一口径 ——
+    /// 宿主把鼠标像素换算成网格行时已经减过 `display_offset`，这里不再动它。
+    /// 没有超链接时返回 `None`（普通字符格、或应用压根没用 `OSC 8`）。
+    #[must_use]
+    pub fn hyperlink_at(&self, point: Point) -> Option<String> {
+        self.try_with_term(|term| {
+            term.grid()[point]
+                .hyperlink()
+                .map(|link| link.uri().to_owned())
+        })
+        .flatten()
+    }
+
+    /// 某一格上**点得动**的东西 —— 宿主「⌘ + 点击」的落点判定就靠它。
+    ///
+    /// 两条来源，优先级从高到低：
+    ///
+    /// 1. `OSC 8` **显式**标记的格子（`ls --hyperlink`、`gh` 会这么干）。URI 是应用给的，
+    ///    照用，不猜；
+    /// 2. 屏幕上只是**长得像链接**的一串字符 —— 这才是绝大多数：`cargo` 报的文档地址、
+    ///    `git` 打的远端 URL、编译器给的文件路径都不带标记（识别规则见
+    ///    [`crate::links`]）。
+    ///
+    /// 第 2 条只在**逻辑行**（沿软换行拼起来的一整行）里找，因此 `https://…` 被终端
+    /// 折成两行时仍能整段点开。`point` 是**网格坐标**（可带负行号 = 回滚区），
+    /// 与 [`Self::hyperlink_at`] 同一口径。
+    #[must_use]
+    pub fn link_at(&self, point: Point) -> Option<TermLink> {
+        self.try_with_term(|term| term_link_at(term, point))
+            .flatten()
+    }
+
+    /// 当前网格里（含回滚区）的 shell 集成标记 —— 已从锚点换算成**网格行号**。
+    ///
+    /// ⚠️ 参数是**调用方已经加锁拿到的** `term`，不是自己去加锁：换算要用网格当前的
+    /// 滚动量（[`Grid::anchor_base`](alacritty_terminal::grid::Grid::anchor_base)），
+    /// 而渲染路径本来就是先拿 `Term` 锁、再在里面把整屏读出来的 ——
+    /// 这里若再 `try_with_term` 一次，`FairMutex` 上就是自己等自己，整帧卡死。
+    ///
+    /// 返回的行号与 [`Self::link_at`] 的 `point` 同一口径（可负 = 回滚区），
+    /// 因此渲染层可以直接拿它跟 `display_iter` 吐出来的行号比。
+    #[must_use]
+    pub fn shell_marks_in(&self, term: &Term<EventProxy>) -> Vec<(i32, ShellMark)> {
+        let base = term.grid().anchor_base();
+        let top = Dimensions::topmost_line(term).0;
+        let marks = self.shell_marks.lock().expect("shell marks lock");
+        marks
+            .iter()
+            .filter_map(|entry| {
+                let line = entry.anchor.saturating_sub(base);
+                // 锚点若落在回滚缓冲之外（配置改过、或被截断过），那一行已经不存在了。
+                (line >= i64::from(top))
+                    .then(|| i32::try_from(line).ok())
+                    .flatten()
+                    .map(|line| (line, entry.mark))
+            })
+            .collect()
+    }
+
+    /// 整块网格（含回滚区）里**有没有**命中一段正则 —— **阻塞加锁**版。
+    ///
+    /// 与 [`Self::search_matches`] 共用同一套正则语义，唯一的差别是**拿锁方式**：
+    /// 渲染路径必须非阻塞（宁可这一帧用旧内容），而这里是给「子进程退出后做一次
+    /// 终局判定」用的 —— 那种判定**不能因为一次 `try_lock` 失败就把结论丢掉**。
+    /// 具体场景见 `duck-app` 里对 ssh 主机密钥告警的识别：漏判的代价是用户
+    /// 看不到本该出现的告警。因此此处用 [`Self::with_term`] 直接等锁，
+    /// 且只在子进程退出这种一次性时机调用。
+    ///
+    /// 空串或正则非法时返回 `false`。
+    #[must_use]
+    pub fn buffer_contains(&self, needle: &str) -> bool {
+        if needle.is_empty() {
+            return false;
+        }
+        let Ok(mut regex) = RegexSearch::new(needle) else {
+            return false;
+        };
+        self.with_term(|term| {
+            let start = Point::new(Dimensions::topmost_line(term), Column(0));
+            let end = Point::new(
+                Dimensions::bottommost_line(term),
+                Dimensions::last_column(term),
+            );
+            RegexIter::new(start, end, Direction::Right, term, &mut regex)
+                .next()
+                .is_some()
+        })
+    }
+
+    /// 在整块网格（含回滚区）里搜一段**区分大小写的正则**，返回每个命中的首末格。
+    ///
+    /// 返回**网格坐标**（闭区间）而不是视口坐标：视口会随滚动变，高亮跟着内核的坐标走
+    /// 才不会「滚一下就偏」。行号可能为负（回滚区），与 [`Self::select_start`] 同一口径。
+    ///
+    /// 空串、或正则非法（用户正在敲 `[` 之类）时返回空表 —— 搜索框里的中间态不该报错。
+    /// 大小写规则沿用 alacritty：串里**有大写就区分大小写**，全小写则不区分。
+    #[must_use]
+    pub fn search_matches(&self, needle: &str) -> Vec<(Point, Point)> {
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let Ok(mut regex) = RegexSearch::new(needle) else {
+            return Vec::new();
+        };
+        self.try_with_term(|term| {
+            let start = Point::new(Dimensions::topmost_line(term), Column(0));
+            let end = Point::new(
+                Dimensions::bottommost_line(term),
+                Dimensions::last_column(term),
+            );
+            RegexIter::new(start, end, Direction::Right, term, &mut regex)
+                .map(|found| (*found.start(), *found.end()))
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// 设置宿主配色。
@@ -670,6 +990,157 @@ fn unpack_cell(packed: u64) -> CellSize {
         width: f32::from((packed >> 16) as u16),
         height: f32::from(packed as u16),
     }
+}
+
+/// 把「某一格」翻成「那格所在的链接」。见 [`Session::link_at`] 的口径说明。
+fn term_link_at(term: &Term<EventProxy>, point: Point) -> Option<TermLink> {
+    let line = LogicalLine::build(term, point.line);
+    // 点中的那一格落在逻辑行的第几个字符上；点到宽字符的尾格时归给它的主格。
+    let index = line.index_of(point)?;
+    // 1) 应用显式标记的 `OSC 8`：URI 是权威的，按「同一 URI 且相邻」向两侧扩。
+    if let Some(link) = line.osc8_link_at(index) {
+        return Some(link);
+    }
+    // 2) 裸文本：只在逻辑行内部找，回绕因此天然被覆盖。
+    let span = crate::links::scan(&line.text)
+        .into_iter()
+        .find(|span| span.start <= index && index < span.end)?;
+    Some(TermLink {
+        target: span.target,
+        ranges: line.ranges_for(span.start, span.end),
+    })
+}
+
+/// 一条**逻辑行**：沿软换行（`WRAPLINE`）拼起来的一整行，以及每个字符落在哪一格。
+///
+/// 之所以不逐格判断，是因为「一行里第 30 个字符在第几列」只有把整行拼起来才知道：
+/// 宽字符占两列、`OSC 8` 的标记是按格存的，两者都要在这张映射表上对齐。
+struct LogicalLine {
+    /// 整行文本（宽字符的尾格不占字符，已跳过）。
+    text: String,
+    /// 第 n 个字符所在的网格格（宽字符只记主格）。
+    origins: Vec<Point>,
+    /// 宽字符尾格 → 它归属的字符下标。点到尾格要算点中了那个字符。
+    spacers: Vec<(Point, usize)>,
+    /// 第 n 个字符上的 `OSC 8` URI 在 `uris` 里的下标；没有标记时 `None`。
+    uri_of: Vec<Option<usize>>,
+    /// 去重后的 URI 表（一行里通常 0~2 个）。
+    uris: Vec<String>,
+}
+
+impl LogicalLine {
+    fn build(term: &Term<EventProxy>, line: Line) -> Self {
+        let grid = term.grid();
+        let last_col = Dimensions::last_column(term);
+        let top = Dimensions::topmost_line(term);
+        let bottom = Dimensions::bottommost_line(term);
+
+        // 软换行的续行会把自己标在**上一行最后一格**上（`WRAPLINE`），
+        // 因此向前向后各吃一遍就能圈出整条逻辑行。
+        let mut first = line;
+        while first > top
+            && grid[Line(first.0 - 1)][last_col]
+                .flags
+                .contains(Flags::WRAPLINE)
+        {
+            first = Line(first.0 - 1);
+        }
+        let mut last = line;
+        while last < bottom && grid[last][last_col].flags.contains(Flags::WRAPLINE) {
+            last = Line(last.0 + 1);
+        }
+
+        let mut text = String::new();
+        let mut origins = Vec::new();
+        let mut spacers = Vec::new();
+        let mut uri_of = Vec::new();
+        let mut uris: Vec<String> = Vec::new();
+
+        for row in first.0..=last.0 {
+            let cells = &grid[Line(row)];
+            for col in 0..=last_col.0 {
+                let origin = Point::new(Line(row), Column(col));
+                let cell = &cells[Column(col)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    spacers.push((origin, origins.len().saturating_sub(1)));
+                    continue;
+                }
+                origins.push(origin);
+                text.push(cell.c);
+                let id = cell
+                    .hyperlink()
+                    .map(|link| intern_uri(&mut uris, link.uri()));
+                uri_of.push(id);
+            }
+        }
+
+        Self {
+            text,
+            origins,
+            spacers,
+            uri_of,
+            uris,
+        }
+    }
+
+    /// 网格格 → 字符下标。点到宽字符的尾格时归给它的主格。
+    fn index_of(&self, point: Point) -> Option<usize> {
+        if let Some(index) = self.origins.iter().position(|origin| *origin == point) {
+            return Some(index);
+        }
+        self.spacers
+            .iter()
+            .find(|(spacer, _)| *spacer == point)
+            .map(|(_, index)| *index)
+    }
+
+    /// 点中的字符若在 `OSC 8` 标记里，返回整段标记（同 URI 且相邻的字符）。
+    fn osc8_link_at(&self, index: usize) -> Option<TermLink> {
+        let id = self.uri_of.get(index).copied().flatten()?;
+        let mut start = index;
+        while start > 0 && self.uri_of[start - 1] == Some(id) {
+            start -= 1;
+        }
+        let mut end = index + 1;
+        while end < self.uri_of.len() && self.uri_of[end] == Some(id) {
+            end += 1;
+        }
+        Some(TermLink {
+            target: crate::links::LinkTarget::Url(self.uris[id].clone()),
+            ranges: self.ranges_for(start, end),
+        })
+    }
+
+    /// 字符区间 `[start, end)` 折成「按行分段」的列区间表。
+    ///
+    /// 同一行上连续相邻的列会被合成一段；跨到下一行（或列号不连续，比如软换行处）就另起一段。
+    fn ranges_for(&self, start: usize, end: usize) -> Vec<(i32, std::ops::RangeInclusive<usize>)> {
+        let mut ranges: Vec<(i32, std::ops::RangeInclusive<usize>)> = Vec::new();
+        for origin in &self.origins[start..end] {
+            let line = origin.line.0;
+            let col = origin.column.0;
+            match ranges.last_mut() {
+                Some((last_line, range)) if *last_line == line && *range.end() + 1 == col => {
+                    *range = *range.start()..=col;
+                }
+                _ => ranges.push((line, col..=col)),
+            }
+        }
+        ranges
+    }
+}
+
+/// 把 URI 收进去重表，返回它的下标。
+fn intern_uri(uris: &mut Vec<String>, uri: &str) -> usize {
+    let existing = uris.iter().position(|known| known == uri);
+    if let Some(index) = existing {
+        return index;
+    }
+    uris.push(uri.to_owned());
+    uris.len() - 1
 }
 
 #[cfg(test)]
@@ -793,12 +1264,19 @@ mod tests {
         let session = Session::spawn(SpawnOptions {
             shell: Some((
                 "/bin/sh".to_owned(),
-                vec!["-c".to_owned(), "printf 'duck-select-ok\\n'; sleep 5".to_owned()],
+                vec![
+                    "-c".to_owned(),
+                    "printf 'duck-select-ok\\n'; sleep 5".to_owned(),
+                ],
             )),
             ..SpawnOptions::default()
         })
         .expect("PTY 应当能起来");
-        assert!(wait_for_text(&session, "duck-select-ok", Duration::from_secs(10)));
+        assert!(wait_for_text(
+            &session,
+            "duck-select-ok",
+            Duration::from_secs(10)
+        ));
 
         // 第 0 行第 0..3 列 = `duck`。
         //
@@ -823,6 +1301,52 @@ mod tests {
         assert_eq!(session.selection_text(), None);
     }
 
+    /// 回归：**整格吸附** —— 从字符中间按下、在字符中间松开，两个端点格都要算上。
+    ///
+    /// 这是「选文本容易漏字段」的回归测试。宿主按「指针在格子的左半还是右半」给
+    /// `Side`，于是最自然的拖选手势给出的正是 `start = Right` / `end = Left`；
+    /// 而 alacritty 的 `range_simple` 对这个组合是「起点在右半边 → 去掉第一格、
+    /// 末端在左半边 → 去掉最后一格」：`duck` 会只剩 `uc`。
+    /// `select_update` 里的 `include_all()` 把两侧端点摆正，下面两种手势都必须
+    /// 拿到完整文本，且不能多出格子。
+    #[test]
+    fn dragging_from_mid_cell_to_mid_cell_keeps_both_end_cells() {
+        let session = Session::spawn(SpawnOptions {
+            shell: Some((
+                "/bin/sh".to_owned(),
+                vec![
+                    "-c".to_owned(),
+                    "printf 'duck-select-ok\\n'; sleep 5".to_owned(),
+                ],
+            )),
+            ..SpawnOptions::default()
+        })
+        .expect("PTY 应当能起来");
+        assert!(wait_for_text(
+            &session,
+            "duck-select-ok",
+            Duration::from_secs(10)
+        ));
+
+        // 最「不巧」的组合：按下落在第 0 格的右半边、松开落在第 3 格的左半边。
+        session.select_start(Point::new(Line(0), Column(0)), Side::Right);
+        session.select_update(Point::new(Line(0), Column(3)), Side::Left);
+        assert_eq!(
+            session.selection_text().as_deref(),
+            Some("duck"),
+            "两个端点格都不能被丢掉"
+        );
+
+        // 反向拖选（从右往左）同样整格吸附：不能反过来又把两侧各减一格。
+        session.select_start(Point::new(Line(0), Column(3)), Side::Left);
+        session.select_update(Point::new(Line(0), Column(0)), Side::Right);
+        assert_eq!(
+            session.selection_text().as_deref(),
+            Some("duck"),
+            "反向拖选的端点格同样要算上"
+        );
+    }
+
     /// 单击（只 `select_start`、没拖过）**不算选区**。
     ///
     /// 这条划的是剪贴板的边界：⌘C 在没有选区时必须是空操作 ——
@@ -832,12 +1356,19 @@ mod tests {
         let session = Session::spawn(SpawnOptions {
             shell: Some((
                 "/bin/sh".to_owned(),
-                vec!["-c".to_owned(), "printf 'duck-select-ok\\n'; sleep 5".to_owned()],
+                vec![
+                    "-c".to_owned(),
+                    "printf 'duck-select-ok\\n'; sleep 5".to_owned(),
+                ],
             )),
             ..SpawnOptions::default()
         })
         .expect("PTY 应当能起来");
-        assert!(wait_for_text(&session, "duck-select-ok", Duration::from_secs(10)));
+        assert!(wait_for_text(
+            &session,
+            "duck-select-ok",
+            Duration::from_secs(10)
+        ));
 
         session.select_start(Point::new(Line(0), Column(3)), Side::Left);
         assert_eq!(
@@ -875,13 +1406,291 @@ mod tests {
         );
         assert!(text.contains("line-6"), "全选也要含屏幕上最后一行");
         assert!(
-            !text.lines().any(|line| line.ends_with(' ') || line.ends_with('\t')),
+            !text
+                .lines()
+                .any(|line| line.ends_with(' ') || line.ends_with('\t')),
             "行尾填充不该被选中，实际：{text:?}"
         );
     }
 
+    /// `OSC 8` 标记过的格子要能被读出来（宿主据此画下划线、⌘ 点击打开）。
+    ///
+    /// 这条覆盖的是「终端里点了链接没反应」的另一半原因：不是打开动作坏了，
+    /// 而是宿主根本不知道哪一格是链接。
     #[test]
-    fn size_packing_round_trips() {        let cell = CellSize {
+    fn osc8_hyperlink_is_readable_from_the_grid() {
+        let session = Session::spawn(SpawnOptions {
+            shell: Some((
+                "/bin/sh".to_owned(),
+                vec![
+                    "-c".to_owned(),
+                    // `OSC 8 ; ; URI ST` … `OSC 8 ; ; ST`（ST 用 `ESC \\`）。
+                    "printf '\\033]8;;https://example.com\\033\\\\link\\033]8;;\\033\\\\\\n'; sleep 5"
+                        .to_owned(),
+                ],
+            )),
+            ..SpawnOptions::default()
+        })
+        .expect("PTY 应当能起来");
+        assert!(wait_for_text(&session, "link", Duration::from_secs(10)));
+
+        assert_eq!(
+            session
+                .hyperlink_at(Point::new(Line(0), Column(0)))
+                .as_deref(),
+            Some("https://example.com"),
+            "被 OSC 8 标记的格子应当带回 URI"
+        );
+        // 普通字符格没有超链接（回归：别把整行都当成链接）。
+        assert_eq!(session.hyperlink_at(Point::new(Line(5), Column(0))), None);
+    }
+
+    /// 起一个只打印一行、然后挂住的会话。
+    fn session_printing(script: String) -> Session {
+        Session::spawn(SpawnOptions {
+            shell: Some(("/bin/sh".to_owned(), vec!["-c".to_owned(), script])),
+            ..SpawnOptions::default()
+        })
+        .expect("PTY 应当能起来")
+    }
+
+    #[test]
+    fn a_plain_url_on_screen_is_clickable() {
+        // 没有 `OSC 8` 的一串网址：以前按 ⌘ 点上去毫无反应，现在要能命中。
+        let session =
+            session_printing("printf 'see https://example.com/a for docs\\n'; sleep 5".to_owned());
+        assert!(wait_for_text(&session, "for docs", Duration::from_secs(10)));
+
+        let link = session
+            .link_at(Point::new(Line(0), Column(6)))
+            .expect("点在网址中间应当命中链接");
+        assert_eq!(
+            link.target,
+            crate::links::LinkTarget::Url("https://example.com/a".to_owned())
+        );
+        assert_eq!(link.ranges, vec![(0, 4..=24)], "高亮正好盖住 URL 那几列");
+
+        // 同一行里不在链接上的格子仍然什么都没有。
+        assert_eq!(session.link_at(Point::new(Line(0), Column(0))), None);
+    }
+
+    #[test]
+    fn a_plain_path_on_screen_is_clickable() {
+        let session = session_printing(
+            "printf 'error at /tmp/duck/main.rs:12:5 here\\n'; sleep 5".to_owned(),
+        );
+        assert!(wait_for_text(&session, "here", Duration::from_secs(10)));
+
+        let link = session
+            .link_at(Point::new(Line(0), Column(12)))
+            .expect("路径也该能点");
+        assert_eq!(
+            link.target,
+            crate::links::LinkTarget::Path("/tmp/duck/main.rs:12:5".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_osc8_mark_wins_over_the_bare_text_scan() {
+        // 应用显式标了 URI 时以它为准，不去按肉眼长相猜。
+        let session = session_printing(
+            "printf '\\033]8;;https://real.example/x\\033\\\\https://made-up.example/y_\\033]8;;\\033\\\\\\n'; sleep 5"
+                .to_owned(),
+        );
+        assert!(wait_for_text(&session, "made-up", Duration::from_secs(10)));
+
+        let link = session
+            .link_at(Point::new(Line(0), Column(2)))
+            .expect("被标记的格子应当命中");
+        assert_eq!(
+            link.target,
+            crate::links::LinkTarget::Url("https://real.example/x".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_link_wrapped_onto_two_rows_stays_one_link() {
+        // 110 个字符的网址在 80 列里必然回绕：两行都得能点，且是同一条链接。
+        let long_url = format!("https://example.com/{}", "a".repeat(90));
+        let session = session_printing(format!("printf '%s\\n' '{long_url}'; sleep 5"));
+        assert!(wait_for_text(&session, "aaaa", Duration::from_secs(10)));
+
+        let start = session
+            .link_at(Point::new(Line(0), Column(0)))
+            .expect("第一行开头应当命中");
+        assert_eq!(
+            start.target,
+            crate::links::LinkTarget::Url(long_url.clone())
+        );
+        assert_eq!(start.ranges.len(), 2, "跨行回绕的链接要报两段高亮");
+
+        let tail = session
+            .link_at(Point::new(Line(1), Column(5)))
+            .expect("续行上也要能点");
+        assert_eq!(tail.target, crate::links::LinkTarget::Url(long_url));
+    }
+
+    #[test]
+    fn only_the_clicked_occurrence_is_highlighted() {
+        // 同一行里同一个 URL 出现两次：高亮只盖住点中的那一处。
+        let session =
+            session_printing("printf 'https://a.io/x then https://a.io/x\\n'; sleep 5".to_owned());
+        assert!(wait_for_text(&session, "then", Duration::from_secs(10)));
+
+        let first = session
+            .link_at(Point::new(Line(0), Column(2)))
+            .expect("第一处应当命中");
+        assert_eq!(
+            first.ranges,
+            vec![(0, 0..=13)],
+            "「https://a.io/x」共 14 列"
+        );
+        let second = session
+            .link_at(Point::new(Line(0), Column(22)))
+            .expect("第二处应当命中");
+        assert_eq!(
+            second.ranges,
+            vec![(0, 20..=33)],
+            "只盖住第二处，不连带第一处"
+        );
+    }
+
+    #[test]
+    fn prose_slashes_are_not_links() {
+        let session = session_printing("printf 'and/or TCP/IP 3/4 done\\n'; sleep 5".to_owned());
+        assert!(wait_for_text(&session, "done", Duration::from_secs(10)));
+        // 整行扫一遍：正文里的斜杠一个都不该被当成路径。
+        for column in 0..25 {
+            assert_eq!(
+                session.link_at(Point::new(Line(0), Column(column))),
+                None,
+                "第 {column} 列不该被认成链接"
+            );
+        }
+    }
+
+    /// shell 集成标记要走完整条链路：`OSC 133` 字节 → vendored 解析 → 事件代理 → 共享表
+    /// → 按当前滚动量换算回行号。这条测试用一个「假 shell 集成」的 printf 顶替真 shell。
+    #[test]
+    fn shell_marks_survive_the_round_trip() {
+        // 四段标记各占一行（每段后面补一个换行，行进才可预期）：
+        //   row 0: A（提示符开始）
+        //   row 1: B（输入开始）
+        //   row 2: C（输出开始）
+        //   row 3: D;7（命令结束，退出码 7）
+        let session = session_printing(
+            "printf '\\033]133;A\\007\\n\\033]133;B\\007\\n\\033]133;C\\007\\n\\033]133;D;7\\007\\n'; sleep 5"
+                .to_owned(),
+        );
+        // 全部都是控制序列，没有可等的正文：直接等到标记齐了。
+        let marks = wait_for_marks(&session, 4, Duration::from_secs(10));
+        assert_eq!(marks.len(), 4, "四条标记都该到：{marks:?}");
+        assert_eq!(marks[0], (0, ShellMark::PromptStart));
+        assert_eq!(marks[1], (1, ShellMark::PromptEnd));
+        assert_eq!(marks[2], (2, ShellMark::OutputStart));
+        assert_eq!(marks[3], (3, ShellMark::CommandFinished(Some(7))));
+    }
+
+    /// `D` 不带退出码时是「没结论」，不能当成成功。
+    #[test]
+    fn a_finish_mark_without_an_exit_code_is_not_a_success() {
+        let session =
+            session_printing("printf '\\033]133;D\\007\\n\\033]133;A\\007\\n'; sleep 5".to_owned());
+        let marks = wait_for_marks(&session, 2, Duration::from_secs(10));
+        assert_eq!(marks[0], (0, ShellMark::CommandFinished(None)));
+        assert_eq!(marks[1], (1, ShellMark::PromptStart));
+        assert_eq!(
+            prompt_bars(&marks),
+            vec![(1, None)],
+            "没报退出码 = 没结论（中性色），不是成功"
+        );
+    }
+
+    #[test]
+    fn prompt_bars_take_the_result_of_the_command_before_them() {
+        use ShellMark::{CommandFinished, OutputStart, PromptEnd, PromptStart};
+        let marks = vec![
+            (0, PromptStart),
+            (0, PromptEnd),
+            (1, OutputStart),
+            (3, CommandFinished(Some(0))),
+            (4, PromptStart),
+            (4, PromptEnd),
+            (5, OutputStart),
+            (8, CommandFinished(Some(1))),
+            (9, PromptStart),
+            // 第三次提示符之前没有 `D`：不该继承上一次的失败结论。
+            (11, PromptStart),
+        ];
+        assert_eq!(
+            prompt_bars(&marks),
+            vec![(0, None), (4, Some(0)), (9, Some(1)), (11, None)]
+        );
+    }
+
+    #[test]
+    fn prompt_bars_tolerate_unordered_input() {
+        use ShellMark::{CommandFinished, PromptStart};
+        // 传入顺序乱掉也要给出按行号的稳定结果（截断 / 共享表可能让它不连续）。
+        let marks = vec![
+            (9, PromptStart),
+            (0, PromptStart),
+            (3, CommandFinished(Some(2))),
+            (4, PromptStart),
+        ];
+        assert_eq!(
+            prompt_bars(&marks),
+            vec![(0, None), (4, Some(2)), (9, None)]
+        );
+    }
+
+    /// 等到共享表里攒够 `count` 条标记，返回按行号排序后的快照。
+    fn wait_for_marks(session: &Session, count: usize, timeout: Duration) -> Vec<(i32, ShellMark)> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let marks = session
+                .try_with_term(|term| session.shell_marks_in(term))
+                .unwrap_or_default();
+            if marks.len() >= count {
+                return marks;
+            }
+            if std::time::Instant::now() >= deadline {
+                return marks;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn search_matches_finds_every_occurrence() {
+        let session = Session::spawn(SpawnOptions {
+            shell: Some((
+                "/bin/sh".to_owned(),
+                vec![
+                    "-c".to_owned(),
+                    "printf 'alpha beta ALPHA\\n'; sleep 5".to_owned(),
+                ],
+            )),
+            ..SpawnOptions::default()
+        })
+        .expect("PTY 应当能起来");
+        assert!(wait_for_text(&session, "ALPHA", Duration::from_secs(10)));
+
+        let matches = session.search_matches("alpha");
+        assert_eq!(matches.len(), 2, "两处命中都要找到，实际：{matches:?}");
+        assert_eq!(matches[0].0, Point::new(Line(0), Column(0)));
+        assert_eq!(matches[0].1, Point::new(Line(0), Column(4)));
+        // 大小写：串里没有大写时按不区分大小写搜（alacritty 的既定规则）。
+        assert_eq!(matches[1].0, Point::new(Line(0), Column(11)));
+
+        // 用户正在敲 `[` 时正则非法：不能 panic，也不能留着上一次的结果。
+        assert!(session.search_matches("[").is_empty());
+        assert!(session.search_matches("").is_empty());
+    }
+
+    #[test]
+    fn size_packing_round_trips() {
+        let cell = CellSize {
             width: 9.4,
             height: 17.6,
         };

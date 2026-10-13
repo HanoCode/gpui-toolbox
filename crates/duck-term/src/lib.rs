@@ -31,22 +31,32 @@
 //! UI 侧**不该**在渲染里阻塞等锁：用 [`Session::try_with_term`] 拿不到就沿用上一帧，
 //! 下一帧的 `SessionEvent::Wakeup` 会再叫醒它。
 
+mod focus;
 mod keymap;
+mod links;
+mod mouse;
 mod palette;
 mod session;
 
+pub use focus::{encode as encode_focus, reports_focus};
 pub use keymap::{Encoded, KeyStroke, encode};
+pub use links::{LinkSpan, LinkTarget};
+pub use mouse::{
+    MouseAction, MouseButton as TermMouseButton, MouseModifiers, encode as encode_mouse,
+    reports_motion, reports_mouse,
+};
 pub use palette::Palette;
-pub use session::{CellSize, Session, SessionEvent, SpawnOptions};
+pub use session::{
+    CellSize, SelectionKind, Session, SessionEvent, ShellMark, SpawnOptions, TermLink,
+    prompt_bars,
+};
 
 // ── 渲染层需要的 alacritty 类型（重导出，避免上层再依赖 vendored crate）──────────
 
 pub use alacritty_terminal::grid::{Dimensions, Grid};
 pub use alacritty_terminal::index::{Column, Line, Point, Side};
 pub use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
-pub use alacritty_terminal::term::cell::{Cell, Flags};
+pub use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 pub use alacritty_terminal::term::color::Colors;
-pub use alacritty_terminal::term::{
-    RenderableContent, RenderableCursor, Term, TermMode,
-};
+pub use alacritty_terminal::term::{RenderableContent, RenderableCursor, Term, TermMode};
 pub use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};

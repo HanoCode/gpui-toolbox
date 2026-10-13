@@ -366,6 +366,25 @@ impl<T> Grid<T> {
         self.scrolled_out_lines
     }
 
+    /// Base of the scroll-invariant coordinate space.
+    ///
+    /// Grid lines are *relative*: every scroll rotates the ring buffer, so each stored line
+    /// number drops by the number of scrolled positions. Adding this base turns a line into a
+    /// number that only ever grows — which is what a mark (or any other long-lived annotation)
+    /// needs in order to stay on the same content.
+    ///
+    /// The two terms cover the two regimes of [`Grid::scroll_up`]: while scrollback is still
+    /// growing it is `history_size` that absorbs the shift, and once the scrollback limit is
+    /// reached the growth moves into `scrolled_out_lines`.
+    pub fn anchor_base(&self) -> i64 {
+        self.history_size() as i64 + self.scrolled_out_lines as i64
+    }
+
+    /// Position of `line` in the scroll-invariant coordinate space (see [`Self::anchor_base`]).
+    pub fn anchor(&self, line: Line) -> i64 {
+        i64::from(line.0) + self.anchor_base()
+    }
+
     /// Reset a visible region within the grid.
     pub fn reset_region<D, R: RangeBounds<Line>>(&mut self, bounds: R)
     where

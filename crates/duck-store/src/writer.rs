@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 
+use crate::audit::AuditEntry;
 use crate::db::{StoreError, now_seconds};
 
 /// 合并窗口：在这段时间内到达的写会被并成一次事务。
@@ -31,6 +32,8 @@ pub enum Table {
     ToolState,
     /// 窗口几何。
     Windows,
+    /// 审计日志（流水；清空是用户显式动作，见 [`Op::PushAudit`]）。
+    Audit,
 }
 
 impl Table {
@@ -42,6 +45,7 @@ impl Table {
             Self::Recent => "recent",
             Self::ToolState => "tool_state",
             Self::Windows => "windows",
+            Self::Audit => "audit",
         }
     }
 }
@@ -77,6 +81,23 @@ pub enum Op {
         key: String,
         value: String,
     },
+    /// 追加一条审计记录，并把表裁到最多 `keep` 条。
+    ///
+    /// `keep` 跟着每条记录一起走而不是单独一条 op：**裁剪与写入是同一件事的两半**
+    /// （「记下这条，并保证表不会无限长」）。分成两个 op 的话，只发写入不发裁剪就会
+    /// 悄悄把库撑大，而那种遗漏在测试里很难被抓到。
+    ///
+    /// 审计是**只增**的：这里只 `INSERT`（外加同事务的裁剪 `DELETE`），
+    /// 修改由数据库的 `audit_no_update` 触发器直接拒绝。
+    PushAudit { entry: AuditEntry, keep: usize },
+    /// 只裁剪、不写入：把表裁到最多 `keep` 条。
+    ///
+    /// 与 [`Op::PushAudit`] 的分工：那条是「记一条，**顺带**保证表不会无限长」——
+    /// 写入必然带裁剪，所以表永远长不起来。这条是「把上限**调小**之后让新上限当场生效」，
+    /// 它没有新记录可写。分开是必要的而不是对称强迫症：只有它存在，才可能出现
+    /// 「裁剪没有任何写入陪着」的情况；而没有这条，用户把 2000 改成 200 之后
+    /// 列表里还是那 2000 行，得等下一次写入才缩 —— 看起来就是「改了没反应」。
+    TrimAudit { keep: usize },
     /// 强制落盘并回执。
     Flush(Sender<()>),
 }
@@ -156,6 +177,12 @@ fn apply(connection: &mut Connection, batch: &mut Vec<Op>) -> Vec<Sender<()>> {
     let mut windows: HashMap<String, (String, Option<String>)> = HashMap::new();
     let mut recent: HashSet<(String, String)> = HashSet::new();
     let mut tool_state: HashMap<(String, String), String> = HashMap::new();
+    // 审计记录：**不去重**，每一条都是一次真实发生的事，顺序即到达顺序。
+    let mut audit: Vec<AuditEntry> = Vec::new();
+    let mut audit_keep: usize = 0;
+    // 单独的裁剪请求（上限调小）。与 `audit_keep` 取最大：谁要求留得多听谁的 ——
+    // 「一次裁剪」不该把同批里刚记下的记录按更小的上限砍掉。
+    let mut audit_trim: usize = 0;
     // 需要先清空的表（去重即可，顺序无关）；`kv_reset` 是覆盖式导入触发的整表清空。
     let mut clear: HashSet<Table> = HashSet::new();
     let mut kv_reset = false;
@@ -197,6 +224,13 @@ fn apply(connection: &mut Connection, batch: &mut Vec<Op>) -> Vec<Sender<()>> {
                 value,
             } => {
                 tool_state.insert((tool_id, key), value);
+            }
+            Op::PushAudit { entry, keep } => {
+                audit.push(entry);
+                audit_keep = audit_keep.max(keep);
+            }
+            Op::TrimAudit { keep } => {
+                audit_trim = audit_trim.max(keep);
             }
             Op::Flush(ack) => acks.push(ack),
         }
@@ -247,10 +281,42 @@ fn apply(connection: &mut Connection, batch: &mut Vec<Op>) -> Vec<Sender<()>> {
                 rusqlite::params![tool_id, key, value, now],
             )?;
         }
+        // 审计：**只 INSERT**（append-only，修改被数据库触发器拒绝），同一批里一行都不合并
+        // —— 每一条都是一次真实发生的事。裁剪紧随其后、同事务完成，保证「写完那一刻起
+        // 就不超过上限」；否则一次长跑会话能把库撑到用户看不见的地方去。
+        for entry in &audit {
+            tx.execute(
+                "INSERT INTO audit(at, kind, action, outcome, scope, detail, fingerprint, trace_id,
+                     duration_ms)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    now,
+                    entry.kind,
+                    entry.action,
+                    entry.outcome,
+                    entry.scope,
+                    entry.detail,
+                    entry.fingerprint,
+                    entry.trace_id,
+                    entry.duration_ms
+                ],
+            )?;
+        }
+        // 裁剪跑在这批 INSERT 之后：`audit_limit` 是「写记录带来的上限」与「单独裁剪请求」
+        // 里更宽松的那个 —— 上限调小是用户意图，但不该把同批里刚记下的东西按更小的数砍掉。
+        let audit_limit = audit_keep.max(audit_trim);
+        if !audit.is_empty() || audit_trim > 0 {
+            // 保留最近 `keep` 条：按 id 倒序取，而不是 `MAX(id) - keep` —— AUTOINCREMENT
+            // 的 id 之间有空洞（回滚过的插入也占号），减法会留下比预期多的行。
+            // `keep` 下限夹到 1：0 会把刚写进去的这条也删掉，那是「写了个寂寞」。
+            tx.execute(
+                "DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT ?1)",
+                rusqlite::params![audit_limit.max(1) as i64],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     })();
-
     if let Err(error) = result {
         tracing::error!(%error, "batch write failed");
     }
@@ -496,6 +562,147 @@ mod tests {
             Some("新"),
             "导入是后发生的，不能被之前的删除吃掉"
         );
+    }
+
+    /// 审计：只增、按条件查、超出上限裁掉**最旧**的、清空留空表。
+    #[test]
+    fn audit_appends_queries_and_trims() {
+        use crate::audit::{AuditEntry, AuditFilter, AuditOutcome};
+
+        let path = temp_db("audit");
+        let store = Store::open(path.clone()).expect("打开库");
+        let entry = |n: usize, outcome: AuditOutcome| {
+            AuditEntry::new("query", "execute", outcome, "conn-1", format!("SELECT {n}"))
+        };
+        // keep = 3：同一批里写 5 条，只该留最后 3 条。
+        for n in 0..5 {
+            store.audit_push(entry(n, AuditOutcome::Ok), 3);
+        }
+        store.flush();
+        assert_eq!(store.audit_count(), 3, "超出上限的旧记录必须被裁掉");
+        let rows = store.audit_query(&AuditFilter::default());
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].detail, "SELECT 4", "最新的在最前");
+        assert_eq!(
+            rows[2].detail, "SELECT 2",
+            "留下的是**最近**三条，不是最早三条"
+        );
+
+        // 只看问题：成功的那三条不该出现在结果里。
+        store.audit_push(entry(9, AuditOutcome::Failed), 100);
+        store.flush();
+        let problems = store.audit_query(&AuditFilter {
+            problems_only: true,
+            ..AuditFilter::default()
+        });
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].is_problem());
+
+        // 按 trace 过滤（点错误徽标进来的那条路）。
+        store.audit_push(
+            AuditEntry::new("query", "execute", AuditOutcome::Failed, "conn-2", "boom")
+                .with_trace("t-1"),
+            100,
+        );
+        store.flush();
+        let traced = store.audit_query(&AuditFilter {
+            trace_id: Some("t-1".to_owned()),
+            ..AuditFilter::default()
+        });
+        assert_eq!(traced.len(), 1);
+        assert_eq!(traced[0].scope, "conn-2");
+
+        // 按类别过滤：认得出的是「这一类有几条」，认不出的类别是空而不是全部。
+        let by_kind = |kind: &str| {
+            store.audit_query(&AuditFilter {
+                kind: Some(kind.to_owned()),
+                ..AuditFilter::default()
+            })
+        };
+        assert_eq!(by_kind("query").len(), 5);
+        assert_eq!(by_kind("connection").len(), 0);
+
+        // 清空是**用户显式动作**，与自动裁剪是仅有的两条删除路径。
+        store.audit_clear();
+        store.flush();
+        assert_eq!(store.audit_count(), 0);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 审计分两批写、批间 flush，裁剪按**累积**结果生效（不是每批各留 keep 条）。
+    #[test]
+    fn audit_trim_looks_at_the_whole_table() {
+        use crate::audit::{AuditEntry, AuditFilter, AuditOutcome};
+
+        let path = temp_db("audit-trim-twice");
+        let store = Store::open(path.clone()).expect("打开库");
+        for n in 0..4 {
+            store.audit_push(
+                AuditEntry::new(
+                    "write",
+                    "commit",
+                    AuditOutcome::Ok,
+                    "conn-1",
+                    format!("#{n}"),
+                ),
+                2,
+            );
+            store.flush();
+        }
+        assert_eq!(store.audit_count(), 2, "每批都裁一次，最终仍只剩 2 条");
+        let rows = store.audit_query(&AuditFilter::default());
+        assert_eq!(rows[0].detail, "#3");
+        assert_eq!(rows[1].detail, "#2");
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 只裁剪：**没有新记录**也能把上限调小，且同批里刚记下的那条不会被误砍。
+    #[test]
+    fn trim_alone_shrinks_the_table_without_writing() {
+        use crate::audit::{AuditEntry, AuditFilter, AuditOutcome};
+
+        let path = temp_db("audit-trim-alone");
+        let store = Store::open(path.clone()).expect("打开库");
+        for n in 0..5 {
+            store.audit_push(
+                AuditEntry::new(
+                    "query",
+                    "execute",
+                    AuditOutcome::Ok,
+                    "conn-1",
+                    format!("#{n}"),
+                ),
+                100,
+            );
+            store.flush();
+        }
+        assert_eq!(store.audit_count(), 5);
+
+        // 上限调小 → 当场缩表（不靠下一次写入顺手裁）。
+        store.audit_trim(3);
+        store.flush();
+        assert_eq!(store.audit_count(), 3);
+        let rows = store.audit_query(&AuditFilter::default());
+        assert_eq!(rows[0].detail, "#4", "留下的是最近三条");
+        assert_eq!(rows[2].detail, "#2");
+
+        // 同批里「写一条 + 裁剪到 2」：取更宽松的那个上限，刚记下的那条必须在。
+        store.audit_push(
+            AuditEntry::new("query", "execute", AuditOutcome::Ok, "conn-1", "#new"),
+            4,
+        );
+        store.audit_trim(2);
+        store.flush();
+        let rows = store.audit_query(&AuditFilter::default());
+        assert_eq!(rows.len(), 4, "同批里写入带来的上限更宽松时听它（4 > 2）");
+        assert_eq!(rows[0].detail, "#new");
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// `kv_all` 是全表快照，且顺序稳定（导出结果可比对）。

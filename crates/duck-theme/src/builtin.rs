@@ -985,13 +985,16 @@ pub fn extended_tokens(base: &SemanticThemeTokens, mode: ThemeMode) -> ExtendedT
         ThemeMode::Dark => c.primary.alpha(0.26),
         ThemeMode::Light => c.primary.alpha(0.18),
     };
+    // 成功绿提成局部量：`success` 字段与「已连接 / 已完成」状态点取同一个绿，
+    // 免得两处各写一份色值、改一处漏一处。
+    let success = match mode {
+        ThemeMode::Dark => color(0x30D158),
+        ThemeMode::Light => color(0x1F9D55),
+    };
 
     ExtendedTokens {
         colors: ExtendedColors {
-            success: match mode {
-                ThemeMode::Dark => color(0x30D158),
-                ThemeMode::Light => color(0x1F9D55),
-            },
+            success,
             warning: match mode {
                 ThemeMode::Dark => color(0xFFB340),
                 ThemeMode::Light => color(0xC77C02),
@@ -1018,7 +1021,10 @@ pub fn extended_tokens(base: &SemanticThemeTokens, mode: ThemeMode) -> ExtendedT
             drag_border: c.primary.alpha(0.65),
             drop_target: c.primary.alpha(0.2),
             status_downloading: c.primary,
-            status_completed: text_tertiary,
+            // 「已完成 / 已连接 / 已启用」是**成功态**，必须亮绿 —— 之前取 `text_tertiary`
+            //（灰），终端标签的状态点、数据库/Redis 连接条、工具箱启用态全被染成灰色，
+            // 「连上了却没颜色」。队列态（`status_queued`）才是中性灰。
+            status_completed: success,
             status_failed: c.destructive,
             status_paused: c.muted_foreground,
             status_queued: text_tertiary,

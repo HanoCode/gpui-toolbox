@@ -6,6 +6,7 @@
 //! 与 UI 层的耦合只有一个 [`Store::install`]：装入 gpui 全局；其余 API 都是普通方法，
 //! 所以本 crate 的读写逻辑可以在没有 gpui 的单元测试里直接跑（见 [`db`] 的测试）。
 
+pub mod audit;
 mod db;
 mod writer;
 
@@ -15,6 +16,9 @@ use std::sync::Mutex;
 use gpui::{App, Global};
 use rusqlite::Connection;
 
+pub use audit::{
+    AuditEntry, AuditFilter, AuditOutcome, AuditRow, DEFAULT_KEEP as AUDIT_DEFAULT_KEEP,
+};
 pub use db::{StoreError, now_seconds};
 pub use writer::{DEBOUNCE, Op, Table, Writer};
 
@@ -244,6 +248,108 @@ impl Store {
     pub fn flush(&self) {
         self.writer.flush();
     }
+
+    // ── 审计日志（append-only） ────────────────────────────────────────────
+    //
+    // 写走 [`Op::PushAudit`]（去抖、批量、同事务裁剪），读走本地读连接。
+    // 与 kv 的分工见 [`crate::audit`] 的模块文档。
+
+    /// 追加一条审计记录，并把表裁到最多 `keep` 条（去抖，异步落盘）。
+    ///
+    /// `keep` 随每条记录一起给（而不是由 store 记一个全局值）：保留上限是**用户设置**，
+    /// 存在 kv 里，调用方本来就握着它；交给 store 记一份反而多出一个会和设置不同步的真源。
+    pub fn audit_push(&self, entry: AuditEntry, keep: usize) {
+        self.writer.send(Op::PushAudit { entry, keep });
+    }
+
+    /// 按条件读审计记录（新 → 旧）。`limit` 为 0 时用缺省条数。
+    #[must_use]
+    pub fn audit_query(&self, filter: &AuditFilter) -> Vec<AuditRow> {
+        let Ok(conn) = self.conn.lock() else {
+            return Vec::new();
+        };
+        // 条件拼成固定的几个 `?n` 片段：值全部走参数，没有一处是字符串插值。
+        let mut clauses: Vec<&str> = Vec::new();
+        if filter.kind.is_some() {
+            clauses.push("kind = ?1");
+        }
+        if filter.problems_only {
+            clauses.push("outcome <> 'ok'");
+        }
+        if filter.trace_id.is_some() {
+            clauses.push("trace_id = ?2");
+        }
+        if filter.scope.is_some() {
+            clauses.push("scope = ?3");
+        }
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        };
+        let limit = if filter.limit == 0 {
+            AuditFilter::DEFAULT_LIMIT
+        } else {
+            filter.limit
+        };
+        let sql = format!(
+            "SELECT id, at, kind, action, outcome, scope, detail, fingerprint, trace_id, duration_ms
+             FROM audit{where_sql} ORDER BY id DESC LIMIT ?4"
+        );
+        let Ok(mut statement) = conn.prepare(&sql) else {
+            return Vec::new();
+        };
+        let rows = statement.query_map(
+            rusqlite::params![
+                filter.kind.as_deref().unwrap_or_default(),
+                filter.trace_id.as_deref().unwrap_or_default(),
+                filter.scope.as_deref().unwrap_or_default(),
+                limit as i64
+            ],
+            |row| {
+                Ok(AuditRow {
+                    id: row.get(0)?,
+                    at: row.get(1)?,
+                    kind: row.get(2)?,
+                    action: row.get(3)?,
+                    outcome: row.get(4)?,
+                    scope: row.get(5)?,
+                    detail: row.get(6)?,
+                    fingerprint: row.get(7)?,
+                    trace_id: row.get(8)?,
+                    duration_ms: row.get(9)?,
+                })
+            },
+        );
+        rows.map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    }
+
+    /// 把审计表裁到最多 `keep` 条（去抖，异步落盘）。
+    ///
+    /// 给「保留上限被**调小**」用：那种情况下没有新记录可写，靠 [`Self::audit_push`]
+    /// 顺手裁的话得等下一次写入，界面上就是「改了档位但列表没缩」。
+    pub fn audit_trim(&self, keep: usize) {
+        self.writer.send(Op::TrimAudit { keep });
+    }
+
+    /// 审计表当前有多少条。
+    #[must_use]
+    pub fn audit_count(&self) -> usize {
+        let Ok(conn) = self.conn.lock() else {
+            return 0;
+        };
+        conn.query_row("SELECT COUNT(*) FROM audit", [], |row| row.get::<_, i64>(0))
+            .map_or(0, |count| count.max(0) as usize)
+    }
+
+    /// 清空审计日志（去抖，异步落盘）。
+    ///
+    /// 这是**用户显式动作**（「清空审计」按钮）：审计的唯一另一种删除是超出保留上限的
+    /// 自动裁剪。两者之外没有第三条路——审计行本身数据库都不许改（见 `db` 的 v3 迁移）。
+    pub fn audit_clear(&self) {
+        self.clear(&[Table::Audit]);
+    }
 }
 
 impl Drop for Store {
@@ -304,5 +410,41 @@ pub fn tool_state_get(cx: &App, tool_id: &str, key: &str) -> Option<String> {
 pub fn tool_state_put(cx: &App, tool_id: &str, key: &str, value: impl Into<String>) {
     if let Some(store) = Store::global(cx) {
         store.tool_state_put(tool_id, key, value);
+    }
+}
+
+/// 追加一条审计记录（`Store` 缺席时静默忽略）。
+pub fn audit_push(cx: &App, entry: AuditEntry, keep: usize) {
+    if let Some(store) = Store::global(cx) {
+        store.audit_push(entry, keep);
+    }
+}
+
+/// 读审计记录（`Store` 缺席时返回空表）。
+///
+/// ⚠️ 写是**去抖**的（[`DEBOUNCE`]）：刚记下的那条可能还没落盘。要「记完立刻读得到」
+/// 的场合（点错误徽标直接开列表）先 [`flush`] 一次。
+#[must_use]
+pub fn audit_query(cx: &App, filter: &AuditFilter) -> Vec<AuditRow> {
+    Store::global(cx).map_or_else(Vec::new, |store| store.audit_query(filter))
+}
+
+/// 审计日志当前条数（`Store` 缺席时为 0）。
+#[must_use]
+pub fn audit_count(cx: &App) -> usize {
+    Store::global(cx).map_or(0, Store::audit_count)
+}
+
+/// 把审计表裁到最多 `keep` 条（`Store` 缺席时静默忽略）。
+pub fn audit_trim(cx: &App, keep: usize) {
+    if let Some(store) = Store::global(cx) {
+        store.audit_trim(keep);
+    }
+}
+
+/// 清空审计日志（`Store` 缺席时静默忽略）。
+pub fn audit_clear(cx: &App) {
+    if let Some(store) = Store::global(cx) {
+        store.audit_clear();
     }
 }

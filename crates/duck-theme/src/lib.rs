@@ -14,7 +14,10 @@ mod tokens;
 mod wire;
 
 pub use builtin::{BuiltinThemeId, base_tokens, button_surface, extended_tokens, foreground_for};
-pub use i18n::{Lang, Locale, system_lang, t, tf, tr, trf};
+pub use i18n::{
+    Lang, Locale, UnderMinute, relative_time, system_lang, t, tf, tn, tr, tr_relative_time, trf,
+    trn,
+};
 pub use manager::{
     Appearance, DEFAULT_ACCENT_RGB, Density, DuckThemeState, NAV_GAP_RANGE, SidebarSide,
     ThemePreference, ThemeSlots, accent_from_rgb, active_theme, apply, default_accent, init,

@@ -1,4 +1,4 @@
-//! 数据备份 / 恢复 / 重置：把「设置 + 快捷键 + 插件 + 日志」打包带走，也能原样收回。
+//! 数据备份 / 恢复 / 重置：把「设置 + 快捷键 + AI 会话 + 插件 + 日志」打包带走，也能原样收回。
 //!
 //! 分层：本模块只做**编排**——读哪些目录、写哪些条目、按什么顺序；真正的字节搬运在
 //! [`duck_platform::archive`]（`tar.gz` 读写 + 逃逸 / 链接 / 炸弹三道校验）。
@@ -15,9 +15,15 @@
 //! 归档里**没有**凭据（`credentials.json` 与 `vault.key` 都是本机私有的东西，
 //! 不属于可以随手分享的应用数据），这一点会写进清单的 `excludes` 字段，
 //! 让用户看到「包里明确没有什么」。
+//!
+//! 第 4 条规则只针对 `ai.db`：**它是活的 SQLite（WAL）库，不能 `fs::copy`**。
+//! 导出走 `VACUUM INTO` 拿一致副本（[`duck_ai::store::snapshot_to`]），
+//! 导入走 `ATTACH` + 逐表搬运（[`duck_ai::store::restore_from`]）——两条都避开
+//! 「换文件」与「拷到一半」这两个坑，细节见那两个函数的文档。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use duck_platform::archive::{self, Entry, Source};
 use duck_store::Table;
@@ -38,12 +44,15 @@ const SETTINGS_KEYBINDINGS: &str = "settings/keybindings.toml";
 const PLUGINS_PREFIX: &str = "plugins";
 /// 日志目录在归档内的前缀。
 const LOGS_PREFIX: &str = "logs";
+/// `ai.db` 快照在归档内的路径（会话 + 知识库索引，同库异表）。
+const AI_DB: &str = "ai/ai.db";
 
 // 清单里的内容块 id：给机器读的（排障时一眼看出包里有什么），不走 i18n。
 const INCLUDE_SETTINGS: &str = "settings";
 const INCLUDE_KEYBINDINGS: &str = "keybindings";
 const INCLUDE_PLUGINS: &str = "plugins";
 const INCLUDE_LOGS: &str = "logs";
+const INCLUDE_AI_DB: &str = "ai-db";
 /// 明确排除项：写进清单，避免用户以为「导出 = 一切都在里面」。
 const EXCLUDE_CREDENTIALS: &str = "credentials";
 
@@ -62,6 +71,8 @@ pub enum BackupError {
     BadManifest(String),
     /// 包的格式版本比本程序新，拒绝导入。
     UnsupportedVersion { found: u32, supported: u32 },
+    /// AI 数据库（`ai.db`）的快照 / 还原失败。
+    Ai(String),
     /// 拒绝在一个不安全的路径上做递归删除（守卫见 [`assert_safe_to_remove`]）。
     UnsafePath(PathBuf),
 }
@@ -78,6 +89,7 @@ impl std::fmt::Display for BackupError {
                 f,
                 "the backup was written by a newer version (format {found} > {supported})"
             ),
+            Self::Ai(detail) => write!(f, "ai.db backup failed: {detail}"),
             Self::UnsafePath(path) => {
                 write!(
                     f,
@@ -106,6 +118,12 @@ impl From<std::io::Error> for BackupError {
 impl From<serde_json::Error> for BackupError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
+    }
+}
+
+impl From<duck_ai::AiError> for BackupError {
+    fn from(error: duck_ai::AiError) -> Self {
+        Self::Ai(error.to_string())
     }
 }
 
@@ -155,6 +173,15 @@ impl DataDirs {
         self.app_data.join("backups")
     }
 
+    /// `ai.db`：AI 会话与知识库索引（**同库异表**，见 [`duck_ai::store`]）。
+    ///
+    /// 与 [`duck_ai::store::default_path`] 必须指向同一个文件——生产环境里
+    /// `app_data` 就是平台的应用数据目录，这里多一层方法只是为了测试可注入。
+    #[must_use]
+    pub fn ai_db(&self) -> PathBuf {
+        self.app_data.join("ai.db")
+    }
+
     /// 快捷键覆盖文件。
     #[must_use]
     pub fn keybindings(&self) -> PathBuf {
@@ -178,6 +205,8 @@ pub struct ExportOptions {
     pub include_plugins: bool,
     /// 是否把日志打进归档。默认关：日志体积大，且排障之外的场景用不到。
     pub include_logs: bool,
+    /// 是否把 `ai.db`（AI 会话 + 知识库索引）打进归档。默认开：会话是不可重建的用户数据。
+    pub include_ai_db: bool,
 }
 
 impl Default for ExportOptions {
@@ -185,6 +214,7 @@ impl Default for ExportOptions {
         Self {
             include_plugins: true,
             include_logs: false,
+            include_ai_db: true,
         }
     }
 }
@@ -219,6 +249,16 @@ pub struct ExportReport {
 #[must_use]
 pub fn default_export_name() -> String {
     format!("duck-backup-{}.tar.gz", duck_platform::file_stamp())
+}
+
+/// 临时文件名：`<prefix>-<pid>-<seq>.<ext>`。
+///
+/// `file_stamp()` 只精确到秒，同一秒内并行导出（或导出与自动备份同时发生）会撞名，
+/// 而 `VACUUM INTO` 的目标被占用时是**直接报错**而不是覆盖。进程内自增序号足够。
+fn temp_name(prefix: &str, ext: &str) -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{seq}.{ext}", std::process::id())
 }
 
 /// 当前编译版本，写进清单（「这个包是哪一版产的」是排障时第一个要问的）。
@@ -278,6 +318,24 @@ pub fn write_archive(
         });
     }
 
+    // `ai.db` 是活的 WAL 库，**不能**当普通文件塞进归档（拷到一半就是坏快照）：
+    // 先让 SQLite 自己 `VACUUM INTO` 一份一致副本，收完包再删掉临时文件。
+    // 快照失败是**硬错误**——会话是不可重建的用户数据，宁可导出失败，也不能悄悄
+    // 产出一个「看起来成功、其实没带会话」的包。库里本来就没事时返回 `Ok(false)`，跳过。
+    let mut staged_ai_db: Option<PathBuf> = None;
+    if options.include_ai_db {
+        duck_platform::ensure_dir(&dirs.backups())?;
+        let staged = dirs.backups().join(temp_name("ai-db", "sqlite"));
+        if duck_ai::store::snapshot_to(&dirs.ai_db(), &staged)? {
+            includes.push(INCLUDE_AI_DB.to_owned());
+            entries.push(Entry {
+                name: AI_DB.to_owned(),
+                source: Source::File(staged.clone()),
+            });
+            staged_ai_db = Some(staged);
+        }
+    }
+
     let manifest = BackupManifest {
         format_version: FORMAT_VERSION,
         app_version: app_version.to_owned(),
@@ -294,7 +352,12 @@ pub fn write_archive(
         },
     );
 
-    let bytes = archive::create(dest, &entries)?;
+    let created = archive::create(dest, &entries);
+    // 临时快照无论成败都要清掉：它是 `ai.db` 的完整副本，留在磁盘上是白占空间。
+    if let Some(staged) = staged_ai_db {
+        let _ = std::fs::remove_file(staged);
+    }
+    let bytes = created?;
     Ok(ExportReport {
         path: dest.to_path_buf(),
         bytes,
@@ -329,6 +392,8 @@ pub struct Loaded {
     pub kv: Vec<(String, String)>,
     /// 包内的快捷键文件内容。
     pub keybindings: Option<String>,
+    /// 解包出来的 `ai.db` 快照（**老包没有这一项**，那时为 `None`）。
+    pub ai_db: Option<PathBuf>,
     /// 解包落点（调用方用完负责清理）。
     pub staging: PathBuf,
 }
@@ -354,10 +419,13 @@ pub fn load_archive(src: &Path, staging: &Path) -> Result<Loaded, BackupError> {
 
     let kv = read_kv(staging)?;
     let keybindings = std::fs::read_to_string(staging.join(SETTINGS_KEYBINDINGS)).ok();
+    // 老包（`ai.db` 进备份之前产的）没有这一项：合法，导入时跳过即可。
+    let ai_db = staging.join(AI_DB).is_file().then(|| staging.join(AI_DB));
     Ok(Loaded {
         manifest,
         kv,
         keybindings,
+        ai_db,
         staging: staging.to_path_buf(),
     })
 }
@@ -395,6 +463,8 @@ pub struct ImportReport {
     pub keybindings: bool,
     /// 是否合并了插件目录。
     pub plugins: bool,
+    /// 是否从包里还原了 `ai.db`（老包没有这一项时为 `false`）。
+    pub ai_db: bool,
     /// 导入前的自动备份路径。
     pub backup: PathBuf,
     /// 包内清单。
@@ -426,6 +496,7 @@ pub fn import(
         ExportOptions {
             include_plugins: true,
             include_logs: false,
+            include_ai_db: true,
         },
         &app_version(),
     )?;
@@ -454,11 +525,23 @@ pub fn import(
         merged_plugins = true;
     }
 
+    // AI 会话 + 知识库索引是**逻辑还原**（`ATTACH` 快照 + 逐表搬运），不换文件：
+    // 运行期的 `AiStore` / `KbIndex` 长连接还挂在那个 inode 上，换文件会把它们之后的
+    // 写入丢进幽灵文件。老包没有这一项就跳过——不是错误，UI 会如实说明。
+    let restored_ai_db = match &loaded.ai_db {
+        Some(snapshot) => {
+            duck_ai::store::restore_from(snapshot, &dirs.ai_db())?;
+            true
+        }
+        None => false,
+    };
+
     let _ = std::fs::remove_dir_all(&loaded.staging);
     let report = ImportReport {
         keys: loaded.kv.len(),
         keybindings: wrote_keybindings,
         plugins: merged_plugins,
+        ai_db: restored_ai_db,
         backup,
         manifest: loaded.manifest,
     };
@@ -467,6 +550,7 @@ pub fn import(
         keys = report.keys,
         keybindings = report.keybindings,
         plugins = report.plugins,
+        ai_db = report.ai_db,
         from_version = %report.manifest.app_version,
         backup = %report.backup.display(),
         "data import applied"
@@ -494,19 +578,42 @@ pub struct ResetReport {
     pub tables: Vec<Table>,
     /// 被删除的目录 / 文件。
     pub removed: Vec<PathBuf>,
+    /// 是否清空了 `ai.db`（AI 会话与知识库索引）。
+    ///
+    /// 与 `removed` 分开：`ai.db` 是**逻辑清空**（`DELETE FROM`），文件本身留下，
+    /// 因为运行期的长连接还挂在它上面（见 [`duck_ai::store::clear`]）。
+    pub ai_db_cleared: bool,
 }
 
 /// 清哪些表。
+///
+/// ⚠️ **审计日志只在「全清」时才删**：它是「发生过什么」的流水，与设置 / 缓存不同 ——
+/// 重置设置顺手毁掉最近的连接与写入记录，正好会毁掉查「刚才那次重置之前发生了什么」的
+/// 唯一线索。要清它得明确点「全清」，而那一档本来就承诺了「什么都不留」。
 #[must_use]
 pub fn reset_tables(scope: ResetScope) -> Vec<Table> {
     match scope {
         ResetScope::Settings | ResetScope::SettingsAndPlugins => {
             vec![Table::Kv, Table::Recent, Table::ToolState]
         }
-        ResetScope::Everything => {
-            vec![Table::Kv, Table::Recent, Table::ToolState, Table::Windows]
-        }
+        ResetScope::Everything => vec![
+            Table::Kv,
+            Table::Recent,
+            Table::ToolState,
+            Table::Windows,
+            Table::Audit,
+        ],
     }
+}
+
+/// 该档重置是否要清空 `ai.db`（AI 会话 + 知识库索引）。
+///
+/// 只有**全清**动它：会话是用户内容而不是「设置」，而 `ai.db` 与
+/// `duck-store` 的表不同库，清掉就没了（知识库索引可重建，会话不行）。
+/// 轻量两档（重置设置 / 重置设置与插件）不该顺手毁掉聊天历史。
+#[must_use]
+pub fn reset_clears_ai_db(scope: ResetScope) -> bool {
+    scope == ResetScope::Everything
 }
 
 /// 恢复出厂状态。
@@ -523,6 +630,7 @@ pub fn reset(scope: ResetScope, dirs: &DataDirs, cx: &App) -> Result<ResetReport
         ExportOptions {
             include_plugins: true,
             include_logs: false,
+            include_ai_db: true,
         },
         &app_version(),
     )?;
@@ -552,15 +660,31 @@ pub fn reset(scope: ResetScope, dirs: &DataDirs, cx: &App) -> Result<ResetReport
         }
     }
 
+    // `ai.db` 走**逻辑清空**而不是删文件：`AiStore` / `KbIndex` 的长连接还开着，
+    // `fs::remove_file` 只会把它从目录里摘掉，连接继续在幽灵 inode 上读写——
+    // 用户看到的是「重置完聊天记录又回来了」。见 [`duck_ai::store::clear`]。
+    // 路径仍然先过一遍删除守卫：防的是「常量拼错」，与真删不真删无关。
+    let mut ai_db_cleared = false;
+    if reset_clears_ai_db(scope) {
+        let database = dirs.ai_db();
+        if database.is_file() {
+            assert_safe_to_remove(dirs, &database)?;
+            duck_ai::store::clear(&database)?;
+            ai_db_cleared = true;
+        }
+    }
+
     let report = ResetReport {
         backup,
         tables,
         removed,
+        ai_db_cleared,
     };
     tracing::info!(
         ?scope,
         tables = report.tables.len(),
         removed = report.removed.len(),
+        ai_db_cleared = report.ai_db_cleared,
         backup = %report.backup.display(),
         "data reset applied"
     );
@@ -671,6 +795,7 @@ mod tests {
             ExportOptions {
                 include_plugins: true,
                 include_logs: false,
+                include_ai_db: true,
             },
             "9.9.9",
         )
@@ -694,6 +819,10 @@ mod tests {
         assert!(
             !report.manifest.includes.contains(&INCLUDE_LOGS.to_owned()),
             "没开日志就不该声明含日志"
+        );
+        assert!(
+            !report.manifest.includes.contains(&INCLUDE_AI_DB.to_owned()),
+            "没有 ai.db 就不该声明含 ai-db"
         );
         assert_eq!(
             report.manifest.excludes,
@@ -837,7 +966,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 重置范围的分级：只有「全清」才动窗口几何。
+    /// 重置范围的分级：只有「全清」才动窗口几何与审计日志。
     #[test]
     fn reset_scopes_are_layered() {
         assert_eq!(
@@ -848,7 +977,16 @@ mod tests {
             !reset_tables(ResetScope::SettingsAndPlugins).contains(&Table::Windows),
             "删插件不该把窗口位置也清掉"
         );
-        assert!(reset_tables(ResetScope::Everything).contains(&Table::Windows));
+        let everything = reset_tables(ResetScope::Everything);
+        assert!(everything.contains(&Table::Windows));
+        assert!(
+            everything.contains(&Table::Audit),
+            "「全清」承诺什么都不留，审计也要清"
+        );
+        assert!(
+            !reset_tables(ResetScope::Settings).contains(&Table::Audit),
+            "重置设置不该顺手毁掉审计流水"
+        );
     }
 
     /// 删除守卫：数据目录本身与目录之外的路径一律拒绝。
@@ -873,5 +1011,121 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- ai.db（AI 会话 + 知识库索引）-------------------------------------
+
+    /// 造一个「有会话、也有知识库来源」的 `ai.db`。
+    fn seeded_ai_db(path: &Path) {
+        let store = duck_ai::store::AiStore::open(path).expect("开 ai.db");
+        let conversation = store.create_conversation("会话", Some("m")).unwrap();
+        store
+            .append_message(&conversation.id, &duck_ai::ChatMessage::user("hi"), None)
+            .unwrap();
+        drop(store);
+        let _ = duck_ai::kb::KbIndex::open(path).expect("建 kb 表");
+    }
+
+    fn conversation_count(path: &Path) -> usize {
+        duck_ai::store::AiStore::open(path)
+            .unwrap()
+            .list_conversations()
+            .unwrap()
+            .len()
+    }
+
+    /// 导出→导入往返：`ai.db` 连同会话一起走一个来回。
+    #[gpui::test]
+    fn import_restores_the_ai_database(cx: &mut gpui::TestAppContext) {
+        let dir = scratch("ai-db-import");
+        let dirs = dirs_for(&dir);
+        std::fs::create_dir_all(dirs.app_data.clone()).unwrap();
+        seeded_ai_db(&dirs.ai_db());
+        assert_eq!(conversation_count(&dirs.ai_db()), 1);
+
+        let archive = dir.join("backup.tar.gz");
+        let report = write_archive(
+            &archive,
+            &dirs,
+            &snapshot(),
+            ExportOptions::default(),
+            "9.9.9",
+        )
+        .expect("导出");
+        assert!(
+            report.manifest.includes.contains(&INCLUDE_AI_DB.to_owned()),
+            "有 ai.db 就该登记进 includes"
+        );
+
+        // 模拟「换台机器 / 先重置过」：活库里的会话没了。
+        duck_ai::store::clear(&dirs.ai_db()).unwrap();
+        assert_eq!(conversation_count(&dirs.ai_db()), 0);
+
+        cx.update(|cx| {
+            let applied = import(
+                &archive,
+                &dirs,
+                ImportMode::Merge,
+                ImportOptions::default(),
+                cx,
+            )
+            .unwrap();
+            assert!(applied.ai_db, "包里带 ai.db，报告要如实说还原过");
+        });
+
+        assert_eq!(conversation_count(&dirs.ai_db()), 1, "会话要还原回来");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 老包（`ai.db` 进备份之前产的）导入**不报错**，只是跳过 AI 那一段。
+    #[gpui::test]
+    fn import_tolerates_a_package_without_the_ai_database(cx: &mut gpui::TestAppContext) {
+        let dir = scratch("no-ai-db");
+        let dirs = dirs_for(&dir);
+        std::fs::create_dir_all(dirs.app_data.clone()).unwrap();
+        // 活库里有会话：包里没有 ai.db，所以它必须**原样保留**，不能被清掉。
+        seeded_ai_db(&dirs.ai_db());
+
+        let archive = dir.join("legacy.tar.gz");
+        write_archive(
+            &archive,
+            &dirs,
+            &snapshot(),
+            ExportOptions {
+                include_ai_db: false,
+                ..ExportOptions::default()
+            },
+            "0.1.0",
+        )
+        .expect("导出");
+
+        let staging = dir.join("staging");
+        let loaded = load_archive(&archive, &staging).expect("读包");
+        assert!(loaded.ai_db.is_none(), "包里没有 ai.db 就该是 None");
+
+        cx.update(|cx| {
+            let applied = import(
+                &archive,
+                &dirs,
+                ImportMode::Merge,
+                ImportOptions::default(),
+                cx,
+            )
+            .unwrap();
+            assert!(!applied.ai_db, "没得还原就要如实报 false");
+        });
+
+        assert_eq!(conversation_count(&dirs.ai_db()), 1, "本机原有会话不受影响");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 重置分档：只有「全清」动 `ai.db`。
+    #[test]
+    fn reset_scopes_decide_the_ai_database() {
+        assert!(!reset_clears_ai_db(ResetScope::Settings));
+        assert!(!reset_clears_ai_db(ResetScope::SettingsAndPlugins));
+        assert!(reset_clears_ai_db(ResetScope::Everything));
     }
 }

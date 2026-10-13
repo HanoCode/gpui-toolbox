@@ -1,4 +1,4 @@
-//! 协议层：IMAP（M1）/ JMAP（M2）/ Gmail REST（M2）。
+//! 协议层：IMAP（收信，M1）/ SMTP（发信）/ JMAP（M2）/ Gmail REST（M2）。
 //!
 //! # 为什么是枚举分发而不是 trait
 //!
@@ -9,8 +9,10 @@
 //! 而 trait 会静默地被 `Box<dyn>` 藏起来。
 
 pub mod imap;
+pub mod smtp;
+pub mod utf7;
 
-use crate::models::ConnectionSecurity;
+use crate::models::{AuthKind, ConnectionSecurity};
 
 /// 邮箱访问协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +54,10 @@ pub struct ImapConfig {
     pub security: ConnectionSecurity,
     /// 登录名。
     pub username: String,
-    /// 口令。
+    /// 凭据。口令档是口令，[`AuthKind::OAuth2`] 档是**访问令牌**。
     pub password: String,
+    /// 认证方式：决定 `password` 是口令还是访问令牌，以及走 `LOGIN` 还是 `XOAUTH2`。
+    pub auth: AuthKind,
 }
 
 impl ImapConfig {

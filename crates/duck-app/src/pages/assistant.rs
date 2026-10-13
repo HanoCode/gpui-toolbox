@@ -33,14 +33,14 @@ use duck_ai::{
 use duck_components::{
     ButtonVariant, DuckIcon, SidebarPanel, SidebarState, button, card,
     content::{accent_tag, accordion, empty_state, neutral_tag, tag},
-    detail_title_text, dropdown_select, icon_button, meta_text, notify,
+    detail_title_text, dropdown_select, icon_button, icon_text_button, meta_text, notify,
     notify::Tone,
     sidebar_navigation_button,
 };
 use duck_theme::{DuckThemeState, active_theme, tr, trf};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Div, Entity, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, Render, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, WeakEntity, Window, div, px,
 };
 use gpui_component::{
@@ -80,7 +80,7 @@ const COMPOSER_MAX_ROWS: usize = 10;
 /// 一次问答的生成参数落到内核前的默认网络超时（秒）。
 const REQUEST_TIMEOUT_SECS: u64 = 300;
 
-/// 工具轮次上限。
+/// 工具轮次上限的**默认值**（设置页可覆盖，见 `AiSettings::max_tool_rounds`）。
 ///
 /// 兜底而非功能：模型偶发会陷入「调工具 → 看结果 → 再调同一个」的循环，
 /// 没有上限就是无限花钱。撞上限时会在消息流末尾明说「已达最大工具轮次」。
@@ -176,6 +176,32 @@ struct Row {
     /// 稳定 `ElementId`（同一个会话里同一行永远同一个 id，选中态与滚动位置才不会串）。
     id: SharedString,
     kind: RowKind,
+    /// 行内操作（没有就不画按钮）。
+    action: Option<RowAction>,
+}
+
+/// 消息行上的行内操作。
+///
+/// **只在「最后一条同类消息」上给**（见 [`AssistantPage::message_actions`]）：
+/// 「重新生成」要删掉它后面的一切，「编辑重发」同理——挂到中间某条上等于一个
+/// 不显眼的分支操作，误点就会静默丢掉后面几轮对话，代价和收益不成比例。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowAction {
+    /// 重新生成：截断这条助手消息及其之后的消息，再按剩下的历史重发。
+    Regenerate(usize),
+    /// 编辑重发：把这条用户消息的正文填回输入框，发送时从它重新开始。
+    Edit(usize),
+    /// 重试：本轮失败后，把最后一条用户消息原样重发。
+    Retry,
+}
+
+/// 哪些消息下标上要挂行内操作。
+#[derive(Debug, Clone, Copy, Default)]
+struct MessageActions {
+    /// 最后一条助手消息（`messages` 里的下标）。
+    last_assistant: Option<usize>,
+    /// 最后一条用户消息（`messages` 里的下标）。
+    last_user: Option<usize>,
 }
 
 enum RowKind {
@@ -246,6 +272,19 @@ pub struct AssistantPage {
     active: Option<String>,
     /// 当前会话的消息（含流式中的那条的**已完成**部分）。
     messages: Vec<ChatMessage>,
+    /// 「编辑重发」正在编辑的那条用户消息在 [`Self::messages`] 里的下标。
+    ///
+    /// **不变量**：`messages` 的下标恒等于落库 `seq`——消息总是追加在尾部，
+    /// 截断也只从尾部截（[`AiStore::truncate_after`]），所以 seq 始终是 0..n 的稠密序列。
+    /// 「重新生成 / 编辑重发」依赖这条不变量把下标当 seq 用。
+    editing: Option<usize>,
+    /// 左栏就地重命名用的输入框。
+    ///
+    /// **常驻**（与 [`Self::search`] 同款）而不是每次改名新建一个：新建就要挂一条
+    /// 订阅，改几次就攒几条；而且输入框实体换掉时，用户正在输的内容会跟着丢。
+    rename_input: Entity<InputState>,
+    /// 正在改名的会话 id；`None` = 没有在改名。
+    renaming: Option<String>,
 
     /// 正在跑的一轮。
     streaming: Option<Streaming>,
@@ -293,6 +332,7 @@ impl AssistantPage {
                 .submit_on_enter(true)
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "搜索会话…")));
+        let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "会话标题")));
         let scroll = cx.new(|cx| MessageScrollerState::new(0, cx));
 
         let providers = ai::load_providers(cx);
@@ -341,12 +381,23 @@ impl AssistantPage {
                     }
                 },
             ),
+            // 改名输入框：回车提交，失焦也提交（点别处 = 就是它了）。
+            // 空标题视为取消——见 `commit_rename`。
+            cx.subscribe(
+                &rename_input,
+                |this: &mut Self, _source, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        this.commit_rename(cx);
+                    }
+                },
+            ),
         ];
 
         Self {
             sidebar,
             composer,
             search,
+            rename_input,
             scroll,
             view: cx.entity().downgrade(),
             _subscriptions: subscriptions,
@@ -357,6 +408,8 @@ impl AssistantPage {
             conversations,
             active: None,
             messages: Vec::new(),
+            editing: None,
+            renaming: None,
             streaming: None,
             poll_task: None,
             status: tr(cx, "就绪").into(),
@@ -450,14 +503,28 @@ impl AssistantPage {
         self.stop_streaming(cx);
         self.active = Some(id.to_owned());
         self.error = None;
+        // 编辑态是「针对某条消息」的，跨会话就失效了。
+        self.editing = None;
         self.messages = self
             .store
             .as_ref()
             .and_then(|store| store.messages(id).ok())
             .map(|stored| stored.iter().filter_map(|item| item.message()).collect())
             .unwrap_or_default();
+        // 恢复这个会话最后使用的模型：档案里模型名相同的就选中它。
+        // 会话存的是**模型名**而不是档案 id（档案可能被删改），所以按名字找。
+        let saved = self
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == id)
+            .and_then(|conversation| conversation.model.clone());
+        if let Some(saved) = saved.filter(|model| !model.trim().is_empty())
+            && let Some(profile) = self.providers.iter().find(|profile| profile.model == saved)
+        {
+            self.selected_provider = Some(profile.id.clone());
+        }
         self.status = tr(cx, "就绪").into();
-        self.sync_scroller(cx, true);
+        self.reset_scroller(cx);
         cx.notify();
     }
 
@@ -475,6 +542,11 @@ impl AssistantPage {
             self.stop_streaming(cx);
             self.active = None;
             self.messages.clear();
+            self.editing = None;
+        }
+        // 正在改名的就是它的话，输入框跟着行一起收掉。
+        if self.renaming.as_deref() == Some(id) {
+            self.renaming = None;
         }
         self.refresh_conversations();
         self.sync_scroller(cx, true);
@@ -526,9 +598,20 @@ impl AssistantPage {
     /// 屏幕上出现过什么，落库的就是什么。
     fn rows(&self) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
-        push_message_rows(&self.messages, "assistant-msg", &mut rows);
+        push_message_rows(
+            &self.messages,
+            "assistant-msg",
+            self.message_actions(),
+            &mut rows,
+        );
         if let Some(streaming) = self.streaming.as_ref() {
-            push_message_rows(&streaming.live, "assistant-live", &mut rows);
+            // 正在跑的一轮不给行内操作：那几行还没落库，没有稳定的 seq。
+            push_message_rows(
+                &streaming.live,
+                "assistant-live",
+                MessageActions::default(),
+                &mut rows,
+            );
 
             let has_text = !(streaming.text.is_empty() && streaming.thinking.is_empty());
             // 空正文的占位气泡只在**没有任何别的可看内容**时出现：
@@ -536,6 +619,7 @@ impl AssistantPage {
             if has_text || streaming.tool_runs.is_empty() {
                 rows.push(Row {
                     id: SharedString::from("assistant-streaming"),
+                    action: None,
                     kind: RowKind::Assistant {
                         text: streaming.text.clone(),
                         thinking: (!streaming.thinking.is_empty())
@@ -546,6 +630,7 @@ impl AssistantPage {
             for run in &streaming.tool_runs {
                 rows.push(Row {
                     id: SharedString::from(format!("assistant-live-tool-{}", run.call_id)),
+                    action: None,
                     kind: RowKind::Tool(Box::new(ToolCard {
                         name: run.name.clone(),
                         summary: run.summary.clone(),
@@ -568,10 +653,32 @@ impl AssistantPage {
         {
             rows.push(Row {
                 id: SharedString::from("assistant-error"),
+                // 失败的那一轮没产出任何助手消息，尾部仍然是那条用户提问，
+                // 所以「重试」就是把它原样再发一次。
+                action: self.streaming.is_none().then_some(RowAction::Retry),
                 kind: RowKind::Error { text: error.into() },
             });
         }
         rows
+    }
+
+    /// 哪些消息下标上要挂行内操作。
+    ///
+    /// 流式期间一律不给：此时尾部有还没落库的行，用户点「重新生成」会删掉正在跑的这一轮。
+    fn message_actions(&self) -> MessageActions {
+        if self.streaming.is_some() {
+            return MessageActions::default();
+        }
+        MessageActions {
+            last_assistant: self
+                .messages
+                .iter()
+                .rposition(|message| message.role == Role::Assistant),
+            last_user: self
+                .messages
+                .iter()
+                .rposition(|message| message.role == Role::User),
+        }
     }
 
     /// 让滚动列表的行数与快照一致；`remeasure` 决定要不要重测最后一行。
@@ -581,18 +688,28 @@ impl AssistantPage {
     fn sync_scroller(&mut self, cx: &mut Context<Self>, remeasure: bool) {
         let target = self.rows().len();
         let state = self.scroll.clone();
-        let streaming = self.streaming.is_some();
         state.update(cx, |state, cx| {
             let current = state.item_count();
             if current < target {
                 state.append(target - current, cx);
             } else if current > target {
+                // `reset` 会把全部行标成「未测量」，等于全量重测。
                 state.reset(target, cx);
-            } else if remeasure && streaming && target > 0 {
-                // 流式增长时最后一行的高度在变，必须重测，否则列表按旧高度排布。
-                state.remeasure_items(target - 1..target, cx);
+            } else if remeasure && target > 0 {
+                // **行数没变但行内容变了**：流式增长时最后一行在长高；一轮结束、
+                // 或开始新一轮（行内操作按钮出现 / 消失）时末尾两行的高度也会变。
+                // `append` 只重测最后一行、`reset` 只在行数变化时走，覆盖不到这两种
+                // 情形，所以这里显式重测末尾两行——「编辑重发」挂在倒数第二条上。
+                state.remeasure_items(target.saturating_sub(2)..target, cx);
             }
         });
+    }
+
+    /// 全量重测：整份列表的内容都换了（切会话），逐行比对高度没有意义。
+    fn reset_scroller(&mut self, cx: &mut Context<Self>) {
+        let target = self.rows().len();
+        let state = self.scroll.clone();
+        state.update(cx, |state, cx| state.reset(target, cx));
     }
 
     /// 清掉输入框。
@@ -620,24 +737,14 @@ impl AssistantPage {
         if prompt.is_empty() {
             return;
         }
-        let Some(profile) = self.active_profile().cloned() else {
-            self.error = Some(SharedString::from(tr(
-                cx,
-                "还没有可用的模型厂商，先到「设置 → AI」添加一个",
-            )));
-            cx.notify();
-            return;
+        let profile = match self.ready_profile(cx) {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.error = Some(SharedString::from(message));
+                cx.notify();
+                return;
+            }
         };
-        if let Err(failure) = profile.validate() {
-            self.error = Some(SharedString::from(failure.to_string()));
-            cx.notify();
-            return;
-        }
-        if self.store.is_none() {
-            self.error = Some(SharedString::from(tr(cx, "会话库不可用，无法保存这轮对话")));
-            cx.notify();
-            return;
-        }
 
         // 没有会话就顺手建一个。
         if self.active.is_none() {
@@ -647,6 +754,11 @@ impl AssistantPage {
             }
         }
         let conversation_id = self.active.clone().expect("just ensured");
+
+        // 「编辑重发」：先从被编辑的那条消息起截断，这次发送的内容就是新的正文。
+        if let Some(index) = self.editing.take() {
+            self.truncate_from(index, cx);
+        }
 
         // 用户消息：先落库再入内存——落库失败时不该让界面显示一条其实没存下来的消息。
         let user_message = ChatMessage::user(prompt.clone());
@@ -661,6 +773,41 @@ impl AssistantPage {
         self.ensure_title(&conversation_id, &prompt);
         self.clear_composer(window, cx);
         self.error = None;
+        self.begin_turn(profile, cx);
+    }
+
+    /// 取本轮要用的档案并校验；失败时返回给用户看的文案。
+    ///
+    /// 三条前置条件（缺厂商 / 档案不完整 / 会话库不可用）在「发送 / 重新生成 / 重试」
+    /// 三条路径上完全一致，所以收敛到一处——复制三遍迟早会漏掉一条。
+    fn ready_profile(&self, cx: &App) -> Result<ProviderProfile, String> {
+        let Some(profile) = self.active_profile().cloned() else {
+            return Err(tr(cx, "还没有可用的模型厂商，先到「设置 → AI」添加一个").to_owned());
+        };
+        if let Err(failure) = profile.validate() {
+            return Err(failure.to_string());
+        }
+        if self.store.is_none() {
+            return Err(tr(cx, "会话库不可用，无法保存这轮对话").to_owned());
+        }
+        Ok(profile)
+    }
+
+    /// 组装历史并把这一轮交给后台线程。
+    ///
+    /// 进入前 `self.messages` 必须已经以「要发给模型的完整对话」结尾，且 `profile`
+    /// 已经过 [`Self::ready_profile`] 校验。
+    fn begin_turn(&mut self, profile: ProviderProfile, cx: &mut Context<Self>) {
+        let Some(conversation_id) = self.active.clone() else {
+            return;
+        };
+        // 任何一轮开始都意味着「编辑态」结束——否则「重新生成」之后再发送一次，
+        // 会把早已被截断的那条消息又截一遍。
+        self.editing = None;
+        // 记下会话最后使用的模型：切回这个会话时按它恢复输入区上方的模型控件。
+        if let Some(store) = self.store.as_ref() {
+            let _ = store.set_conversation_model(&conversation_id, &profile.model);
+        }
 
         // 组装发给模型的完整对话：system 在最前。
         let mut history = Vec::with_capacity(self.messages.len() + 1);
@@ -673,7 +820,16 @@ impl AssistantPage {
             temperature: self.settings.temperature,
             max_tokens: self.settings.max_tokens,
             timeout_secs: REQUEST_TIMEOUT_SECS,
+            // 上下文预算可在「设置 → AI → 生成参数」里调（`0` = 关闭压缩）；未设置时
+            // 用内核默认口径。这里读的是**设置快照**，改完设置立即对下一轮生效。
+            compaction: ai::compaction_policy(&self.settings),
         };
+        // 轮次上限可配置（设置 → AI → 生成参数）；`.max(1)` 兜住手改 kv 写入的 0。
+        let max_rounds = self
+            .settings
+            .max_tool_rounds
+            .unwrap_or(MAX_TOOL_ROUNDS)
+            .max(1);
         let handle = RunHandle::new();
         let (sender, receiver) = mpsc::channel::<StreamMessage>();
         let thread_handle = handle.clone();
@@ -694,19 +850,22 @@ impl AssistantPage {
                 // key 直接从档案副本里解出来：密文随 `profile` 一起进了线程，
                 // 不再有「后台再去系统存储取一次」那一步。解密是纯内存操作
                 // （密钥已缓存），所以在这里做不会卡住 UI 线程。
-                let api_key =
-                    match thread_profile.api_key.as_deref().and_then(duck_ai::secret::open) {
-                        Some(key) => key,
-                        // 解不开（换了机器、密钥文件被删）与「本来就还没配」在这里
-                        // 是同一件事：都当作没配密钥，报同一句话。
-                        None if thread_profile.needs_key() => {
-                            let _ = sender.send(StreamMessage::Failed(
-                                "no API key stored for this provider".to_owned(),
-                            ));
-                            return;
-                        }
-                        None => String::new(),
-                    };
+                let api_key = match thread_profile
+                    .api_key
+                    .as_deref()
+                    .and_then(duck_ai::secret::open)
+                {
+                    Some(key) => key,
+                    // 解不开（换了机器、密钥文件被删）与「本来就还没配」在这里
+                    // 是同一件事：都当作没配密钥，报同一句话。
+                    None if thread_profile.needs_key() => {
+                        let _ = sender.send(StreamMessage::Failed(
+                            "no API key stored for this provider".to_owned(),
+                        ));
+                        return;
+                    }
+                    None => String::new(),
+                };
 
                 let mut sink = |event: AgentEvent| {
                     let _ = sender.send(StreamMessage::Event(event));
@@ -732,7 +891,7 @@ impl AssistantPage {
                     &history,
                     &AgentOptions {
                         chat: options,
-                        max_rounds: MAX_TOOL_ROUNDS,
+                        max_rounds,
                     },
                     &registry,
                     &mut approve,
@@ -872,6 +1031,7 @@ impl AssistantPage {
                 let stop_reason = outcome.stop_reason;
                 let cancelled = outcome.cancelled;
                 let exhausted = streaming.rounds_exhausted;
+                let compaction = outcome.compaction;
 
                 self.persist_messages(&messages, Some(usage));
                 self.status = if cancelled {
@@ -881,6 +1041,18 @@ impl AssistantPage {
                         cx,
                         "已达最大工具轮次（{}）",
                         &[&exhausted.unwrap_or_default().to_string()],
+                    )
+                    .into()
+                } else if compaction.changed() {
+                    // 长会话里内核会在发请求前压缩上下文。说清楚「省了什么」，
+                    // 否则用户只会发现「模型忽然忘了前面的事」而不知道发生了什么。
+                    trf(
+                        cx,
+                        "已压缩较早上下文（省略 {} 条消息 / 裁剪 {} 条工具结果）",
+                        &[
+                            &compaction.dropped_messages.to_string(),
+                            &compaction.pruned_tool_results.to_string(),
+                        ],
                     )
                     .into()
                 } else {
@@ -961,6 +1133,163 @@ impl AssistantPage {
     }
 
     // ------------------------------------------------------------------
+    // 重新生成 / 编辑重发 / 重试
+    // ------------------------------------------------------------------
+
+    /// 从 `messages[index]` 起把内存与库里的消息一起删掉。
+    ///
+    /// **下标即 `seq`**：见 [`Self::messages`] 字段上的不变量说明。
+    /// 落库失败时不动内存——宁可什么都不删，也不要让界面和库里对不上。
+    fn truncate_from(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.messages.len() {
+            return;
+        }
+        let Some(conversation_id) = self.active.clone() else {
+            return;
+        };
+        if let Some(store) = self.store.as_ref()
+            && let Err(failure) = store.truncate_after(&conversation_id, index as i64)
+        {
+            self.error = Some(SharedString::from(failure.to_string()));
+            cx.notify();
+            return;
+        }
+        self.messages.truncate(index);
+    }
+
+    /// 「重新生成」：删掉这条助手消息及其之后的一切，按剩下的历史重发。
+    fn regenerate(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.streaming.is_some() {
+            return;
+        }
+        // 只对助手消息开放：截断点必须落在「提问之后、回答之前」，否则重发的输入不对。
+        if self.messages.get(index).map(|message| message.role) != Some(Role::Assistant) {
+            return;
+        }
+        let profile = match self.ready_profile(cx) {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.error = Some(SharedString::from(message));
+                cx.notify();
+                return;
+            }
+        };
+        self.truncate_from(index, cx);
+        // 截断后尾部必须是一条用户消息，否则这一轮没有可重发的输入。
+        if self.messages.last().map(|message| message.role) != Some(Role::User) {
+            self.error = Some(SharedString::from(tr(cx, "这条回答前面没有可重发的提问")));
+            cx.notify();
+            return;
+        }
+        self.error = None;
+        self.begin_turn(profile, cx);
+    }
+
+    /// 「编辑重发」：把这条用户消息的正文填回输入框，发送时从它重新开始。
+    fn begin_edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.streaming.is_some() {
+            return;
+        }
+        if self.messages.get(index).map(|message| message.role) != Some(Role::User) {
+            return;
+        }
+        let text = self.messages[index].text();
+        self.composer
+            .update(cx, |state, cx| state.set_value(text, window, cx));
+        self.editing = Some(index);
+        self.error = None;
+        self.status = tr(cx, "正在编辑消息，发送后将从这里重新开始").into();
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    /// 退出编辑态（不清库：用户只是不想改了）。
+    fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.take().is_none() {
+            return;
+        }
+        self.clear_composer(window, cx);
+        self.status = tr(cx, "就绪").into();
+        cx.notify();
+    }
+
+    /// 「重试」：把最后一条用户消息原样重发。
+    ///
+    /// 失败时 `finish_stream` 只会落库**已经定稿的轮次**，所以出错后尾部通常仍是
+    /// 那条用户消息；万一不是（多轮工具跑到一半断的），就明确报错而不是乱发。
+    fn retry(&mut self, cx: &mut Context<Self>) {
+        if self.streaming.is_some() {
+            return;
+        }
+        let profile = match self.ready_profile(cx) {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.error = Some(SharedString::from(message));
+                cx.notify();
+                return;
+            }
+        };
+        if self.messages.last().map(|message| message.role) != Some(Role::User) {
+            self.error = Some(SharedString::from(tr(cx, "没有可重试的提问")));
+            cx.notify();
+            return;
+        }
+        self.error = None;
+        self.begin_turn(profile, cx);
+    }
+
+    // ------------------------------------------------------------------
+    // 会话重命名
+    // ------------------------------------------------------------------
+
+    /// 进入某个会话的就地重命名。
+    fn start_rename(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == id)
+            .map(|conversation| conversation.title.clone())
+            .unwrap_or_default();
+        self.rename_input
+            .update(cx, |state, cx| state.set_value(title, window, cx));
+        self.renaming = Some(id);
+        let handle = self.rename_input.read(cx).focus_handle(cx);
+        handle.focus(window, cx);
+        cx.notify();
+    }
+
+    /// 提交改名：空标题视为取消（不写库、保持原标题）。
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.renaming.take() else {
+            return;
+        };
+        let title = self.rename_input.read(cx).value().trim().to_owned();
+        if title.is_empty() {
+            cx.notify();
+            return;
+        }
+        if let Some(store) = self.store.as_ref()
+            && let Err(failure) = store.rename_conversation(&id, &title)
+        {
+            self.error = Some(SharedString::from(failure.to_string()));
+        }
+        self.refresh_conversations();
+        cx.notify();
+    }
+
+    /// 取消就地改名：不写库、保持原标题。
+    ///
+    /// **先把 `renaming` 清空是这里的关键**：输入框随渲染树消失时会派发一次 `Blur`，
+    /// 而 `commit_rename` 的第一行就是 `renaming.take()`——取到 `None` 便直接返回。
+    /// 所以这次取消不会被随后的失焦提交覆盖，不需要额外的「正在取消」标志位。
+    fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        if self.renaming.take().is_none() {
+            return;
+        }
+        cx.notify();
+    }
+
+    // ------------------------------------------------------------------
     // 渲染
     // ------------------------------------------------------------------
 
@@ -1020,6 +1349,9 @@ impl AssistantPage {
 
         let renderer_rows = Rc::clone(&rows);
         let render_theme = theme;
+        // 行内操作要能把动作送回页面，而 `MessageScroller` 的行闭包是 `'static` 的：
+        // 弱引用可以挪进去，`&self` 不行。
+        let renderer_view = self.view.clone();
         MessageScroller::new(
             "assistant-transcript",
             self.scroll.clone(),
@@ -1027,7 +1359,7 @@ impl AssistantPage {
                 let Some(row) = renderer_rows.get(index) else {
                     return div().into_any_element();
                 };
-                render_row(row, &render_theme, cx)
+                render_row(row, &render_theme, &renderer_view, cx)
             },
         )
         .scrollbar(true)
@@ -1065,6 +1397,14 @@ impl AssistantPage {
                     let _ = view.update(cx, |this, cx| {
                         this.selected_provider = Some(value.to_string());
                         this.status = tr(cx, "已切换模型").into();
+                        // 顺手记到当前会话上：切走再切回来时选中项要跟着它走。
+                        if let Some(store) = this.store.as_ref()
+                            && let Some(conversation_id) = this.active.clone()
+                            && let Some(model) =
+                                this.active_profile().map(|profile| profile.model.clone())
+                        {
+                            let _ = store.set_conversation_model(&conversation_id, &model);
+                        }
                         cx.notify();
                     });
                 }
@@ -1080,10 +1420,29 @@ impl AssistantPage {
             self.error.clone().unwrap_or_else(|| self.status.clone())
         };
 
-        let header = h_flex()
-            .w_full()
-            .items_center()
-            .gap(tokens.spacing.sm)
+        let mut header = h_flex().w_full().items_center().gap(tokens.spacing.sm);
+        if self.editing.is_some() {
+            header = header
+                .child(accent_tag(SharedString::from(tr(cx, "编辑中")), cx))
+                .child(
+                    icon_button(
+                        "assistant-cancel-edit",
+                        tr(cx, "取消编辑"),
+                        Icon::new(DuckIcon::X)
+                            .size(extended.icon.sm)
+                            .text_color(tokens.colors.muted_foreground),
+                        ButtonVariant::Ghost,
+                        cx,
+                    )
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            let _ = view.update(cx, |this, cx| this.cancel_edit(window, cx));
+                        }
+                    }),
+                );
+        }
+        let header = header
             .child(model_picker)
             .child(div().flex_1().min_w_0())
             .child(
@@ -1228,6 +1587,52 @@ impl AssistantPage {
         for conversation in visible {
             let id = conversation.id.clone();
             let selected = self.active.as_deref() == Some(id.as_str());
+
+            // 正在就地改名的会话：整行换成输入框。提交走「回车 / 失焦」，
+            // 空标题视为取消（见 `commit_rename`）——所以这里不再放取消按钮：
+            // 点按钮会先触发输入框的 `Blur`，提交先跑，取消按钮永远来不及生效。
+            if self.renaming.as_deref() == Some(id.as_str()) {
+                nav = nav.child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(tokens.spacing.xxs)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .rounded(theme.components().input_radius)
+                                .border(extended.stroke.thin)
+                                .border_color(tokens.colors.border)
+                                .bg(tokens.colors.surface)
+                                .px(tokens.spacing.sm)
+                                // `Esc` 取消改名。`InputEvent` 只有 `Change` /
+                                // `PressEnter` / `Focus` / `Blur` 四种，接不到 `Esc`，
+                                // 所以只能挂在输入框的**祖先**上收冒泡事件
+                                //（`Input` 仅在 `disabled` 时才 `stop_propagation`）。
+                                .on_key_down(cx.listener(
+                                    |this, event: &KeyDownEvent, _window, cx| {
+                                        if event.keystroke.key.eq_ignore_ascii_case("escape")
+                                            && !event.keystroke.modifiers.modified()
+                                        {
+                                            this.cancel_rename(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
+                                .child(
+                                    Input::new(&self.rename_input)
+                                        .appearance(false)
+                                        .aria_label(tr(cx, "会话标题"))
+                                        .w_full()
+                                        .text_size(tokens.typography.sm.size)
+                                        .line_height(tokens.typography.sm.line_height),
+                                ),
+                        ),
+                );
+                continue;
+            }
+
             let count = self
                 .store
                 .as_ref()
@@ -1240,6 +1645,26 @@ impl AssistantPage {
                     SharedString::from(trf(cx, "{} 条", &[&count.to_string()])),
                     cx,
                 ))
+                .child(
+                    icon_button(
+                        SharedString::from(format!("assistant-rename-{id}")),
+                        tr(cx, "重命名会话"),
+                        Icon::new(DuckIcon::Pencil)
+                            .size(extended.icon.sm)
+                            .text_color(tokens.colors.muted_foreground),
+                        ButtonVariant::Ghost,
+                        cx,
+                    )
+                    .on_click({
+                        let view = view.clone();
+                        let id = id.clone();
+                        move |_, window, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.start_rename(id.clone(), window, cx);
+                            });
+                        }
+                    }),
+                )
                 .child(
                     icon_button(
                         SharedString::from(format!("assistant-delete-{id}")),
@@ -1402,6 +1827,43 @@ impl AssistantPage {
             }
             None => rows.push(meta_text(tr(cx, "还没有配置任何厂商"), cx).into_any_element()),
         }
+
+        // 会话级累计用量。**不是本轮的**——本轮那份在流式途中另有一行（见下）。
+        if let Some(conversation) = self
+            .active
+            .as_ref()
+            .and_then(|id| self.conversations.iter().find(|item| &item.id == id))
+        {
+            push_pair(
+                "累计用量",
+                trf(
+                    cx,
+                    "输入 {} / 输出 {}",
+                    &[
+                        &conversation.input_tokens.to_string(),
+                        &conversation.output_tokens.to_string(),
+                    ],
+                ),
+                &mut rows,
+            );
+        }
+
+        // 当前上下文的规模**估算**：发出去之前给用户一个量级。
+        // 措辞一律是「估算」——`duck_ai::tokens` 是启发式，偏差 20%~40% 是常态，
+        // 说成精确值会误导人（真值只能以服务端回的 usage 为准）。
+        push_pair(
+            "上下文估算",
+            trf(
+                cx,
+                "约 {} tokens",
+                &[&duck_ai::estimate_conversation(
+                    Some(self.settings.system_prompt.as_str()),
+                    &self.messages,
+                )
+                .to_string()],
+            ),
+            &mut rows,
+        );
 
         if let Some(streaming) = self.streaming.as_ref() {
             push_pair(
@@ -1695,7 +2157,12 @@ fn partial_from_buffers(streaming: &Streaming) -> Option<ChatMessage> {
 /// 工具结果**不单独成行**——它被折进对应 `ToolUse` 的卡片里，所以先扫一遍结果表，
 /// 再按顺序出行。这样「助手说了一句 → 调了两个工具 → 工具结果是并排两张卡」
 /// 而不是「一张卡 + 后面孤零零两条结果」。
-fn push_message_rows(messages: &[ChatMessage], prefix: &str, rows: &mut Vec<Row>) {
+fn push_message_rows(
+    messages: &[ChatMessage],
+    prefix: &str,
+    actions: MessageActions,
+    rows: &mut Vec<Row>,
+) {
     let mut results: Vec<(&str, &str, bool)> = Vec::new();
     for message in messages {
         for block in &message.blocks {
@@ -1711,10 +2178,15 @@ fn push_message_rows(messages: &[ChatMessage], prefix: &str, rows: &mut Vec<Row>
         }
     }
 
+    // 「重新生成」要落在**最后一个真有气泡的**助手行上：末条助手消息可能只有工具调用、
+    // 没有正文（被取消 / 撞上轮次上限），那一行压根不出行，按钮就没了落点。
+    let mut last_assistant_row: Option<(usize, usize)> = None;
+
     for (index, message) in messages.iter().enumerate() {
         match message.role {
             Role::User => rows.push(Row {
                 id: SharedString::from(format!("{prefix}-{index}")),
+                action: (actions.last_user == Some(index)).then_some(RowAction::Edit(index)),
                 kind: RowKind::User {
                     text: message.text(),
                 },
@@ -1723,8 +2195,10 @@ fn push_message_rows(messages: &[ChatMessage], prefix: &str, rows: &mut Vec<Row>
                 let text = message.text();
                 let thinking = message.thinking();
                 if !(text.is_empty() && thinking.is_none()) {
+                    last_assistant_row = Some((rows.len(), index));
                     rows.push(Row {
                         id: SharedString::from(format!("{prefix}-{index}")),
+                        action: None,
                         kind: RowKind::Assistant { text, thinking },
                     });
                 }
@@ -1738,6 +2212,7 @@ fn push_message_rows(messages: &[ChatMessage], prefix: &str, rows: &mut Vec<Row>
                         });
                     rows.push(Row {
                         id: SharedString::from(format!("{prefix}-tool-{}", call.id)),
+                        action: None,
                         kind: RowKind::Tool(Box::new(ToolCard {
                             name: call.name.clone(),
                             summary: ai_tools::call_summary(call),
@@ -1757,13 +2232,57 @@ fn push_message_rows(messages: &[ChatMessage], prefix: &str, rows: &mut Vec<Row>
             Role::Tool | Role::System => {}
         }
     }
+
+    // `actions.last_assistant` 有值 = 这一趟是「可操作的历史」（正在跑的那一轮传的是
+    // `MessageActions::default()`），此时才补按钮。
+    if actions.last_assistant.is_some()
+        && let Some((row_index, message_index)) = last_assistant_row
+    {
+        rows[row_index].action = Some(RowAction::Regenerate(message_index));
+    }
 }
 
 /// 渲染消息流的一行。
 ///
 /// 自由函数而不是方法：它要能挪进 `MessageScroller` 的 `'static` 闭包，
 /// 因此只依赖传进来的 token 快照与 `cx`，不碰 `self`。
-fn render_row(row: &Row, theme: &DuckThemeState, cx: &App) -> AnyElement {
+fn render_row(
+    row: &Row,
+    theme: &DuckThemeState,
+    view: &WeakEntity<AssistantPage>,
+    cx: &App,
+) -> AnyElement {
+    let body = render_row_body(row, theme, cx);
+    // 一条消息可能只有行内动作、只有「复制」、或者两者都有 ——
+    // 都没有时不画那条操作栏，免得每行底下都空留一段高度。
+    if row.action.is_none() && copyable_text(row).is_none() {
+        return body;
+    }
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .gap(theme.tokens().spacing.xxs)
+        .child(body)
+        .child(render_row_actions(row, theme, view, cx))
+        .into_any_element()
+}
+
+/// 一行的正文里**能复制走**的那部分；没有就不给复制按钮。
+///
+/// 只认用户气泡与助手气泡 —— 这两类才是「消息」。工具卡是结构化产物（有状态标签、
+/// 有表格），复制成一坨等宽文本只会把结构丢掉；错误行是诊断提示，复制它没有去处。
+/// 流式刚开始、正文还没到时的空占位同理不给（复制到一个空串是坏行为）。
+fn copyable_text(row: &Row) -> Option<String> {
+    match &row.kind {
+        RowKind::User { text } | RowKind::Assistant { text, .. } => {
+            (!text.is_empty()).then(|| text.clone())
+        }
+        RowKind::Tool(_) | RowKind::Error { .. } => None,
+    }
+}
+
+/// 渲染一行消息的正文（气泡 / 卡片）。
+fn render_row_body(row: &Row, theme: &DuckThemeState, cx: &App) -> AnyElement {
     let tokens = theme.tokens();
     let extended = theme.extended();
     match &row.kind {
@@ -1829,6 +2348,90 @@ fn render_row(row: &Row, theme: &DuckThemeState, cx: &App) -> AnyElement {
             .into_any_element(),
         RowKind::Tool(card_data) => render_tool_card(card_data, theme, cx),
     }
+}
+
+/// 渲染一行底部的次要操作条：能复制就有「复制」按钮，另有行内动作时并排。
+///
+/// 都走 `Ghost` + 小图标 + 文字：它们是**次要操作**，视觉上不该和
+/// 发送 / 停止争注意力；但也不做「悬停才出现」——悬停态要额外存一份 hover 状态，
+/// 而消息行现在是纯快照，为它引一套交互状态不划算。
+fn render_row_actions(
+    row: &Row,
+    theme: &DuckThemeState,
+    view: &WeakEntity<AssistantPage>,
+    cx: &App,
+) -> AnyElement {
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let icon_color = tokens.colors.muted_foreground;
+
+    let mut bar = h_flex().w_full().gap(tokens.spacing.xxs);
+    // 用户消息靠右，助手消息靠左：按钮跟着自己那条气泡那一侧对齐。
+    if matches!(row.kind, RowKind::User { .. }) {
+        bar = bar.justify_end();
+    }
+
+    if let Some(action) = row.action {
+        // `ElementId` 由行 id 派生：同一时刻最多只有一条消息带操作，但按领域 id 拼
+        // 是仓库约定（AGENTS §4），也免得将来放开「每行都给」时撞 id。
+        let (id, label, icon) = match action {
+            RowAction::Regenerate(_) => ("regenerate", tr(cx, "重新生成"), DuckIcon::RotateCw),
+            RowAction::Edit(_) => ("edit", tr(cx, "编辑重发"), DuckIcon::Pencil),
+            RowAction::Retry => ("retry", tr(cx, "重试"), DuckIcon::RotateCw),
+        };
+
+        let button = icon_text_button(
+            SharedString::from(format!("{}-{id}", row.id)),
+            label,
+            Icon::new(icon)
+                .size(extended.icon.sm)
+                .text_color(icon_color),
+            ButtonVariant::Ghost,
+            cx,
+        );
+        let button = match action {
+            RowAction::Regenerate(index) => button.on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    let _ = view.update(cx, |this, cx| this.regenerate(index, cx));
+                }
+            }),
+            RowAction::Edit(index) => button.on_click({
+                let view = view.clone();
+                move |_, window, cx| {
+                    let _ = view.update(cx, |this, cx| this.begin_edit(index, window, cx));
+                }
+            }),
+            RowAction::Retry => button.on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    let _ = view.update(cx, |this, cx| this.retry(cx));
+                }
+            }),
+        };
+        bar = bar.child(button);
+    }
+
+    if let Some(text) = copyable_text(row) {
+        // 正文整段进系统剪贴板（而不是只复制选中部分）：重发到别处、
+        // 贴进工单，要的通常就是这一条消息的全文。
+        bar = bar.child(
+            icon_text_button(
+                SharedString::from(format!("{}-copy", row.id)),
+                tr(cx, "复制"),
+                Icon::new(DuckIcon::Copy)
+                    .size(extended.icon.sm)
+                    .text_color(icon_color),
+                ButtonVariant::Ghost,
+                cx,
+            )
+            .on_click(move |_, _window, cx| {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+            }),
+        );
+    }
+
+    bar.into_any_element()
 }
 
 /// 渲染一张工具调用卡。
@@ -1972,4 +2575,133 @@ fn render_detail_table(rows: &[Vec<String>], theme: &DuckThemeState, cx: &App) -
         );
     }
     list.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 行内操作只落在「最后一条用户 / 助手消息」上。
+    #[test]
+    fn actions_land_on_the_tail_rows() {
+        let messages = vec![
+            ChatMessage::user("q1"),
+            ChatMessage::assistant("a1"),
+            ChatMessage::user("q2"),
+            ChatMessage::assistant("a2"),
+        ];
+        let actions = MessageActions {
+            last_assistant: Some(3),
+            last_user: Some(2),
+        };
+        let mut rows = Vec::new();
+        push_message_rows(&messages, "h", actions, &mut rows);
+
+        assert_eq!(rows.len(), 4);
+        assert!(rows[0].action.is_none());
+        assert!(rows[1].action.is_none());
+        assert!(matches!(rows[2].action, Some(RowAction::Edit(2))));
+        assert!(matches!(rows[3].action, Some(RowAction::Regenerate(3))));
+    }
+
+    /// 末条助手消息只有工具调用、没有正文时那一行不出气泡：
+    /// 「重新生成」要退到最后一个真有气泡的助手行上，而不是凭空消失。
+    #[test]
+    fn regenerate_falls_back_to_the_last_visible_bubble() {
+        let messages = vec![
+            ChatMessage::user("q"),
+            ChatMessage::assistant("a"),
+            ChatMessage {
+                role: Role::Assistant,
+                blocks: vec![duck_ai::ContentBlock::ToolUse {
+                    call: duck_ai::ToolCall {
+                        id: "c1".into(),
+                        name: "read_file".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            },
+        ];
+        let actions = MessageActions {
+            last_assistant: Some(2),
+            last_user: Some(0),
+        };
+        let mut rows = Vec::new();
+        push_message_rows(&messages, "h", actions, &mut rows);
+
+        // user + assistant + tool 卡片 = 3 行。
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(rows[0].action, Some(RowAction::Edit(0))));
+        assert!(matches!(rows[1].action, Some(RowAction::Regenerate(1))));
+        assert!(rows[2].action.is_none());
+    }
+
+    /// 正在跑的那一轮（`MessageActions::default()`）一律不给行内操作。
+    #[test]
+    fn live_rows_carry_no_actions() {
+        let messages = vec![ChatMessage::user("q"), ChatMessage::assistant("a")];
+        let mut rows = Vec::new();
+        push_message_rows(&messages, "l", MessageActions::default(), &mut rows);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.action.is_none()));
+    }
+
+    /// 「复制」跟着气泡走：用户 / 助手消息都有，工具卡与错误行都没有。
+    #[test]
+    fn every_message_bubble_is_copyable() {
+        // 中间两条**没有**行内动作（不是最后一条），照样要给「复制」。
+        let messages = vec![
+            ChatMessage::user("q1"),
+            ChatMessage::assistant("a1"),
+            ChatMessage::user("q2"),
+            ChatMessage::assistant("a2"),
+        ];
+        let actions = MessageActions {
+            last_assistant: Some(3),
+            last_user: Some(2),
+        };
+        let mut rows = Vec::new();
+        push_message_rows(&messages, "h", actions, &mut rows);
+
+        assert_eq!(rows.len(), 4);
+        // 行内动作只有尾部两条有，但四条**全都能复制**。
+        assert!(rows[0].action.is_none());
+        assert_eq!(copyable_text(&rows[0]).as_deref(), Some("q1"));
+        assert_eq!(copyable_text(&rows[1]).as_deref(), Some("a1"));
+        assert_eq!(copyable_text(&rows[2]).as_deref(), Some("q2"));
+        assert_eq!(copyable_text(&rows[3]).as_deref(), Some("a2"));
+
+        // 流式占位（正文还没到）不给复制：复制到一个空串比没有按钮更糟。
+        let empty = Row {
+            id: "x".into(),
+            kind: RowKind::Assistant {
+                text: String::new(),
+                thinking: None,
+            },
+            action: None,
+        };
+        assert_eq!(copyable_text(&empty), None);
+
+        // 工具卡与错误行不给。
+        let tool = Row {
+            id: "t".into(),
+            kind: RowKind::Tool(Box::new(ToolCard {
+                name: "read_file".into(),
+                summary: "{}".into(),
+                state: ToolState::Finished,
+                result: None,
+                detail: None,
+            })),
+            action: None,
+        };
+        assert_eq!(copyable_text(&tool), None);
+        let error = Row {
+            id: "e".into(),
+            kind: RowKind::Error {
+                text: "boom".into(),
+            },
+            action: None,
+        };
+        assert_eq!(copyable_text(&error), None);
+    }
 }

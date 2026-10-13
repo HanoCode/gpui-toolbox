@@ -12,6 +12,9 @@ description = "数据库模块内核：连接档案、驱动分发、SQL 智能�
 # （docs/database-design.md §4.1）。**无论哪条，本 crate 都不向调用方暴露 tokio 类型。**
 [dependencies]
 duck-platform.workspace = true
+# AI 协议层收敛（docs/ai-design.md §4.9）：`ai.rs` 只留 SQL 领域提示词，
+# HTTP / SSE / 工具调用那套通用能力统一走 duck-ai，本仓不再维护第二套实现。
+duck-ai.workspace = true
 rusqlite.workspace = true
 postgres.workspace = true
 postgres_rustls.workspace = true

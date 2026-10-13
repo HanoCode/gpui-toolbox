@@ -10,7 +10,7 @@ use duck_components::{
     ButtonVariant, DuckIcon, body_text, button, caption_heading, meta_text, notify,
     toolbar_action_button,
 };
-use duck_theme::{active_theme, tr, trf};
+use duck_theme::{UnderMinute, active_theme, tr, tr_relative_time};
 use gpui::{
     Anchor, AnyElement, App, ElementId, FontWeight, InteractiveElement as _, IntoElement,
     MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
@@ -261,19 +261,13 @@ fn history_panel(cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// 相对时间文案：刚刚 / N 分钟前 / N 小时前 / N 天前（i18n 条目已存在）。
+/// 相对时间文案：刚刚 / N 分钟前 / N 小时前 / N 天前。
+///
+/// 分档已下沉到 `duck-theme` 的格式化层（[`tr_relative_time`]）——本仓原先在
+/// `duck-shell` / `duck-app::redis` / `duck-app::plugin_center` 各写了一遍，
+/// 且三处的英文复数都是错的（`1 minutes ago`）。这里只留 `SystemTime` → 秒的换算；
+/// 读不到时间（时钟比记录还早）按 0 秒处理，仍显示「刚刚」。
 fn relative_time(at: SystemTime, cx: &App) -> SharedString {
-    let Ok(elapsed) = at.elapsed() else {
-        return SharedString::from(tr(cx, "刚刚"));
-    };
-    let secs = elapsed.as_secs();
-    if secs < 60 {
-        SharedString::from(tr(cx, "刚刚"))
-    } else if secs < 3600 {
-        trf(cx, "{} 分钟前", &[&(secs / 60).to_string()]).into()
-    } else if secs < 86_400 {
-        trf(cx, "{} 小时前", &[&(secs / 3600).to_string()]).into()
-    } else {
-        trf(cx, "{} 天前", &[&(secs / 86_400).to_string()]).into()
-    }
+    let secs = at.elapsed().map_or(0, |elapsed| elapsed.as_secs() as i64);
+    tr_relative_time(cx, secs, UnderMinute::JustNow).into()
 }

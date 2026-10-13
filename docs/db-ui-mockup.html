@@ -1,0 +1,2121 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duck Toolbox · 数据库模块 UI 设计稿（可交互）</title>
+<style>
+/* ============================================================
+   Duck Toolbox 数据库模块 UI 设计稿
+   颜色 / 尺寸全部取自 crates/duck-theme 的真实 token，不是近似值：
+     DefaultLight bg #F8F9FA · surface #FFFFFF · surface2 #F1F3F5
+                  fg #09090B · fg2 #71717A · border #E4E4E7 · primary #3B82F6
+     DefaultDark  bg #1C1C1E · surface #2C2C2E · surface2 #3A3A3C
+                  fg #F5F5F7 · fg2 #A1A1A6 · border #48484A · primary #3B82F6
+     派生：chrome / navSelected / hairline / textTertiary 按 builtin.rs 的 mix 规则算出
+     尺寸：spacing 2/4/8/12/16/24/32 · radius 3/6/8 · 密度 Normal
+           activity_rail 48 · activity_button 32 · title_bar 40
+           nav_row 28 · control 28 · status_bar 28 · section_header 24
+     字阶：badge 10/13 · xs 12/16 · sm 13/18 · md 15/20 · lg 17/22 · xl 22/26
+           mono_md 13/20（编辑器与网格）
+   ============================================================ */
+:root{
+  --bg:#F8F9FA; --surface:#FFFFFF; --surface2:#F1F3F5;
+  --fg:#09090B; --fg2:#71717A; --fg3:#A7A7AD;
+  --border:#E4E4E7; --hairline:#EFEFF1;
+  --primary:#3B82F6; --primary-fg:#FFFFFF;
+  --destructive:#EF4444; --success:#1F9D55; --warning:#C77C02;
+  --chrome:#F6F7F8; --nav-selected:#E9E9EC; --nav-hover:#EFF0F3;
+  --row-hover:rgba(59,130,246,.10);
+  --accent-tint:rgba(59,130,246,.10);
+  --accent-text:#1D6FE0;
+  --page:#ECECEF;
+  --panel-line:rgba(0,0,0,.06);
+  --win-shadow:0 20px 56px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.1);
+  --lightdot:#FF5F57; --yellowdot:#FEBC2E; --greendot:#28C840;
+  --editor-bg:#FFFFFF; --editor-gutter:#F7F8F9;
+  --syntax-kw:#0550AE; --syntax-str:#953800; --syntax-num:#0A7B4B;
+  --syntax-comment:#9AA0A6; --syntax-fn:#7C3AED; --syntax-punct:#57606A;
+  --fold-bg:#EFF0F3; --stmt-fill:rgba(59,130,246,.06);
+}
+[data-theme="dark"]{
+  --bg:#1C1C1E; --surface:#2C2C2E; --surface2:#3A3A3C;
+  --fg:#F5F5F7; --fg2:#A1A1A6; --fg3:#757578;
+  --border:#48484A; --hairline:#3E3E40;
+  --primary:#3B82F6; --primary-fg:#FFFFFF;
+  --destructive:#EF4444; --success:#30D158; --warning:#FFB340;
+  --chrome:#222224; --nav-selected:#38383A; --nav-hover:#2E2E33;
+  --row-hover:rgba(59,130,246,.16);
+  --accent-tint:rgba(59,130,246,.16);
+  --accent-text:#6BA5F8;
+  --page:#0F0F10;
+  --panel-line:rgba(255,255,255,.08);
+  --win-shadow:0 20px 56px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+  --lightdot:#FF5F57; --yellowdot:#FEBC2E; --greendot:#28C840;
+  --editor-bg:#1E1E20; --editor-gutter:#242427;
+  --syntax-kw:#7CB7FF; --syntax-str:#E9A96B; --syntax-num:#7ED9A0;
+  --syntax-comment:#6B6B70; --syntax-fn:#C4A6FF; --syntax-punct:#B4B4B9;
+  --fold-bg:#33333A; --stmt-fill:rgba(59,130,246,.10);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--page); color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  font-size:13px; line-height:18px;
+  padding:32px 40px 96px;
+}
+a{color:var(--accent-text);text-decoration:none}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ---------- 页面头 ---------- */
+.page-head{max-width:1180px;margin:0 auto 28px}
+.page-head h1{font-size:26px;line-height:32px;font-weight:600;letter-spacing:-.01em}
+.page-head .sub{color:var(--fg2);margin-top:6px;font-size:13px;line-height:20px;max-width:900px}
+.page-head .sub code{font-size:12px;background:var(--accent-tint);color:var(--accent-text);padding:1px 5px;border-radius:4px}
+.controls{display:flex;align-items:center;gap:8px;margin-top:16px;flex-wrap:wrap}
+.btn{
+  height:28px;padding:0 10px;border-radius:6px;border:1px solid var(--border);
+  background:var(--surface);color:var(--fg);font-size:13px;font-family:inherit;
+  display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+}
+.btn:hover{background:var(--row-hover);border-color:var(--primary)}
+.btn.on{background:var(--accent-tint);border-color:var(--primary);color:var(--accent-text);font-weight:500}
+.btn .ic{width:14px;height:14px;color:var(--fg2)}
+.controls .zoom{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin-left:4px}
+input[type=range]{width:130px;accent-color:var(--primary)}
+select{
+  height:28px;border-radius:6px;border:1px solid var(--border);background:var(--surface);
+  color:var(--fg);font-family:inherit;font-size:13px;padding:0 6px;
+}
+
+/* ---------- 章节 ---------- */
+.shot{max-width:1180px;margin:0 auto 44px}
+.shot > h2{font-size:17px;line-height:22px;font-weight:600;display:flex;align-items:baseline;gap:8px}
+.shot > h2 .idx{
+  font-size:12px;font-weight:600;color:var(--primary-fg);background:var(--primary);
+  width:20px;height:20px;border-radius:5px;display:inline-flex;align-items:center;
+  justify-content:center;flex:none;
+}
+.shot > .cap{color:var(--fg2);font-size:13px;line-height:20px;margin:6px 0 14px;max-width:920px}
+.stage{zoom:var(--zoom,1)}
+.notes{margin-top:14px;padding:12px 14px;border-left:2px solid var(--primary);
+  background:color-mix(in srgb, var(--primary) 6%, transparent);border-radius:0 6px 6px 0}
+.notes li{list-style:none;font-size:12.5px;line-height:19px;color:var(--fg2);
+  padding-left:14px;position:relative}
+.notes li + li{margin-top:5px}
+.notes li::before{content:"";position:absolute;left:2px;top:7px;width:4px;height:4px;
+  border-radius:50%;background:var(--primary)}
+.notes li b{color:var(--fg);font-weight:600}
+.notes code{font-size:11.5px;background:var(--accent-tint);color:var(--accent-text);padding:0 4px;border-radius:3px}
+
+/* ---------- 窗口外壳 ---------- */
+.win{
+  width:1180px;height:740px;background:var(--bg);border:1px solid var(--border);
+  border-radius:10px;overflow:hidden;box-shadow:var(--win-shadow);
+  display:flex;flex-direction:column;position:relative;color:var(--fg);
+}
+.titlebar{
+  height:40px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px;
+  background:var(--chrome);border-bottom:1px solid var(--hairline);
+}
+.lights{display:flex;gap:8px;flex:none}
+.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:var(--lightdot)}
+.lights i:nth-child(2){background:var(--yellowdot)}
+.lights i:nth-child(3){background:var(--greendot)}
+.search{
+  height:24px;width:330px;border-radius:6px;background:var(--surface);
+  border:1px solid var(--border);display:flex;align-items:center;gap:6px;padding:0 8px;
+  color:var(--fg2);font-size:12px;
+}
+.search .ic{width:13px;height:13px;color:var(--fg2);flex:none}
+.search kbd{margin-left:auto;font-family:inherit;font-size:11px;color:var(--fg3);
+  border:1px solid var(--border);border-radius:4px;padding:0 4px;line-height:15px}
+.titlebar .trail{margin-left:auto;display:flex;align-items:center;gap:4px}
+.tbtn{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;
+  justify-content:center;color:var(--fg2)}
+.tbtn .ic{width:14px;height:14px}
+.tbtn.hot{background:var(--row-hover);color:var(--fg)}
+
+.body{flex:1;display:flex;min-height:0}
+
+/* ---------- 活动栏 ---------- */
+.rail{
+  width:48px;flex:none;background:var(--chrome);border-right:1px solid var(--hairline);
+  display:flex;flex-direction:column;gap:4px;align-items:center;padding-top:4px;
+}
+.rail .tile{width:48px;height:32px;display:flex;align-items:center;justify-content:center;position:relative}
+.rail .rb{width:32px;height:32px;border-radius:6px;display:flex;align-items:center;
+  justify-content:center;color:var(--fg2)}
+.rail .rb .ic{width:18px;height:18px}
+.rail .tile.on .rb{background:var(--nav-selected);color:var(--primary)}
+.rail .spacer{flex:1}
+
+/* ---------- 左栏：连接与对象树 ---------- */
+.sidebar{
+  width:232px;flex:none;background:var(--chrome);border-right:1px solid var(--hairline);
+  display:flex;flex-direction:column;min-height:0;
+}
+.sbhead{
+  height:44px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);
+}
+.sbhead h3{font-size:13px;font-weight:600}
+.sbhead .acts{margin-left:auto;display:flex;gap:2px}
+.ibtn{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--fg2);cursor:pointer}
+.ibtn .ic{width:14px;height:14px}
+.ibtn:hover{background:var(--row-hover);color:var(--fg)}
+.sbfilter{padding:6px 10px 8px;border-bottom:1px solid var(--hairline)}
+.sbfilter .search{width:100%;height:24px}
+.tree{flex:1;overflow:auto;padding:6px 8px 10px}
+.sect{
+  height:24px;display:flex;align-items:center;padding:0 6px;font-size:11px;
+  color:var(--fg3);letter-spacing:.02em;
+}
+.trow{
+  height:26px;border-radius:6px;display:flex;align-items:center;gap:6px;padding:0 6px;
+  font-size:12.5px;cursor:pointer;position:relative;white-space:nowrap;
+}
+.trow:hover{background:var(--row-hover)}
+.trow.sel{background:var(--nav-selected);font-weight:500}
+.trow.sel .ic{color:var(--primary)}
+.trow .ic{width:14px;height:14px;color:var(--fg2);flex:none}
+.trow .chev{width:12px;height:12px;color:var(--fg3);flex:none;transition:transform .12s ease}
+.trow.open .chev{transform:rotate(90deg)}
+.trow .lbl{overflow:hidden;text-overflow:ellipsis}
+.trow .meta{margin-left:auto;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums;flex:none}
+.trow .dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--success)}
+.trow .dot.warn{background:var(--warning)}
+.trow[data-depth="1"]{padding-left:20px}
+.trow[data-depth="2"]{padding-left:34px}
+.trow[data-depth="3"]{padding-left:48px}
+.trow[data-depth="4"]{padding-left:62px}
+.trow .tw{overflow:hidden;text-overflow:ellipsis}
+.sb-foot{
+  flex:none;height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;
+  border-top:1px solid var(--hairline);font-size:11.5px;color:var(--fg3);
+}
+
+/* ---------- 主区：标签条 ---------- */
+.main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+.tabbar{
+  height:44px;flex:none;display:flex;align-items:center;gap:4px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);background:var(--bg);overflow:hidden;
+}
+.tab{
+  height:28px;max-width:250px;padding:0 8px 0 10px;border-radius:6px;border:1px solid transparent;
+  display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--fg2);cursor:pointer;flex:none;
+}
+.tab:hover{background:var(--row-hover)}
+.tab.on{background:var(--surface);border-color:var(--primary);color:var(--fg);font-weight:500}
+.tab .ic{width:14px;height:14px;flex:none}
+.tab .ic.db{color:var(--primary)}
+.tab .ic.tbl{color:var(--success)}
+.tab .ic.dash{color:var(--warning)}
+.tab .sub{color:var(--fg3);font-weight:400;font-size:11.5px;overflow:hidden;text-overflow:ellipsis}
+.tab .x{width:16px;height:16px;border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--fg3);flex:none}
+.tab .x:hover{background:var(--nav-hover);color:var(--fg)}
+.tab .x .ic{width:10px;height:10px}
+.tab .st{width:6px;height:6px;border-radius:50%;flex:none;background:var(--success)}
+.tab .st.run{background:var(--warning);animation:pulse 1.1s ease-in-out infinite}
+.tab .st.err{background:var(--destructive)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.tab.add{width:26px;padding:0;justify-content:center;border:1px dashed var(--border);color:var(--fg3)}
+.tabbar .hint{margin-left:auto;font-size:11px;color:var(--fg3);flex:none;padding-left:8px}
+
+/* ---------- 主区：工具条 ---------- */
+.toolbar{
+  height:34px;flex:none;display:flex;align-items:center;gap:4px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);background:var(--bg);
+}
+.tb{
+  height:24px;padding:0 8px;border-radius:5px;border:1px solid transparent;background:transparent;
+  color:var(--fg2);font-family:inherit;font-size:12px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;
+}
+.tb:hover{background:var(--row-hover);color:var(--fg)}
+.tb .ic{width:13px;height:13px}
+.tb.primary{background:var(--accent-tint);color:var(--accent-text);font-weight:500}
+.tb.danger{color:var(--destructive)}
+.tb-sep{width:1px;height:16px;background:var(--hairline);margin:0 4px}
+.toolbar .right{margin-left:auto;display:flex;align-items:center;gap:4px}
+
+/* ---------- 编辑器 ---------- */
+.editor-wrap{flex:1.15;min-height:0;display:flex;background:var(--editor-bg)}
+.editor{flex:1;min-width:0;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:13px;line-height:20px}
+.eline{display:flex;align-items:flex-start;height:20px}
+.eline.folded{background:var(--fold-bg)}
+.gut{
+  width:22px;flex:none;text-align:center;color:var(--fg3);font-size:12px;line-height:20px;
+  user-select:none;cursor:pointer;
+}
+.gut.run{width:24px}
+.gut.run .play{opacity:0;display:inline-flex;align-items:center;justify-content:center;height:20px}
+.eline:hover .gut.run .play{opacity:1}
+.gut.run .play .ic{width:11px;height:11px}
+.gut.run .st{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--success);vertical-align:middle}
+.gut.run .st.run{background:var(--warning);animation:pulse 1.1s ease-in-out infinite}
+.gut.run .st.err{background:var(--destructive)}
+.gut.num{
+  width:34px;flex:none;text-align:right;padding-right:8px;color:var(--fg3);
+  font-size:12px;line-height:20px;background:var(--editor-gutter);user-select:none;
+}
+.gut.fold{width:20px;flex:none;text-align:center;line-height:20px;color:var(--fg3);cursor:pointer;
+  background:var(--editor-gutter);user-select:none}
+.gut.fold:hover{color:var(--fg)}
+.gut.fold .ic{width:11px;height:11px;transition:transform .12s ease}
+.gut.fold.open .ic{transform:rotate(90deg)}
+.code{white-space:pre;padding-right:12px;color:var(--fg)}
+.eline.cur{background:var(--stmt-fill)}
+.eline.stmt-head.cur::before,.eline.cur::before{
+  content:"";position:absolute;left:80px;width:3px;top:0;bottom:0;background:var(--primary)
+}
+.eline{position:relative}
+.code .kw{color:var(--syntax-kw);font-weight:600}
+.code .str{color:var(--syntax-str)}
+.code .num{color:var(--syntax-num)}
+.code .cm{color:var(--syntax-comment);font-style:italic}
+.code .fn{color:var(--syntax-fn)}
+.code .punct{color:var(--syntax-punct)}
+.placeholder{
+  height:20px;display:flex;align-items:center;gap:6px;
+  font-size:12px;color:var(--fg2);background:var(--fold-bg);flex:1;
+}
+
+/* ---------- 结果区 ---------- */
+.results{
+  flex:1;min-height:0;display:flex;flex-direction:column;border-top:1px solid var(--hairline);
+  background:var(--bg);
+}
+.resbar{
+  height:32px;flex:none;display:flex;align-items:center;gap:4px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);
+}
+.rtab{
+  height:22px;padding:0 8px;border-radius:5px;font-size:11.5px;display:inline-flex;align-items:center;gap:5px;
+  border:1px solid transparent;color:var(--fg2);cursor:pointer;
+}
+.rtab.on{background:var(--accent-tint);color:var(--accent-text);border-color:var(--primary);font-weight:500}
+.rtab .n{font-variant-numeric:tabular-nums}
+.rtab .st{width:5px;height:5px;border-radius:50%;background:var(--success)}
+.rtab .st.warn{background:var(--warning)}
+.rtab .st.err{background:var(--destructive)}
+.resbar .right{margin-left:auto;display:flex;gap:2px}
+.grid{flex:1;min-height:0;overflow:auto}
+.ghead{display:flex;height:34px;align-items:center;background:var(--surface2);border-bottom:1px solid var(--border);
+  font-size:11.5px;font-weight:600;color:var(--fg2);position:sticky;top:0;z-index:2}
+.grow{display:flex;height:26px;align-items:center;border-bottom:1px solid var(--hairline);font-size:12.5px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.grow:hover{background:var(--row-hover)}
+.cell{padding:0 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cell.rownum{width:52px;flex:none;color:var(--fg3);text-align:right;background:var(--surface2)}
+.cell.null{color:var(--fg3);font-style:italic}
+.grid-foot{
+  flex:none;height:30px;display:flex;align-items:center;gap:12px;padding:0 12px;
+  border-top:1px solid var(--hairline);font-size:11.5px;color:var(--fg2);
+}
+.grid-foot .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.pgbtn{height:22px;min-width:22px;padding:0 6px;border-radius:5px;border:1px solid var(--border);
+  background:var(--surface);color:var(--fg2);font-size:11.5px;font-family:inherit;cursor:pointer}
+.pgbtn.on{background:var(--accent-tint);border-color:var(--primary);color:var(--accent-text)}
+
+/* ---------- 表浏览 / 库视图 / 系统视图 面板 ---------- */
+.pane{flex:1;min-height:0;display:none;flex-direction:column}
+.pane.on{display:flex}
+.pane-head{
+  flex:none;padding:10px 12px;border-bottom:1px solid var(--hairline);display:flex;align-items:center;gap:10px;
+}
+.pane-head h3{font-size:15px;line-height:20px;font-weight:600}
+.pane-head .path{font-size:12px;color:var(--fg2)}
+.pane-head .right{margin-left:auto;display:flex;gap:4px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--hairline)}
+.chip{
+  height:20px;padding:0 8px;border-radius:5px;font-size:11.5px;display:inline-flex;align-items:center;gap:4px;
+  background:var(--surface2);color:var(--fg2);
+}
+.chip b{color:var(--fg);font-weight:600}
+.filterbar{
+  flex:none;height:34px;display:flex;align-items:center;gap:6px;padding:0 12px;
+  border-bottom:1px solid var(--hairline);font-size:12px;color:var(--fg2);
+}
+.filterbar .fchip{
+  height:20px;padding:0 8px;border-radius:5px;background:var(--accent-tint);color:var(--accent-text);
+  display:inline-flex;align-items:center;gap:4px;font-size:11.5px;
+}
+.filterbar .add{color:var(--fg2);border:1px dashed var(--border);border-radius:5px;padding:0 8px;height:20px;
+  display:inline-flex;align-items:center;font-size:11.5px;cursor:pointer}
+.loadmore{
+  flex:none;padding:6px 12px;border-top:1px solid var(--hairline);display:flex;align-items:center;gap:8px;
+  font-size:11.5px;color:var(--fg2);
+}
+
+/* ---------- 全局操作组（dbx AppToolbar 对位） ---------- */
+.globalbar{
+  height:36px;flex:none;display:flex;align-items:center;gap:2px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);background:var(--bg);
+}
+.gb{
+  height:24px;padding:0 9px;border-radius:6px;border:none;background:transparent;
+  color:var(--fg);font-family:inherit;font-size:12.5px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+}
+.gb:hover{background:var(--row-hover)}
+.gb .ic{width:14px;height:14px;color:var(--accent-text)}
+.gb .cv{width:10px;height:10px;color:var(--fg3)}
+.gb.disabled{color:var(--fg3)}
+.gb.disabled .ic{color:var(--fg3)}
+.globalbar .right{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg2)}
+
+/* ---------- 结果区对象 header（dbx 对象级 header 对位） ---------- */
+.objheader{
+  height:34px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);background:var(--bg);
+}
+.objheader .pin{color:var(--fg3);cursor:pointer;display:flex;align-items:center}
+.objheader .pin .ic{width:13px;height:13px}
+.objheader .pin.on{color:var(--primary)}
+.objpill{
+  height:22px;padding:0 10px;border-radius:5px;background:var(--fg);color:var(--bg);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-weight:600;
+  display:inline-flex;align-items:center;gap:6px;
+}
+.objpill .dotk{width:10px;height:10px;color:var(--warning)}
+.objheader .acts{margin-left:auto;display:flex;align-items:center;gap:2px}
+.oh{
+  height:24px;padding:0 8px;border-radius:5px;border:none;background:transparent;color:var(--fg2);
+  font-family:inherit;font-size:12px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;
+}
+.oh:hover{background:var(--row-hover);color:var(--fg)}
+.oh .ic{width:13px;height:13px}
+
+/* ---------- 数据表工具行（dbx 数据网格工具行对位） ---------- */
+.toolrow{
+  height:34px;flex:none;display:flex;align-items:center;gap:4px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);background:var(--bg);
+}
+.vswitch{display:flex;align-items:center;gap:2px;background:var(--surface2);border-radius:6px;padding:2px}
+.vswitch .v{
+  height:20px;padding:0 8px;border-radius:5px;border:none;background:transparent;color:var(--fg2);
+  font-family:inherit;font-size:12px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;
+}
+.vswitch .v.on{background:var(--surface);color:var(--fg);font-weight:500;box-shadow:inset 0 0 0 1px var(--border)}
+.vswitch .v .ic{width:13px;height:13px}
+.tx-badge{
+  height:20px;padding:0 7px;border-radius:5px;font-size:11px;display:inline-flex;align-items:center;gap:4px;
+  background:color-mix(in srgb,var(--success) 14%,transparent);color:var(--success);font-weight:600;
+}
+.tx-badge.in-tx{background:color-mix(in srgb,var(--warning) 16%,transparent);color:var(--warning)}
+.toolrow .right{margin-left:auto;display:flex;align-items:center;gap:2px}
+
+/* ---------- 列头 / 单元格 ---------- */
+.colcell{display:flex;flex-direction:column;justify-content:center;padding:0 10px;overflow:hidden}
+.colcell .c1{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;color:var(--fg)}
+.colcell .c1 .k{width:11px;height:11px;color:var(--warning)}
+.colcell .c1 .h{width:11px;height:11px;color:var(--fg3)}
+.colcell .c1 .sortarr{margin-left:auto;color:var(--fg2);display:flex;align-items:center;gap:1px}
+.colcell .c1 .sortarr .ic{width:11px;height:11px}
+.colcell .c2{font-size:10.5px;color:var(--fg3);line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cell.num{font-variant-numeric:tabular-nums}
+.grow.cursel{background:var(--accent-tint)}
+.cell.cursel{outline:1.5px solid var(--primary);outline-offset:-1.5px;border-radius:2px;background:var(--accent-tint)}
+
+/* ---------- 右键菜单 ---------- */
+.ctxmenu{
+  position:fixed;z-index:60;width:238px;background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;box-shadow:var(--win-shadow);padding:5px;display:none;max-height:70vh;overflow:auto;
+}
+.ctxmenu.on{display:block}
+.cm-i{
+  height:26px;border-radius:5px;display:flex;align-items:center;gap:8px;padding:0 8px;
+  font-size:12.5px;color:var(--fg);cursor:pointer;white-space:nowrap;
+}
+.cm-i:hover{background:var(--row-hover)}
+.cm-i .ic{width:13px;height:13px;color:var(--fg2);flex:none}
+.cm-i.danger{color:var(--destructive)}
+.cm-i.danger .ic{color:var(--destructive)}
+.cm-i.dim{color:var(--fg3)}
+.cm-i .arr{margin-left:auto;color:var(--fg3);display:flex}
+.cm-i .kbd{margin-left:auto;font-size:10.5px;color:var(--fg3);border:1px solid var(--border);
+  border-radius:4px;padding:0 4px;line-height:15px}
+.cm-sep{height:1px;background:var(--hairline);margin:4px 6px}
+.cm-note{padding:4px 8px;font-size:10.5px;color:var(--fg3);line-height:15px}
+
+/* ---------- 右侧 dock（shell 右栏分段：详情 / 历史 / AI 助手） ---------- */
+.dock{
+  width:296px;flex:none;border-left:1px solid var(--hairline);background:var(--chrome);
+  display:flex;flex-direction:column;min-height:0;
+}
+.dock.off{display:none}
+.docktabs{height:36px;flex:none;display:flex;align-items:center;gap:2px;padding:0 8px;border-bottom:1px solid var(--hairline)}
+.dtab{
+  height:24px;padding:0 9px;border-radius:6px;border:none;background:transparent;color:var(--fg2);
+  font-family:inherit;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;
+}
+.dtab:hover{background:var(--row-hover)}
+.dtab.on{background:var(--nav-selected);color:var(--fg);font-weight:500}
+.dockbody{flex:1;min-height:0;overflow:auto;padding:10px}
+.dsec{display:none}
+.dsec.on{display:block}
+#ds-ai.on{display:flex;flex-direction:column;height:100%}
+.dockrail{
+  width:26px;flex:none;border-left:1px solid var(--hairline);background:var(--chrome);
+  display:none;flex-direction:column;align-items:center;padding-top:8px;gap:6px;cursor:pointer;
+}
+.dockrail.on{display:flex}
+.dockrail .ic{width:14px;height:14px;color:var(--fg2)}
+.seg{display:flex;background:var(--surface2);border-radius:6px;padding:2px;gap:2px;margin-bottom:10px}
+.seg button{
+  flex:1;height:22px;border-radius:5px;border:none;background:transparent;color:var(--fg2);
+  font-family:inherit;font-size:11.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:4px;
+}
+.seg button.on{background:var(--surface);color:var(--fg);font-weight:500;box-shadow:inset 0 0 0 1px var(--border)}
+.hitem{border-radius:8px;padding:8px 10px;cursor:pointer;margin-bottom:6px;border:1px solid transparent}
+.hitem:hover{background:var(--row-hover)}
+.hitem.on{background:var(--accent-tint);border-color:var(--primary)}
+.hitem .sql{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;color:var(--fg)}
+.hitem .meta{font-size:11px;color:var(--fg3);margin-top:3px;font-variant-numeric:tabular-nums}
+.kvrow{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--hairline);font-size:12px}
+.kvrow .k{color:var(--fg2)}
+.kvrow .v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg);text-align:right;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dh{font-size:11px;color:var(--fg3);letter-spacing:.02em;margin:10px 0 4px}
+.ai-msgs{display:flex;flex-direction:column;gap:8px}
+.ai-msg{max-width:92%;padding:8px 10px;border-radius:8px;font-size:12.5px;line-height:19px}
+.ai-msg.user{align-self:flex-end;background:var(--accent-tint);color:var(--fg)}
+.ai-msg.bot{align-self:flex-start;background:var(--surface);border:1px solid var(--border);color:var(--fg)}
+.ai-empty{padding:34px 12px;text-align:center;color:var(--fg3);font-size:12.5px;line-height:20px}
+.ai-empty .em{width:34px;height:34px;border-radius:9px;background:var(--surface2);margin:0 auto 10px;
+  display:flex;align-items:center;justify-content:center;color:var(--fg2)}
+.ai-foot{flex:none;border-top:1px solid var(--hairline);padding:8px 10px;background:var(--chrome)}
+.ai-ctx{display:flex;gap:4px;margin-bottom:6px;align-items:center}
+.ai-ctx .chip{height:19px}
+.ai-box{
+  border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:7px 8px;
+}
+.ai-box textarea{
+  width:100%;border:none;background:transparent;resize:none;outline:none;color:var(--fg);
+  font-family:inherit;font-size:12.5px;line-height:18px;height:34px;
+}
+.ai-box .send{
+  width:26px;height:26px;border-radius:7px;border:none;background:var(--primary);color:var(--primary-fg);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none;
+}
+.ai-row{display:flex;align-items:flex-end;gap:8px}
+.ai-row .tools{display:flex;gap:4px;padding-top:4px}
+.ai-panel{
+  position:absolute;top:0;right:0;bottom:0;width:348px;z-index:20;
+  background:var(--surface);border-left:1px solid var(--border);
+  box-shadow:var(--win-shadow);display:none;flex-direction:column;
+}
+.ai-panel.on{display:flex}
+.ai-head{height:40px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid var(--hairline)}
+.ai-acts{margin-left:auto;display:flex;gap:2px}
+
+/* ---------- 结果视图切换（行模式 / 列模式 / JSON） ---------- */
+.vmodes{display:flex;align-items:center;gap:2px;background:var(--surface2);border-radius:6px;padding:2px}
+.vmodes button{
+  height:20px;padding:0 8px;border-radius:5px;border:none;background:transparent;color:var(--fg2);
+  font-family:inherit;font-size:11.5px;cursor:pointer;display:inline-flex;align-items:center;gap:4px;
+}
+.vmodes button.on{background:var(--surface);color:var(--fg);font-weight:500;box-shadow:inset 0 0 0 1px var(--border)}
+.colmode .crow{display:flex;border-bottom:1px solid var(--hairline)}
+.colmode .cname{width:170px;flex:none;padding:7px 12px;background:var(--surface2);font-size:12px;font-weight:600;
+  display:flex;align-items:center;gap:6px}
+.colmode .cname .ty{font-weight:400;color:var(--fg3);font-size:10.5px;margin-left:auto}
+.colmode .cval{flex:1;padding:7px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jsonview{padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:19px;
+  white-space:pre;color:var(--fg)}
+.jsonview .jk{color:var(--syntax-kw)}
+.jsonview .js{color:var(--syntax-str)}
+.jsonview .jn{color:var(--syntax-num)}
+
+/* ---------- 状态栏 ---------- */
+.statusbar{
+  height:28px;flex:none;display:flex;align-items:center;gap:14px;padding:0 12px;
+  border-top:1px solid var(--hairline);background:var(--chrome);font-size:11.5px;color:var(--fg2);
+}
+.statusbar .right{margin-left:auto;display:flex;gap:14px}
+.statusbar kbd{font-family:inherit;border:1px solid var(--border);border-radius:4px;padding:0 4px;
+  font-size:10.5px;color:var(--fg3);line-height:15px}
+
+/* ---------- 事件日志（审核用） ---------- */
+.logpanel{
+  position:absolute;right:14px;bottom:44px;width:392px;max-height:244px;
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  box-shadow:var(--win-shadow);display:flex;flex-direction:column;overflow:hidden;z-index:9;
+}
+.logpanel header{
+  height:28px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;
+  border-bottom:1px solid var(--hairline);font-size:11.5px;font-weight:600;color:var(--fg2);
+}
+.logpanel header .ic{width:12px;height:12px}
+.logpanel header .x{margin-left:auto;cursor:pointer;color:var(--fg3)}
+.logpanel .rows{overflow:auto;padding:4px 0}
+.logrow{
+  padding:3px 10px;font-size:11.5px;line-height:17px;color:var(--fg2);
+  display:flex;gap:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+.logrow .t{color:var(--fg3);flex:none}
+.logrow.new{background:var(--accent-tint);color:var(--fg)}
+.logrow b{color:var(--accent-text);font-weight:600}
+
+/* ---------- 规则表 ---------- */
+table.rules{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--surface);
+  border:1px solid var(--border);border-radius:8px;overflow:hidden}
+table.rules th,table.rules td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--hairline);
+  vertical-align:top}
+table.rules th{background:var(--surface2);font-size:11.5px;color:var(--fg2);font-weight:600}
+table.rules tr:last-child td{border-bottom:none}
+table.rules td code{font-size:11.5px;background:var(--surface2);padding:1px 5px;border-radius:4px}
+.pill{display:inline-flex;align-items:center;gap:4px;height:19px;padding:0 7px;border-radius:5px;
+  font-size:11px;background:var(--surface2);color:var(--fg2)}
+.pill.now{background:var(--accent-tint);color:var(--accent-text)}
+.pill.later{background:color-mix(in srgb,var(--warning) 16%,transparent);color:var(--warning)}
+
+/* ---------- 待确认清单 ---------- */
+.qlist{display:grid;gap:10px}
+.qcard{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.qcard h4{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.qcard .num{width:18px;height:18px;border-radius:5px;background:var(--accent-tint);color:var(--accent-text);
+  font-size:11px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.qcard p{font-size:12.5px;line-height:19px;color:var(--fg2);margin-top:6px}
+.qcard .opts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.opt{
+  border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:12px;color:var(--fg2);
+  background:var(--bg);cursor:pointer;flex:1;min-width:220px;
+}
+.opt:hover{border-color:var(--primary)}
+.opt.on{border-color:var(--primary);background:var(--accent-tint);color:var(--fg)}
+.opt b{display:block;color:var(--fg);font-weight:600;font-size:12.5px;margin-bottom:2px}
+.opt.on b{color:var(--accent-text)}
+
+/* ---------- 批次计划 ---------- */
+.batch{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.bcard{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.bcard h4{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.bcard ul{margin-top:8px}
+.bcard li{list-style:none;font-size:12.5px;line-height:19px;color:var(--fg2);padding-left:16px;position:relative}
+.bcard li + li{margin-top:4px}
+.bcard li::before{content:"";position:absolute;left:3px;top:7px;width:5px;height:5px;border-radius:2px;
+  background:var(--border);border:1px solid var(--fg3)}
+.bcard.b1{border-color:var(--primary)}
+.bcard.b1 li::before{background:var(--primary);border-color:var(--primary)}
+.bcard .tag{font-size:11px;background:var(--surface2);color:var(--fg2);border-radius:5px;padding:1px 6px}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>Duck Toolbox · 数据库模块 UI 设计稿</h1>
+  <div class="sub">
+    对照 <code>temp/dbx</code>（CodeMirror 6 + Vue，dataTabOpenPolicy）与 <code>temp/dbflux</code>（Rust/GPUI，tab_manager）
+    两套参考实现重排数据库页。左侧对象树、标签条、编辑器折叠、结果区均可点击试操作；
+    右下角「事件日志」会实时显示你这一次点击触发的是<b>复用</b>还是<b>新开</b>。
+    数据来源均为真实源码：<code>crates/duck-app/src/pages/db.rs</code>（18172 行）、<code>crates/duck-db</code>、<code>duck-theme</code>。
+  </div>
+  <div class="controls">
+    <button class="btn" id="themeBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M6 1v1.6M6 9.4V11M1 6h1.6M9.4 6H11M2.5 2.5l1.1 1.1M8.4 8.4l1.1 1.1M9.5 2.5L8.4 3.6M3.6 8.4L2.5 9.5"/><circle cx="6" cy="6" r="2.1"/></svg>切换明暗</button>
+    <button class="btn" id="resetBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M10 6a4 4 0 1 1-1.2-2.9M10 1.2V4H7.4"/></svg>重置演示</button>
+    <label class="zoom">数据 tab 复用策略
+      <select id="reuseSel">
+        <option value="same-table">同表复用（已确认）</option>
+        <option value="always-new">永远新开</option>
+        <option value="active-tab">活动 tab 复用</option>
+      </select>
+    </label>
+    <label class="zoom">缩放
+      <input type="range" id="zoom" min="70" max="100" value="100">
+    </label>
+  </div>
+</div>
+
+<section class="shot">
+  <h2><span class="idx">1</span>数据库页整体布局（可点击试操作）</h2>
+  <div class="cap">
+    在左栏点「表 / 视图」「数据库」「已保存查询」，观察右上标签条与右下日志的变化；
+    按住 <b>⌥ Option</b> 点击表示强制新开 tab。改动点用 ①②③ 标在图上。
+  </div>
+  <div class="stage">
+    <div class="win">
+
+      <div class="titlebar">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <div class="search">
+          <svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="5.2" cy="5.2" r="3.4"/><path d="M7.8 7.8L10.4 10.4"/></svg>
+          搜索连接与对象…
+          <kbd>⌘K</kbd>
+        </div>
+        <div class="trail">
+          <div class="tbtn" title="新建连接"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M6 2v8M2 6h8"/></svg></div>
+          <div class="tbtn hot" title="刷新目录"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M10 6a4 4 0 1 1-1.2-2.9M10 1.2V4H7.4"/></svg></div>
+        </div>
+      </div>
+
+      <div class="body">
+        <div class="rail">
+          <div class="tile"><div class="rb"><svg class="ic" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2" width="14" height="14" rx="3"/><path d="M6 6h6M6 9h6M6 12h3"/></svg></div></div>
+          <div class="tile on"><div class="rb"><svg class="ic" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3"><ellipse cx="9" cy="4.6" rx="6" ry="2.4"/><path d="M3 4.6v8.8c0 1.3 2.7 2.4 6 2.4s6-1.1 6-2.4V4.6M3 9c0 1.3 2.7 2.4 6 2.4s6-1.1 6-2.4"/></svg></div></div>
+          <div class="tile"><div class="rb"><svg class="ic" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="3" width="14" height="12" rx="2"/><path d="M4.6 7l3 2.4-3 2.4M9.4 12h4"/></svg></div></div>
+          <div class="tile"><div class="rb"><svg class="ic" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 5.4h12M3 9h12M3 12.6h7"/></svg></div></div>
+          <div class="spacer"></div>
+          <div class="tile"><div class="rb"><svg class="ic" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="9" cy="9" r="2.4"/><path d="M9 2.4v2M9 13.6v2M2.4 9h2M13.6 9h2M4.4 4.4l1.4 1.4M12.2 12.2l1.4 1.4M13.6 4.4l-1.4 1.4M5.8 12.2l-1.4 1.4"/></svg></div></div>
+        </div>
+
+        <div class="sidebar">
+          <div class="sbhead">
+            <h3>连接</h3>
+            <div class="acts">
+              <div class="ibtn" title="新建分组"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.6 3.4h3.2l1 1.2h4.6v5.2H1.6z"/><path d="M6 7v2.4M4.8 8.2h2.4"/></svg></div>
+              <div class="ibtn" title="刷新"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M10 6a4 4 0 1 1-1.2-2.9M10 1.2V4H7.4"/></svg></div>
+              <div class="ibtn" title="新建连接"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M6 2v8M2 6h8"/></svg></div>
+            </div>
+          </div>
+          <div class="sbfilter">
+            <div class="search">
+              <svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="5.2" cy="5.2" r="3.4"/><path d="M7.8 7.8L10.4 10.4"/></svg>
+              过滤连接与对象…
+            </div>
+          </div>
+          <div class="tree" id="tree"></div>
+          <div class="sb-foot">
+            <span>2 个连接 · 8 个库</span>
+            <span style="margin-left:auto">导入 / 导出</span>
+          </div>
+        </div>
+
+        <div class="main">
+          <div class="globalbar" id="globalbar">
+            <button class="gb" id="gbNewConn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><ellipse cx="6" cy="3" rx="4.2" ry="1.6"/><path d="M1.8 3v6c0 .9 1.9 1.6 4.2 1.6s4.2-.7 4.2-1.6V3"/></svg>新建连接</button>
+            <button class="gb" id="gbNewQuery"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.8" y="1.8" width="8.4" height="8.4" rx="1.4"/><path d="M3.6 4.4h4.8M3.6 6.6h3"/></svg>新建查询</button>
+            <button class="gb disabled" id="gbTransfer" title="内核暂无对应能力，按「演示项判据」不接后端不摆真实入口"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 4h7M7 2l2 2-2 2M10 8H3M5 6L3 8l2 2"/></svg>数据传输</button>
+            <button class="gb disabled" id="gbDriver" title="依赖与驱动清单见 THIRD_PARTY_LICENSES 门禁；暂无管理界面"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M6 1.6l4.2 2.4v4L6 10.4 1.8 8V4z"/><path d="M6 6v4.4M6 6L1.8 4M6 6l4.2-2"/></svg>驱动管理</button>
+            <button class="gb" id="gbPlugins"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M4.4 1.8h3.2v2.6h2.6v3.2H7.6v2.6H4.4V7.6H1.8V4.4h2.6z"/></svg>插件中心</button>
+            <button class="gb" id="gbMore">更多<svg class="cv" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.6l3 3 3-3"/></svg></button>
+            <div class="right">
+              <button class="gb" id="gbAI" title="AI 助手（独立右滑面板）"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.8" y="1.8" width="8.4" height="8.4" rx="2"/><circle cx="4.4" cy="5" r="0.7" fill="currentColor"/><circle cx="7.6" cy="5" r="0.7" fill="currentColor"/><path d="M4.2 7.4c.5.7 1.1 1 1.8 1s1.3-.3 1.8-1"/></svg>AI 助手</button>
+              <span id="gbStat" style="font-size:11px;color:var(--fg3)">SQLite / PG / MySQL / Redis / MSSQL / Mongo / ES</span>
+            </div>
+          </div>
+          <div class="tabbar" id="tabbar"></div>
+
+          <div class="toolbar" id="toolbar">
+            <button class="tb primary" id="runBtn"><svg class="ic" viewBox="0 0 12 12" fill="currentColor"><path d="M3.4 2.2v7.6l6-3.8z"/></svg>运行</button>
+            <button class="tb" id="runSelBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.4 6h4.4M6 3.4v5.2"/><rect x="1.4" y="1.6" width="9.2" height="8.8" rx="2" stroke-dasharray="1.6 1.4"/></svg>选中执行</button>
+            <button class="tb" id="fmtBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 3.4h8M2 6h5M2 8.6h8"/></svg>格式化</button>
+            <button class="tb" id="commentBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 3.4h8M2 6h8M2 8.6h5"/><path d="M8.6 8.6h1.8" opacity=".5"/></svg>注释</button>
+            <button class="tb" id="compactBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8.4 2.4L10.6 4.6 8.4 6.8M3.6 5.2L1.4 7.4l2.2 2.2"/></svg>压缩</button>
+            <button class="tb" id="explainBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 9.4V6.2M5 9.4V2.6M8 9.4V7.4M10.4 9.4V4.4"/></svg>执行计划</button>
+            <div class="tb-sep"></div>
+            <button class="tb" id="saveBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.4 2.4h5.4l1.8 1.8v5.4H2.4z"/><path d="M4.4 2.4v3h3.2v-3M4.4 9.6V7h3.2v2.6"/></svg>保存查询</button>
+            <button class="tb" id="histBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M6 3.2V6l2 1.4"/><circle cx="6" cy="6" r="4.2"/></svg>历史</button>
+            <div class="right">
+              <span class="tx-badge" id="txBadge">Tx · 自动提交</span>
+              <button class="tb" id="foldAllBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 3.4h6M3 6h6M3 8.6h6"/><path d="M1 5l1-1 1 1M9 7l1 1 1-1"/></svg>全部折叠</button>
+              <button class="tb" id="unfoldAllBtn"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 3.4h6M3 6h6M3 8.6h6"/><path d="M1 7l1 1 1-1M9 5l1-1 1 1"/></svg>全部展开</button>
+              <div class="tb-sep"></div>
+              <select id="connSel" style="height:24px;font-size:12px">
+                <option>🐬 本地 MySQL</option>
+                <option>🐘 本地 pg</option>
+              </select>
+              <select id="dbSel" style="height:24px;font-size:12px">
+                <option>wordpress</option>
+                <option>shop_mall</option>
+              </select>
+              <button class="tb" id="setDefaultBtn">设为默认</button>
+            </div>
+          </div>
+
+          <div class="editor-wrap" id="editorPane"></div>
+
+          <div class="pane" id="tablePane"></div>
+          <div class="pane" id="dbPane"></div>
+          <div class="pane" id="sysPane"></div>
+
+          <div class="results" id="resultsPane">
+            <div class="objheader" id="objheader"></div>
+            <div class="resbar" id="resbar"></div>
+            <div class="grid" id="grid"></div>
+            <div class="grid-foot">
+              <div class="vmodes" id="vModes">
+                <button data-vm="rows" class="on">▦ 行模式</button>
+                <button data-vm="cols">☰ 列模式</button>
+                <button data-vm="json">{ } JSON</button>
+              </div>
+              <span id="gridStat">208 行 · 只读结果 · 耗时 8 ms</span>
+              <span class="right">
+                <button class="pgbtn" data-ta="export">⤓ 导出 ∨</button>
+                <button class="pgbtn">«</button>
+                <button class="pgbtn">上一页</button>
+                <button class="pgbtn on">1</button>
+                <button class="pgbtn">下一页</button>
+                <button class="pgbtn">»</button>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="dock" id="dock">
+          <div class="docktabs">
+            <button class="dtab on" data-dock="detail">详情</button>
+            <button class="dtab" data-dock="history">历史</button>
+            <button class="dtab" id="dockHide" style="margin-left:auto" title="收起右栏">»</button>
+          </div>
+          <div class="dockbody">
+            <div class="dsec on" id="ds-detail">
+              <div class="dh">连接信息</div>
+              <div class="kvrow"><span class="k">主机</span><span class="v">127.0.0.1:3306</span></div>
+              <div class="kvrow"><span class="k">版本</span><span class="v">MySQL 8.0.36</span></div>
+              <div class="kvrow"><span class="k">当前库</span><span class="v">wordpress</span></div>
+              <div class="kvrow"><span class="k">传输</span><span class="v">直连</span></div>
+              <div class="dh">选中行详情（第 1 行）</div>
+              <div class="kvrow"><span class="k">meta_id</span><span class="v">1201</span></div>
+              <div class="kvrow"><span class="k">post_id</span><span class="v">88</span></div>
+              <div class="kvrow"><span class="k">meta_key</span><span class="v">_edit_last</span></div>
+              <div class="kvrow"><span class="k">meta_value</span><span class="v" title="长文本截断">a:12:{i:1790872614;…</span></div>
+              <div class="dh">对象速览 · ah_postmeta</div>
+              <div class="kvrow"><span class="k">列 / 索引 / 外键</span><span class="v">4 / 3 / 2</span></div>
+              <div class="kvrow"><span class="k">触发器</span><span class="v">0</span></div>
+              <div style="margin-top:8px;font-size:11px;color:var(--fg3);line-height:17px">
+                右键菜单里的「行详情 / 列详情」直接落到本栏，不再弹窗——右栏是 shell 级统一区域（with_right_sidebar），页面不重复造。
+              </div>
+            </div>
+            <div class="dsec" id="ds-history">
+              <div class="seg" id="histSeg">
+                <button class="on" data-hseg="recent">🕐 最近</button>
+                <button data-hseg="saved">☆ 已保存</button>
+              </div>
+              <div id="histList"></div>
+            </div>
+          </div>
+        </div>
+        <div class="dockrail" id="dockrail" title="展开右栏">
+          <svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.4" y="1.8" width="9.2" height="8.4" rx="1"/><path d="M7.6 1.8v8.4"/></svg>
+          <svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="6" cy="6" r="4.2"/><path d="M6 3.4V6l1.8 1.2"/></svg>
+        </div>
+
+        <div class="ai-panel" id="aiPanel">
+          <div class="ai-head">
+            <span style="font-weight:600">新对话</span>
+            <div class="ai-acts">
+              <button class="ibtn" data-aia="save" title="保存对话"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2.4 2.4h5.4l1.8 1.8v5.4H2.4z"/><path d="M4.4 2.4v3h3.2v-3"/></svg></button>
+              <button class="ibtn" data-aia="new" title="新对话"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M6 2v8M2 6h8"/></svg></button>
+              <button class="ibtn" data-aia="hist" title="历史对话"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="6" cy="6" r="4.2"/><path d="M6 3.4V6l1.8 1.2"/></svg></button>
+              <button class="ibtn" data-aia="clear" title="清空"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2.4 3.4h7.2M4.6 3.4V2.2h2.8v1.2M3.4 3.4l.5 6h4.2l.5-6"/></svg></button>
+              <button class="ibtn" data-aia="expand" title="放大"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 5l3-3M10 5V2H7M5 7l-3 3M2 7v3h3"/></svg></button>
+              <button class="ibtn" data-aia="close" title="关闭"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+            </div>
+          </div>
+          <div class="ai-msgs" id="aiMsgs" style="flex:1;overflow:auto">
+            <div class="ai-empty">
+              <div class="em"><svg class="ic" viewBox="0 0 12 12" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.8" y="1.8" width="8.4" height="8.4" rx="2"/><circle cx="4.4" cy="5" r="0.7" fill="currentColor"/><circle cx="7.6" cy="5" r="0.7" fill="currentColor"/><path d="M4.2 7.4c.5.7 1.1 1 1.8 1s1.3-.3 1.8-1"/></svg></div>
+              告诉我你想了解什么，我来帮你分析
+            </div>
+          </div>
+          <div class="ai-foot">
+            <div class="ai-ctx">
+              <span class="chip">🐬 本地 MySQL ∨</span>
+              <span class="chip">⛁wordpress</span>
+              <span style="margin-left:auto;font-size:10.5px;color:var(--fg3)">上下文自动跟随活动 tab</span>
+            </div>
+            <div style="font-size:11px;color:var(--fg3);margin-bottom:6px">输入你的问题，我来帮你分析…输入 @ 可添加可用对象或文件作为上下文</div>
+            <div class="ai-box" style="margin-bottom:8px">
+              <textarea id="aiInput" placeholder="输入你的问题，我来帮你分析…输入 @ 可引用对象或上下文"></textarea>
+            </div>
+            <div class="ai-row">
+              <button class="ibtn" data-aia="attach" style="border:1px solid var(--border)">＋</button>
+              <span class="chip" style="cursor:pointer" data-aia="mode">▣ Ask · 通用问答 ∨</span>
+              <div style="flex:1"></div>
+              <button class="send" id="aiSend"><svg viewBox="0 0 12 12" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 9.6V2.6M3 5.2L6 2.4l3 2.8"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="statusbar">
+        <span id="stConn">wordpress-prod · MySQL</span>
+        <span id="stDb">wordpress</span>
+        <span id="stMode">查询模式</span>
+        <div class="right">
+          <span>只读关闭 · 自动提交</span>
+          <span><kbd>⌘↵</kbd> 运行</span>
+          <span><kbd>⌘.</kbd> 停止</span>
+        </div>
+      </div>
+
+      <div class="logpanel" id="logPanel">
+        <header>
+          <svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 3h8M2 6h8M2 9h5"/></svg>
+          事件日志（本次点击触发了什么）
+          <span class="x" id="logClear">清空</span>
+        </header>
+        <div class="rows" id="logRows"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <li><b>三审新增</b>：① 全局操作组<b>移进主工作区</b>（tab 条上方，不横跨窗口标题栏）② 右侧 dock 三分段——<b>详情 / 历史 / AI 助手</b>（点 dock 标签切换、» 可收起）③ 结果 tab 增强（行数 / 语句来源 / 结果内搜索 / 记录-只读 footer）④ <b>行模式 / 列模式 / JSON</b> 三视图切换（在结果区 resbar 上点）。</li>
+    <li><b>右栏分工</b>：右键菜单里「行详情 / 列详情」直接落到 dock 详情分段，不再弹窗；查询历史从「工具条按钮」升级为右侧常驻面板（最近 / 已保存 两段，点击填编辑器不执行）。右栏是 shell 级统一区域（<code>with_right_sidebar</code>），db 页不重复造栏。</li>
+    <li><b>本轮新增五块区域</b>（对照你四张 dbx 截图）：① 全局操作组 ② 编辑器工具条（运行模式组 / Tx 徽标 / 连接与库切换 / 设为默认）③ 结果区对象 header（pin / 对象 pill / 字段筛选 / 跳转列 / DDL）④ 数据表工具行（视图切换 / 行范围 / 新增行 / 提交 / 回滚）⑤ 网格类型化列头 + <b>单元格右键菜单</b>（在网格上右键试试）。</li>
+    <li><b>灰显 = 无后端</b>：「数据传输 / 驱动管理 / 比较架构 / 比较数据 / 数据库备份」在 Duck Toolbox 内核没有对应能力，按「演示项判据（P3-6）」真机不摆入口，图中仅为 dbx 对位示意；菜单里灰色项同理。</li>
+    <li><b>改动点 ②</b> 标签条从「连接维度」扩到「连接 + 库 + 对象」：现有 <code>tabs/tab_conn/sessions_views</code> 只有连接一个维度（<code>db.rs:4583-4594</code>）。</li>
+    <li><b>改动点 ③</b> 结果区从单槽位 <code>QueryView.result</code> 升级为结果 tab（多语句 → 多结果）；对象 header / 工具行的提交与回滚走既有暂存事务（⌘S / ⇧⌘⌫）。</li>
+  </div>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">2</span>点击行为规则（对齐 dbx <code>dataTabOpenPolicy</code> / dbflux <code>tab_manager</code>）</h2>
+  <div class="cap">三种复用策略的下拉在上方工具区，切过去再点左栏节点即可对比差异。</div>
+  <table class="rules">
+    <thead>
+      <tr><th style="width:170px">左栏节点</th><th style="width:230px">主区动作</th><th>复用 / 焦点规则</th><th style="width:96px">批次</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>表 / 视图</td>
+        <td>打开数据 tab：<code>表名@库名</code></td>
+        <td>同连接+同库+同表：复用并激活；<b>⌥ 点击</b>强制新开；新 tab 插到活动 tab 之后</td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>数据库（命名空间）</td>
+        <td>打开<b>库数据 tab</b>：对象清单 + 行数/大小 + 前 100 行预览</td>
+        <td>同连接+同库复用；库 tab 内的表双击再进表 tab（详见待确认 #1）</td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>分类节点（表 / 视图 / 过程…）</td>
+        <td>只折叠展开，不动主区</td>
+        <td>保持现状（<code>db.rs:14926</code>），符合 dbx 的 <code>toggle</code> 语义</td>
+        <td><span class="pill">—</span></td>
+      </tr>
+      <tr>
+        <td>已保存查询 / 对象骨架</td>
+        <td>填入当前活动查询 tab 的编辑器</td>
+        <td>只填不执行（<code>fill_editor</code> 语义）；无活动 tab 则落到该连接首个查询 tab</td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>连接节点</td>
+        <td>选中 + 确保会话；已有 tab 则激活其最后一个 tab</td>
+        <td>不再清空已有 tab（现状 <code>activate_conn</code> 会重置视图）</td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>仪表盘 / 实例概览 / 指标 / 检查器</td>
+        <td>全局视图切换</td>
+        <td>按已确认决策：<b>保持单例</b>，不进 tab 序列</td>
+        <td><span class="pill">—</span></td>
+      </tr>
+      <tr>
+        <td>标签条 <code>＋</code></td>
+        <td>当前连接新建空查询 tab</td>
+        <td>沿用现有 <code>open_tab</code>，但编辑器状态改为每 tab 独立（见待确认 #2）</td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>结果区对象 header</td>
+        <td>pin / 对象 pill / 字段筛选 / 跳转列 / DDL</td>
+        <td>DDL 走既有 <code>stage_sql</code>（已有）；字段筛选、跳转列新做；pill 标题 = <code>库.对象</code> 或 <code>连接@库</code></td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>数据表工具行</td>
+        <td>视图切换 / 行范围 / 新增行 / 删除行 / 提交 / 回滚</td>
+        <td>提交=⌘S 暂存事务、回滚=⇧⌘⌫、新增行=pending_inserts（后端全都有，纯界面接线）；导入 / 自动刷新 P2</td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>编辑器工具条右侧</td>
+        <td>连接下拉 / 库下拉 / 设为默认 / Tx 徽标</td>
+        <td>库切换 = <code>set_namespace</code>（不重连，PG 例外）；Tx 徽标读 <code>in_tx</code>（内核已有）</td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>全局操作组</td>
+        <td>新建连接 / 新建查询 / 插件中心 / 更多</td>
+        <td><b>限定在主工作区内</b>（tab 条上方，不横跨窗口标题栏，按你的 third-round 意见）；新建连接与插件中心已有路由；<b>数据传输 / 驱动管理 / 比较 / 备份无后端不摆</b>（P3-6 判据）</td>
+        <td><span class="pill now">P1</span></td>
+      </tr>
+      <tr>
+        <td>右侧 dock 三分段</td>
+        <td>详情 / 查询历史 / AI 助手</td>
+        <td>挂在既有 shell 右栏（<code>with_right_sidebar</code>）下做分段：详情=现有连接/列/索引/选中行信息 + 右键菜单「行·列详情」落点；历史=kv <code>db_query_history</code>，最近/已保存切换，点击填编辑器；AI=duck-ai（凭据 kv: ai_providers + vault 密文），上下文跟随活动 tab；可整体折叠</td>
+        <td><span class="pill now">P1</span> <span class="pill later">AI→P2</span></td>
+      </tr>
+      <tr>
+        <td>结果 tab 增强</td>
+        <td>行数 / 来源语句 / 结果内搜索 / 记录-只读 footer</td>
+        <td>tab 标题带行数；副标 <code>语句 L8–11 · 表名</code>（dbflux 同款）；搜索过滤当前结果集；footer：记录 pill + 只读 + 导出 + 分页</td>
+        <td><span class="pill later">P2</span></td>
+      </tr>
+      <tr>
+        <td>行模式 / 列模式 / JSON</td>
+        <td>结果视图三切换</td>
+        <td>列模式 = 首行转置「名称/值 + 类型」（dbx 转置查看对位，落在结果区而非右键菜单）；JSON = 单行序列化预览</td>
+        <td><span class="pill later">P2</span></td>
+      </tr>
+      <tr>
+        <td>网格右键菜单</td>
+        <td>排序 / 行·单元格·列详情 / 复制 / 设 NULL / 克隆 / 删除 / 导出</td>
+        <td>排序、行详情、复制、批量、删除、导出已有；单元格详情 / 设 NULL / 克隆 / 复制为 INSERT 拟新增</td>
+        <td><span class="pill later">P2</span></td>
+      </tr>
+      <tr>
+        <td>标签右键 / 中键</td>
+        <td>关闭 / 关闭其它 / 固定 / 复制对象名</td>
+        <td>对齐 dbx：中键关闭、Pin 到固定区、关闭中间 tab 不重编号</td>
+        <td><span class="pill later">P2</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="notes">
+    <li><b>为什么不给系统页做 tab</b>：dbflux 每个文档类型都能成 tab，但依赖 `PaneHandle` 闭包擦除壳；本项目四个系统页共用一个全局 <code>instance_data</code> 缓存与指标历史，改成 tab 需要拆状态且会挤占 tab 条，收益低。</li>
+    <li><b>Tab 标题去重</b>：dbx 对重名 tab 追加稳定数字后缀，且关闭中间 tab 不重编号（<code>tabPresentation.ts:159-190</code>）。本项目同样处理，避免「同名两个 wordpress」分不清。</li>
+  </div>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">3</span>编辑器折叠细节（点 chevron / 全部折叠 试操作）</h2>
+  <div class="cap">
+    折叠能力在组件层<b>已存在</b>：<code>gpui-component 0.7.1</code> 的 tree-sitter 高亮器对跨 ≥3 行的语法节点产出折叠候选
+    （<code>highlighter/input_adapter.rs:233-262</code>），编辑器默认 <code>folding: true</code>（<code>gpui-base .../base/mode.rs:76-85</code>），
+    行号右侧渲染 chevron。缺的是 dbx 的「语句级运行标记 / 全部折叠 ⌘⌥[ / 当前语句框」。本图就是补齐后的形态。
+  </div>
+  <div class="stage">
+    <div class="win" style="height:470px">
+      <div class="toolbar" style="height:40px">
+        <button class="tb primary" id="runStmtBtn"><svg class="ic" viewBox="0 0 12 12" fill="currentColor"><path d="M3.4 2.2v7.6l6-3.8z"/></svg>运行光标语句</button>
+        <button class="tb" id="foldAllBtn2"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 3.4h6M3 6h6M3 8.6h6"/><path d="M1 5l1-1 1 1M9 7l1 1 1-1"/></svg>全部折叠 ⌘⌥[</button>
+        <button class="tb" id="unfoldAllBtn2"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 3.4h6M3 6h6M3 8.6h6"/><path d="M1 7l1 1 1-1M9 5l1-1 1 1"/></svg>全部展开 ⌘⌥]</button>
+        <span class="tb-sep"></span>
+        <span style="font-size:11.5px;color:var(--fg2)" id="stmtCount"></span>
+        <div class="right">
+          <span style="font-size:11.5px;color:var(--fg3)">折叠粒度：整条语句 · BEGIN/END 块 · 括号子查询 · UNION 分支</span>
+        </div>
+      </div>
+      <div class="editor-wrap" style="flex:1" id="editorPane2"></div>
+      <div class="statusbar">
+        <span>点击左侧 ▶ 执行单条语句 · 点击 ⌄ 折叠该条 · 悬停行号列显示执行按钮</span>
+        <div class="right"><span id="foldStat">折叠 1 条 · 共 3 条语句</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <li><b>折叠占位符</b>：dbx 用的是 CodeMirror 默认 <code>…</code>（<code>QueryEditor.vue:1995</code> 未传 placeholderDOM）。设计稿改为「⋯ N 行已折叠 ⋯」，让折叠范围可数。</li>
+    <li><b>真机待验</b>：折叠在组件层默认开启，但目前没有任何测试或截图证据表明它在 db 页可见。P1 第一步就是真机截图确认；若不可见，排查高亮器是否被 <code>.language()</code> 之外的路径重置。</li>
+    <li><b>不改上游</b>：折叠全部 / 语句级 run 标记若上游无 API，走自绘 gutter 列（本项目已有 <code>db.rs:11078-11122</code> 的 ▶ 执行列），不 fork gpui-component。</li>
+  </div>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">4</span>多结果集与逐语句执行（第二批 P2）</h2>
+  <div class="cap">连点两次「运行」看结果 tab 累积；对齐 dbx 的「每语句一个结果 tab」与 dbflux 的语句 gutter。</div>
+  <div class="stage">
+    <div class="win" style="height:330px">
+      <div class="editor-wrap" style="flex:.8;border-bottom:1px solid var(--hairline)" id="editorPane3"></div>
+      <div class="results" style="flex:1;border-top:none">
+        <div class="resbar" id="resbar4"></div>
+        <div class="grid" id="grid4"></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <li><b>内核已具备</b>：<code>duck_db</code> 执行整段时逐条执行，但目前只保留最后一条返回行的语句结果（<code>crates/duck-db/src/result.rs:604-613</code>），中间结果集被丢掉——P2 要把它们带出来（<code>additional_results</code> 之类），内核改动需与界面同步。</li>
+    <li><b>结果 tab 标题</b>：dbx/dbflux 都带来源语句行号（dbflux: <code>Statement L7–16 · orders, customers</code>），便于对照。</li>
+  </div>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">5</span>改动点清单与分批计划（已按你的三项决策定稿）</h2>
+  <div class="batch">
+    <div class="bcard b1">
+      <h4>第一批 P1 <span class="tag">tab 体系 + 折叠验证</span></h4>
+      <ul>
+        <li>左栏库/表点击 → 开 tab（同表复用，⌥ 强制新开）</li>
+        <li>tab 数据模型扩展：<code>TabKind::{Query, DbData, TableData}</code> + 归属 <code>(conn, db, object)</code></li>
+        <li>标签条渲染分类图标 + <code>表@库</code> 副标题 + 重名后缀去重</li>
+        <li>点连接节点不再重置已有 tab（保留会话、只切焦点）</li>
+        <li>编辑器折叠真机验证；补「全部折叠 / 全部展开」与折叠占位文案</li>
+        <li>激活 tab 时状态栏显示 连接 · 库 · 模式</li>
+      </ul>
+    </div>
+    <div class="bcard">
+      <h4>第二批 P2 <span class="tag">执行体验</span></h4>
+      <ul>
+        <li>语句级 gutter：▶ 逐句执行 + 成功/运行中/失败徽标</li>
+        <li>选中执行（有选区跑选区，无选区跑光标语句）</li>
+        <li>多结果集 tab（内核带出 additional results）</li>
+        <li>tab 右键菜单：关闭其它 / 固定 / 复制对象名；中键关闭</li>
+        <li>当前语句整段淡色底 + 左缘竖条</li>
+        <li>（可选）库 tab 内的对象搜索与批量打开</li>
+      </ul>
+    </div>
+  </div>
+  <div class="notes">
+    <li><b>不改的东西</b>：仪表盘 / 实例三页保持单例切换（已确认）；连接编辑器仍是六标签之外的既有弹窗；<code>db.settings</code> / <code>db.saved_queries</code> 的 kv 结构不动。</li>
+    <li><b>风险与顺序</b>：<code>db.rs</code> 18172 行、<code>tabs</code> 相关逻辑散在 7088/7128/7245/7264 四处，先抽 <code>TabKind</code> 与复用判定纯函数（可单测），再接界面，最后跑 rustfmt 单文件 + <code>cargo check -p duck-app</code> + <code>cargo test -p duck-db</code>。</li>
+  </div>
+</section>
+
+<section class="shot">
+  <h2><span class="idx">6</span>待你拍板的两处细节</h2>
+  <div class="qlist">
+    <div class="qcard">
+      <h4><span class="num">1</span>点「数据库」节点，主区该给什么？</h4>
+      <p>你的原话是「点击多个数据库，tab 都不会增加对应数据 tab」，所以这里有两种理解。点选项直接看上方效果图变化。</p>
+      <div class="opts" id="q1opts">
+        <div class="opt on" data-q1="dbdata"><b>库数据 tab（我的建议）</b>对象清单 + 每表行数/大小 + 前 100 行预览；库内双击表再进表 tab。</div>
+        <div class="opt" data-q1="querytab"><b>库查询 tab</b>每个库一个独立 SQL 草稿页（更接近 dbx 的 <code>OpenConsole</code>），不展示数据。</div>
+      </div>
+    </div>
+    <div class="qcard">
+      <h4><span class="num">2</span>每个 tab 是否要有独立撤销栈？</h4>
+      <p>现状：编辑器实体全页唯一（<code>db.rs:1390-1397</code> 注释写明），撤销栈跨 tab 共享，切 tab 可能退回上一个 tab 的文本。</p>
+      <div class="opts" id="q2opts">
+        <div class="opt on" data-q2="own"><b>每 tab 独立编辑器（我的建议）</b>每 tab 一个 <code>EditorState</code>，撤销栈、折叠状态、光标位置互不串；内存成本 = tab 数 × 编辑器。</div>
+        <div class="opt" data-q2="shared"><b>继续共享单编辑器</b>改动小，但撤销栈串台问题保留，只对 SQL 文本做快照切换。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="ctxmenu" id="ctxmenu"></div>
+
+<script>
+(function(){
+  var ICONS = {
+    chev:'<path d="M4 2l4 4-4 4"/>',
+    db:'<ellipse cx="6" cy="3.2" rx="4.2" ry="1.7"/><path d="M1.8 3.2v5.6c0 .94 1.88 1.7 4.2 1.7s4.2-.76 4.2-1.7V3.2M1.8 6c0 .94 1.88 1.7 4.2 1.7s4.2-.76 4.2-1.7"/>',
+    tbl:'<rect x="1.4" y="1.8" width="9.2" height="8.4" rx="1"/><path d="M1.4 4.8h9.2M5 4.8v5.4"/>',
+    view:'<path d="M1.2 6S3 2.6 6 2.6 10.8 6 10.8 6 9 9.4 6 9.4 1.2 6 1.2 6z"/><circle cx="6" cy="6" r="1.5"/>',
+    dash:'<rect x="1.6" y="1.6" width="3.6" height="4.4" rx="1"/><rect x="6.8" y="1.6" width="3.6" height="2.6" rx="1"/><rect x="1.6" y="7.4" width="3.6" height="3" rx="1"/><rect x="6.8" y="5.6" width="3.6" height="4.8" rx="1"/>',
+    chart:'<path d="M1.6 9.6V6M4.8 9.6V2.6M8 9.6V7.4M10.6 9.6V4.6"/>',
+    gauge:'<path d="M2 9a4.4 4.4 0 1 1 8 0"/><path d="M6 9l2.2-3"/>',
+    grid:'<rect x="1.4" y="1.8" width="9.2" height="8.4" rx="1"/><path d="M1.4 5h9.2M6 1.8v8.4"/>',
+    pin:'<path d="M7 1.6L10.4 5 8.2 5.8 6.4 9 3 5.6 6.2 3.8z"/><path d="M3 9l-1.4 1.4"/>',
+    plus:'<path d="M6 2v8M2 6h8"/>',
+    x:'<path d="M3 3l6 6M9 3l-6 6"/>',
+    play:'<path d="M3.6 2.4v7.2l5.6-3.6z"/>',
+    search:'<circle cx="5.2" cy="5.2" r="3.4"/><path d="M7.8 7.8l2.6 2.6"/>',
+    clock:'<circle cx="6" cy="6" r="4.2"/><path d="M6 3.4V6l1.8 1.2"/>',
+    save:'<path d="M2.4 2.4h5.4l1.8 1.8v5.4H2.4z"/><path d="M4.4 2.4v3h3.2v-3"/>',
+    filter:'<path d="M1.8 2.6h8.4L7 6.2v3.6L5 8.6V6.2z"/>',
+    back:'<path d="M5 2.6L2 6l3 3.4M2 6h8"/>',
+    fwd:'<path d="M7 2.6L10 6l-3 3.4M10 6H2"/>',
+    sql:'<path d="M2 3.4h4M2 6h6M2 8.6h3"/><path d="M8.4 6.6l2 1.6-2 1.6"/>',
+    pin:'<path d="M7.2 1.6L10.4 4.8 8.4 5.6 6.6 8.6 3.4 5.4 6.4 3.6z"/><path d="M3 9l-1.4 1.4"/>',
+    key:'<circle cx="4.2" cy="4.2" r="2.4"/><path d="M6 6l4 4M8.4 8.4l1.2-1.2M7 9.8l1.2-1.2"/>',
+    filter:'<path d="M1.8 2.6h8.4L7 6.2v3.6L5 8.6V6.2z"/>',
+    jump:'<rect x="1.4" y="1.8" width="9.2" height="8.4" rx="1"/><path d="M1.4 5h9.2M4.6 5v5.2"/><circle cx="7.6" cy="7.6" r="1.6"/>',
+    code:'<path d="M4.4 3.4L1.8 6l2.6 2.6M7.6 3.4L10.2 6 7.6 8.6"/>',
+    wrench:'<path d="M8.8 2.2a2.6 2.6 0 0 0-3.4 3.4L2 9l1 1 3.4-3.4a2.6 2.6 0 0 0 3.4-3.4L8.2 4.8 7.2 3.8z"/>',
+    morev:'<circle cx="2.6" cy="6" r="1"/><circle cx="6" cy="6" r="1"/><circle cx="9.4" cy="6" r="1"/>',
+    upload:'<path d="M6 8.6V2.4M3.6 4.8L6 2.4l2.4 2.4M2 10h8"/>',
+    download:'<path d="M6 2.4v6.2M3.6 6.2L6 8.6l2.4-2.4M2 10h8"/>',
+    refresh:'<path d="M10 6a4 4 0 1 1-1.2-2.9M10 1.2V4H7.4"/>',
+    clock:'<circle cx="6" cy="6" r="4.2"/><path d="M6 3.4V6l1.8 1.2"/>',
+    plusrow:'<rect x="1.4" y="2.4" width="9.2" height="7.2" rx="1"/><path d="M6 4.4v3M4.5 5.9h3"/>',
+    trash:'<path d="M2.4 3.4h7.2M4.6 3.4V2.2h2.8v1.2M3.4 3.4l.5 6h4.2l.5-6"/>',
+    commit:'<circle cx="6" cy="6" r="3.4"/><path d="M1.2 6h1.4M9.4 6h1.4"/>',
+    rollback:'<path d="M3.4 2.6L1 5l2.4 2.4M1 5h6.4a2.8 2.8 0 1 1 0 5.6H5"/>',
+    chart:'<path d="M1.6 9.6V6M4.8 9.6V2.6M8 9.6V7.4M10.6 9.6V4.6"/>',
+    swap:'<path d="M2 4h7M7 2l2 2-2 2M10 8H3M5 6L3 8l2 2"/>',
+    clone:'<rect x="3.4" y="3.4" width="7.2" height="7.2" rx="1"/><path d="M8 1.4H2.4A1 1 0 0 0 1.4 2.4V8"/>',
+    info:'<circle cx="6" cy="6" r="4.2"/><path d="M6 5.4V8.4M6 3.8v.2"/>',
+    updown:'<path d="M4.4 2.4v7.2M4.4 2.4L2.8 4M4.4 2.4L6 4M7.6 9.6V2.4M7.6 9.6L6 8M7.6 9.6L9.2 8"/>'
+  };
+  function ic(name, cls, size){
+    return '<svg class="ic ' + (cls||'') + '" viewBox="0 0 12 12" width="'+(size||14)+'" height="'+(size||14)+
+      '" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' +
+      (ICONS[name]||'') + '</svg>';
+  }
+
+  /* ---------------- 树数据 ---------------- */
+  var TREE = [
+    {t:'sect', label:'默认分组'},
+    {t:'conn', id:'c1', label:'wordpress-prod', meta:'MySQL 8.0', depth:0, open:true, dot:'ok'},
+    {t:'sys',  id:'s1', label:'仪表盘', icon:'dash', depth:1, conn:'c1'},
+    {t:'saved',id:'q1', label:'已保存查询', meta:'3', icon:'clock', depth:1, conn:'c1', open:false},
+    {t:'sect2',label:'数据库', depth:1, open:true},
+    {t:'db',   id:'d1', label:'wordpress', meta:'12.4 MB', icon:'db', depth:2, conn:'c1', db:'wordpress', open:true},
+    {t:'cat',  id:'k1', label:'表', meta:'12', depth:3, conn:'c1', db:'wordpress', open:true},
+    {t:'tbl',  id:'t1', label:'ah_posts', meta:'1.2k', icon:'tbl', depth:4, conn:'c1', db:'wordpress', obj:'ah_posts'},
+    {t:'tbl',  id:'t2', label:'ah_postmeta', meta:'8.4k', icon:'tbl', depth:4, conn:'c1', db:'wordpress', obj:'ah_postmeta'},
+    {t:'tbl',  id:'t3', label:'wp_users', meta:'18', icon:'tbl', depth:4, conn:'c1', db:'wordpress', obj:'wp_users'},
+    {t:'cat',  id:'k2', label:'视图', meta:'3', depth:3, conn:'c1', db:'wordpress', open:false},
+    {t:'db',   id:'d2', label:'shop_mall', meta:'48.1 MB', icon:'db', depth:2, conn:'c1', db:'shop_mall', open:false},
+    {t:'sys',  id:'s2', label:'实例概览', icon:'gauge', depth:1, conn:'c1'},
+    {t:'sys',  id:'s3', label:'实例指标', icon:'chart', depth:1, conn:'c1'},
+    {t:'sys',  id:'s4', label:'实例检查器', icon:'grid', depth:1, conn:'c1'},
+    {t:'conn', id:'c2', label:'mail-archive', meta:'PostgreSQL 16', depth:0, open:false, dot:'warn'},
+    {t:'sys',  id:'s5', label:'仪表盘', icon:'dash', depth:1, conn:'c2'}
+  ];
+
+  /* ---------------- 状态 ---------------- */
+  var state = {
+    reuse: 'same-table',
+    tabs: [{id:1, kind:'query', conn:'c1', connName:'wordpress-prod', db:null, title:'查询 1', sub:'wordpress-prod', active:true}],
+    activeTab: 1,
+    seq: 1,
+    sysView: null,
+    q1: 'dbdata',
+    q2: 'own'
+  };
+  var TABLES = {
+    wordpress: [
+      {name:'ah_posts', rows:'1,204', size:'780 KB', note:'文章'},
+      {name:'ah_postmeta', rows:'8,431', size:'4.1 MB', note:'文章元数据'},
+      {name:'wp_users', rows:'18', size:'32 KB', note:'用户'},
+      {name:'wp_options', rows:'412', size:'1.2 MB', note:'选项'}
+    ],
+    shop_mall: [
+      {name:'orders', rows:'52,881', size:'22 MB', note:'订单'},
+      {name:'order_items', rows:'191,204', size:'31 MB', note:'订单明细'},
+      {name:'sku', rows:'3,120', size:'640 KB', note:'商品'}
+    ]
+  };
+  var COLS = {
+    ah_postmeta:['meta_id','post_id','meta_key','meta_value'],
+    ah_posts:['ID','post_title','post_status','post_date'],
+    wp_users:['ID','user_login','user_email','user_registered'],
+    wp_options:['option_id','option_name','option_value','autoload']
+  };
+  var COLTYPES = {
+    ah_postmeta:{meta_id:'bigint unsigned', post_id:'bigint', meta_key:'varchar(191)', meta_value:'longtext'},
+    ah_posts:{ID:'bigint unsigned', post_title:'text', post_status:'varchar(20)', post_date:'datetime'},
+    wp_users:{ID:'bigint unsigned', user_login:'varchar(60)', user_email:'varchar(100)', user_registered:'datetime'},
+    wp_options:{option_id:'bigint unsigned', option_name:'varchar(191)', option_value:'longtext', autoload:'varchar(20)'}
+  };
+  var PKS = {ah_postmeta:'meta_id', ah_posts:'ID', wp_users:'ID', wp_options:'option_id'};
+  var ROWS = {
+    ah_postmeta:[['1201','88','_edit_last','1'],['1202','88','_wp_page_template','default'],['1203','91','_thumbnail_id','412'],['1204','91','_edit_lock','1698:1'],['1205','97','_stock_status','instock'],['1206','97','_price','128.00']],
+    ah_posts:[['88','手冲咖啡的三种滤杯','publish','2026-08-14 09:20'],['91','秋季新品发布公告','publish','2026-09-02 14:05'],['97','限量联名马克杯','draft','2026-09-19 11:41']],
+    wp_users:[['1','batch','batch@duck.dev','2024-01-08 10:02'],['18','editor_lu','lu@duck.dev','2026-03-22 16:30']],
+    wp_options:[['1','siteurl','https://duck.dev','yes'],['2','blogname','Duck Toolbox','yes']]
+  };
+
+  var logs = [];
+  function log(text){
+    var d = new Date();
+    var t = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+    logs.unshift({t:t, text:text});
+    if(logs.length > 40) logs.pop();
+    renderLog();
+  }
+  function renderLog(){
+    var rows = document.getElementById('logRows');
+    if(!logs.length){ rows.innerHTML = '<div class="logrow"><span class="t">--:--:--</span>等待操作…（点左侧树或标签条）</div>'; return; }
+    rows.innerHTML = logs.map(function(l,i){
+      return '<div class="logrow'+(i===0?' new':'')+'"><span class="t">'+l.t+'</span><span>'+l.text+'</span></div>';
+    }).join('');
+  }
+
+  /* ---------------- 树渲染 ---------------- */
+  function renderTree(){
+    var html = '';
+    TREE.forEach(function(n){
+      if(n.t === 'sect' || n.t === 'sect2'){
+        html += '<div class="sect" style="padding-left:'+(6 + (n.depth||0)*14)+'px">'+(n.t==='sect2'?'<span style="cursor:pointer;margin-right:4px">'+(n.open?'▾':'▸')+'</span>':'')+n.label+
+          (n.t==='sect2'?'<span style="margin-left:auto">2</span>':'')+'</div>';
+        return;
+      }
+      var cls = 'trow' + (n.open?' open':'');
+      if(n.t==='db' && n.db === currentDb() ) cls += ' sel';
+      if(n.t==='conn' && n.id==='c1') cls += ' sel';
+      var icon = n.t==='conn' ? 'db' : (n.icon || (n.t==='saved'?'clock':'tbl'));
+      var chevron = (n.t==='conn'||n.t==='db'||n.t==='cat') ? ic('chev','chev') : '';
+      var dot = n.dot ? '<span class="dot'+(n.dot==='warn'?' warn':'')+'"></span>' : '';
+      html += '<div class="'+cls+'" data-id="'+n.id+'" data-kind="'+n.t+'" data-depth="'+(n.depth||0)+'">'+
+        chevron + ic(icon) + dot + '<span class="lbl">'+n.label+'</span>' +
+        (n.meta?'<span class="meta">'+n.meta+'</span>':'') +
+        '</div>';
+    });
+    document.getElementById('tree').innerHTML = html;
+  }
+  function currentDb(){
+    var t = tabById(state.activeTab);
+    return t ? t.db : null;
+  }
+  function tabById(id){ for(var i=0;i<state.tabs.length;i++){ if(state.tabs[i].id===id) return state.tabs[i]; } return null; }
+
+  /* ---------------- 标签条 ---------------- */
+  function renderTabs(){
+    var bar = document.getElementById('tabbar');
+    if(!state.tabs.length){
+      bar.innerHTML = '<div class="hint" style="margin-left:0">没有打开的标签 · 点左栏对象打开</div>';
+      return;
+    }
+    var html = '';
+    state.tabs.forEach(function(t){
+      var on = t.id === state.activeTab;
+      var icon = t.kind==='query' ? ic('sql','db') : (t.kind==='dbdata' ? ic('db','db') : ic('tbl','tbl'));
+      var sub = t.kind==='query' ? '<span class="sub">'+t.sub+'</span>'
+              : (t.kind==='dbdata' ? '<span class="sub">库</span>' : '<span class="sub">@'+t.db+'</span>');
+      var st = t.status ? '<span class="st'+(t.status==='running'?' run':(t.status==='error'?' err':''))+'"></span>' : '';
+      html += '<div class="tab'+(on?' on':'')+'" data-tab="'+t.id+'" title="'+t.kind+'">'+icon+st+
+        '<span class="tw">'+t.title+'</span>'+sub+
+        '<span class="x" data-close="'+t.id+'">'+ic('x','',10)+'</span></div>';
+    });
+    html += '<div class="tab add" id="newTabBtn">'+ic('plus','',12)+'</div>';
+    html += '<div class="hint">'+(state.reuse==='same-table'?'复用策略：同表复用':(state.reuse==='always-new'?'复用策略：永远新开':'复用策略：活动 tab 复用'))+'</div>';
+    bar.innerHTML = html;
+  }
+
+  /* ---------------- 打开 tab 的三条规则 ---------------- */
+  function findTab(pred){
+    for(var i=0;i<state.tabs.length;i++){ if(pred(state.tabs[i])) return state.tabs[i]; }
+    return null;
+  }
+  function insertAfterActive(tab){
+    var i = 0;
+    for(var k=0;k<state.tabs.length;k++){ if(state.tabs[k].id===state.activeTab) i = k+1; }
+    state.tabs.splice(i,0,tab);
+  }
+  function activateTab(t){
+    state.activeTab = t.id;
+    state.sysView = null;
+    state.tabs.forEach(function(x){ x.active = false; });
+    t.active = true;
+    log('激活 tab <b>'+t.title+'</b>');
+    renderAll();
+  }
+  function openTable(conn, db, obj, forceNew){
+    var existing = state.reuse === 'same-table' || state.reuse === 'active-tab'
+      ? findTab(function(t){ return t.kind==='tbl' && t.conn===conn && t.db===db && t.obj===obj; })
+      : null;
+    if(existing && !forceNew){
+      activateTab(existing);
+      log('复用数据 tab <b>'+obj+'@'+db+'</b> —— 未新建（同表复用）');
+      return;
+    }
+    if(state.reuse === 'active-tab' && !forceNew){
+      var at = tabById(state.activeTab);
+      if(at && at.kind !== 'query'){
+        at.kind = 'tbl'; at.obj = obj; at.db = db; at.conn = conn;
+        at.title = obj; at.status = null; at.page = 0; at.filters = [];
+        log('活动 tab 就地变为数据 tab <b>'+obj+'@'+db+'</b>（活动 tab 复用）');
+        renderAll(); return;
+      }
+    }
+    state.seq++;
+    var t = {id:state.seq, kind:'tbl', conn:conn, db:db, obj:obj, title:obj, page:0, filters:[]};
+    insertAfterActive(t);
+    state.activeTab = t.id; state.sysView = null;
+    log('新开数据 tab <b>'+(forceNew?'⌥ ':'')+obj+'@'+db+'</b> —— 第 '+state.tabs.length+' 个标签');
+    renderAll();
+  }
+  function openDbTab(conn, db, forceNew){
+    var existing = forceNew ? null : findTab(function(t){
+      return (state.reuse==='same-table' ? (t.kind==='dbdata' && t.conn===conn && t.db===db)
+        : (t.kind==='query' && t.qdb===db));
+    });
+    if(state.q1 === 'dbdata'){
+      if(existing && !forceNew){ activateTab(existing); log('复用库 tab <b>'+db+'</b>'); return; }
+      state.seq++;
+      var t = {id:state.seq, kind:'dbdata', conn:conn, db:db, title:db};
+      insertAfterActive(t); state.activeTab = t.id; state.sysView = null;
+      log('新开库数据 tab <b>'+db+'</b> —— 对象清单 + 前 100 行预览');
+      renderAll();
+    } else {
+      if(existing && !forceNew){ activateTab(existing); log('复用库查询 tab <b>'+db+'</b>'); return; }
+      state.seq++;
+      var q = {id:state.seq, kind:'query', conn:conn, connName:'wordpress-prod', db:db, qdb:db,
+               title:'查询 · '+db, sub:'wordpress-prod', active:false};
+      insertAfterActive(q); state.activeTab = q.id; state.sysView = null;
+      log('新开库查询 tab <b>'+db+'</b> —— 独立 SQL 草稿');
+      renderAll();
+    }
+  }
+  function fillEditor(text){
+    var t = tabById(state.activeTab);
+    if(!t || t.kind !== 'query'){
+      t = findTab(function(x){ return x.kind==='query'; });
+      if(!t){ state.seq++; t = {id:state.seq, kind:'query', conn:'c1', connName:'wordpress-prod', title:'查询 1', sub:'wordpress-prod'}; state.tabs.push(t); }
+      state.activeTab = t.id;
+    }
+    if(!t.draft) t.draft = defaultSql();
+    t.draft = text;
+    log('填入编辑器（只填不执行）：<b>'+text.split('\n')[0].slice(0,42)+'…</b>');
+    renderAll();
+  }
+  function openSys(kind, conn){
+    state.sysView = {kind:kind, conn:conn};
+    log('系统页单例切换：<b>'+kind+'</b>（按已确认决策不进 tab 序列）');
+    renderAll();
+  }
+
+  function defaultSql(){
+    return [
+      '-- 统计各仓库的未读消息',
+      'SELECT w.name, COUNT(*) AS unread',
+      'FROM mail m JOIN wxb w ON w.id = m.wid',
+      'GROUP BY w.name',
+      'ORDER BY unread DESC;',
+      '',
+      "SELECT * FROM ah_postmeta",
+      "WHERE meta_key LIKE '%read%'",
+      '  AND post_id > 100',
+      'ORDER BY meta_id DESC',
+      'LIMIT 100;',
+      '',
+      'UPDATE ah_postmeta SET',
+      "  meta_value = 'seen',",
+      '  meta_key = meta_key',
+      'WHERE meta_id = 1;'
+    ].join('\n');
+  }
+
+  /* ---------------- 编辑器（语句 + 折叠） ---------------- */
+  var editorState = {
+    1: null, 2: null, 3: null
+  };
+  function statements(text){
+    var lines = text.split('\n');
+    var out = [], cur = [];
+    lines.forEach(function(l, i){
+      cur.push(l);
+      if(/;\s*$/.test(l)){ out.push(cur); cur = []; }
+    });
+    if(cur.length && cur.join('').trim()) out.push(cur);
+    return out.map(function(ls, idx){
+      return {idx:idx, lines:ls, folded:false, status:(idx===1?'running':(idx===2?'error':'idle')), start:null};
+    });
+  }
+  function highlight(line){
+    var esc = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if(/^\s*--/.test(line)) return '<span class="cm">'+esc+'</span>';
+    esc = esc.replace(/('[^']*')/g, '<span class="str">$1</span>');
+    esc = esc.replace(/\b(SELECT|FROM|WHERE|JOIN|ON|GROUP BY|ORDER BY|DESC|ASC|LIMIT|UPDATE|SET|INSERT|INTO|VALUES|DELETE|AND|OR|AS|COUNT)\b/g, '<span class="kw">$1</span>');
+    esc = esc.replace(/\b(\d+)\b/g, '<span class="num">$1</span>');
+    return esc;
+  }
+  function renderEditor(key, containerId, curStmt){
+    var st = editorState[key];
+    if(!st){ st = editorState[key] = {stmts: statements(defaultSql()), foldAll:false}; }
+    var html = '';
+    var lineNo = 0;
+    var foldedCount = 0;
+    st.stmts.forEach(function(s, si){
+      var isCur = (si === curStmt);
+      var canFold = s.lines.length >= 3;
+      var head = s.lines[0];
+      lineNo++;
+      var markerCls = 'gut run';
+      var marker = s.status==='running'
+        ? '<span class="st run"></span>'
+        : (s.status==='error' ? '<span class="st err"></span>' : (s.status==='ok' ? '<span class="st"></span>' : '<span class="play">'+ic('play','',11)+'</span>'));
+      if(s.folded) foldedCount++;
+      var gutter = '<div class="'+markerCls+'" data-run="'+si+'">'+marker+'</div>' +
+        '<div class="gut num">'+lineNo+'</div>';
+      var foldCell = canFold
+        ? '<div class="gut fold'+(s.folded?'':' open')+'" data-fold="'+si+'">'+ic('chev','',11)+'</div>'
+        : '<div class="gut fold"></div>';
+      html += '<div class="eline'+(isCur?' cur':'')+'">'+gutter+foldCell+'<div class="code">'+highlight(head)+'</div></div>';
+      if(s.folded){
+        html += '<div class="eline folded"><div class="gut run"></div><div class="gut num"></div><div class="gut fold"></div>'+
+          '<div class="placeholder">⋯ '+(s.lines.length-1)+' 行已折叠 ⋯</div></div>';
+      } else {
+        for(var i=1;i<s.lines.length;i++){
+          lineNo++;
+          html += '<div class="eline'+(isCur?' cur':'')+'"><div class="gut run"></div><div class="gut num">'+lineNo+'</div><div class="gut fold"></div>'+
+            '<div class="code">'+highlight(s.lines[i])+'</div></div>';
+        }
+      }
+      html += '<div class="eline"><div class="gut run"></div><div class="gut num"></div><div class="gut fold"></div><div class="code"> </div></div>';
+    });
+    document.getElementById(containerId).innerHTML = '<div class="editor">'+html+'</div>';
+    return foldedCount;
+  }
+
+  /* ---------------- 主区渲染 ---------------- */
+  function renderAll(){
+    renderTabs(); renderTree();
+    var t = tabById(state.activeTab);
+    var kind = state.sysView ? 'sys' : (t ? t.kind : 'query');
+    ['editorPane','tablePane','dbPane','sysPane','resultsPane'].forEach(function(id){
+      document.getElementById(id).classList.remove('on');
+    });
+    document.getElementById('editorPane').style.display = 'none';
+    document.getElementById('resultsPane').style.display = 'none';
+    document.getElementById('toolbar').style.display = 'none';
+
+    if(kind === 'tbl'){
+      document.getElementById('tablePane').classList.add('on');
+      renderTablePane(t);
+      setStatus(t.conn, t.db, '表浏览模式');
+    } else if(kind === 'dbdata'){
+      document.getElementById('dbPane').classList.add('on');
+      renderDbPane(t);
+      setStatus(t.conn, t.db, '库视图');
+    } else if(kind === 'sys'){
+      document.getElementById('sysPane').classList.add('on');
+      renderSysPane();
+      setStatus('c1', '—', '系统视图（单例）');
+    } else {
+      document.getElementById('editorPane').style.display = 'flex';
+      document.getElementById('resultsPane').style.display = 'flex';
+      document.getElementById('toolbar').style.display = 'flex';
+      renderEditor(1,'editorPane', 1);
+      renderResults();
+      setStatus('c1', t && t.db ? t.db : 'wordpress', '查询模式');
+    }
+  }
+  function setStatus(conn, db, mode){
+    document.getElementById('stConn').textContent = (conn==='c2'?'mail-archive · PostgreSQL':'wordpress-prod · MySQL');
+    document.getElementById('stDb').textContent = db || '—';
+    document.getElementById('stMode').textContent = mode;
+  }
+  function ohHtml(pill, pinned){
+    return '<span class="pin'+(pinned?' on':'')+'" data-oh="pin" title="固定该视图（pin 后切 tab 不回收）">'+ic('pin')+'</span>'+
+      '<span class="objpill">'+ic('key','dotk')+'<span>'+pill+'</span></span>'+
+      '<div class="acts">'+
+      '<button class="oh" data-oh="filter">'+ic('filter')+'字段筛选</button>'+
+      '<button class="oh" data-oh="jump">'+ic('jump')+'跳转列</button>'+
+      '<button class="oh" data-oh="ddl">'+ic('code')+'DDL</button>'+
+      '<button class="oh" data-oh="wrench" title="网格设置">'+ic('wrench')+'</button>'+
+      '<button class="oh" data-oh="more" title="更多">'+ic('morev')+'</button>'+
+      '</div>';
+  }
+  function colHead(c, width){
+    var t = 'text', isPk = false;
+    Object.keys(COLTYPES).forEach(function(k){
+      if(COLTYPES[k][c] !== undefined){ t = COLTYPES[k][c]; isPk = (PKS[k] === c); }
+    });
+    return '<div class="cell colcell" style="width:'+width+'px;padding:0">'+
+      '<div class="c1">'+(isPk?'<span class="k">'+ic('key','',11)+'</span>':'<span class="h">'+ic('key','',11)+'</span>')+
+      '<span>'+c+'</span><span class="sortarr">'+ic('updown','',11)+'<span style="color:var(--fg3)">∨</span></span></div>'+
+      '<div class="c2">'+t+'</div></div>';
+  }
+  window.resMode = 'rows';
+  window.resQuery = '';
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function renderResults(){
+    var bar = document.getElementById('resbar');
+    if(!window.resTabs) window.resTabs = [{n:1, kind:'SELECT', rows:208, info:'8 ms', on:true}];
+    bar.innerHTML = window.resTabs.map(function(r,i){
+      return '<div class="rtab'+(r.on?' on':'')+'" data-res="'+i+'"><span class="st"></span>'+
+        '结果 '+r.n+' · '+r.rows+' 行 · '+r.info+'</div>';
+    }).join('') +
+    '<span style="font-size:11px;color:var(--fg3);margin-left:8px">语句 L8–11 · ah_postmeta</span>' +
+    '<div class="right">'+
+      '<input id="resSearch" placeholder="在结果中搜索" value="'+esc(window.resQuery)+'" '+
+        'style="height:22px;width:170px;border:1px solid var(--border);border-radius:6px;font-size:11.5px;padding:0 8px;background:var(--surface);color:var(--fg);outline:none">'+
+      ic('save')+
+    '</div>';
+    var t = tabById(state.activeTab);
+    var pill = t ? (t.kind==='tbl' ? t.db+'.'+t.obj : (t.connName||'wordpress-prod')+(t.db?'@'+t.db:'')) : 'wordpress.ah_postmeta';
+    document.getElementById('objheader').innerHTML = ohHtml(pill, t && t.pinned);
+    var cols = ['meta_id','post_id','meta_key','meta_value'];
+    var all = ROWS.ah_postmeta.concat([['1207','103','_edit_last',null]]);
+    var q = window.resQuery.trim().toLowerCase();
+    var rows = q ? all.filter(function(r){ return r.join('\u0001').toLowerCase().indexOf(q)>=0; }) : all;
+    var html = '';
+    if(window.resMode === 'rows'){
+      html = '<div class="ghead"><div class="cell rownum">#</div>' +
+        cols.map(function(c){ return colHead(c,150); }).join('') + '</div>';
+      html += rows.map(function(r,i){
+        return '<div class="grow'+(i===0?' cursel':'')+'"><div class="cell rownum">'+(i+1)+'</div>' +
+          r.map(function(v,ci){ return '<div class="cell'+(i===0&&ci===1?' cursel':'')+'" style="width:150px'+(v==null?';color:var(--fg3);font-style:italic':'')+'">'+(v==null?'NULL':v)+'</div>'; }).join('') + '</div>';
+      }).join('');
+      if(!rows.length) html += '<div style="padding:18px;color:var(--fg3);font-size:12px">没有匹配「'+esc(window.resQuery)+'」的行</div>';
+      document.getElementById('grid').className = 'grid';
+    } else if(window.resMode === 'cols'){
+      var r0 = rows[0] || [];
+      html = '<div class="colmode" style="padding:0 0 0 0">';
+      cols.forEach(function(c,ci){
+        var v = r0[ci];
+        html += '<div class="crow"><div class="cname">'+(PKS.ah_postmeta===c?'<span class="k" style="color:var(--warning)">'+ic('key','',11)+'</span>':'')+
+          c+'<span class="ty">'+(function(){var t='TEXT';Object.keys(COLTYPES).forEach(function(k){if(COLTYPES[k][c])t=COLTYPES[k][c];});return t;})()+'</span></div>'+
+          '<div class="cval">'+(v==null?'<span style="color:var(--fg3);font-style:italic">NULL</span>':esc(v))+'</div></div>';
+      });
+      html += '</div>';
+      document.getElementById('grid').className = 'grid';
+    } else {
+      var obj = {};
+      cols.forEach(function(c,ci){ obj[c] = (rows[0]||[])[ci] ?? null; });
+      var j = JSON.stringify([obj], null, 2)
+        .replace(/"([^"]+)":/g,'<span class="jk">"$1"</span>:')
+        .replace(/: "([^"]*)"/g,': <span class="js">"$1"</span>')
+        .replace(/: (\d+)/g,': <span class="jn">$1</span>');
+      html = '<div class="jsonview">'+j+'</div>';
+      document.getElementById('grid').className = 'grid';
+    }
+    document.getElementById('grid').innerHTML = html;
+    document.getElementById('gridStat').textContent =
+      (window.resMode==='rows' ? rows.length+' / ' : '') + '208 行 · 只读结果 · 耗时 8 ms' + (q?' · 过滤「'+window.resQuery+'」':'');
+  }
+  function renderTablePane(t){
+    var cols = COLS[t.obj] || ['id'];
+    var meta = (TABLES[t.db]||[]).filter(function(x){return x.name===t.obj;})[0] || {rows:'—'};
+    var inTx = !!(t && t.tx);
+    var html = '<div class="objheader">'+ohHtml(t.db+'.'+t.obj, t.pinned)+'</div>';
+    html += '<div class="toolrow">'+
+      '<div class="vswitch">'+
+        '<button class="v on">'+ic('tbl')+'数据表</button>'+
+        '<button class="v" id="tpChart">'+ic('chart')+'图表</button>'+
+      '</div>'+
+      '<select id="tpRange" style="height:24px;font-size:12px"><option>全部行</option><option>前 100 行</option><option>前 1000 行</option><option>选中行</option></select>'+
+      '<div class="right">'+
+        '<button class="tb" data-ta="import">'+ic('upload')+'导入</button>'+
+        '<button class="tb" data-ta="export">'+ic('download')+'导出</button>'+
+        '<button class="tb" data-ta="refresh">'+ic('refresh')+'</button>'+
+        '<button class="tb" data-ta="auto">'+ic('clock')+'自动</button>'+
+        '<div class="tb-sep"></div>'+
+        '<button class="tb" data-ta="insert">'+ic('plusrow')+'新增行</button>'+
+        '<button class="tb" data-ta="delrow">'+ic('trash')+'删除行</button>'+
+        '<div class="tb-sep"></div>'+
+        '<span class="tx-badge'+(inTx?' in-tx':'')+'" id="tpTx">'+(inTx?'Tx · 事务中 N 处改动':'Tx · 自动提交')+'</span>'+
+        '<button class="tb" data-ta="commit"><svg class="ic" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 6.4l2.6 2.6L10 3.4"/></svg>提交</button>'+
+        '<button class="tb" data-ta="rollback">'+ic('rollback')+'回滚</button>'+
+      '</div></div>';
+    html += '<div class="chips">'+
+      '<span class="chip">行数 <b>'+meta.rows+'</b></span>'+
+      '<span class="chip">列 <b>'+cols.length+'</b></span>'+
+      '<span class="chip">索引 <b>3</b></span>'+
+      '<span class="chip">主键 <b>'+(PKS[t.obj]||cols[0])+'</b></span>'+
+      '<span class="chip">外键 <b>2</b></span></div>';
+    html += '<div class="filterbar">'+
+      (t.filters||[]).map(function(f){ return '<span class="fchip">'+f+' '+ic('x','',10)+'</span>'; }).join('') +
+      '<span class="add" id="addFilterBtn">＋ 添加过滤 / 排序</span>'+
+      '<span style="margin-left:auto">点列头排序（服务器侧 ORDER BY，升→降→取消）</span></div>';
+    html += '<div class="grid">';
+    html += '<div class="ghead" style="height:34px"><div class="cell rownum" style="height:34px">#</div>' +
+      cols.map(function(c){ return colHead(c,160); }).join('') + '</div>';
+    var data = ROWS[t.obj] || [cols.map(function(c,i){ return i===0?'1':'…'; })];
+    html += data.map(function(r,i){
+      return '<div class="grow" style="height:30px" data-row="'+i+'"><div class="cell rownum" style="height:30px">'+(i+1)+'</div>' + r.map(function(v){
+        return '<div class="cell num" style="width:160px;height:30px'+(v===''?';color:var(--fg3);font-style:italic':'')+'">'+(v===''?'NULL':v)+'</div>'; }).join('') + '</div>';
+    }).join('');
+    html += '</div>';
+    html += '<div class="loadmore">'+ic('fwd','',12)+' 加载更多（每次 200 行，上限见 db.settings）　·　<b>右键行 / 单元格</b>看完整操作菜单</div>';
+    document.getElementById('tablePane').innerHTML = html;
+  }
+  function renderDbPane(t){
+    var list = TABLES[t.db] || [];
+    var html = '<div class="pane-head"><h3>'+t.db+'</h3><span class="path">库视图 · '+list.length+' 张表</span>'+
+      '<div class="right">'+ic('search')+ic('sql')+'</div></div>';
+    html += '<div class="chips">'+
+      '<span class="chip">表 <b>'+list.length+'</b></span>'+
+      '<span class="chip">视图 <b>3</b></span>'+
+      '<span class="chip">存储过程 <b>0</b></span>'+
+      '<span class="chip">大小 <b>'+(t.db==='wordpress'?'12.4 MB':'48.1 MB')+'</b></span></div>';
+    html += '<div class="grid"><div class="ghead"><div class="cell rownum" style="width:44px"></div>'+
+      '<div class="cell" style="width:220px">对象</div><div class="cell" style="width:110px">行数</div>'+
+      '<div class="cell" style="width:110px">大小</div><div class="cell">说明</div></div>';
+    html += list.map(function(o){
+      return '<div class="grow" data-open-table="'+o.name+'" style="cursor:pointer">'+
+        '<div class="cell rownum" style="width:44px">'+ic('tbl','',12)+'</div>'+
+        '<div class="cell" style="width:220px">'+o.name+'</div>'+
+        '<div class="cell" style="width:110px">'+o.rows+'</div>'+
+        '<div class="cell" style="width:110px">'+o.size+'</div>'+
+        '<div class="cell" style="color:var(--fg2)">'+o.note+'</div></div>';
+    }).join('');
+    html += '</div>';
+    html += '<div class="loadmore">双击行 / 点行 → 打开该表的数据 tab　·　单击选中　·　右键：查看结构 / 生成 SELECT / 导出</div>';
+    document.getElementById('dbPane').innerHTML = html;
+  }
+  function renderSysPane(){
+    var label = {'dashboard':'仪表盘','overview':'实例概览','metrics':'实例指标','inspector':'实例检查器'}[state.sysView.kind] || state.sysView.kind;
+    var html = '<div class="pane-head"><h3>'+label+'</h3><span class="path">wordpress-prod · '+'MySQL 8.0</span>'+
+      '<div class="right">'+ic('fwd','',12)+'</div></div>';
+    html += '<div class="chips"><span class="chip">按已确认决策：<b>单例切换，不进 tab</b></span>'+
+      '<span class="chip">tab 条不被系统页挤占</span></div>';
+    html += '<div class="grid" style="padding:14px">'+
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
+      ['连接数 12','QPS 348','缓冲命中 99.2%','慢查询 3','线程 24','数据量 60.5 MB'].map(function(m){
+        return '<div style="background:var(--surface2);border-radius:6px;padding:10px 14px;min-width:150px">'+
+          '<div style="font-size:11.5px;color:var(--fg2)">'+m.split(' ')[0]+'</div>'+
+          '<div style="font-size:20px;font-weight:600;margin-top:2px">'+m.split(' ').slice(1).join(' ')+'</div></div>';
+      }).join('')+'</div>'+
+      '<div style="margin-top:14px;font-size:12.5px;color:var(--fg2)">系统页内容保持现状（仪表盘图表 / 指标曲线 / 检查器列表），只改「不进 tab 序列」这一条。</div>'+
+      '</div>';
+    document.getElementById('sysPane').innerHTML = html;
+  }
+
+  /* ---------------- 事件绑定 ---------------- */
+  document.getElementById('tree').addEventListener('click', function(e){
+    var row = e.target.closest('.trow');
+    if(!row){ return; }
+    var id = row.dataset.id, kind = row.dataset.kind;
+    var node = TREE.filter(function(n){ return n.id===id; })[0];
+    if(!node) return;
+    var alt = e.altKey;
+    if(kind === 'conn'){
+      var t = findTab(function(x){ return x.conn===id; });
+      if(t){ activateTab(t); log('点连接节点：激活该连接的最后一个 tab，<b>不清空</b>已有 tab'); }
+      else { log('点连接节点 <b>'+node.label+'</b>：确保会话（未连接则连接）'); }
+      return;
+    }
+    if(kind === 'cat'){ node.open = !node.open; log('分类节点只折叠展开，不动主区（对齐 dbx toggle 语义）'); renderTree(); return; }
+    if(kind === 'db'){ openDbTab(id, node.db, alt); return; }
+    if(kind === 'tbl'){ openTable(node.conn, node.db, node.obj, alt); return; }
+    if(kind === 'saved'){
+      node.open = !node.open;
+      fillEditor("SELECT * FROM wp_options\nWHERE autoload = 'yes'\nORDER BY option_name;");
+      return;
+    }
+    if(kind === 'sys'){
+      var map = {'s1':'dashboard','s2':'overview','s3':'metrics','s4':'inspector','s5':'dashboard'};
+      openSys(map[id]||'overview', node.conn);
+      return;
+    }
+  });
+
+  document.getElementById('tabbar').addEventListener('click', function(e){
+    var x = e.target.closest('[data-close]');
+    if(x){
+      var id = Number(x.dataset.close);
+      var idx = state.tabs.findIndex(function(t){ return t.id===id; });
+      state.tabs = state.tabs.filter(function(t){ return t.id!==id; });
+      log('关闭 tab <b>#'+id+'</b>');
+      if(state.activeTab === id){
+        var next = state.tabs[Math.max(0, idx-1)] || state.tabs[0];
+        state.activeTab = next ? next.id : null;
+      }
+      renderAll(); return;
+    }
+    if(e.target.closest('#newTabBtn')){
+      state.seq++;
+      var conn = (tabById(state.activeTab)||{}).conn || 'c1';
+      var t = {id:state.seq, kind:'query', conn:conn, connName:'wordpress-prod', title:'查询 '+(state.seq), sub:'wordpress-prod', active:true};
+      insertAfterActive(t); state.activeTab = t.id; state.sysView = null;
+      log('新建空查询 tab <b>'+t.title+'</b>（每个 tab 独立编辑器）');
+      renderAll(); return;
+    }
+    var tab = e.target.closest('[data-tab]');
+    if(tab){ var t2 = tabById(Number(tab.dataset.tab)); if(t2) activateTab(t2); }
+  });
+
+  document.getElementById('dbPane').addEventListener('click', function(e){
+    var r = e.target.closest('[data-open-table]');
+    if(!r) return;
+    var t = tabById(state.activeTab);
+    openTable(t.conn, t.db, r.dataset.openTable, false);
+  });
+
+  document.getElementById('reuseSel').addEventListener('change', function(e){
+    state.reuse = e.target.value;
+    log('复用策略切换为 <b>'+e.target.selectedOptions[0].textContent+'</b>');
+    renderTabs();
+  });
+
+  document.body.addEventListener('click', function(e){
+    var run = e.target.closest('[data-run]');
+    if(run){
+      var key = run.closest('#editorPane2') ? 2 : (run.closest('#editorPane3') ? 3 : 1);
+      var st = editorState[key] || editorState[2];
+      var si = Number(run.dataset.run);
+      var s = st.stmts[si];
+      s.status = 'running';
+      log('执行光标语句 #'+(si+1)+'（gutter ▶ 逐句执行）');
+      renderEditor(key, key===2?'editorPane2':(key===3?'editorPane3':'editorPane'), 1);
+      setTimeout(function(){
+        s.status = 'ok';
+        window.resTabs.push({n:window.resTabs.length+1, kind:'SELECT', info:(6+si*3)+' ms', on:false});
+        log('语句 #'+(si+1)+' 成功 · 新增结果 tab <b>结果 '+window.resTabs.length+'</b>');
+        renderEditor(key, key===2?'editorPane2':(key===3?'editorPane3':'editorPane'), 1);
+        if(key===1) renderResults();
+      }, 700);
+      return;
+    }
+    var fold = e.target.closest('[data-fold]');
+    if(fold){
+      var k = fold.closest('#editorPane2') ? 2 : (fold.closest('#editorPane3') ? 3 : 1);
+      var stt = editorState[k];
+      var i2 = Number(fold.dataset.fold);
+      stt.stmts[i2].folded = !stt.stmts[i2].folded;
+      log((stt.stmts[i2].folded?'折叠':'展开')+'语句 #'+(i2+1)+' —— 多行 SQL 可折叠（tree-sitter 节点跨 ≥3 行）');
+      renderEditor(k, k===2?'editorPane2':(k===3?'editorPane3':'editorPane'), 1);
+      updateFoldStat(k);
+      return;
+    }
+    var rtab = e.target.closest('[data-res]');
+    if(rtab){
+      window.resTabs.forEach(function(r,i){ r.on = i===Number(rtab.dataset.res); });
+      renderResults(); log('切换结果 tab #'+(Number(rtab.dataset.res)+1)+'（多语句 → 多结果）');
+    }
+  });
+
+  function updateFoldStat(key){
+    var st = editorState[key]; if(!st) return;
+    var n = st.stmts.filter(function(s){ return s.folded; }).length;
+    var el = document.getElementById('foldStat');
+    if(el) el.textContent = '折叠 '+n+' 条 · 共 '+st.stmts.length+' 条语句';
+    var c = document.getElementById('stmtCount');
+    if(c) c.textContent = st.stmts.length + ' 条语句 · 上次执行 0.32 s';
+  }
+  function foldAll(key, on){
+    var st = editorState[key]; if(!st) return;
+    st.stmts.forEach(function(s){ if(s.lines.length>=3) s.folded = on; });
+    log(on?'全部折叠（⌘⌥[）':'全部展开（⌘⌥]）');
+    renderEditor(key, key===2?'editorPane2':(key===3?'editorPane3':'editorPane'), 1);
+    updateFoldStat(key);
+  }
+  document.getElementById('foldAllBtn').onclick = function(){ foldAll(1,true); };
+  document.getElementById('unfoldAllBtn').onclick = function(){ foldAll(1,false); };
+  document.getElementById('foldAllBtn2').onclick = function(){ foldAll(2,true); };
+  document.getElementById('unfoldAllBtn2').onclick = function(){ foldAll(2,false); };
+
+  document.getElementById('runBtn').onclick = function(){
+    var t = tabById(state.activeTab);
+    if(t) t.status = 'running';
+    log('运行整段 SQL（现状全量执行；P2 起有选区则跑选区）');
+    renderTabs();
+    setTimeout(function(){
+      if(t) t.status = null;
+      window.resTabs.push({n:window.resTabs.length+1, kind:'UPDATE', info:'3 rows', on:true});
+      log('执行完成 · 结果 tab 追加 <b>结果 '+window.resTabs.length+' · UPDATE · 3 rows</b>');
+      renderTabs(); renderResults();
+    }, 800);
+  };
+  document.getElementById('runSelBtn').onclick = function(){ log('选中执行：无选区 → 回退为光标所在语句（P2）'); };
+  document.getElementById('fmtBtn').onclick = function(){ log('格式化：内核 format_sql，解析失败保持原样（现状已实现）'); };
+  document.getElementById('explainBtn').onclick = function(){ log('执行计划：一次只看一条语句（现状已实现）'); };
+  document.getElementById('saveBtn').onclick = function(){ log('保存查询 → kv 单键 <b>db.saved_queries</b>'); };
+  document.getElementById('histBtn').onclick = function(){ log('查询历史 → kv <b>db_query_history</b>（上限取 db.settings）'); };
+  document.getElementById('logClear').onclick = function(){ logs = []; renderLog(); };
+
+  document.getElementById('themeBtn').onclick = function(){
+    var el = document.documentElement;
+    el.dataset.theme = el.dataset.theme === 'dark' ? 'light' : 'dark';
+  };
+  document.getElementById('zoom').oninput = function(e){
+    document.documentElement.style.setProperty('--zoom', (e.target.value/100));
+  };
+  document.getElementById('resetBtn').onclick = function(){
+    state.tabs = [{id:1, kind:'query', conn:'c1', connName:'wordpress-prod', title:'查询 1', sub:'wordpress-prod', active:true}];
+    state.activeTab = 1; state.seq = 1; state.sysView = null;
+    window.resTabs = [{n:1, kind:'SELECT', info:'8 ms', on:true}];
+    editorState = {1:null,2:null,3:null};
+    logs = []; log('演示已重置');
+    renderAll();
+    var st2 = editorState[2] = {stmts: statements(defaultSql()), foldAll:false};
+    st2.stmts[1].folded = true;
+    renderEditor(2,'editorPane2',1); updateFoldStat(2);
+    renderEditor(3,'editorPane3',0);
+    renderResbar4();
+  };
+  function renderResbar4(){
+    var bar = document.getElementById('resbar4');
+    bar.innerHTML = '<div class="rtab on"><span class="st"></span>结果 1 · SELECT · 8 ms</div>'+
+      '<div class="rtab"><span class="st warn"></span>结果 2 · SELECT · 11 ms</div>'+
+      '<div class="rtab"><span class="st"></span>结果 3 · UPDATE · 3 rows</div>'+
+      '<div class="right">'+ic('search')+' '+ic('save')+'</div>';
+    document.getElementById('grid4').innerHTML = document.getElementById('grid') ? document.getElementById('grid').innerHTML : '';
+  }
+  document.getElementById('resbar4').addEventListener('click', function(e){
+    var r = e.target.closest('.rtab'); if(!r) return;
+    Array.prototype.forEach.call(this.querySelectorAll('.rtab'), function(x){ x.classList.remove('on'); });
+    r.classList.add('on'); log('切换结果 tab');
+  });
+
+  document.getElementById('q1opts').addEventListener('click', function(e){
+    var o = e.target.closest('.opt'); if(!o) return;
+    this.querySelectorAll('.opt').forEach(function(x){ x.classList.remove('on'); });
+    o.classList.add('on'); state.q1 = o.dataset.q1;
+    log('待确认 #1 选择：<b>'+(state.q1==='dbdata'?'库数据 tab':'库查询 tab')+'</b>');
+  });
+  document.getElementById('q2opts').addEventListener('click', function(e){
+    var o = e.target.closest('.opt'); if(!o) return;
+    this.querySelectorAll('.opt').forEach(function(x){ x.classList.remove('on'); });
+    o.classList.add('on'); state.q2 = o.dataset.q2;
+    log('待确认 #2 选择：<b>'+(state.q2==='own'?'每 tab 独立编辑器':'继续共享单编辑器')+'</b>');
+  });
+
+  /* ---------------- 通用菜单（右键 / 更多） ---------------- */
+  var CM_GRID = [
+    {h:'排序（服务器侧 ORDER BY）'},
+    {i:'asc', label:'列升序排序', ico:'updown', tag:'已有'},
+    {i:'desc', label:'列降序排序', ico:'updown', tag:'已有'},
+    {i:'unsort', label:'取消排序', ico:'x', tag:'已有'},
+    {sep:1},
+    {i:'rowinfo', label:'行详情（行编辑器）', ico:'info', tag:'已有'},
+    {i:'cellinfo', label:'单元格详情', ico:'info', tag:'P2'},
+    {i:'colinfo', label:'列详情', ico:'tbl', tag:'右栏'},
+    {sep:1},
+    {i:'copy', label:'复制值', ico:'clone', tag:'已有'},
+    {i:'copyins', label:'复制为 INSERT', ico:'clone', tag:'P2'},
+    {i:'setnull', label:'设为 NULL', ico:'x', tag:'P2'},
+    {i:'batch', label:'批量修改所选', ico:'swap', tag:'已有'},
+    {i:'clonerow', label:'克隆为新行', ico:'clone', tag:'P2'},
+    {sep:1},
+    {i:'delrow', label:'删除行', ico:'trash', danger:1, tag:'已有'},
+    {sep:1},
+    {i:'export', label:'导出 CSV / JSONL', ico:'download', tag:'已有'},
+    {i:'refresh', label:'刷新', ico:'refresh', tag:'已有'},
+    {note:'转置查看 / 高亮 / 隐藏相同数值列 / 截图 / 打开方式：dbx 特化，无对应后端暂不跟'}
+  ];
+  var CM_MORE = [
+    {i:'sqlfile', label:'执行 SQL 文件', ico:'upload', tag:'P2'},
+    {i:'diffschema', label:'比较架构', ico:'swap', dim:1},
+    {i:'diffdata', label:'比较数据', ico:'swap', dim:1},
+    {i:'backup', label:'数据库备份', ico:'download', dim:1},
+    {note:'灰色项无对应后端能力，按「演示项判据（P3-6）」不摆真实入口'}
+  ];
+  var curMenu = [];
+  function showMenu(items, x, y){
+    curMenu = items;
+    var m = document.getElementById('ctxmenu');
+    m.innerHTML = items.map(function(it){
+      if(it.sep) return '<div class="cm-sep"></div>';
+      if(it.note) return '<div class="cm-note">'+it.note+'</div>';
+      if(it.h) return '<div class="cm-note" style="font-weight:600">'+it.h+'</div>';
+      return '<div class="cm-i'+(it.danger?' danger':'')+(it.dim?' dim':'')+'" data-cm="'+it.i+'">'+ic(it.ico)+'<span>'+it.label+'</span>'+
+        (it.tag?'<span style="margin-left:auto;font-size:10px;color:'+(it.tag==='已有'||it.tag==='右栏'?'var(--success)':'var(--warning)')+'">'+it.tag+'</span>':'')+
+        '</div>';
+    }).join('');
+    m.classList.add('on');
+    m.style.left = '0px'; m.style.top = '0px';
+    var r = m.getBoundingClientRect();
+    m.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8))+'px';
+    m.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8))+'px';
+  }
+  function bindMenuClicks(){
+    var m = document.getElementById('ctxmenu');
+    document.addEventListener('click', function(e){
+      if(!m.classList.contains('on')) return;
+      var item = e.target.closest('[data-cm]');
+      if(item){
+        var it = curMenu.filter(function(x){ return x.i===item.dataset.cm; })[0] || {};
+        var verdict = it.dim ? '无对应后端——真机上不摆此入口'
+          : (it.tag==='P2' ? '拟新增，P2 批次' : (it.tag==='右栏' ? '入口在右侧栏' : '现状已有'));
+        log('菜单动作 <b>'+it.label+'</b>：'+verdict);
+      }
+      m.classList.remove('on');
+    });
+    document.addEventListener('contextmenu', function(e){
+      var grow = e.target.closest('.grow');
+      if(!grow || !grow.closest('.grid')) return;
+      e.preventDefault();
+      showMenu(CM_GRID, e.clientX+2, e.clientY+2);
+    });
+  }
+  bindMenuClicks();
+
+  /* ---------------- 对象 header / 工具行 / 全局栏 / 下拉 ---------------- */
+  document.addEventListener('click', function(e){
+    var oh = e.target.closest('[data-oh]');
+    if(oh){
+      var act = oh.dataset.oh;
+      var t = tabById(state.activeTab);
+      if(act==='pin'){
+        if(t) t.pinned = !t.pinned;
+        log('固定 / 取消固定视图 —— pin 后切 tab 不回收滚动与筛选状态');
+        renderAll();
+      }
+      else if(act==='filter') log('字段筛选：勾选要显示的列（P1 新增，dbx 字段筛选对位）');
+      else if(act==='jump') log('跳转列：输入列名横向滚动定位（P1 新增）');
+      else if(act==='ddl') log('DDL → <b>stage_sql</b> 只填编辑器不执行（现状已有）');
+      else if(act==='wrench') log('网格设置：列宽 / 换行 / NULL 显示（P2）');
+      else if(act==='more') log('更多：复制为 Markdown / 统计（P2）');
+      return;
+    }
+    var ta = e.target.closest('[data-ta]');
+    if(ta){
+      var a = ta.dataset.ta;
+      if(a==='import') log('导入 CSV → 暂存 pending_inserts（P2）');
+      else if(a==='export') log('导出：现状已有整区右键导出');
+      else if(a==='refresh') log('刷新当前页：保留筛选与排序（现状已有）');
+      else if(a==='auto') log('自动刷新间隔（P2，dbx「自动」对位）');
+      else if(a==='insert') log('新增行 → 暂存 pending_inserts，⌘S 提交（现状已有）');
+      else if(a==='delrow') log('删除选中行 → 暂存 DELETE，提交时单事务（现状已有）');
+      else if(a==='commit') log('提交暂存 ⌘S：pending_edits + pending_inserts 单事务（现状已有）');
+      else if(a==='rollback') log('丢弃暂存 ⇧⌘⌫（现状已有）');
+      return;
+    }
+    if(e.target.closest('#tpChart')){
+      log('图表视角：复用现有 chart_view（render_chart），仅查询结果可切');
+      return;
+    }
+    var txEl = e.target.closest('#tpTx') || e.target.closest('#txBadge');
+    if(txEl){
+      if(txEl.id === 'txBadge'){
+        var on = txEl.classList.toggle('in-tx');
+        txEl.textContent = on ? 'Tx · 事务中' : 'Tx · 自动提交';
+      } else {
+        var t2 = tabById(state.activeTab);
+        if(t2) t2.tx = !t2.tx;
+      }
+      log('切换事务模式：BEGIN 后徽标变橙，⌘S 提交 / ⇧⌘⌫ 回滚（内核 in_tx 已有）');
+      renderAll();
+      return;
+    }
+    var rg = e.target.closest('#tpRange');
+    if(rg){ /* change 事件另行处理 */ }
+  });
+  document.addEventListener('change', function(e){
+    if(e.target.id === 'tpRange'){
+      log('行范围切换：<b>'+e.target.value+'</b>（全部行 = 服务器侧分页浏览）');
+    }
+  });
+  document.getElementById('connSel').addEventListener('change', function(e){
+    var pg = e.target.value.indexOf('pg')>=0;
+    log('连接切换下拉 → 激活 <b>'+e.target.value+'</b> 的 tab 组（未连接则先连接）');
+    setStatus(pg?'c2':'c1', document.getElementById('dbSel').value, '查询模式');
+  });
+  document.getElementById('dbSel').addEventListener('change', function(e){
+    log('库切换 = <b>set_namespace</b>（duck-db 换命名空间不重连；PG 走重连）');
+    setStatus('c1', e.target.value, '查询模式');
+  });
+  document.getElementById('setDefaultBtn').onclick = function(){ log('设为默认：写入 kv <b>db.settings</b>（默认连接 + 默认库，P1）'); };
+  document.getElementById('commentBtn').onclick = function(){ log('注释 / 取消注释选中行（P2）'); };
+  document.getElementById('compactBtn').onclick = function(){ log('压缩 SQL 为单行（P2，dbx「压缩」对位）'); };
+  document.getElementById('gbNewConn').onclick = function(){ log('新建连接 → open_new_connection_picker（现状已有）'); };
+  document.getElementById('gbNewQuery').onclick = function(){ log('新建查询 → 当前连接新开查询 tab（P1 tab 体系）'); };
+  document.getElementById('gbTransfer').onclick = function(){ log('数据传输：无对应后端——按「演示项判据 P3-6」真机不摆此入口'); };
+  document.getElementById('gbDriver').onclick = function(){ log('驱动管理：依赖与许可证走 THIRD_PARTY_LICENSES 双重门禁，暂无界面'); };
+  document.getElementById('gbPlugins').onclick = function(){ log('插件中心 → shell 路由 <b>plugin_center</b>（现状已有）'); };
+  document.getElementById('gbMore').addEventListener('click', function(e){
+    e.stopPropagation();
+    var r = this.getBoundingClientRect();
+    showMenu(CM_MORE, r.left, r.bottom+6);
+  });
+
+  /* ---------------- 右侧 dock：详情 / 历史 / AI ---------------- */
+  var HIST = [
+    {sql:'select * from ah_options', when:'刚刚', rows:208, ms:'1 ms'},
+    {sql:"select * from ah_postmeta where meta_key like '%read%'", when:'2 天前', rows:37, ms:'4 ms'},
+    {sql:'SELECT w.name, COUNT(*) AS unread FROM mail m JOIN wxb w ON w.id = m.wid GROUP BY w.name', when:'2 天前', rows:12, ms:'6 ms'},
+    {sql:'show tables', when:'3 天前', rows:12, ms:'0.4 ms'}
+  ];
+  var SAVED = [
+    {sql:"SELECT * FROM wp_options WHERE autoload = 'yes'", when:'已保存 · 选项检查'},
+    {sql:'SELECT post_status, COUNT(*) FROM ah_posts GROUP BY post_status', when:'已保存 · 文章统计'},
+    {sql:"DELETE FROM ah_postmeta WHERE meta_key = '_edit_lock'", when:'已保存 · 清理锁（危险）'}
+  ];
+  window.histSeg = 'recent';
+  function renderHist(){
+    var items = window.histSeg==='saved' ? SAVED : HIST;
+    document.getElementById('histList').innerHTML = items.map(function(h,i){
+      return '<div class="hitem" data-hist="'+i+'"><div class="sql">'+esc(h.sql)+'</div>'+
+        '<div class="meta">'+h.when+(h.rows?' · '+h.rows+' 行':'')+(h.ms?' · '+h.ms:'')+'</div></div>';
+    }).join('');
+  }
+  document.querySelectorAll('.dtab[data-dock]').forEach(function(b){
+    b.addEventListener('click', function(){
+      document.querySelectorAll('.dtab[data-dock]').forEach(function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      ['detail','history'].forEach(function(k){
+        document.getElementById('ds-'+k).classList.toggle('on', k===b.dataset.dock);
+      });
+      if(b.dataset.dock==='history') renderHist();
+    });
+  });
+  document.getElementById('dockHide').addEventListener('click', function(){
+    document.getElementById('dock').classList.add('off');
+    document.getElementById('dockrail').classList.add('on');
+    log('收起右栏（shell 级 with_right_sidebar 折叠）');
+  });
+  document.getElementById('dockrail').addEventListener('click', function(){
+    document.getElementById('dock').classList.remove('off');
+    document.getElementById('dockrail').classList.remove('on');
+    log('展开右栏');
+  });
+  document.getElementById('histSeg').addEventListener('click', function(e){
+    var b = e.target.closest('[data-hseg]');
+    if(!b) return;
+    window.histSeg = b.dataset.hseg;
+    this.querySelectorAll('button').forEach(function(x){ x.classList.remove('on'); });
+    b.classList.add('on');
+    renderHist();
+  });
+  document.getElementById('histList').addEventListener('click', function(e){
+    var h = e.target.closest('[data-hist]');
+    if(!h) return;
+    var items = window.histSeg==='saved' ? SAVED : HIST;
+    var it = items[Number(h.dataset.hist)];
+    this.querySelectorAll('.hitem').forEach(function(x){ x.classList.remove('on'); });
+    h.classList.add('on');
+    log('历史条目 → <b>填入编辑器（只填不执行）</b>：'+esc(it.sql.slice(0,40))+'…');
+    var q = it.sql;
+    setTimeout(function(){ fillEditor(q); }, 150);
+  });
+
+  /* AI 助手（独立右滑面板；duck-ai：供应商档案走 kv: ai_providers，凭据 vault 密文） */
+  document.getElementById('gbAI').addEventListener('click', function(){
+    var p = document.getElementById('aiPanel');
+    p.classList.toggle('on');
+    log(p.classList.contains('on') ? '打开 <b>AI 助手</b> 独立右滑面板（独立按钮触发，不占 dock 分段）' : '关闭 AI 助手面板');
+  });
+  document.getElementById('aiPanel').addEventListener('click', function(e){
+    var a = e.target.closest('[data-aia]');
+    if(!a) return;
+    var act = a.dataset.aia;
+    if(act==='close'){ this.classList.remove('on'); log('关闭 AI 面板'); }
+    else if(act==='new' || act==='clear'){
+      document.getElementById('aiMsgs').innerHTML =
+        '<div class="ai-empty"><div class="em">🤖</div>告诉我你想了解什么，我来帮你分析</div>';
+      document.getElementById('aiInput').value='';
+      log(act==='new'?'新对话':'清空对话');
+    }
+    else if(act==='save') log('保存对话 → kv（P2）');
+    else if(act==='hist') log('历史对话列表（P2）');
+    else if(act==='expand') log('放大为独立窗口（P2）');
+    else if(act==='mode') log('模式切换：Ask · 通用问答 / SQL 解释 / 数据洞察（P2）');
+    else if(act==='attach') log('添加对象 / 文件上下文（@ 引用，P2）');
+  });
+  function aiSend(){
+    var inp = document.getElementById('aiInput');
+    var txt = inp.value.trim();
+    if(!txt) return;
+    var msgs = document.getElementById('aiMsgs');
+    var empty = msgs.querySelector('.ai-empty');
+    if(empty) empty.remove();
+    var u = document.createElement('div');
+    u.className = 'ai-msg user';
+    u.textContent = txt;
+    msgs.appendChild(u);
+    inp.value = '';
+    var b = document.createElement('div');
+    b.className = 'ai-msg bot';
+    b.textContent = '（真机走 duck-ai 供应商档案回答；上下文自动带上当前活动 tab 的连接 / 库 / 选中行）';
+    msgs.appendChild(b);
+    msgs.scrollTop = msgs.scrollHeight;
+    log('AI 助手：发送问题 —— 凭据走 <b>kv: ai_providers + vault 密文</b>，不进 secret');
+  }
+  document.getElementById('aiSend').addEventListener('click', aiSend);
+  document.getElementById('aiInput').addEventListener('keydown', function(e){
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); aiSend(); }
+  });
+
+  /* 结果视图模式 + 结果内搜索 */
+  document.addEventListener('click', function(e){
+    var vm = e.target.closest('[data-vm]');
+    if(vm){
+      window.resMode = vm.dataset.vm;
+      document.querySelectorAll('#vModes [data-vm]').forEach(function(x){
+        x.classList.toggle('on', x.dataset.vm===window.resMode);
+      });
+      log('结果视图切换 → <b>'+({rows:'行模式（表格）',cols:'列模式（名称/值，首行转置）',json:'JSON'})[window.resMode]+'</b>（footer 最前）');
+      renderResults();
+    }
+  });
+  document.addEventListener('input', function(e){
+    if(e.target.id !== 'resSearch') return;
+    window.resQuery = e.target.value;
+    renderResults();
+    var box = document.getElementById('resSearch');
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  });
+
+  /* ---------------- 初始化 ---------------- */
+  log('演示就绪：先点左栏的 <b>ah_postmeta</b>，再点 <b>wp_users</b>，再点回 <b>ah_postmeta</b> 看复用判定');
+  renderAll();
+  var st2 = editorState[2] = {stmts: statements(defaultSql()), foldAll:false};
+  st2.stmts[1].folded = true;
+  renderEditor(2,'editorPane2',1); updateFoldStat(2);
+  renderEditor(3,'editorPane3',0);
+  setInterval(function(){
+    var d = new Date();
+    var el = document.getElementById('stmtCount');
+    if(el) el.textContent = st2.stmts.length + ' 条语句 · 上次执行 0.32 s · ' + d.toLocaleTimeString('zh-CN',{hour12:false});
+  }, 1000);
+})();
+</script>
+</body>
+</html>

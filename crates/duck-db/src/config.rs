@@ -119,6 +119,56 @@ impl DatabaseKind {
     pub const fn needs_database(self) -> bool {
         matches!(self, Self::Sqlite)
     }
+
+    /// 该引擎包裹标识符（表名 / 列名）用的引号字符；`None` = 引擎没有 SQL 标识符概念
+    /// （MongoDB 走 JSON 命令、Elasticsearch 走 REST 路径，都没有「带引号的表名」）。
+    ///
+    /// 与各驱动拼 SQL 时传给 `quote_identifier` 的字符**同源口径**：PostgreSQL / SQLite /
+    /// SQL Server 用 `"`，MySQL 与 ClickHouse 用反引号（MySQL 默认 `ANSI_QUOTES` 关闭，
+    /// 双引号会被当字符串字面量）。界面侧要拼「能直接执行的 SQL 草稿」时用它
+    /// ——结果集的 INSERT 导出、对象树「生成 SELECT」骨架。
+    #[must_use]
+    pub const fn identifier_quote(self) -> Option<char> {
+        match self {
+            Self::Sqlite | Self::Postgres | Self::SqlServer => Some('"'),
+            Self::Mysql | Self::ClickHouse => Some('`'),
+            Self::Mongo | Self::Elasticsearch => None,
+        }
+    }
+
+    /// 该引擎是否支持结果集「分页续拉」（[`crate::drivers::Connection::execute_paged`]）。
+    ///
+    /// **这是「能不能续拉」的唯一判据**：内核的 `execute_paged` 与界面结果区的
+    /// 「加载更多」都查它，两边口径不会再各写一份。
+    ///
+    /// - SQLite / PostgreSQL / MySQL / ClickHouse：外层包 `LIMIT/OFFSET` 可靠；
+    /// - SQL Server：派生表不能带 `ORDER BY`，而外层又必须 `ORDER BY` 才能
+    ///   `OFFSET/FETCH`——顺序不定会让翻页重复 / 漏行，故**不支持**（显式拒绝，不返回错页）；
+    /// - MongoDB / Elasticsearch：没有 SQL 分页语法，同样不支持。
+    #[must_use]
+    pub const fn supports_paged_read(self) -> bool {
+        matches!(
+            self,
+            Self::Sqlite | Self::Postgres | Self::Mysql | Self::ClickHouse
+        )
+    }
+
+    /// 该引擎是否支持**实例级内省**（实例概览 / 实例指标 / 实例检查器）。
+    ///
+    /// **这是「要不要画这三个入口」的唯一判据**：内核的
+    /// [`crate::drivers::Connection::instance_overview`] /
+    /// [`crate::drivers::Connection::instance_table`] 与界面的左栏树都查它，
+    /// 两边口径不会再各写一份。
+    ///
+    /// - SQLite / PostgreSQL / MySQL：有——SQLite 虽无服务端，但 PRAGMA 能给出
+    ///   真实的页级体量与连接挂载状态；
+    /// - SQL Server / ClickHouse / MongoDB / Elasticsearch：本轮未实作，界面**不画**
+    ///   入口。宁可少一个节点，也不要给一个点开就报「不支持」的按钮（「不支持」与
+    ///   「执行失败」必须分得开——后者用户能改，前者不能）。
+    #[must_use]
+    pub const fn supports_instance_insight(self) -> bool {
+        matches!(self, Self::Sqlite | Self::Postgres | Self::Mysql)
+    }
 }
 
 /// 环境标签：给连接列表分组着色用，防「把生产库当测试库」。
@@ -171,8 +221,12 @@ impl EnvTag {
     }
 }
 
-/// TLS 策略。PostgreSQL 在 M1 尚不支持 TLS（见 `docs/database-design.md` 依赖注记），
-/// 选了非 `Disable` 档会在建连时得到 [`crate::error::DbError::Unsupported`]。
+/// TLS 策略：`Disable` 明文、`Trust` 按系统信任链校验证书、`DangerAcceptInvalid`
+/// 接受无效证书（自签测试库）。
+///
+/// **六条网络引擎均已接入 TLS**（PostgreSQL / MySQL / ClickHouse / SQL Server /
+/// MongoDB 走 rustls 或各自的 TLS 开关，两条 HTTP 引擎走 https 端点；见
+/// `drivers/*.rs`）。**SQLite 无网络，本档位对它无意义**——选了也不会有任何效果。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TlsMode {
     /// 不使用 TLS。
@@ -254,17 +308,39 @@ pub struct ConnectionConfig {
     /// SSH 隧道（`None` = 直连）。
     #[serde(default)]
     pub ssh_tunnel: Option<SshTunnelConfig>,
+    /// SOCKS5 / HTTP CONNECT 代理（`None` = 不走代理，见 [`crate::proxy`]）。
+    ///
+    /// 代理口令不在这里：与 SSH 口令同一条纪律，只走凭据文件
+    /// `dbconn:{id}:proxy`（见 [`proxy_secret_key`]）。
+    #[serde(default)]
+    pub proxy: Option<crate::proxy::ProxyConfig>,
+    /// AWS SSM 端口转发（`None` = 不用，见 [`crate::ssm`]）。
+    ///
+    /// 走用户本机已装的 `aws` CLI，本项目不引 AWS SDK、不存 AWS 凭据。
+    #[serde(default)]
+    pub ssm: Option<crate::ssm::SsmConfig>,
+    /// 引用的「可复用传输档案」id（`None` = 用本档案自己的上面三档）。
+    ///
+    /// 档案本体由界面侧存 kv（内核不认识它），建连前由界面**展开**成上面三档 ——
+    /// 内核看到的永远是一份填好的 [`ConnectionConfig`]，[`Self::transport`] 也随之生效。
+    /// 这里只留一个引用，所以「一份公司 SOCKS5 出口被五条连接共用」是改一处、
+    /// 五条连接下次建连全都生效。
+    #[serde(default)]
+    pub tunnel_profile: Option<String>,
     /// 该连接的**默认查询超时**（秒）；`None` / `0` = 用引擎无关的全局默认（30 秒）。
     ///
     /// 只作用于「可能很久」的读路径（SQL 执行、表页加载、AI 只读自动执行）；
     /// 单次覆盖由查询选项面板给，见 `docs/database-design.md` §4.4。
     #[serde(default)]
     pub default_timeout_secs: Option<u64>,
-    /// 连接级**只读档**（`docs/database-design.md` §4.8）：建连后由服务器自己拒绝写入。
+    /// 连接级**只读档**（`docs/database-design.md` §4.8）：开启后写语句会被拒绝。
     ///
-    /// 三个引擎都落到引擎原生的只读开关上（SQLite `query_only` / PG
-    /// `default_transaction_read_only` / MySQL `SESSION TRANSACTION READ ONLY`），
-    /// 所以即便界面漏了一道拦截，写语句也会在服务器侧报错。生产库必开。
+    /// **前四引擎由服务器兜底**（SQLite `query_only` / PG `default_transaction_read_only` /
+    /// MySQL `SESSION TRANSACTION READ ONLY` / ClickHouse 每请求带 `readonly=1`），
+    /// 即便界面漏了一道拦截，写语句也会在服务端报错。
+    /// ⚠️ **SQL Server / MongoDB / Elasticsearch 没有会话级只读开关**——只读档由驱动在
+    /// 写语句进引擎之前拦下（未知操作一律当写，默认拒绝）：可信，但不是服务器兜底。
+    /// 真要防住生产库，仍然应该用只读账号。生产库必开。
     #[serde(default)]
     pub read_only: bool,
     /// 上次浏览的 schema / 库（`None` = 引擎的当前命名空间）。
@@ -272,6 +348,11 @@ pub struct ConnectionConfig {
     /// 只影响界面的默认落点，不改变连接行为。
     #[serde(default)]
     pub schema: Option<String>,
+    /// 连接钩子（建连 / 断开前后跑的本机命令，见 [`crate::hooks`]）。
+    ///
+    /// 缺省空集合：老档案读进来就是「没有钩子」，建连路径据此**不取快照、不起后台任务**。
+    #[serde(default)]
+    pub hooks: crate::hooks::ConnectionHooks,
 }
 
 /// SSH 隧道配置（跳板机信息；SSH 口令走凭据文件 `dbconn:{id}:ssh`，不入 kv）。
@@ -393,6 +474,153 @@ pub fn delete_ssh_password(id: &str) -> Result<(), SecretError> {
     duck_platform::secret::delete(&ssh_secret_key(id))
 }
 
+/// 代理口令键名（与数据库 / SSH 口令都分开存）。
+#[must_use]
+pub fn proxy_secret_key(id: &str) -> String {
+    format!("dbconn:{id}:proxy")
+}
+
+/// 存代理口令（新建或覆盖）。
+pub fn store_proxy_password(id: &str, password: &str) -> Result<(), SecretError> {
+    duck_platform::secret::set(&proxy_secret_key(id), password)
+}
+
+/// 读代理口令；未存过是 `Ok(None)`。
+pub fn load_proxy_password(id: &str) -> Result<Option<String>, SecretError> {
+    duck_platform::secret::get(&proxy_secret_key(id))
+}
+
+/// 删代理口令（幂等）。
+pub fn delete_proxy_password(id: &str) -> Result<(), SecretError> {
+    duck_platform::secret::delete(&proxy_secret_key(id))
+}
+
+/// 传输档案的 SSH 口令键名。
+///
+/// 档案是**独立凭据主体**：一份被五条连接引用的档案，口令只该存一份，
+/// 而不是在五条连接上各存一遍（那样「轮换代理口令」就是五处手改）。
+#[must_use]
+pub fn profile_ssh_secret_key(profile_id: &str) -> String {
+    format!("dbprofile:{profile_id}:ssh")
+}
+
+/// 存传输档案的 SSH 口令。
+pub fn store_profile_ssh_password(profile_id: &str, password: &str) -> Result<(), SecretError> {
+    duck_platform::secret::set(&profile_ssh_secret_key(profile_id), password)
+}
+
+/// 读传输档案的 SSH 口令；未存过是 `Ok(None)`。
+pub fn load_profile_ssh_password(profile_id: &str) -> Result<Option<String>, SecretError> {
+    duck_platform::secret::get(&profile_ssh_secret_key(profile_id))
+}
+
+/// 删传输档案的 SSH 口令（幂等）。
+pub fn delete_profile_ssh_password(profile_id: &str) -> Result<(), SecretError> {
+    duck_platform::secret::delete(&profile_ssh_secret_key(profile_id))
+}
+
+/// 传输档案的代理口令键名。
+#[must_use]
+pub fn profile_proxy_secret_key(profile_id: &str) -> String {
+    format!("dbprofile:{profile_id}:proxy")
+}
+
+/// 存传输档案的代理口令。
+pub fn store_profile_proxy_password(profile_id: &str, password: &str) -> Result<(), SecretError> {
+    duck_platform::secret::set(&profile_proxy_secret_key(profile_id), password)
+}
+
+/// 读传输档案的代理口令；未存过是 `Ok(None)`。
+pub fn load_profile_proxy_password(profile_id: &str) -> Result<Option<String>, SecretError> {
+    duck_platform::secret::get(&profile_proxy_secret_key(profile_id))
+}
+
+/// 删传输档案的代理口令（幂等）。
+pub fn delete_profile_proxy_password(profile_id: &str) -> Result<(), SecretError> {
+    duck_platform::secret::delete(&profile_proxy_secret_key(profile_id))
+}
+
+/// 连接实际走的传输方式。
+///
+/// ⚠️ **一次只用一条**：SSH 隧道 / 代理 / SSM 三者各自对内只暴露一个本机
+/// `127.0.0.1` 端口，叠加没有确定的语义（真叠加要「让 ssh 子进程先经代理出网」
+/// 这类链路改造）。因此这里按固定优先级挑一条，**规则只写在这一处**，
+/// 界面上的分区顺序与提示文案都据它渲染。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportKind {
+    /// 直连（无隧道 / 无代理）。
+    Direct,
+    /// `ssh -N -L` 本地端口转发。
+    Ssh,
+    /// SOCKS5 / HTTP CONNECT 代理。
+    Proxy,
+    /// AWS SSM 端口转发（本机 `aws` CLI）。
+    Ssm,
+}
+
+impl TransportKind {
+    /// 稳定键（i18n / 测试用）。
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Ssh => "ssh",
+            Self::Proxy => "proxy",
+            Self::Ssm => "ssm",
+        }
+    }
+}
+
+impl ConnectionConfig {
+    /// 生效的传输方式（优先级 **SSM > SSH > 代理 > 直连**）。
+    ///
+    /// 「配了但填不全」的档位**不算生效**（例如 SSM 没填实例 id、代理没填主机）——
+    /// 否则界面会显示「走 SSM」而实际直连，最难查的那种错。
+    #[must_use]
+    pub fn transport(&self) -> TransportKind {
+        if self
+            .ssm
+            .as_ref()
+            .is_some_and(crate::ssm::SsmConfig::is_usable)
+        {
+            return TransportKind::Ssm;
+        }
+        if self
+            .ssh_tunnel
+            .as_ref()
+            .is_some_and(|tunnel| !tunnel.host.trim().is_empty() && !tunnel.user.trim().is_empty())
+        {
+            return TransportKind::Ssh;
+        }
+        if self
+            .proxy
+            .as_ref()
+            .is_some_and(|proxy| !proxy.host.trim().is_empty())
+        {
+            return TransportKind::Proxy;
+        }
+        TransportKind::Direct
+    }
+
+    /// 是否配了「填不全」的传输档位（界面据此提示，而不是静默直连）。
+    #[must_use]
+    pub fn has_incomplete_transport(&self) -> bool {
+        let ssm_partial = self
+            .ssm
+            .as_ref()
+            .is_some_and(|ssm| !crate::ssm::SsmConfig::is_usable(ssm));
+        let ssh_partial = self
+            .ssh_tunnel
+            .as_ref()
+            .is_some_and(|tunnel| tunnel.host.trim().is_empty() || tunnel.user.trim().is_empty());
+        let proxy_partial = self
+            .proxy
+            .as_ref()
+            .is_some_and(|proxy| proxy.host.trim().is_empty());
+        ssm_partial || ssh_partial || proxy_partial
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +648,34 @@ mod tests {
             default_timeout_secs: Some(120),
             read_only: true,
             schema: Some("analytics".into()),
+            hooks: crate::hooks::ConnectionHooks {
+                hooks: vec![crate::hooks::ConnectionHook {
+                    id: "hook-1".into(),
+                    phase: crate::hooks::HookPhase::PreConnect,
+                    enabled: true,
+                    action: crate::hooks::HookAction::Command {
+                        line: "echo hi".into(),
+                        cwd: None,
+                    },
+                    failure: crate::hooks::HookFailure::Warn,
+                    timeout_secs: None,
+                }],
+            },
+            proxy: Some(crate::proxy::ProxyConfig {
+                kind: crate::proxy::ProxyKind::Socks5,
+                host: "proxy.example.com".into(),
+                port: Some(1080),
+                username: "duck".into(),
+                // ⚠️ `password` 是 `#[serde(skip)]`：留 `None` 才能让往返相等。
+                password: None,
+            }),
+            ssm: Some(crate::ssm::SsmConfig {
+                instance: "i-0123456789abcdef0".into(),
+                remote_host: Some("db.internal".into()),
+                region: Some("cn-north-1".into()),
+                profile: Some("default".into()),
+            }),
+            tunnel_profile: Some("tunnel-1".into()),
         };
         let json = serde_json::to_string(&cfg).expect("序列化");
         let back: ConnectionConfig = serde_json::from_str(&json).expect("反序列化");
@@ -437,6 +693,12 @@ mod tests {
         assert_eq!(old.default_timeout(), None);
         assert!(!old.read_only, "旧存档默认必须是「可写」，不能凭空变只读");
         assert_eq!(old.schema, None);
+        // 传输三档同样对旧存档隐身。
+        assert_eq!(old.proxy, None);
+        assert_eq!(old.ssm, None);
+        assert_eq!(old.tunnel_profile, None);
+        assert_eq!(old.transport(), TransportKind::Direct);
+        assert!(!old.has_incomplete_transport(), "缺字段不算「填不全」");
         // `0` 与 `None` 同义（都表示「未设置」）。
         assert_eq!(
             ConnectionConfig {
@@ -446,6 +708,66 @@ mod tests {
             .default_timeout(),
             None
         );
+    }
+
+    /// 造一个只填了主机的代理档（其余留空）。
+    fn proxy_at(host: &str) -> crate::proxy::ProxyConfig {
+        crate::proxy::ProxyConfig {
+            kind: crate::proxy::ProxyKind::Socks5,
+            host: host.into(),
+            port: None,
+            username: String::new(),
+            password: None,
+        }
+    }
+
+    /// 造一个只填了实例 id 的 SSM 档。
+    fn ssm_at(instance: &str) -> crate::ssm::SsmConfig {
+        crate::ssm::SsmConfig {
+            instance: instance.into(),
+            remote_host: None,
+            region: None,
+            profile: None,
+        }
+    }
+
+    /// 传输优先级：**SSM > SSH > 代理 > 直连**；「配了但填不全」必须让位而不是静默直连。
+    #[test]
+    fn transport_precedence_and_incomplete_inputs() {
+        let mut cfg = ConnectionConfig {
+            kind: DatabaseKind::Postgres,
+            host: "db.local".into(),
+            ..ConnectionConfig::default()
+        };
+        assert_eq!(cfg.transport(), TransportKind::Direct);
+        assert!(!cfg.has_incomplete_transport());
+
+        cfg.proxy = Some(proxy_at("proxy.local"));
+        assert_eq!(cfg.transport(), TransportKind::Proxy);
+
+        cfg.ssh_tunnel = Some(SshTunnelConfig {
+            host: "bastion".into(),
+            user: "duck".into(),
+            ..SshTunnelConfig::default()
+        });
+        assert_eq!(cfg.transport(), TransportKind::Ssh);
+        assert!(!cfg.has_incomplete_transport());
+
+        cfg.ssm = Some(ssm_at("i-0123456789abcdef0"));
+        assert_eq!(cfg.transport(), TransportKind::Ssm);
+
+        // 逐个「填不全」：生效档位降级，同时界面能问出「有个档位没填完」。
+        cfg.ssm = Some(ssm_at("  "));
+        assert_eq!(cfg.transport(), TransportKind::Ssh);
+        assert!(cfg.has_incomplete_transport());
+
+        cfg.ssh_tunnel = Some(SshTunnelConfig::default());
+        assert_eq!(cfg.transport(), TransportKind::Proxy);
+        assert!(cfg.has_incomplete_transport());
+
+        cfg.proxy = Some(proxy_at(" "));
+        assert_eq!(cfg.transport(), TransportKind::Direct);
+        assert!(cfg.has_incomplete_transport());
     }
 
     /// 显示名兜底与校验。
@@ -549,5 +871,40 @@ mod tests {
                 assert!(cfg.validate().is_err(), "{}: 主机应必填", kind.wire_name());
             }
         }
+    }
+
+    /// 标识符引号：SQL 族分两档（反引号 / 双引号），两条非 SQL 引擎没有这个概念。
+    #[test]
+    fn identifier_quote_is_per_engine() {
+        assert_eq!(DatabaseKind::Mysql.identifier_quote(), Some('`'));
+        assert_eq!(DatabaseKind::ClickHouse.identifier_quote(), Some('`'));
+        assert_eq!(DatabaseKind::Postgres.identifier_quote(), Some('"'));
+        assert_eq!(DatabaseKind::Sqlite.identifier_quote(), Some('"'));
+        assert_eq!(DatabaseKind::SqlServer.identifier_quote(), Some('"'));
+        // 非 SQL 引擎：界面上「导出 INSERT / 生成 SELECT」这类 SQL 草稿项要对它们禁用。
+        assert_eq!(DatabaseKind::Mongo.identifier_quote(), None);
+        assert_eq!(DatabaseKind::Elasticsearch.identifier_quote(), None);
+    }
+
+    /// 分页续拉能力：只有四条 SQL 引擎支持；SQL Server（顺序不定）/ MongoDB /
+    /// Elasticsearch 一律不支持——界面与 `execute_paged` 都查这一个判据。
+    #[test]
+    fn paged_read_is_only_for_four_sql_engines() {
+        let supported: Vec<DatabaseKind> = DatabaseKind::ALL
+            .into_iter()
+            .filter(|kind| kind.supports_paged_read())
+            .collect();
+        assert_eq!(
+            supported,
+            vec![
+                DatabaseKind::Sqlite,
+                DatabaseKind::Postgres,
+                DatabaseKind::Mysql,
+                DatabaseKind::ClickHouse,
+            ]
+        );
+        assert!(!DatabaseKind::SqlServer.supports_paged_read());
+        assert!(!DatabaseKind::Mongo.supports_paged_read());
+        assert!(!DatabaseKind::Elasticsearch.supports_paged_read());
     }
 }

@@ -63,7 +63,7 @@
 | P2-8 | ✅ 插件能力授权细化（子集授权） | P2 | 2.5 | 无 |
 | P2-9 | ✅ 插件 JS 网络能力落地 | P2 | 4.0 | P2-8（授权前提） |
 | P3-1 | 插件签名与市场治理 | P3 | 6.0 | P1-3（签名基建复用） |
-| P3-2 | i18n 深化（复数 / 日期 / 数字） | P3 | 3.0 | 无 |
+| P3-2 | i18n 深化（**复数 ✅ · 相对时间 ✅**；日期 / 数字 / 序数未做） | P3 | 3.0 | 无 |
 | P3-3 | 大文件拆分与架构治理 | P3 | 4.0 | 无 |
 | P3-4 | 多平台补齐（Linux / Windows 对齐） | P3 | 3.0 | 无 |
 | P3-5 | 主题深化 + 可选遥测 | P3 | 3.0 | 无 |
@@ -1390,9 +1390,33 @@ clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 
 ### P3-2 i18n 深化
 **现状**：只有 zh-Hans / En / 跟随系统；无复数、日期、数字、货币、相对时间本地化（`i18n.rs:14-46`）。
-**方案**：引入轻量格式化层（复选 / 序数 / 相对时间 / 数字分组）；`trf` 扩展为支持 `{count}` 复数变体；
+**方案**：引入轻量格式化层（复数 / 序数 / 相对时间 / 数字分组）；`trf` 扩展为支持 `{count}` 复数变体；
 日期时间统一走格式化层，禁止手拼字符串。
 **涉及**：`duck-theme/src/i18n.rs`、全仓 `tr/trf` 调用点。**估工 3.0 人日。**
+
+#### 第一批（**2026-10-13 已实施**）：复数机制 + 相对时间收敛
+
+**做了什么**（全在 `duck-theme`，纯函数 + 单测）：
+
+| 新增 | 作用 |
+| --- | --- |
+| `EN_PLURAL` 表 | `(中文源串, 英文单数, 英文复数)`，与 `EN` 同一字节序不变量；只收「英文单复数不同形」的条目 |
+| `tn` / `trn` | 带**数量**的文案：中文替换 `{}`，英文按 `count == 1` 取单数档；未登记时回落 `tf`（可能是错的复数，但不空白） |
+| `UnderMinute` + `relative_time` / `tr_relative_time` | 相对时间统一分档：`< 60s` 按 `UnderMinute` 取「刚刚」或「N 秒前」、`< 60min`「N 分钟前」、`< 24h`「N 小时前」、更早「N 天前」；负数（时钟漂移）归零 |
+| `fill`（私有） | 把 `tf` 的占位符替换抽出来，`tf` / `tn` 共用——`tn` 要格式化的模板是**已译好**的，不能再过一次 `t()` |
+
+**顺带修掉的重复与缺陷**：相对时间原本在**三处各写一遍**（`duck-shell/src/notifications.rs`、
+`pages/plugin_center.rs`、`pages/redis.rs`），三处的英文复数**全都是错的**——`else if` 链直接套
+`"{} minutes ago"`，`count == 1` 时输出 `1 minutes ago` / `1 days ago`。三处已全部改为调用
+格式化层；`redis.rs` 取 `UnderMinute::Seconds`（慢日志要区分「刚发生」与「几秒前」），
+另两处取 `JustNow`，**显示口径与改前逐字一致**。
+
+**新增守卫**（`duck-theme/src/i18n.rs` 的测试）：`plural_table_is_sorted`（字节序）、
+`plural_entries_are_well_formed`（源串须同时登记在 `EN`、三列各含恰好一个 `{}`、
+单复数不得同形）、`plurals_and_relative_time`（单复数取词 + 三档边界 + 负数归零）。
+
+**仍未做**：日期时间本地化、数字千分位分组、序数、货币；`trf` 的显式 `{count}` 变体
+（当前用独立的 `tn` 而不是扩展 `trf`，避免改动 300+ 处既有 `trf` 调用点的语义）。
 
 ### P3-3 大文件拆分与架构治理
 **现状（证据）**：`pages/settings.rs` **2321 行**、`pages/plugin_center.rs` **1632 行**、`pages/toolbox.rs` **1441 行**。
@@ -1570,7 +1594,7 @@ i18n +6（分屏 / 取消分屏 / 分屏（仅限终端会话）/ 打开 SFTP �
 | 通知 | ~~设置页「通知」分组只有一句说明 + 三个演示按钮，**一个开关都没有**~~ **已解决**：应用内横幅三档（全部 / 仅警告与错误 / 全部关掉）+ 系统通知开关，落 `kv` 且即时生效；历史照记且原方案里的「声音通道」因上游无 API 而如实取消。顺带修掉两处静默失败：去抖回读把档位改动吞掉、「两者同时」因自绘 toast 无文本而系统那条被丢弃 | `duck-components/src/notify.rs`、`pages/settings.rs`、`settings.rs` | **P2-6 ✅** |
 | 插件 JS 轨 | ~~无网络 host 函数，`NetworkHost` 空转~~ **已解决**：`duck.fetch` 上线，主机白名单逐跳校验 + 跨请求时长预算 + 逐跳重定向 + 响应体上限 + 审计日志（零新依赖，复用已在图内的 `ureq`） | `plugin-js/src/net.rs`（新）、`lib.rs`、`plugin/capability.rs` | **P2-9 ✅** |
 | 插件授权 | ~~安装确认框只展示，子集授权未实现~~ **已解决**：确认框逐条开关 + 详情页事后调整 + 卸载回收，运行时按「声明 ∩ 授予」仲裁；顺带修掉 JS 侧 `Display` 丢异常消息导致「只报插件执行失败」的缺陷 | `plugin/capability.rs`、`app/plugins.rs`、`pages/plugin_center.rs` | **P2-8 ✅** |
-| i18n | 无复数 / 日期 / 数字本地化 | `i18n.rs:14-46` | P3-2 |
+| i18n | ~~无复数 / 相对时间本地化~~ **部分解决**（2026-10-13 第一批）：`duck-theme` 的格式化层上线——`EN_PLURAL` 复数表 + `tn` / `trn`（英文 `count == 1` 走单数）+ `relative_time` / `tr_relative_time`（`UnderMinute` 两档口径）。相对时间原本在 `duck-shell` / `plugin_center` / `redis` **三处各写一遍且英文复数全错**（`1 minutes ago`），已收敛成 `duck-theme` 里的一处。**仍缺**：日期时间、数字千分位、序数、货币 | `duck-theme/src/i18n.rs`、`duck-shell/src/notifications.rs`、`pages/{plugin_center,redis}.rs` | P3-2（第一批 ✅） |
 | 窗口 | ~~仅主窗几何落盘；辅窗每次居中重建~~ **已解决**：主/辅窗几何与显示状态均落盘，会话（路由 / 右栏 / 辅窗集合）经 `kv` 恢复 | `app.rs`、`settings.rs` | **P1-2 ✅** |
 | 唤起快捷键 | ~~`⌥Space` 会把主窗整个切到前台（与键位的启动器语义不符）~~ **已解决**：落点改为**独立命令面板浮窗**（`WindowKind::PopUp` → macOS `NSPanel` + 非激活面板 + 层级 101；Windows `WS_EX_TOOLWINDOW \| WS_EX_TOPMOST`），失焦 / Esc / 关闭按钮三条出口；设置里加「唤起时打开主窗口」开关可回到完整旧行为 | `duck-shell/src/palette_window.rs`（新）、`command_palette.rs`、`app.rs`、`hotkey.rs`、`settings.rs` | **P1-1 ✅**（补充） |
 | 可访问性 | ~~零星 label，无全流程验证~~ **已解决**：自绘可点元素补 role / 名字 / 选中态（a11y 树只收带 role 的节点，此前**等于不存在**）+ `tab_stop` + 焦点描边；`gpui_base::Button` 默认已可 Tab | `duck-components/src/{lib,kit}.rs`、`duck-shell/src/view.rs`、`duck-app/src/theme_picker.rs`、`pages/{settings,logs}.rs`、两处新 `tests/` | **P2-7 ✅**（焦点环对比度挂起） |

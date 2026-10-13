@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::AiError;
+use crate::compaction::{CompactionPolicy, CompactionReport, compact_in_place};
 use crate::provider::{ChatRequest, ProviderProfile, stream_chat};
 use crate::tool::{
     ToolDetail, ToolOutcome, ToolRegistry, ToolRisk, TruncationTier, truncate_tiered,
@@ -35,6 +36,8 @@ pub struct ChatOptions {
     pub max_tokens: Option<u32>,
     /// 单次请求的网络超时（秒）。流式只作用于连接阶段。
     pub timeout_secs: u64,
+    /// 上下文预算与压缩口径（防爆窗）。每一轮发请求前按它裁剪历史。
+    pub compaction: CompactionPolicy,
 }
 
 impl Default for ChatOptions {
@@ -43,6 +46,7 @@ impl Default for ChatOptions {
             temperature: None,
             max_tokens: None,
             timeout_secs: 300,
+            compaction: CompactionPolicy::default(),
         }
     }
 }
@@ -86,6 +90,8 @@ pub struct TurnOutcome {
     pub usage: Usage,
     /// 结束原因。
     pub stop_reason: StopReason,
+    /// 本轮**发出去之前**做了多少上下文压缩（没超预算时是「什么都没做」）。
+    pub compaction: CompactionReport,
 }
 
 /// 把增量事件拼成一条助手消息。
@@ -130,8 +136,9 @@ impl AssistantBuilder {
 
 /// 跑一轮问答：发请求 → 流式回调 → 交回助手消息。
 ///
-/// `messages` 是**完整**对话历史（含 system 与之前的工具结果），内核不做裁剪——
-/// 上下文窗口管理是上层的事，内核不猜用户的意图。
+/// `messages` 是完整对话历史（含 system 与之前的工具结果）。发请求前会按
+/// [`ChatOptions::compaction`] 做一次上下文压缩（防爆窗）；压缩只作用于「发出去的副本」，
+/// 不改调用方持有的历史，压缩详情见 `TurnOutcome::compaction`。
 ///
 /// 不声明工具的单轮调用。需要工具循环请用 [`run_agent`]。
 pub fn run_turn(
@@ -158,8 +165,8 @@ pub fn run_turn(
 /// 同 [`run_turn`]，额外下发工具声明（OpenAI `tools` 数组）。
 ///
 /// `tools` 为空时**不往请求体里塞 `tools` 字段**：部分服务端见到空数组直接报参数错误。
-// 参数多是因为它必须同时接收「谁在问、问哪一轮的上下文、怎么取消、事件往哪送」，
-// 打包成结构体只会把同样的字段再抄一遍。同仓 `plugin_center.rs:1311` 同款处理。
+/// 参数多是因为它必须同时接收「谁在问、问哪一轮的上下文、怎么取消、事件往哪送」，
+/// 打包成结构体只会把同样的字段再抄一遍。同仓 `plugin_center.rs:1311` 同款处理。
 #[allow(clippy::too_many_arguments)]
 pub fn run_turn_with(
     profile: &ProviderProfile,
@@ -171,7 +178,11 @@ pub fn run_turn_with(
     handle: &RunHandle,
     sink: &mut dyn FnMut(AiEvent),
 ) -> Result<TurnOutcome, AiError> {
-    let mut request = ChatRequest::new(model, messages.to_vec());
+    // 压缩只动「发出去的那份副本」：调用方的历史（内存 / 库）保持原样。
+    let mut outgoing = messages.to_vec();
+    let compaction = compact_in_place(&mut outgoing, &options.compaction);
+
+    let mut request = ChatRequest::new(model, outgoing);
     request.temperature = options.temperature;
     request.max_tokens = options.max_tokens;
     request.tools = tools.to_vec();
@@ -206,6 +217,7 @@ pub fn run_turn_with(
         message: builder.into_message(),
         usage,
         stop_reason,
+        compaction,
     })
 }
 
@@ -300,6 +312,8 @@ pub struct AgentOutcome {
     /// **取消不算失败**：已经跑完的轮次是真实发生过的对话，丢掉它们会让历史缺一段。
     /// 所以取消走 `Ok` + 这个标志，而不是 `Err`。只有「请求本身就失败了」才返回 `Err`。
     pub cancelled: bool,
+    /// 本次问答各轮上下文压缩的合计（没超预算时全为 0）。
+    pub compaction: CompactionReport,
 }
 
 /// 驱动一次问答，自带工具循环。
@@ -330,6 +344,8 @@ pub fn run_agent(
     let mut produced: Vec<ChatMessage> = Vec::new();
     let mut usage = Usage::default();
     let mut stop_reason = StopReason::default();
+    // 每轮发请求前都会压一次；这里把各轮的账合起来，收尾交给上层显示。
+    let mut compaction = CompactionReport::default();
 
     for round in 1..=max_rounds {
         let outcome = match run_turn_with(
@@ -352,12 +368,14 @@ pub fn run_agent(
                     stop_reason,
                     rounds: round,
                     cancelled: true,
+                    compaction,
                 });
             }
             Err(other) => return Err(other),
         };
         usage = merge_usage(usage, outcome.usage);
         stop_reason = outcome.stop_reason;
+        compaction = compaction.merge(outcome.compaction);
 
         let calls: Vec<ToolCall> = outcome.message.tool_calls().into_iter().cloned().collect();
         conversation.push(outcome.message.clone());
@@ -376,6 +394,7 @@ pub fn run_agent(
                 stop_reason,
                 rounds: round,
                 cancelled: false,
+                compaction,
             });
         }
 
@@ -404,6 +423,7 @@ pub fn run_agent(
                     stop_reason,
                     rounds: round,
                     cancelled: true,
+                    compaction,
                 });
             }
 
@@ -459,6 +479,7 @@ pub fn run_agent(
                 stop_reason,
                 rounds: round,
                 cancelled: true,
+                compaction,
             });
         }
     }
@@ -474,6 +495,7 @@ pub fn run_agent(
         stop_reason,
         rounds: max_rounds,
         cancelled: false,
+        compaction,
     })
 }
 
@@ -1041,5 +1063,58 @@ mod tests {
         let requests = stub.requests.lock().unwrap();
         // 空数组会让部分服务端直接报参数错误，所以宁可不发这个字段。
         assert!(requests[0].get("tools").is_none());
+    }
+
+    #[test]
+    fn long_history_is_compacted_before_the_request() {
+        let stub = stub_server(vec![sse_text("ok")]);
+        let registry = ToolRegistry::new();
+        // 远超预算的历史：发出去的必须比原始历史短，且要如实记账。
+        let mut history: Vec<ChatMessage> = (0..10)
+            .map(|index| ChatMessage::user(format!("{index}").repeat(800)))
+            .collect();
+        history.push(ChatMessage::user("z".repeat(1_500)));
+        let options = AgentOptions {
+            chat: ChatOptions {
+                temperature: None,
+                max_tokens: None,
+                timeout_secs: 5,
+                compaction: crate::compaction::CompactionPolicy {
+                    max_chars: 3_000,
+                    keep_recent_chars: 1_800,
+                    ..crate::compaction::CompactionPolicy::default()
+                },
+            },
+            max_rounds: 1,
+        };
+        let mut approve = |_call: &ToolCall, _risk: ToolRisk| Approval::Run;
+        let outcome = run_agent(
+            &stub_profile(&stub.base_url),
+            "k",
+            "stub-model",
+            &history,
+            &options,
+            &registry,
+            &mut approve,
+            &RunHandle::new(),
+            &mut |_| {},
+        )
+        .expect("agent loop");
+
+        assert!(outcome.compaction.changed(), "长历史应当触发压缩");
+        assert!(outcome.compaction.dropped_messages > 0);
+
+        let requests = stub.requests.lock().unwrap();
+        let sent = requests[0]["messages"].as_array().unwrap();
+        assert!(
+            sent.len() < history.len(),
+            "发出去的消息条数应当少于原始历史"
+        );
+        // 被省略这件事必须让模型知道（提示就写在最前面那条）。
+        let first = sent[0]["content"].as_str().unwrap_or_default();
+        assert!(first.contains("were omitted"), "{first}");
+        // 最后一条（当前提问）必须原样保留。
+        let last = sent.last().unwrap()["content"].as_str().unwrap_or_default();
+        assert_eq!(last.chars().count(), 1_500);
     }
 }

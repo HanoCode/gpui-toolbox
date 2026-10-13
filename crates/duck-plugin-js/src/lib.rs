@@ -459,9 +459,10 @@ fn run_fetch<'js>(
 
     match outcome {
         Ok(reply) => {
-            // 审计：**只记方法与目的地与结果，绝不记 header 与 body**。
+            // 落笔口径：**只记方法与目的地与结果，绝不记 header 与 body**。
             // 下一项的凭据就挂在 header 上，记了等于把 token 抄进日志文件
-            // （而日志是要被导出、被贴进 issue 的）。
+            //（而日志是要被导出、被贴进 issue 的）。审计流水（duck-app 的 `audit`）
+            // 沿用同一条口径：应用层只记「哪个插件、跑的是哪个工具」。
             tracing::info!(
                 target: "duck::plugin::net",
                 plugin = plugin_id,

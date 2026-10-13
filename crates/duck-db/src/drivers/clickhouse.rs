@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex};
 use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
-    CatalogTable, OrderBy, PkValues, RowCount, TableIndex, TableKind, TableRef, order_by_clause,
-    quote_identifier, quote_qualified,
+    CatalogTable, FilterOp, OrderBy, PkValues, RowCount, TableFilter, TableIndex, TableKind,
+    TableRef, filter_conditions, order_by_clause, quote_identifier, quote_qualified,
 };
 // URL 成分编码的实现住在 `drivers/mod.rs`：Elasticsearch 的路径段要用同一份，
 // 编码规则不能有两处口径。
@@ -66,6 +66,49 @@ fn pick_database<'a>(schema: Option<&'a str>, configured: &'a str) -> &'a str {
         .and_then(clean)
         .or_else(|| clean(configured))
         .unwrap_or(DEFAULT_DATABASE)
+}
+
+/// 列类型是不是 ClickHouse 的**数值族**（`UInt*` / `Int*` / `Float*` / `Decimal*` / `Bool`）。
+///
+/// **纯函数**，脱开连接单测。先剥掉 `Nullable(...)` / `LowCardinality(...)` 包装
+/// （可叠加，如 `Nullable(LowCardinality(Int64))`），再判前缀。
+///
+/// 刻意**不**把 `Date` / `DateTime` / `DateTime64` 算进来：它们的 `>` 走字符串序才是
+/// 对的（ISO 串的字典序就是时间序），而且 `toFloat64OrNull` 未必接受它们。
+/// `String` / `FixedString` / `Enum*` / `UUID` / `IPv4` / `Array(...)` 同理不算。
+fn is_numeric_type(type_name: &str) -> bool {
+    let mut inner = type_name.trim();
+    loop {
+        let stripped = ["Nullable(", "LowCardinality("].iter().find_map(|prefix| {
+            inner
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(')'))
+        });
+        match stripped {
+            Some(rest) => inner = rest.trim(),
+            None => break,
+        }
+    }
+    inner.starts_with("UInt")
+        || inner.starts_with("Int")
+        || inner.starts_with("Float")
+        || inner.starts_with("Decimal")
+        || inner == "Bool"
+}
+
+/// 该档过滤是否应走**数值序**比较：仅「顺序算子**且**列是数值族」。
+///
+/// **纯函数**，且是这两个判定的**单一真源**：`table_page` 的 `column_expr` 与
+/// `value_expr` 两个闭包都调它。两边的判定一旦不一致，就会生成「列转 Float64、
+/// 值还是 String」这种必然报类型错的 SQL，所以不允许各写一份。
+fn numeric_ordering(types: &[Column], column: &str, op: FilterOp) -> bool {
+    matches!(
+        op,
+        FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte
+    ) && types
+        .iter()
+        .find(|candidate| candidate.name.as_str() == column)
+        .is_some_and(|candidate| is_numeric_type(&candidate.type_name))
 }
 
 /// 发一条请求所需的全部内容。
@@ -279,15 +322,35 @@ impl ClickHouseConnection {
         Ok(outcome)
     }
 
+    /// 分页读取（结果区「加载更多」走这里）：把语句包一层 `LIMIT/OFFSET`，
+    /// 从第 `offset` 行起取 `limit` 行；多取一行探测「还有下一页」。
+    ///
+    /// 语义与边界见 [`crate::drivers::Connection::execute_paged`]。
+    pub fn execute_paged(
+        &mut self,
+        sql: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<ResultSet, DbError> {
+        let inner = super::paged_inner_sql(sql)?;
+        let wrapped = super::wrap_paged_sql(&inner, offset, limit, '`')?;
+        self.query_one_with(&wrapped, &[], limit)
+    }
+
     /// 跑一条语句，同时登记 `query_id` 供取消寻址；返回后立刻撤销登记。
     fn send_with_id(&self, sql: &str) -> Result<Reply, DbError> {
+        self.send_with_id_params(sql, &[])
+    }
+
+    /// 同 [`Self::send_with_id`]，但带 `param_<名>=<值>`（配 SQL 里的 `{名:String}`）。
+    fn send_with_id_params(&self, sql: &str, params: &[(&str, &str)]) -> Result<Reply, DbError> {
         let query_id = next_query_id();
         if let Ok(mut slot) = self.inflight.lock() {
             *slot = Some(query_id.clone());
         }
         let reply = self
             .endpoint
-            .post(sql, Some(&query_id), self.read_only, &[]);
+            .post(sql, Some(&query_id), self.read_only, params);
         // 无论成败都要撤销：留着一个已结束的 id 会让下一次取消打到空气上。
         if let Ok(mut slot) = self.inflight.lock() {
             *slot = None;
@@ -295,10 +358,33 @@ impl ClickHouseConnection {
         reply
     }
 
-    /// 跑一条读语句并取结果集。
-    fn query_one(&self, stmt: &str, max_rows: usize) -> Result<ResultSet, DbError> {
-        let reply = self.send_with_id(stmt)?;
+    /// 跑一条**带参数**的读语句（表浏览过滤用；值是 URL 上的 `param_<名>`）。
+    fn query_one_with(
+        &self,
+        stmt: &str,
+        params: &[(&str, &str)],
+        max_rows: usize,
+    ) -> Result<ResultSet, DbError> {
+        let reply = self.send_with_id_params(stmt, params)?;
         result_set(&reply.body, max_rows)
+    }
+
+    /// **切换会话的当前库**。
+    ///
+    /// ClickHouse 走 HTTP，没有「会话」可切 —— 「当前库」是**每个请求**上的
+    /// `database` URL 参数（见 `Endpoint::database`）。所以切库就是改端点上的
+    /// 这个字段：此后所有请求（含用户手写的 SQL 与内省语句）都落在新库上。
+    /// 这就等价于原生命令行里 `USE <db>` 的效果。
+    pub fn use_database(&mut self, name: &str) {
+        self.endpoint.database = name.to_owned();
+    }
+
+    /// **全部**库（含 `INFORMATION_SCHEMA`）。
+    ///
+    /// 与 [`Self::list_schemas`] 的差别只在 `INFORMATION_SCHEMA`：浏览对象时它
+    /// 与 `system` 重复、剔掉更干净；但「这条连接上有哪些库」这个问题应当如实回答。
+    pub fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        self.strings("SELECT name FROM system.databases ORDER BY name", &[])
     }
 
     /// 可选库清单。
@@ -343,6 +429,15 @@ impl ClickHouseConnection {
 
     /// 一张表的列（走 `system.columns`，`position` 升序即声明序）。
     pub fn table_columns(&mut self, table: &TableRef) -> Result<Vec<Column>, DbError> {
+        self.column_types(table)
+    }
+
+    /// [`Self::table_columns`] 的 `&self` 版本。
+    ///
+    /// 为什么要单独一个有：`table_page` 是 `&self`，而它的过滤需要知道每一列的**声明
+    /// 类型**才能决定顺序比较走数值序还是字典序（见 [`Self::table_page`]）。只读查询
+    /// 本来就不需要 `&mut self`——`table_columns` 收 `&mut` 只是沿用了同一 impl 的写法。
+    fn column_types(&self, table: &TableRef) -> Result<Vec<Column>, DbError> {
         let database = self.resolve_schema(table.schema.as_deref());
         let reply = self.endpoint.post(
             "SELECT name, type FROM system.columns \
@@ -366,17 +461,84 @@ impl ClickHouseConnection {
     }
 
     /// 一张表的分页数据（标识符用反引号；`order_by` 为空时依赖引擎自身的序）。
+    ///
+    /// 过滤值走官方的 `param_<名>=<值>` + `{名:String}` 占位（**没有字符串拼接**）。
+    ///
+    /// # ⚠️ 顺序比较必须按列的声明类型分叉
+    ///
+    /// ClickHouse 不允许 Number 与 String 直接比较（`FunctionsComparison.h`：numbers /
+    /// strings / dates 各自成组，「within each group, but not from different groups」）。
+    /// 而 `{fN:String}` 参数**就是 String 类型**，所以两侧必须有一侧被转。转到哪一边
+    /// 决定了语义，两种都要：
+    ///
+    /// - **数值列 + `>` / `>=` / `<` / `<=`** → 两侧都过 `toFloat64OrNull` → **数值序**。
+    ///   这修掉了一个真实缺陷：此前一律 `toString(列) op {fN:String}`，比的是字典序，
+    ///   `10 > 9` 会被判成**假**（`'1' < '9'`），数值列的 `>` / `<` 因此是错的。
+    /// - **其余全部**（相等 / 不等 / `LIKE` / 文本列与日期列的顺序比较）→
+    ///   `toString(列) op {fN:String}` → **字典序**。对 ISO 日期串这正是时间序
+    ///   （`'2024-01-01' < '2024-02-01'`），对文本也正是期望语义；而且 `Date` /
+    ///   `DateTime` / `Enum` 这些列不能过 `toFloat64OrNull`，硬转会报类型错。
+    ///
+    /// 已知代价：数值序那一档走 Float64，`|整数| > 2^53` 会丢精度。要在「无服务端类型
+    /// 推断、且一条 SQL 生成路径同时服务文本列与数值列」的前提下同时拿到两种语义，
+    /// 这是最简的可用解（要精确就得按列类型生成不同的转型表达式，那是更大的改造）。
     pub fn table_page(
         &self,
         table: &TableRef,
         limit: usize,
         offset: u64,
         order_by: &[OrderBy],
+        filters: &[TableFilter],
     ) -> Result<ResultSet, DbError> {
         let quoted = quote_qualified(table, '`')?;
         let order = order_by_clause(order_by, '`')?;
-        let sql = format!("SELECT * FROM {quoted}{order} LIMIT {limit} OFFSET {offset}");
-        self.query_one(&sql, limit)
+        // 过滤才需要列类型（多一次 `system.columns`，无过滤时不查）。
+        // 取不到类型时退化为空表 —— 于是所有顺序比较都走字典序，也就是**改动前的一贯
+        // 行为**：过滤不该因为一次元数据查询失败而整页报错。
+        let types = if filters.is_empty() {
+            Vec::new()
+        } else {
+            self.column_types(table).unwrap_or_default()
+        };
+        let (conditions, values) = filter_conditions(
+            filters,
+            |name, op| {
+                let quoted_column = quote_identifier(name, '`')?;
+                Ok(if numeric_ordering(&types, name, op) {
+                    format!("toFloat64OrNull({quoted_column})")
+                } else if op.needs_value() {
+                    format!("toString({quoted_column})")
+                } else {
+                    quoted_column
+                })
+            },
+            |index, filter| {
+                let placeholder = format!("{{f{index}:String}}");
+                // 与上面那条分支**必须同源**（都问 `numeric_ordering`）：一旦判定不一致，
+                // 就会生成「列转 Float64、值还是 String」这类必然报类型错的 SQL。
+                if numeric_ordering(&types, &filter.column, filter.op) {
+                    format!("toFloat64OrNull({placeholder})")
+                } else {
+                    placeholder
+                }
+            },
+        )?;
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        let sql =
+            format!("SELECT * FROM {quoted}{where_clause}{order} LIMIT {limit} OFFSET {offset}");
+        let names: Vec<String> = (1..=values.len())
+            .map(|index| format!("f{index}"))
+            .collect();
+        let params: Vec<(&str, &str)> = names
+            .iter()
+            .zip(values.iter())
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        self.query_one_with(&sql, &params, limit)
     }
 
     /// **总是空**：ClickHouse 没有可供网格编辑定位的「行主键」。
@@ -982,7 +1144,109 @@ mod tests {
     fn relation_kinds_stay_explicit() {
         assert!(TableKind::Table.is_relation());
         assert!(TableKind::View.is_relation());
-        assert!(!TableKind::Routine.is_relation());
+        assert!(!TableKind::Procedure.is_relation());
+        assert!(!TableKind::Function.is_relation());
         assert!(!TableKind::Sequence.is_relation());
+    }
+
+    /// 数值族判定：数值算、日期/文本/枚举/复合**不算**（它们不能过 `toFloat64OrNull`，
+    /// 而且字典序本来就是它们的正确语义）。
+    #[test]
+    fn numeric_type_detection_covers_the_number_family_only() {
+        for numeric in [
+            "UInt8",
+            "UInt64",
+            "UInt256",
+            "Int32",
+            "Int128",
+            "Float32",
+            "Float64",
+            "Decimal(18, 4)",
+            "Decimal256(10)",
+            "Bool",
+        ] {
+            assert!(is_numeric_type(numeric), "{numeric} 应判为数值族");
+        }
+
+        // 包装要剥掉（含叠加）。
+        assert!(is_numeric_type("Nullable(UInt64)"));
+        assert!(is_numeric_type("LowCardinality(Int32)"));
+        assert!(is_numeric_type("Nullable(LowCardinality(Int64))"));
+        assert!(is_numeric_type("  Nullable(Float64)  "), "首尾空白要容忍");
+        assert!(!is_numeric_type("Nullable(String)"), "剥掉包装后是文本");
+
+        for non_numeric in [
+            "String",
+            "FixedString(8)",
+            "Date",
+            "Date32",
+            "DateTime",
+            "DateTime64(3)",
+            "UUID",
+            "IPv4",
+            "IPv6",
+            "Enum8('a' = 1, 'b' = 2)",
+            "Array(UInt8)",
+            "Map(String, UInt8)",
+            "Tuple(UInt8, String)",
+            "Nothing",
+        ] {
+            assert!(
+                !is_numeric_type(non_numeric),
+                "{non_numeric} 不该判为数值族"
+            );
+        }
+    }
+
+    /// 决策函数：**只有**「顺序算子 + 数值列」才走数值序。这条判定是
+    /// `table_page` 里 `column_expr` / `value_expr` 两个闭包的共同来源，口径必须一致。
+    #[test]
+    fn numeric_ordering_needs_both_an_ordering_op_and_a_numeric_column() {
+        let columns = |raw: &[(&str, &str)]| {
+            raw.iter()
+                .map(|(name, type_name)| Column {
+                    name: (*name).to_owned(),
+                    type_name: (*type_name).to_owned(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let types = columns(&[("amount", "UInt64"), ("name", "String"), ("at", "DateTime")]);
+
+        for op in [FilterOp::Gt, FilterOp::Gte, FilterOp::Lt, FilterOp::Lte] {
+            assert!(
+                numeric_ordering(&types, "amount", op),
+                "数值列 {op:?} 走数值序"
+            );
+            assert!(
+                !numeric_ordering(&types, "name", op),
+                "文本列 {op:?} 走字典序"
+            );
+            assert!(
+                !numeric_ordering(&types, "at", op),
+                "日期列 {op:?} 走字典序"
+            );
+            assert!(
+                !numeric_ordering(&types, "missing", op),
+                "列名对不上时保守走字典序"
+            );
+        }
+
+        // 相等 / 不等 / LIKE 一律文本比较（数值列也走 toString，做精确文本匹配）。
+        for op in [FilterOp::Eq, FilterOp::NotEq, FilterOp::Like] {
+            assert!(
+                !numeric_ordering(&types, "amount", op),
+                "{op:?} 不该走数值序"
+            );
+        }
+        // 无值算子同理（它们本来就不进 `filter_conditions` 的值分支）。
+        for op in [FilterOp::IsNull, FilterOp::IsNotNull] {
+            assert!(
+                !numeric_ordering(&types, "amount", op),
+                "{op:?} 不该走数值序"
+            );
+        }
+
+        // 类型未知（元数据查询失败时的退化路径）→ 走字典序，即改动前的一贯行为。
+        assert!(!numeric_ordering(&[], "amount", FilterOp::Gt));
     }
 }

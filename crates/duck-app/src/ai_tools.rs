@@ -3,19 +3,24 @@
 //! 内核（`duck-ai::tool`）只定义协议与注册表，**实现留在这一层**——因为工具要读本机
 //! 文件、要开知识库连接，那些都不该进一个「零依赖内核」。
 //!
-//! # 本轮只交付三个只读工具
+//! # 四个只读工具
 //!
 //! | 工具 | 风险 | 说明 |
 //! | --- | --- | --- |
 //! | `read_file` | 只读 | 读白名单目录内的 UTF-8 文本，支持行区间 |
 //! | `list_dir` | 只读 | 列白名单目录内的条目 |
 //! | `search_kb` | 只读 | 检索本地知识库（FTS5），带出处 |
+//! | `run_sql_readonly` | 只读 | 在**用户已打开**的数据库连接上跑一段**可证明只读**的 SQL |
 //!
-//! 设计文档 §4.6 里的第四个工具 `run_sql_readonly` **本轮不交付**，原因写在
-//! `docs/ai-design.md` §10.3：它的「只读就自动执行」需要一个**活着的数据库会话**，
-//! 而会话由 `pages/db.rs` 持有——那个文件正在被另一会话改写（§4.9 的同一条阻塞）。
-//! 与其先发一个永远回「未连接数据库」的空壳（本项目明令禁止的演示项），
-//! 不如等 §4.9 收敛时和 `duck-db::ai` 一起接。
+//! `run_sql_readonly`（`docs/ai-design.md` §4.6 的第四个工具）此前暂缓，原因是「会话句柄在
+//! `DatabasePage` 内部，没有可查的会话注册表」。现在数据库侧的只读入口已就绪
+//! （`DatabasePage::readonly_session` + `duck_db::Connection::execute_read_only`），
+//! 于是本模块用一份**进程级只读会话目录**把「页面持有的会话」暴露给工具：
+//! 连接成功时页面 [`publish_sql_session`]，断开时 [`retract_sql_session`]。
+//!
+//! **它不是新连接**：发布的句柄就是页面那条活跃会话的克隆（同一事务状态），
+//! 且闸门在**内核**里（`execute_read_only` 只放行证明得了只读的语句，一条不达标就整体拒绝），
+//! 所以拿到句柄也跑不了写语句——风险档因此定为 [`ToolRisk::ReadOnly`]（见工具实现处的说明）。
 //!
 //! # 路径沙箱
 //!
@@ -30,11 +35,15 @@
 //! 白名单根由用户显式配置（设置 → AI → 工具）。**默认关闭**：本项目既有口径是
 //! 「涉及本机数据的开关由用户自己打开」（`redis.rs` 的 `require_confirm_writes` 同源）。
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use duck_ai::kb::KbIndex;
 use duck_ai::tool::{Tool, ToolDetail, ToolOutcome, ToolRegistry, ToolRisk, ToolSpec};
 use duck_ai::wire::ToolCall;
+use duck_db::{DbError, ExecOutcome};
 use gpui::App;
 
 use crate::ai;
@@ -53,6 +62,10 @@ const LIST_MAX_ENTRIES: usize = 300;
 const KB_DEFAULT_HITS: usize = 5;
 /// `search_kb` 一次最多返回的片段数。
 const KB_MAX_HITS: usize = 20;
+/// `run_sql_readonly` 默认返回的行数。
+const SQL_DEFAULT_ROWS: usize = 100;
+/// `run_sql_readonly` 一次最多返回的行数（外层还会按上下文档位截断文本）。
+const SQL_MAX_ROWS: usize = 1_000;
 
 // ---------------------------------------------------------------------------
 // 路径沙箱
@@ -530,6 +543,241 @@ impl Tool for SearchKbTool {
 }
 
 // ---------------------------------------------------------------------------
+// run_sql_readonly 的会话目录
+// ---------------------------------------------------------------------------
+
+/// 「跑一段只读 SQL」这一件事的句柄。
+///
+/// 刻意用**闭包**而不是 `ReadOnlySession` 类型：那个类型住在本 crate 的 `pages::db`
+/// 私有模块里，工具层不该为了一个工具去抬它的可见性。闭包把「怎么执行」封装好，
+/// 工具层只认「给我 SQL 与行上限，还我一个 `ExecOutcome` 或错误」。
+type SqlRunner = Arc<dyn Fn(&str, usize) -> Result<ExecOutcome, DbError> + Send + Sync + 'static>;
+
+/// 目录里一条已发布的只读会话。
+struct CatalogEntry {
+    /// 给模型看的连接名（`ConnectionConfig::display_name`）。
+    label: String,
+    run: SqlRunner,
+}
+
+/// 进程级只读会话目录。
+///
+/// 为什么是 `OnceLock<Mutex<..>>` 而不是 gpui `Global`：工具在**后台线程**里 `run`，
+/// 那里没有 `cx`，拿不到 Global；发布方（`DatabasePage`）与消费方（工具）都必须能在
+/// 无 `cx` 处访问。同仓 `db.rs` 的 `DbOpGate` 正是这套写法。
+fn catalog() -> &'static Mutex<BTreeMap<String, CatalogEntry>> {
+    static CATALOG: OnceLock<Mutex<BTreeMap<String, CatalogEntry>>> = OnceLock::new();
+    CATALOG.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// 发布（或更新）一条只读会话，供 `run_sql_readonly` 使用。
+///
+/// 由数据库页在**连接成功**时调用；`run` 通常是
+/// `move |sql, rows| session.execute(sql, rows)`。重复 id 覆盖旧句柄（重连场景）。
+pub fn publish_sql_session(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    run: impl Fn(&str, usize) -> Result<ExecOutcome, DbError> + Send + Sync + 'static,
+) {
+    let entry = CatalogEntry {
+        label: label.into(),
+        run: Arc::new(run),
+    };
+    if let Ok(mut catalog) = catalog().lock() {
+        catalog.insert(id.into(), entry);
+    }
+}
+
+/// 撤回一条只读会话（断开标签时）。不存在的 id 是空操作。
+pub fn retract_sql_session(id: &str) {
+    if let Ok(mut catalog) = catalog().lock() {
+        catalog.remove(id);
+    }
+}
+
+/// 目录快照：`(id, label)`，按 id 升序。
+fn catalog_listing() -> Vec<(String, String)> {
+    catalog()
+        .lock()
+        .map(|catalog| {
+            catalog
+                .iter()
+                .map(|(id, entry)| (id.clone(), entry.label.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 取某条会话的执行句柄。
+fn catalog_runner(id: &str) -> Option<SqlRunner> {
+    catalog()
+        .lock()
+        .ok()
+        .and_then(|catalog| catalog.get(id).map(|entry| Arc::clone(&entry.run)))
+}
+
+/// 目录为空时给模型的口径（引导它去让用户先连一个库，而不是干猜连接名）。
+const NO_SESSION_HINT: &str = "No database connection is currently open. \
+     Ask the user to open the Database page and connect first.";
+
+/// 列出可选连接的文本（模型据此选择 `connection`）。
+fn listing_text() -> String {
+    let listing = catalog_listing();
+    if listing.is_empty() {
+        return NO_SESSION_HINT.to_owned();
+    }
+    let mut text = String::from("Open database connections:\n");
+    for (id, label) in &listing {
+        text.push_str(&format!("- {id}  ({label})\n"));
+    }
+    text.push_str("\nPass one id as `connection`, plus a read-only `sql` statement.");
+    text
+}
+
+/// 把执行产出折成「回灌文本 + 结果表」。
+fn render_exec_outcome(outcome: &ExecOutcome) -> (String, Option<ToolDetail>) {
+    let Some(result) = outcome.result.as_ref() else {
+        // 只读语句也可能不返回行（如 `PRAGMA` / `SHOW`）；如实说明，别假装没执行。
+        return (
+            format!(
+                "statement(s) completed; no rows returned ({} statement(s) run)",
+                outcome.statements_run
+            ),
+            None,
+        );
+    };
+    let columns: Vec<String> = result
+        .columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect();
+    let rows: Vec<Vec<String>> = result
+        .rows
+        .iter()
+        .map(|row| row.iter().map(duck_db::Value::render).collect())
+        .collect();
+
+    let mut content = format!("{} row(s), {} column(s)\n", rows.len(), columns.len());
+    content.push_str(&columns.join(" | "));
+    content.push('\n');
+    for row in &rows {
+        content.push_str(&row.join(" | "));
+        content.push('\n');
+    }
+    if result.truncated {
+        // 行被上限截断要明说（与本模块「绝不静默丢内容」同一条纪律）。
+        content.push_str("[row cap reached; more rows exist]\n");
+    }
+    (content, Some(ToolDetail::Table { columns, rows }))
+}
+
+// ---------------------------------------------------------------------------
+// run_sql_readonly
+// ---------------------------------------------------------------------------
+
+/// 在用户**已打开**的连接上跑只读 SQL。
+///
+/// # 风险档：`ReadOnly`（自动执行），理由
+///
+/// 设计 §4.6 的口径是「看语句 → 证明为只读 → 自动执行」。**证明在执行内核里**
+/// （`duck_db::Connection::execute_read_only`）：任何一条语句证明不了只读就整体拒绝、
+/// 一条都不跑。所以这个工具**没有**做写操作的能力——把它标成 `NeedsApproval`
+/// 只会让每次安全的 `SELECT` 都白弹一次确认，而真正的防线（内核闸门）一点没动。
+///
+/// 「连哪个库、查什么」这类**知情权**不靠审批满足：只有用户**主动打开**的连接才会
+/// 出现在目录里（[`publish_sql_session`] 的调用方是页面本身），模型也无法凭空开新连接；
+/// 而它执行的 SQL 与结果都原样显示在工具卡片上，用户看得到。
+#[derive(Default)]
+pub struct RunSqlReadonlyTool;
+
+impl Tool for RunSqlReadonlyTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "run_sql_readonly".to_owned(),
+            description: "Run a read-only SQL query against one of the user's currently open \
+                 database connections. Only statements that can be proven read-only will run; \
+                 anything that might write is refused by the engine and must be reviewed by the \
+                 user. Call this with no arguments to list the available connections and their ids."
+                .to_owned(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "connection": {
+                        "type": "string",
+                        "description": "Connection id from the listing (omit to list connections)."
+                    },
+                    "sql": {
+                        "type": "string",
+                        "description": "A read-only SQL query (e.g. SELECT)."
+                    },
+                    "max_rows": {
+                        "type": "integer",
+                        "description": "Row cap. Defaults to 100."
+                    }
+                }
+            }),
+            risk: ToolRisk::ReadOnly,
+        }
+    }
+
+    fn run(&self, input: &serde_json::Value, cancel: &AtomicBool) -> ToolOutcome {
+        let connection = input
+            .get("connection")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(connection) = connection else {
+            // 没点名连接 = 想看清单。这不是错误：模型需要知道能查什么。
+            return ToolOutcome::text(listing_text());
+        };
+        let Some(sql) = input.get("sql").and_then(serde_json::Value::as_str) else {
+            return ToolOutcome::error(format!(
+                "missing required argument: sql (target connection {connection:?})"
+            ));
+        };
+        if sql.trim().is_empty() {
+            return ToolOutcome::error("sql must not be empty");
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return ToolOutcome::error("cancelled before execution");
+        }
+
+        let Some(run) = catalog_runner(connection) else {
+            let available: Vec<String> = catalog_listing().into_iter().map(|(id, _)| id).collect();
+            return ToolOutcome::error(format!(
+                "unknown or closed connection {connection:?}; available: {}",
+                if available.is_empty() {
+                    "(none)".to_owned()
+                } else {
+                    available.join(", ")
+                }
+            ));
+        };
+
+        let max_rows = input
+            .get("max_rows")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(SQL_DEFAULT_ROWS as u64)
+            .clamp(1, SQL_MAX_ROWS as u64) as usize;
+
+        // 同步阻塞调用：本工具总是在后台线程里跑（注册表随线程转移所有权），不卡 UI。
+        match run(sql, max_rows) {
+            Ok(outcome) => {
+                let (content, detail) = render_exec_outcome(&outcome);
+                let outcome = ToolOutcome::text(content);
+                match detail {
+                    Some(detail) => outcome.with_detail(detail),
+                    None => outcome,
+                }
+            }
+            // 写语句 / 证明不了只读：内核整体拒绝。这是**预期内的拒绝**，
+            // 把原因原样回灌，模型据此改口径（而不是反复重试同一条语句）。
+            Err(error) => ToolOutcome::error(format!("read-only execution refused: {error}")),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 装配
 // ---------------------------------------------------------------------------
 
@@ -538,13 +786,14 @@ impl Tool for SearchKbTool {
 /// **配置读取都走 `duck_store::kv`（内存快照），不碰磁盘**——这个函数在页面构造与
 /// 配置变更时各调一次，不在渲染路径上。
 ///
-/// 三档结果：
-///
 /// | 配置 | 注册的工具 |
 /// | --- | --- |
 /// | 工具未开启 | 一个都没有（连 `tools` 字段都不下发） |
-/// | 开启但没配工作目录 | 只有 `search_kb`（知识库不依赖工作目录） |
-/// | 开启且配了目录 | 三个 |
+/// | 开启但没配工作目录 | `search_kb` + `run_sql_readonly`（都不依赖工作目录） |
+/// | 开启且配了目录 | 四个 |
+///
+/// `run_sql_readonly` 即便此刻没有打开的连接也照常注册：它「只列清单」时不报错，
+/// 模型据此知道有这个能力、要去让用户连库；等连接发布进目录后同一个注册表就能执行。
 #[must_use]
 pub fn build_registry(cx: &App) -> ToolRegistry {
     let settings = ai::load_settings(cx);
@@ -565,17 +814,18 @@ pub fn build_registry(cx: &App) -> ToolRegistry {
         registry.register(ListDirTool::new(sandbox));
     }
     registry.register(SearchKbTool::default());
+    registry.register(RunSqlReadonlyTool);
     registry
 }
 
 /// 工具调用的一句话摘要（卡片标题右侧）。
 ///
-/// 从入参里挑最有信息量的那个字段：`path` / `query`，都没有就退回整段 JSON
-/// （截断到 80 字符，卡片放不下更长的）。
+/// 从入参里挑最有信息量的那个字段：`path` / `query` / `sql` / `connection`，
+/// 都没有就退回整段 JSON（截断到 80 字符，卡片放不下更长的）。
 #[must_use]
 pub fn call_summary(call: &ToolCall) -> String {
     let arguments = call.parsed_arguments();
-    for key in ["path", "query"] {
+    for key in ["path", "query", "sql", "connection"] {
         if let Some(value) = arguments.get(key).and_then(serde_json::Value::as_str)
             && !value.trim().is_empty()
         {
@@ -798,5 +1048,202 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KB");
         assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
+    }
+
+    // ── run_sql_readonly（会话目录 + 工具）───────────────────────────
+
+    use duck_db::{Column, ResultSet, Value};
+
+    /// 造一份带行的执行产出。
+    fn outcome_with_rows(columns: &[&str], rows: Vec<Vec<Value>>) -> ExecOutcome {
+        ExecOutcome {
+            result: Some(ResultSet {
+                columns: columns
+                    .iter()
+                    .map(|name| Column {
+                        name: (*name).to_owned(),
+                        type_name: String::new(),
+                    })
+                    .collect(),
+                rows,
+                truncated: false,
+            }),
+            affected: 0,
+            statements_run: 1,
+        }
+    }
+
+    /// 每个测试用互不相同的连接 id，避免共享的进程级目录互相串味。
+    fn unique_id(tag: &str) -> String {
+        format!(
+            "sql-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
+    }
+
+    #[test]
+    fn run_sql_readonly_lists_connections_when_no_target_is_given() {
+        let id = unique_id("list");
+        publish_sql_session(&id, "演示库", |_sql, _rows| {
+            Ok(outcome_with_rows(&["a"], vec![]))
+        });
+        let tool = RunSqlReadonlyTool;
+        let outcome = tool.run(&serde_json::json!({}), &never_cancel());
+        assert!(outcome.ok, "{}", outcome.content);
+        assert!(outcome.content.contains(&id));
+        assert!(outcome.content.contains("演示库"));
+        retract_sql_session(&id);
+    }
+
+    #[test]
+    fn run_sql_readonly_returns_a_structured_table() {
+        let id = unique_id("table");
+        publish_sql_session(&id, "demo", |_sql, _rows| {
+            Ok(outcome_with_rows(
+                &["id", "name"],
+                vec![
+                    vec![Value::Int(1), Value::Text("a".into())],
+                    vec![Value::Int(2), Value::Null],
+                ],
+            ))
+        });
+        let tool = RunSqlReadonlyTool;
+        let outcome = tool.run(
+            &serde_json::json!({"connection": id, "sql": "SELECT 1"}),
+            &never_cancel(),
+        );
+        assert!(outcome.ok, "{}", outcome.content);
+        assert!(outcome.content.contains("2 row(s), 2 column(s)"));
+        let rows = match outcome.detail {
+            Some(ToolDetail::Table { columns, rows }) => {
+                assert_eq!(columns, vec!["id".to_owned(), "name".to_owned()]);
+                rows
+            }
+            other => panic!("expected a table detail, got {other:?}"),
+        };
+        assert_eq!(rows[0], vec!["1".to_owned(), "a".to_owned()]);
+        // NULL 渲染成字面 "NULL"，不是空串。
+        assert_eq!(rows[1][1], "NULL");
+        retract_sql_session(&id);
+    }
+
+    #[test]
+    fn run_sql_readonly_surfaces_the_read_only_refusal() {
+        let id = unique_id("refuse");
+        publish_sql_session(&id, "demo", |_sql, _rows| {
+            Err(DbError::Unsupported(
+                "read-only execution refused a statement that is not provably read-only: DELETE"
+                    .into(),
+            ))
+        });
+        let tool = RunSqlReadonlyTool;
+        let outcome = tool.run(
+            &serde_json::json!({"connection": id, "sql": "DELETE FROM t"}),
+            &never_cancel(),
+        );
+        // 拒绝是**预期内**的结果：ok=false，但原因要能读，模型据此换方案。
+        assert!(!outcome.ok);
+        assert!(outcome.content.contains("refused"), "{}", outcome.content);
+        retract_sql_session(&id);
+    }
+
+    #[test]
+    fn run_sql_readonly_rejects_unknown_and_retracted_connections() {
+        let tool = RunSqlReadonlyTool;
+        let unknown = tool.run(
+            &serde_json::json!({"connection": "definitely-not-open", "sql": "SELECT 1"}),
+            &never_cancel(),
+        );
+        assert!(!unknown.ok);
+        assert!(unknown.content.contains("unknown or closed"));
+
+        let id = unique_id("retract");
+        publish_sql_session(&id, "demo", |_sql, _rows| {
+            Ok(outcome_with_rows(&["a"], vec![]))
+        });
+        retract_sql_session(&id);
+        let after = tool.run(
+            &serde_json::json!({"connection": id, "sql": "SELECT 1"}),
+            &never_cancel(),
+        );
+        assert!(!after.ok, "撤回后不该还能执行");
+    }
+
+    #[test]
+    fn run_sql_readonly_clamps_max_rows_and_reports_no_rows() {
+        let id = unique_id("rows");
+        let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let recorder = Arc::clone(&seen);
+        publish_sql_session(&id, "demo", move |_sql, rows| {
+            recorder.lock().unwrap().push(rows);
+            // 只读但无返回行（如 PRAGMA）：如实说明，不假装没执行。
+            Ok(ExecOutcome {
+                result: None,
+                affected: 0,
+                statements_run: 1,
+            })
+        });
+        let tool = RunSqlReadonlyTool;
+        // 0 → 抬到 1；10_000 → 压到 SQL_MAX_ROWS。
+        let _ = tool.run(
+            &serde_json::json!({"connection": id, "sql": "PRAGMA x", "max_rows": 0}),
+            &never_cancel(),
+        );
+        let _ = tool.run(
+            &serde_json::json!({"connection": id, "sql": "PRAGMA x", "max_rows": 10_000}),
+            &never_cancel(),
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.as_slice(), &[1, SQL_MAX_ROWS]);
+        retract_sql_session(&id);
+
+        let no_rows = tool.run(
+            &serde_json::json!({"connection": id, "sql": "PRAGMA x"}),
+            &never_cancel(),
+        );
+        // 会话已撤回 → 走「未知连接」分支；验证无行文本用另一条。
+        assert!(!no_rows.ok);
+        let id2 = unique_id("norows");
+        publish_sql_session(&id2, "demo", |_sql, _rows| {
+            Ok(ExecOutcome {
+                result: None,
+                affected: 0,
+                statements_run: 1,
+            })
+        });
+        let text = tool.run(
+            &serde_json::json!({"connection": id2, "sql": "PRAGMA x"}),
+            &never_cancel(),
+        );
+        assert!(text.ok);
+        assert!(
+            text.content.contains("no rows returned"),
+            "{}",
+            text.content
+        );
+        retract_sql_session(&id2);
+    }
+
+    #[test]
+    fn run_sql_readonly_needs_sql_and_honours_cancel() {
+        let id = unique_id("args");
+        publish_sql_session(&id, "demo", |_sql, _rows| {
+            Ok(outcome_with_rows(&["a"], vec![]))
+        });
+        let tool = RunSqlReadonlyTool;
+        let missing = tool.run(&serde_json::json!({"connection": id}), &never_cancel());
+        assert!(!missing.ok);
+        assert!(missing.content.contains("sql"));
+
+        let cancelled = tool.run(
+            &serde_json::json!({"connection": id, "sql": "SELECT 1"}),
+            &AtomicBool::new(true),
+        );
+        assert!(!cancelled.ok);
+        assert!(cancelled.content.contains("cancelled"));
+        retract_sql_session(&id);
     }
 }

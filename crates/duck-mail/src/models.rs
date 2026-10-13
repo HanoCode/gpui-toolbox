@@ -290,8 +290,12 @@ impl FolderRole {
         if has("\\Archive") || has("\\All") {
             return Self::Archive;
         }
-        // 退到名字匹配。小写化 + 去掉分隔符噪音后做子串判断。
-        let lower = name.to_ascii_lowercase();
+        // 退到名字匹配。⚠️ 名字是 **Modified UTF-7**（`&XfJT0ZAB-`）——不解码的话
+        // 中文名一个都匹配不上，全部落 `Other`，而同步会跳过 `Other`，表现为
+        // 「同步完成：0 个文件夹，新增 0 封」。先解回 UTF-8 再小写化 + 去掉分隔符
+        // 噪音做子串判断。
+        let decoded = crate::proto::utf7::decode_mailbox_name(name);
+        let lower = decoded.to_ascii_lowercase();
         let tail = lower.rsplit(['/', '.', '\\']).next().unwrap_or(&lower);
         match tail {
             "inbox" => Self::Inbox,
@@ -385,6 +389,131 @@ impl MessageSummary {
             .filter(|s| !s.trim().is_empty())
             .or(self.from_addr.as_deref())
             .unwrap_or("")
+    }
+}
+
+/// 会话列表的一行（`threads` 表的聚合值 + 会话内最新一封的主题）。
+///
+/// 与 [`MessageSummary`] **并存**：M1 的列表是一封一行（直接查 `messages`），
+/// 会话视图用这个（查 `threads`）。线程聚合是后台重算的结果，不改变既有读路径，
+/// 所以两者不是替代关系。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadSummary {
+    /// 主键（`threads.id`）。
+    pub id: i64,
+    /// 所属账户。
+    pub account_id: i64,
+    /// 会话主题：取会话内**最新一封**的原始主题（保留 `Re:` 前缀，由界面决定怎么显示）。
+    pub subject: String,
+    /// 摘要：取会话内最新一封的 `snippet`。
+    pub snippet: String,
+    /// 最新一封的时间（Unix 秒）——列表按它倒序。
+    pub last_message_at: i64,
+    /// 会话内消息数。
+    pub message_count: i64,
+    /// 会话内未读数。
+    pub unread_count: i64,
+    /// 会话内旗标数。
+    pub starred_count: i64,
+    /// 会话内带附件的消息数。
+    pub attachment_count: i64,
+    /// 参与者地址（去重，按首次出现顺序）。
+    pub participants: Vec<String>,
+}
+
+impl ThreadSummary {
+    /// 界面上显示的参与者串：前两个，多了补省略号（与草稿的收件人展示同口径）。
+    pub fn participants_display(&self) -> String {
+        match self.participants.split_first() {
+            None => String::new(),
+            Some((first, [])) => first.clone(),
+            Some((first, [second, rest @ ..])) => {
+                if rest.is_empty() {
+                    format!("{first}, {second}")
+                } else {
+                    format!("{first}, {second} …")
+                }
+            }
+        }
+    }
+}
+
+/// 草稿的由来（`drafts_meta.mode`）。
+///
+/// 表里存的是**英文短标识**（`new` / `reply` / `forward`）——与 [`crate::MailError::code`]
+/// 同一口径：语言无关，界面要显示什么由界面层决定。存中文会让这一列变成「界面的
+/// 一部分」，换语言时数据就脏了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DraftMode {
+    /// 新写（也包括「转发的空壳」——没有可回填的原信时它就是新写）。
+    #[default]
+    New,
+    /// 回复 / 全部回复。
+    Reply,
+    /// 转发。
+    Forward,
+}
+
+impl DraftMode {
+    /// 落库用的短标识。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Reply => "reply",
+            Self::Forward => "forward",
+        }
+    }
+
+    /// 读库。**认不出来一律当 [`DraftMode::New`]**：草稿列表里最保守的一档，
+    /// 而且老数据（本列有 `DEFAULT 'new'`）本来就都是 `new`。
+    pub fn from_db(text: &str) -> Self {
+        match text {
+            "reply" => Self::Reply,
+            "forward" => Self::Forward,
+            _ => Self::New,
+        }
+    }
+}
+
+/// 草稿箱列表的一行。
+///
+/// **不能复用 [`MessageSummary`]**：那个类型的 `folder_id` 是**非空 `i64`**，而草稿的
+/// `folder_id` 恒为 NULL（见 [`crate::db::repo::drafts`]）——拿它去接 NULL 会直接
+/// `InvalidColumnType`。多一个类型比在那边挖一个 `Option` 更安全：收信路径没有任何
+/// 理由去面对「这封邮件不属于任何文件夹」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftSummary {
+    /// 本地行号（`messages.id`）。
+    pub id: i64,
+    /// 所属账户。
+    pub account_id: i64,
+    /// 主题（草稿允许为空）。
+    pub subject: String,
+    /// 收件人的**展示串**（`名字 <地址>` 或裸地址，顺序与用户录入一致）。
+    pub recipients: Vec<String>,
+    /// 最后一次保存时间（Unix 秒）——草稿列表按它倒序。
+    pub date: i64,
+    /// 草稿的由来。
+    pub mode: DraftMode,
+    /// 附件条数（`draft_attachments` 的行数，**不是**字节数）。
+    pub attachment_count: i64,
+}
+
+impl DraftSummary {
+    /// 列表上显示的收件人：前两个，多了补省略号。空收件人给空串（由界面决定
+    /// 「(无收件人)」怎么写——文案不住在内核里）。
+    pub fn recipients_display(&self) -> String {
+        match self.recipients.split_first() {
+            None => String::new(),
+            Some((first, [])) => first.clone(),
+            Some((first, [second, rest @ ..])) => {
+                if rest.is_empty() {
+                    format!("{first}, {second}")
+                } else {
+                    format!("{first}, {second} …")
+                }
+            }
+        }
     }
 }
 
@@ -502,6 +631,24 @@ mod tests {
             FolderRole::Other
         );
         assert_eq!(FolderRole::from_imap("Work/INBOX", &[]), FolderRole::Inbox);
+    }
+
+    #[test]
+    fn folder_role_matches_decoded_utf7_names() {
+        // 国内邮箱不给 SPECIAL-USE 旗标、名字还是 Modified UTF-7 的场景：
+        // 不先解码就匹配不上，全部落 `Other` → 同步一个文件夹都不跑。
+        assert_eq!(FolderRole::from_imap("&XfJT0ZAB-", &[]), FolderRole::Sent);
+        assert_eq!(FolderRole::from_imap("&g0l6P3ux-", &[]), FolderRole::Drafts);
+        assert_eq!(
+            FolderRole::from_imap("&V4NXPpCuTvY-", &[]),
+            FolderRole::Junk
+        );
+        assert_eq!(FolderRole::from_imap("&XfJSIJZk-", &[]), FolderRole::Trash);
+        // 层级前缀 + 编码段混合（如 `[QQ Mail]/&XfJT0ZAB-`）也认得出尾巴。
+        assert_eq!(
+            FolderRole::from_imap("[QQ Mail]/&XfJT0ZAB-", &[]),
+            FolderRole::Sent
+        );
     }
 
     #[test]

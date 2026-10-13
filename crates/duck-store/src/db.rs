@@ -82,6 +82,44 @@ const MIGRATIONS: &[&str] = &[
     r"
     DROP TABLE IF EXISTS settings;
     ",
+    // v3：审计日志（append-only）。
+    //
+    // 与 `recent` 的分工：`recent` 是「最近用过什么」（主键去重、只留最后一次），
+    // 审计是**发生过什么**的流水（一次一行，永不合并）。两者的键、用途、保留策略都不同，
+    // 所以另起一张表而不是复用。
+    //
+    // `outcome` / `kind` / `action` 都是**稳定英文键**（`ok` / `failed` / `blocked` /
+    // `cancelled`、`connection` / `query` / `write` / `transport` / `hook` / `plugin` / `mcp`…）：
+    // 界面文案按当次语言另译，日志与筛选按这些键走，换语言不会让历史记录失配。
+    //
+    // `fingerprint` 是语句的**归一化指纹**（字面量换成占位符后哈希），用来把
+    // 「同一类语句跑了多少次」聚合起来；`trace_id` 只在出错时非空，是错误与其它
+    // 记录的关联键（状态栏徽标点进去就按它过滤）。
+    //
+    // ⚠️ **append-only**：只增不改。下面那个 `BEFORE UPDATE` 触发器把这一点钉死
+    // （误改会直接报错，而不是静默改写历史）。允许的删除只有两种，都是显式动作：
+    // 超出保留上限的**裁剪**，以及用户点的「清空审计」。
+    r"
+    CREATE TABLE IF NOT EXISTS audit (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        at          INTEGER NOT NULL,
+        kind        TEXT NOT NULL,
+        action      TEXT NOT NULL,
+        outcome     TEXT NOT NULL,
+        scope       TEXT NOT NULL,
+        detail      TEXT NOT NULL,
+        fingerprint TEXT NOT NULL DEFAULT '',
+        trace_id    TEXT NOT NULL DEFAULT '',
+        duration_ms INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
+    CREATE INDEX IF NOT EXISTS audit_trace ON audit(trace_id);
+    CREATE TRIGGER IF NOT EXISTS audit_no_update
+    BEFORE UPDATE ON audit
+    BEGIN
+        SELECT RAISE(ABORT, 'audit rows are append-only');
+    END;
+    ",
 ];
 
 /// 打开数据库、应用 PRAGMA 并把 schema 迁到最新版本。
@@ -167,7 +205,7 @@ mod tests {
     fn all_tables_exist() -> Result<(), StoreError> {
         let path = temp_path("tables");
         let connection = open(&path)?;
-        for table in ["kv", "windows", "recent", "tool_state"] {
+        for table in ["kv", "windows", "recent", "tool_state", "audit"] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
                 [table],
@@ -175,6 +213,28 @@ mod tests {
             )?;
             assert_eq!(count, 1, "缺表 {table}");
         }
+        drop(connection);
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
+
+    /// 审计表**只增不改**：误改一行必须当场报错，而不是静默改写历史。
+    #[test]
+    fn audit_rows_cannot_be_updated() -> Result<(), StoreError> {
+        let path = temp_path("audit-append-only");
+        let connection = open(&path)?;
+        connection.execute(
+            "INSERT INTO audit(at, kind, action, outcome, scope, detail)
+             VALUES(1, 'query', 'execute', 'ok', 'conn-1', 'SELECT 1')",
+            [],
+        )?;
+        let updated = connection.execute("UPDATE audit SET detail = '改了'", []);
+        assert!(
+            updated.is_err(),
+            "审计行被改成功了，append-only 触发器没生效"
+        );
+        // 删除仍然可以（裁剪与「清空审计」都要用它）——这是**有意**留的口子。
+        connection.execute("DELETE FROM audit", [])?;
         drop(connection);
         let _ = std::fs::remove_file(&path);
         Ok(())

@@ -22,7 +22,7 @@
 //!
 //! 页面只读这里的函数，不自己拼 kv 键——键名只有一处定义，改动不会漏。
 
-use duck_ai::{ProviderProfile, provider};
+use duck_ai::{CompactionPolicy, ProviderProfile, provider};
 use gpui::App;
 
 /// 厂商档案数组的 kv 键（范式同 `db_connections` / `redis_connections`）。
@@ -56,6 +56,18 @@ pub struct AiSettings {
     pub tools_enabled: bool,
     /// 工具可访问的根目录；`None` = 未配置（此时文件类工具不注册）。
     pub workspace_dir: Option<String>,
+    /// 一次问答内允许的最大工具调用轮数；`None` = 用内核默认值
+    /// （[`crate::pages::assistant`] 的 `MAX_TOOL_ROUNDS`）。
+    ///
+    /// 是**失控循环的兜底**，不是功能开关：模型偶发会「调工具 → 看结果 → 再调同一个」，
+    /// 没有上限就是无限花钱。
+    pub max_tool_rounds: Option<usize>,
+    /// 上下文预算上限（字符数）；`None` = 用内核默认值
+    /// （[`CompactionPolicy::default`] 的 `max_chars`）。
+    ///
+    /// ⚠️ **`Some(0)` 表示关闭压缩**（内核语义）。关掉之后长会话可能直接超出模型的
+    /// 上下文窗口，请求会被服务端拒；调小则更早丢历史。两者都只该由用户明知代价地选。
+    pub compaction_max_chars: Option<usize>,
 }
 
 impl Default for AiSettings {
@@ -67,6 +79,8 @@ impl Default for AiSettings {
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_owned(),
             tools_enabled: false,
             workspace_dir: None,
+            max_tool_rounds: None,
+            compaction_max_chars: None,
         }
     }
 }
@@ -89,6 +103,10 @@ struct AiSettingsWire {
     tools_enabled: Option<bool>,
     #[serde(default)]
     workspace_dir: Option<String>,
+    #[serde(default)]
+    max_tool_rounds: Option<usize>,
+    #[serde(default)]
+    compaction_max_chars: Option<usize>,
 }
 
 impl From<AiSettingsWire> for AiSettings {
@@ -102,6 +120,8 @@ impl From<AiSettingsWire> for AiSettings {
                 .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_owned()),
             tools_enabled: wire.tools_enabled.unwrap_or(false),
             workspace_dir: wire.workspace_dir,
+            max_tool_rounds: wire.max_tool_rounds,
+            compaction_max_chars: wire.compaction_max_chars,
         }
     }
 }
@@ -115,6 +135,8 @@ impl From<&AiSettings> for AiSettingsWire {
             system_prompt: Some(settings.system_prompt.clone()),
             tools_enabled: Some(settings.tools_enabled),
             workspace_dir: settings.workspace_dir.clone(),
+            max_tool_rounds: settings.max_tool_rounds,
+            compaction_max_chars: settings.compaction_max_chars,
         }
     }
 }
@@ -301,6 +323,66 @@ pub fn parse_max_tokens(raw: &str) -> Option<Option<u32>> {
         .map(Some)
 }
 
+/// 解析最大工具轮次；空串 = 用默认值。
+#[must_use]
+pub fn parse_max_rounds(raw: &str) -> Option<Option<usize>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Some(None);
+    }
+    trimmed
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value >= 1)
+        .map(Some)
+}
+
+/// 最大工具轮次的输入框文本。
+#[must_use]
+pub fn max_rounds_text(settings: &AiSettings) -> String {
+    settings
+        .max_tool_rounds
+        .map(|value| value.to_string())
+        .unwrap_or_default()
+}
+
+/// 解析上下文预算（字符数）；空串 = 用内核默认。
+///
+/// ⚠️ 与其它数值项不同，**`0` 是合法值**：内核把 `max_chars == 0` 解释为「关闭压缩」，
+/// 所以这里不加 `> 0` 的下限过滤。
+#[must_use]
+pub fn parse_compaction_budget(raw: &str) -> Option<Option<usize>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Some(None);
+    }
+    trimmed.parse::<usize>().ok().map(Some)
+}
+
+/// 上下文预算的输入框文本。
+#[must_use]
+pub fn compaction_budget_text(settings: &AiSettings) -> String {
+    settings
+        .compaction_max_chars
+        .map(|value| value.to_string())
+        .unwrap_or_default()
+}
+
+/// 由设置得到内核的上下文压缩策略。
+///
+/// 只把「总预算」这一个维度暴露给用户：其余四项（近端保留长度、工具结果的头 / 尾 /
+/// 裁枝阈值）是调参细节，改错了只会让压缩变得难以解释，不如固定在内核默认值上。
+#[must_use]
+pub fn compaction_policy(settings: &AiSettings) -> CompactionPolicy {
+    match settings.compaction_max_chars {
+        None => CompactionPolicy::default(),
+        Some(max_chars) => CompactionPolicy {
+            max_chars,
+            ..CompactionPolicy::default()
+        },
+    }
+}
+
 /// 温度的输入框文本。
 #[must_use]
 pub fn temperature_text(settings: &AiSettings) -> String {
@@ -332,6 +414,8 @@ mod tests {
             system_prompt: "custom".into(),
             tools_enabled: true,
             workspace_dir: Some("/tmp/ws".into()),
+            max_tool_rounds: Some(12),
+            compaction_max_chars: Some(48_000),
         };
         let wire = AiSettingsWire::from(&settings);
         let json = serde_json::to_string(&wire).unwrap();
@@ -350,6 +434,55 @@ mod tests {
             .into();
         assert!(!back.tools_enabled);
         assert!(back.workspace_dir.is_none());
+        // 工具轮次同理：缺字段必须回落到内核默认，而不是凭空给一个 0（0 轮 = 直接禁用）。
+        assert!(back.max_tool_rounds.is_none());
+        // 上下文预算同理：缺字段 = 用内核默认档，**不能**落到 `0`（那是「关闭压缩」）。
+        assert!(back.compaction_max_chars.is_none());
+    }
+
+    /// 上下文预算的解析：空 = 默认，`0` = 关闭压缩（合法），非数字 = 拒绝。
+    #[test]
+    fn compaction_budget_parsing() {
+        assert_eq!(parse_compaction_budget(""), Some(None));
+        assert_eq!(parse_compaction_budget("   "), Some(None));
+        assert_eq!(parse_compaction_budget("0"), Some(Some(0)));
+        assert_eq!(parse_compaction_budget(" 96000 "), Some(Some(96_000)));
+        assert_eq!(parse_compaction_budget("-1"), None);
+        assert_eq!(parse_compaction_budget("很多"), None);
+    }
+
+    /// 设置 → 内核策略的映射：只覆盖上限，其余吃内核默认；`Some(0)` 要真的传成 0。
+    #[test]
+    fn compaction_policy_follows_the_budget() {
+        let unset = compaction_policy(&AiSettings::default());
+        assert_eq!(unset, CompactionPolicy::default(), "未设置就用内核默认");
+
+        let off = compaction_policy(&AiSettings {
+            compaction_max_chars: Some(0),
+            ..AiSettings::default()
+        });
+        assert_eq!(off.max_chars, 0, "0 必须原样传下去（内核据此关闭压缩）");
+        assert_eq!(
+            off.keep_recent_chars,
+            CompactionPolicy::default().keep_recent_chars,
+            "其余维度仍吃内核默认"
+        );
+
+        let custom = compaction_policy(&AiSettings {
+            compaction_max_chars: Some(12_345),
+            ..AiSettings::default()
+        });
+        assert_eq!(custom.max_chars, 12_345);
+    }
+
+    #[test]
+    fn rounds_parsing_rejects_zero() {
+        assert_eq!(parse_max_rounds(""), Some(None));
+        assert_eq!(parse_max_rounds(" 6 "), Some(Some(6)));
+        assert_eq!(parse_max_rounds("0"), None);
+        assert_eq!(parse_max_rounds("-1"), None);
+        assert_eq!(parse_max_rounds("x"), None);
+        assert_eq!(max_rounds_text(&AiSettings::default()), "");
     }
 
     #[test]

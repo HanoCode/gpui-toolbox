@@ -38,14 +38,18 @@
 //! 终端那条路更短：调用方拿 [`Target::base_argv`] 拼出 `ssh -t ...`，
 //! 直接交给 `duck_term::Session::spawn`。
 
+mod known_hosts;
 mod remote;
 mod target;
 
+pub use known_hosts::{HostKeyStatus, known_hosts_path, status as host_key_status};
 pub use remote::{
-    Output, RemoteEntry, RemoteListing, download, exec, list_dir, mkdir, remove, rename,
-    test_connection, upload,
+    Output, RemoteEntry, RemoteListing, TransferHandle, download, download_spawn, exec, list_dir,
+    local_size, mkdir, path_size, remove, rename, test_connection, upload, upload_spawn,
 };
-pub use target::{Availability, Target, askpass_script, control_path};
+pub use target::{
+    AuthMethod, Availability, ForwardKind, PortForward, Target, askpass_script, control_path,
+};
 
 /// 远端能力的错误。
 ///
@@ -62,6 +66,12 @@ pub enum SshError {
     Spawn { message: String },
     /// 远端命令返回非零。带上 stderr 的首行供界面展示。
     Failed { status: Option<i32>, stderr: String },
+    /// 远端目录进不去（列举前的 `cd` 失败）：目录不存在、或没有进入权限。
+    ///
+    /// 单独立一个变体而不是塞进 [`Self::Failed`]：那三类的下一步动作完全不同 ——
+    /// 「目录不存在」要用户换一个目录，而 `Failed` 里的「连接被拒 / 权限被拒」
+    /// 要去查认证与主机配置。远端脚本用 stderr 上的哨兵把这一情况标出来。
+    NoSuchDir { path: String },
     /// 传输失败（`scp` 非零退出）。`message` 是 `scp` 的原文。
     Transfer { message: String },
     /// 本地源路径不存在（**上传前**的检查，见 [`upload`]）。
@@ -103,6 +113,7 @@ impl SshError {
                 }
             }
             Self::Transfer { message } => ("传输失败：{}", vec![message.clone()]),
+            Self::NoSuchDir { path } => ("远端目录不存在或无法进入：{}", vec![path.clone()]),
             Self::LocalMissing { path } => ("本地路径不存在：{}", vec![path.clone()]),
         }
     }
@@ -219,6 +230,9 @@ mod tests {
             },
             SshError::Transfer {
                 message: "no space left".to_owned(),
+            },
+            SshError::NoSuchDir {
+                path: "~/nope".to_owned(),
             },
             SshError::LocalMissing {
                 path: "/nope".to_owned(),

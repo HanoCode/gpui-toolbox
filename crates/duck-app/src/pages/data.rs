@@ -86,7 +86,13 @@ fn export_row(cx: &App) -> gpui::AnyElement {
     let include_logs = flag(cx, KV_INCLUDE_LOGS, false);
     option_row(
         tr(cx, "导出备份"),
-        Some(tr(cx, "把设置、快捷键与已安装的插件打成一个归档文件。").into()),
+        Some(
+            tr(
+                cx,
+                "把设置、快捷键、AI 会话与已安装的插件打成一个归档文件。",
+            )
+            .into(),
+        ),
         button(
             "duck-data-export",
             tr(cx, "导出…"),
@@ -196,7 +202,7 @@ fn reset_row(scope: ResetScope, cx: &App) -> gpui::AnyElement {
             tr(cx, "全部清除"),
             tr(
                 cx,
-                "再删除窗口位置、自定义快捷键与日志，回到初次启动的样子。",
+                "再删除窗口位置、自定义快捷键与日志，并清空 AI 会话与知识库索引，回到初次启动的样子。",
             ),
             tr(cx, "全部清除"),
             ButtonVariant::Destructive,
@@ -230,6 +236,7 @@ fn run_export(include_logs: bool, window: &mut Window, cx: &mut App) {
     let options = ExportOptions {
         include_plugins: true,
         include_logs,
+        include_ai_db: true,
     };
     match backup::export(&with_tar_gz(path), &dirs, options, cx) {
         Ok(report) => duck_components::notify::success(
@@ -279,15 +286,23 @@ fn run_import(replace: bool, window: &mut Window, cx: &mut App) {
         ImportMode::Merge
     };
     match backup::import(&source, &dirs, mode, ImportOptions::default(), cx) {
-        Ok(report) => duck_components::notify::success(
-            trf(
-                cx,
-                "已导入 {} 项设置，重启应用后完全生效。",
-                &[&report.keys.to_string()],
-            ),
-            window,
-            cx,
-        ),
+        Ok(report) => {
+            // 老包没有 ai.db：如实说「包里的会话没带过来」，而不是假装全都在。
+            let message = if report.ai_db {
+                trf(
+                    cx,
+                    "已导入 {} 项设置与 AI 会话，重启应用后完全生效。",
+                    &[&report.keys.to_string()],
+                )
+            } else {
+                trf(
+                    cx,
+                    "已导入 {} 项设置，重启应用后完全生效（包里没有 AI 会话）。",
+                    &[&report.keys.to_string()],
+                )
+            };
+            duck_components::notify::success(message, window, cx)
+        }
         Err(error) => duck_components::notify::error(
             trf(cx, "导入失败：{}", &[&error.to_string()]),
             window,
@@ -309,18 +324,21 @@ fn run_reset(scope: ResetScope, window: &mut Window, cx: &mut App) {
     }
     let dirs = DataDirs::from_platform();
     match backup::reset(scope, &dirs, cx) {
-        Ok(report) => duck_components::notify::success(
-            trf(
-                cx,
-                "已清空 {} 张表、删除 {} 项内容，重启后生效。",
-                &[
-                    &report.tables.len().to_string(),
-                    &report.removed.len().to_string(),
-                ],
-            ),
-            window,
-            cx,
-        ),
+        Ok(report) => {
+            let tables = report.tables.len().to_string();
+            let removed = report.removed.len().to_string();
+            let counts: [&str; 2] = [&tables, &removed];
+            let message = if report.ai_db_cleared {
+                trf(
+                    cx,
+                    "已清空 {} 张表、删除 {} 项内容，并清空 AI 会话与知识库索引，重启后生效。",
+                    &counts,
+                )
+            } else {
+                trf(cx, "已清空 {} 张表、删除 {} 项内容，重启后生效。", &counts)
+            };
+            duck_components::notify::success(message, window, cx)
+        }
         Err(error) => duck_components::notify::error(
             trf(cx, "重置失败：{}", &[&error.to_string()]),
             window,
