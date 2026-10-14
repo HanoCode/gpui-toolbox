@@ -4,7 +4,7 @@
 use gpui::{
     Anchor, AnyElement, App, Entity, Hsla, InteractiveElement as _, IntoElement, ParentElement,
     Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled, WeakEntity, div,
-    prelude::FluentBuilder as _, px,
+    prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     Icon, h_flex,
@@ -14,19 +14,22 @@ use gpui_component::{
 };
 
 use duck_components::{
-    ButtonVariant, DuckIcon, caption_heading,
+    ButtonVariant, DuckIcon, SegmentItem, button, caption_heading,
     content::{alert_block, empty_state, neutral_tag},
     icon_button, meta_text, nav_icon_color,
     notify::Tone,
-    segmented_tabs, sidebar_navigation_button, tabular_numbers, toolbar_text_dropdown_button,
+    segmented_tabs_with_icons, sidebar_navigation_button, tabular_numbers,
+    toolbar_text_dropdown_button,
 };
-use duck_project::{Project, ProjectStatus, Tag, Task, TaskSort};
+use duck_project::{
+    CalendarDate, LogKind, Project, ProjectStatus, Tag, Task, TaskSort, TaskStatus, Weekday,
+};
 use duck_theme::{active_theme, color_from_hex, tr, trf};
 
 use super::ProjectsPage;
 use super::archive::render_archive_center;
 use super::prefs::ViewMode;
-use super::state::{BoardScope, ProjectsState, SidebarCounts, SmartFilter};
+use super::state::{BoardScope, ProjectsState, SidebarCounts, SmartFilter, local_date};
 use super::widgets::kanban_column::kanban_column;
 use super::widgets::priority_dot::priority_dot;
 use super::widgets::progress_bar::task_progress;
@@ -660,6 +663,10 @@ pub(crate) fn render_main(
 
     let body = match state.view() {
         ViewMode::List => render_list(state, view, cx),
+        ViewMode::Calendar => render_calendar(state, view, cx),
+        ViewMode::Timeline => render_timeline(state, view, cx),
+        ViewMode::Report => render_report(state, view, cx),
+        ViewMode::Log => render_log(state, view, cx),
         // `Board` 与 `Archive` 都落到这儿，但 `Archive` 在上面已经 return 了。
         _ => render_board(state, view, cx),
     };
@@ -849,23 +856,26 @@ fn show_done_toggle(
     .into_any_element()
 }
 
-/// 视图切换：`segmented_tabs`（看板 / 列表）。
+/// 视图切换：`segmented_tabs_with_icons`（看板 / 列表 / 日历 / 时间线 / 报表 / 工作日志）。
 ///
-/// 只放**已实现**的两个视图：日历 / 时间线还在 §7 的 S5，摆一个点了没反应的 tab
-/// 就是演示控件（P3-6 判据）。
+/// 六档一起摆出来（原型 `VIEWS` 同款）而不是只摆做得了的两个：六个视图在本轮
+/// 全部落地了，不再有「点了没反应」的占位档（P3-6 判据）。
 fn view_switcher(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
     let current = state.view();
     let selected = ViewMode::TABS
         .iter()
         .position(|mode| *mode == current)
         .unwrap_or(0);
-    let labels: Vec<SharedString> = ViewMode::TABS
+    let items: Vec<SegmentItem> = ViewMode::TABS
         .iter()
-        .map(|mode| SharedString::from(view_tab_label(*mode, cx)))
+        .map(|mode| {
+            SegmentItem::new(SharedString::from(view_tab_label(*mode, cx)))
+                .icon(view_tab_icon(*mode))
+        })
         .collect();
-    segmented_tabs(
+    segmented_tabs_with_icons(
         "projects-view-tabs",
-        labels,
+        items,
         selected,
         {
             let view = view.clone();
@@ -881,11 +891,35 @@ fn view_switcher(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &Ap
     .into_any_element()
 }
 
-/// 视图 tab 的中文名。
+/// 视图 tab 的中文名（与原型 `VIEWS` 逐条对应）。
 fn view_tab_label(mode: ViewMode, cx: &App) -> &'static str {
     match mode {
+        ViewMode::Board => tr(cx, "看板"),
         ViewMode::List => tr(cx, "列表"),
-        _ => tr(cx, "看板"),
+        ViewMode::Calendar => tr(cx, "日历"),
+        ViewMode::Timeline => tr(cx, "时间线"),
+        ViewMode::Report => tr(cx, "报表"),
+        ViewMode::Log => tr(cx, "工作日志"),
+        // 归档中心有它自己的左栏入口，不在 segmented tabs 里（`ViewMode::TABS` 也不含它）。
+        ViewMode::Archive => tr(cx, "归档"),
+    }
+}
+
+/// 视图 tab 的图标（原型 `VIEWS[].icon`）。
+///
+/// 原型用的是 Lucide 的 `kanban` / `list` / `calendar` / `gantt` / `chart` / `file-text`；
+/// 本仓图标集里没有 `calendar` 与 `gantt`，各取语义最近的一个：日历用 `Clock`
+/// （日期与时刻同族），时间线用 `Columns2`（分段条）；换名字会同时改到 tab 与
+/// [`render_empty_*`] 的空态图标，所以集中在这一处。
+const fn view_tab_icon(mode: ViewMode) -> DuckIcon {
+    match mode {
+        ViewMode::Board => DuckIcon::Kanban,
+        ViewMode::List => DuckIcon::Table,
+        ViewMode::Calendar => DuckIcon::Clock,
+        ViewMode::Timeline => DuckIcon::Columns2,
+        ViewMode::Report => DuckIcon::ChartLine,
+        ViewMode::Log => DuckIcon::FileText,
+        ViewMode::Archive => DuckIcon::Archive,
     }
 }
 
@@ -1444,6 +1478,1327 @@ fn scope_text(state: &ProjectsState, cx: &App) -> SharedString {
         BoardScope::Inbox => SharedString::from(tr(cx, "未归入项目")),
         BoardScope::Project(id) => project_name(state, id, cx),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 视图：日历 / 时间线 / 报表 / 工作日志
+// ---------------------------------------------------------------------------
+//
+// 四个视图读的都是**同一份** `state.tasks()`（口径在 `ProjectsState::query`），
+// 所以「范围 + 筛选 + 搜索 + 排序」的结果与看板逐条一致 —— 切视图不该改变看到的东西。
+
+/// 日历网格恒为 6 行 × 7 列（42 格）。
+///
+/// 行数随月份变（4~6 行）会让每翻一页网格高度就跳一次，鼠标下的格子会挪位；
+/// 恒 6 行则「下个月」永远在同一个位置。
+const CALENDAR_CELLS: i64 = 42;
+/// 日历格高（不属间距阶梯、也不是字号，故留裸值）：容得下日号 + 两行任务。
+const CALENDAR_CELL_HEIGHT: f32 = 92.;
+
+/// 时间线的窗口长度（天）、每行高度、左侧任务名宽度。
+const TIMELINE_DAYS: i64 = 28;
+const TIMELINE_ROW_HEIGHT: f32 = 26.;
+const TIMELINE_LABEL_WIDTH: f32 = 180.;
+
+/// 「进行中」的 WIP 上限（与原型一致：超过就提示超限，**不做硬拦**）。
+const WIP_LIMIT: u32 = 5;
+
+/// 任务「归到哪一天」：已完成按完成日，其余按截止日（原型 `dayOf` 同口径）。
+///
+/// 没有日期的任务**不显示**在日历上 —— 日历的意义就是「日子 × 事情」，
+/// 硬塞进某一天（比如今天）只会让那天的格子骗人。
+fn calendar_day(task: &Task) -> Option<CalendarDate> {
+    if task.status == TaskStatus::Done {
+        task.completed_at.map(local_date).or(task.due_date)
+    } else {
+        task.due_date
+    }
+}
+
+/// 日历视图：月网格（按截止日归位，已完成按完成日归位）。
+fn render_calendar(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let today = state.today();
+    let anchor = state.calendar_month().unwrap_or(today);
+    let Some(first) = CalendarDate::new(anchor.year(), anchor.month(), 1) else {
+        return main_empty_state(state, cx);
+    };
+    let grid_start = first.start_of_week();
+    let tasks = state.tasks();
+
+    let mut grid = v_flex().w_full().flex_none();
+    for row in 0..(CALENDAR_CELLS / 7) {
+        let mut line = div().flex().flex_row().items_stretch().w_full().flex_none();
+        for column in 0..7 {
+            let day = grid_start.add_days(row * 7 + column);
+            line = line.child(calendar_cell(day, anchor, today, tasks, view, cx));
+        }
+        grid = grid.child(line);
+    }
+
+    v_flex()
+        .size_full()
+        .min_h_0()
+        .min_w_0()
+        .child(calendar_header(anchor, view, cx))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .p(tokens.spacing.sm)
+                .child(
+                    v_flex()
+                        .w_full()
+                        .flex_1()
+                        .min_h_0()
+                        .rounded(theme.components().card_radius)
+                        .border(extended.stroke.thin)
+                        .border_color(extended.colors.hairline)
+                        .bg(tokens.colors.surface)
+                        .overflow_hidden()
+                        .child(weekday_row(cx))
+                        .child(grid),
+                ),
+        )
+        .into_any_element()
+}
+
+/// 日历工具条：翻月 + 回到今天 + 月份标题 + 口径说明。
+fn calendar_header(anchor: CalendarDate, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let icon_size = extended.icon.sm;
+    let month_label = SharedString::from(trf(
+        cx,
+        "{} 年 {} 月",
+        &[&anchor.year().to_string(), &anchor.month().to_string()],
+    ));
+
+    let step = |id: &'static str, label: &'static str, icon: DuckIcon, delta: i32, cx: &App| {
+        let view = view.clone();
+        icon_button(
+            id,
+            label,
+            Icon::new(icon).size(icon_size),
+            ButtonVariant::Ghost,
+            cx,
+        )
+        .on_click(move |_, _, cx| {
+            let _ = view.update(cx, |page, cx| page.step_calendar_month(Some(delta), cx));
+        })
+    };
+
+    h_flex()
+        .flex_none()
+        .w_full()
+        .gap(tokens.spacing.xs)
+        .px(tokens.spacing.sm)
+        .py(tokens.spacing.xs)
+        .border_b(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .child(step(
+            "projects-calendar-prev",
+            tr(cx, "上个月"),
+            DuckIcon::ChevronLeft,
+            -1,
+            cx,
+        ))
+        .child(step(
+            "projects-calendar-next",
+            tr(cx, "下个月"),
+            DuckIcon::ChevronRight,
+            1,
+            cx,
+        ))
+        .child({
+            let view = view.clone();
+            button(
+                "projects-calendar-today",
+                tr(cx, "今天"),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .on_click(move |_, _, cx| {
+                let _ = view.update(cx, |page, cx| page.step_calendar_month(None, cx));
+            })
+        })
+        .child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.sm.size)
+                .line_height(tokens.typography.sm.line_height)
+                .text_color(tokens.colors.foreground)
+                .child(month_label),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(tr(
+                    cx,
+                    "按截止日归位 · 已完成按完成日归位 · 无日期任务不显示",
+                ))),
+        )
+        .child(div().flex_1().min_w_0())
+        .into_any_element()
+}
+
+/// 星期行（周一起，与内核的 [`Weekday`] 同序）。
+fn weekday_row(cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let labels = ["一", "二", "三", "四", "五", "六", "日"];
+    div()
+        .flex()
+        .flex_row()
+        .w_full()
+        .flex_none()
+        .border_b(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .children(labels.iter().enumerate().map(|(index, label)| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .py(tokens.spacing.xxs)
+                .flex()
+                .justify_center()
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(if index >= 5 {
+                    extended.colors.text_tertiary
+                } else {
+                    tokens.colors.muted_foreground
+                })
+                .child(SharedString::from(*label))
+        }))
+        .into_any_element()
+}
+
+/// 一个日历格：日号 + 最多两条任务 + 「+N 更多」。
+fn calendar_cell(
+    day: CalendarDate,
+    anchor: CalendarDate,
+    today: CalendarDate,
+    tasks: &[Task],
+    view: &WeakEntity<ProjectsPage>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+
+    let mut items: Vec<&Task> = tasks
+        .iter()
+        .filter(|task| calendar_day(task) == Some(day))
+        .collect();
+    items.sort_by_key(|task| task.priority.as_i64());
+
+    let other_month = day.month() != anchor.month();
+    let is_today = day == today;
+
+    let mut cell = v_flex()
+        .id(SharedString::from(format!(
+            "projects-calendar-{}",
+            day.to_iso()
+        )))
+        .flex_1()
+        .min_w_0()
+        .h(px(CALENDAR_CELL_HEIGHT))
+        .gap(tokens.spacing.xxs)
+        .p(tokens.spacing.xxs)
+        .border_r(extended.stroke.thin)
+        .border_b(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .overflow_hidden();
+
+    // 日号：今天加强调色圆底，跨月的日子淡化。
+    let day_number = div()
+        .flex_none()
+        .size(tokens.spacing.lg)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .text_size(tokens.typography.xs.size)
+        .line_height(tokens.typography.xs.line_height)
+        .text_color(if is_today {
+            tokens.colors.primary_foreground
+        } else if other_month {
+            extended.colors.text_tertiary
+        } else {
+            tokens.colors.foreground
+        })
+        .when(is_today, |this| this.bg(tokens.colors.primary))
+        .child(SharedString::from(day.day().to_string()));
+
+    let mut head = h_flex()
+        .flex_none()
+        .w_full()
+        .gap(tokens.spacing.xxs)
+        .child(day_number);
+    if !items.is_empty() {
+        head = head.child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(items.len().to_string())),
+        );
+    }
+    cell = cell.child(head);
+
+    for task in items.iter().take(2) {
+        let id = task.id;
+        let view = view.clone();
+        cell = cell.child(
+            h_flex()
+                .id(SharedString::from(format!("projects-calendar-task-{id}")))
+                .flex_none()
+                .w_full()
+                .min_w_0()
+                .gap(tokens.spacing.xxs)
+                .px(tokens.spacing.xxs)
+                .rounded(tokens.spacing.xxs)
+                .cursor_pointer()
+                .hover(move |style| style.bg(extended.colors.hover_tint))
+                .role(Role::Button)
+                .aria_label(SharedString::from(task.title.clone()))
+                .child(priority_dot(task.priority, cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_size(tokens.typography.xs.size)
+                        .line_height(tokens.typography.xs.line_height)
+                        .text_color(if task.status == TaskStatus::Done {
+                            tokens.colors.muted_foreground
+                        } else {
+                            tokens.colors.foreground
+                        })
+                        .child(SharedString::from(task.title.clone())),
+                )
+                .on_click(move |_, _, cx| {
+                    let _ = view.update(cx, |page, cx| page.select_task(Some(id), cx));
+                }),
+        );
+    }
+    if items.len() > 2 {
+        cell = cell.child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(trf(
+                    cx,
+                    "+{} 更多",
+                    &[&(items.len() - 2).to_string()],
+                ))),
+        );
+    }
+
+    cell.when(other_month, |this| this.opacity(extended.opacity.muted))
+        .into_any_element()
+}
+
+/// 时间线视图：近 4 周，一行一个任务（有开始或截止日期的才排得上）。
+///
+/// 只画 16 行（原型同口径）：时间线是「扫一眼排期」，不是全量清单；要全量去列表。
+fn render_timeline(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let today = state.today();
+    // 窗口从「本周一往前一周」开始，正好把过去一周与未来三周都罩进来。
+    let window_start = today.start_of_week().add_days(-7);
+
+    let rows: Vec<&Task> = state
+        .tasks()
+        .iter()
+        .filter(|task| task.start_date.is_some() || task.due_date.is_some())
+        .take(16)
+        .collect();
+
+    let mut body = v_flex().w_full().flex_none();
+    if rows.is_empty() {
+        body = body.child(
+            div()
+                .w_full()
+                .p(tokens.spacing.lg)
+                .text_size(tokens.typography.sm.size)
+                .line_height(tokens.typography.sm.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(tr(
+                    cx,
+                    "没有带日期的任务 —— 时间线只展示有开始或截止日期的任务。",
+                ))),
+        );
+    } else {
+        for task in rows {
+            body = body.child(timeline_row(task, window_start, today, view, cx));
+        }
+    }
+
+    v_flex()
+        .size_full()
+        .min_h_0()
+        .min_w_0()
+        .child(timeline_header(window_start, today, cx))
+        .child(
+            div()
+                .id("projects-timeline")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_y_scroll()
+                .p(tokens.spacing.sm)
+                .child(
+                    v_flex()
+                        .w_full()
+                        .rounded(theme.components().card_radius)
+                        .border(extended.stroke.thin)
+                        .border_color(extended.colors.hairline)
+                        .bg(tokens.colors.surface)
+                        .overflow_hidden()
+                        .child(body),
+                ),
+        )
+        .into_any_element()
+}
+
+/// 时间线的刻度头：左侧留白 + 28 天刻度（只标周一，否则糊成一片）。
+fn timeline_header(window_start: CalendarDate, today: CalendarDate, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+
+    h_flex()
+        .flex_none()
+        .w_full()
+        .gap(tokens.spacing.sm)
+        .px(tokens.spacing.sm)
+        .py(tokens.spacing.xs)
+        .border_b(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .child(
+            div()
+                .flex_none()
+                .w(px(TIMELINE_LABEL_WIDTH))
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(tr(cx, "任务 · 近 4 周"))),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .children((0..TIMELINE_DAYS).map(|offset| {
+                    let day = window_start.add_days(offset);
+                    let monday = day.weekday() == Weekday::Monday;
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .justify_center()
+                        .text_size(tokens.typography.xs.size)
+                        .line_height(tokens.typography.xs.line_height)
+                        .text_color(if day == today {
+                            tokens.colors.primary
+                        } else if day.weekday().is_weekend() {
+                            extended.colors.text_tertiary
+                        } else {
+                            tokens.colors.muted_foreground
+                        })
+                        .child(if monday {
+                            SharedString::from(trf(
+                                cx,
+                                "{}/{}",
+                                &[&day.month().to_string(), &day.day().to_string()],
+                            ))
+                        } else {
+                            SharedString::default()
+                        })
+                })),
+        )
+        .into_any_element()
+}
+
+/// 时间线一行：任务名 + 起止条（只有截止日的画一个里程碑方块）。
+fn timeline_row(
+    task: &Task,
+    window_start: CalendarDate,
+    today: CalendarDate,
+    view: &WeakEntity<ProjectsPage>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let id = task.id;
+
+    let start = task.start_date.unwrap_or(today);
+    let end = task.due_date.unwrap_or(start);
+    let i0 = start.days_since_epoch() - window_start.days_since_epoch();
+    let i1 = end.days_since_epoch() - window_start.days_since_epoch();
+
+    // 颜色：已完成 → 成功色，逾期 → 危险色，受阻 → 警告色，其余 → 强调色。
+    let tone = if task.status == TaskStatus::Done {
+        extended.colors.success
+    } else if task.is_overdue(today) {
+        tokens.colors.destructive
+    } else if task.status == TaskStatus::Blocked {
+        extended.colors.warning
+    } else {
+        tokens.colors.primary
+    };
+
+    let track = {
+        let mut track = div()
+            .flex_1()
+            .min_w_0()
+            .h(px(TIMELINE_ROW_HEIGHT))
+            .relative()
+            .overflow_hidden();
+
+        // 底纹：周末一个浅色块，让「周」在横向可数。
+        let mut backdrop = div().flex().flex_row().size_full().absolute();
+        for offset in 0..TIMELINE_DAYS {
+            let weekend = window_start.add_days(offset).weekday().is_weekend();
+            backdrop = backdrop.child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .when(weekend, |this| this.bg(extended.colors.hover_tint)),
+            );
+        }
+        track = track.child(backdrop);
+
+        let has_span = task.start_date.is_some()
+            && task.due_date.is_some()
+            && task.due_date != task.start_date;
+        if has_span {
+            // 有起止：横条。左缘按起始日、宽度按跨度；两端都夹进窗口内。
+            let clipped_start = i0.max(0);
+            let clipped_end = i1.min(TIMELINE_DAYS - 1);
+            let left = clipped_start as f32 / TIMELINE_DAYS as f32;
+            let span = (clipped_end - clipped_start + 1).max(1) as f32;
+            let width = (span / TIMELINE_DAYS as f32).max(0.032);
+            track = track.child(
+                div()
+                    .absolute()
+                    .left(relative(left))
+                    .top(px(6.))
+                    .w(relative(width))
+                    .h(px(TIMELINE_ROW_HEIGHT - 12.))
+                    .rounded_full()
+                    .bg(tone)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .text_size(tokens.typography.xs.size)
+                    .line_height(tokens.typography.xs.line_height)
+                    .text_color(tokens.colors.primary_foreground)
+                    .child(if span >= 3. {
+                        SharedString::from(trf(cx, "{}%", &[&task.progress.to_string()]))
+                    } else {
+                        SharedString::default()
+                    }),
+            );
+        } else if (0..TIMELINE_DAYS).contains(&i1) {
+            // 只有截止日：一个里程碑方块，落在那一天的中线上。
+            let left = (i1 as f32 + 0.5) / TIMELINE_DAYS as f32;
+            track = track.child(
+                div()
+                    .absolute()
+                    .left(relative(left))
+                    .top(px(TIMELINE_ROW_HEIGHT / 2. - 4.))
+                    .size(px(8.))
+                    .rounded(px(2.))
+                    .bg(tone),
+            );
+        }
+
+        // 今天那条竖线（窗口外面就不画）。
+        let today_left = (today.days_since_epoch() - window_start.days_since_epoch()) as f32 + 0.5;
+        if (0. ..TIMELINE_DAYS as f32).contains(&today_left) {
+            track = track.child(
+                div()
+                    .absolute()
+                    .left(relative(today_left / TIMELINE_DAYS as f32))
+                    .top_0()
+                    .h_full()
+                    .w(px(1.))
+                    .bg(tokens.colors.destructive),
+            );
+        }
+        track
+    };
+
+    h_flex()
+        .id(SharedString::from(format!("projects-timeline-row-{id}")))
+        .flex_none()
+        .w_full()
+        .h(px(TIMELINE_ROW_HEIGHT))
+        .gap(tokens.spacing.sm)
+        .px(tokens.spacing.sm)
+        .border_b(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .cursor_pointer()
+        .role(Role::Button)
+        .aria_label(SharedString::from(task.title.clone()))
+        .on_click({
+            let view = view.clone();
+            move |_, _, cx| {
+                let _ = view.update(cx, |page, cx| page.select_task(Some(id), cx));
+            }
+        })
+        .child(
+            h_flex()
+                .flex_none()
+                .w(px(TIMELINE_LABEL_WIDTH))
+                .min_w_0()
+                .gap(tokens.spacing.xs)
+                .child(priority_dot(task.priority, cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_size(tokens.typography.sm.size)
+                        .line_height(tokens.typography.sm.line_height)
+                        .text_color(tokens.colors.foreground)
+                        .child(SharedString::from(task.title.clone())),
+                ),
+        )
+        .child(track)
+        .into_any_element()
+}
+
+/// 报表视图：KPI + 近 7 天完成趋势 + 按项目分布 + 逾期清单。
+///
+/// 数字全部**现算**（`state.tasks()` 一次遍历），不额外落统计表 —— 统计表要跟着
+/// 每一次写维护，早晚会有一次忘掉，然后就出现「报表和看板对不上」。
+/// 口径与看板一致：报的是**当前范围**（状态栏那条「范围：…」）里的事。
+fn render_report(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let today = state.today();
+    let tasks = state.tasks();
+
+    let count = |status: TaskStatus| tasks.iter().filter(|task| task.status == status).count();
+    let open: Vec<&Task> = tasks
+        .iter()
+        .filter(|task| !task.status.is_settled())
+        .collect();
+    let avg_progress = if open.is_empty() {
+        0
+    } else {
+        open.iter()
+            .map(|task| u32::from(task.progress))
+            .sum::<u32>()
+            / open.len() as u32
+    };
+    let mut overdue: Vec<&Task> = tasks.iter().filter(|task| task.is_overdue(today)).collect();
+    overdue.sort_by_key(|task| task.due_date.map_or(0, CalendarDate::days_since_epoch));
+    let max_overdue = overdue
+        .iter()
+        .filter_map(|task| task.due_date)
+        .map(|due| today.days_until(due).unsigned_abs())
+        .max()
+        .unwrap_or(0);
+
+    let kpis = h_flex()
+        .flex_none()
+        .w_full()
+        .gap(tokens.spacing.sm)
+        .child(report_kpi(
+            "projects-kpi-done",
+            DuckIcon::CircleCheck,
+            tr(cx, "已完成"),
+            SharedString::from(count(TaskStatus::Done).to_string()),
+            tokens.colors.foreground,
+            SharedString::from(trf(
+                cx,
+                "近 7 天完成 {} 个",
+                &[&completed_within(tasks, today, 7).to_string()],
+            )),
+            cx,
+        ))
+        .child(report_kpi(
+            "projects-kpi-doing",
+            DuckIcon::Play,
+            tr(cx, "进行中"),
+            SharedString::from(count(TaskStatus::Doing).to_string()),
+            tokens.colors.foreground,
+            SharedString::from(doing_note(count(TaskStatus::Doing) as u32, cx)),
+            cx,
+        ))
+        .child(report_kpi(
+            "projects-kpi-blocked",
+            DuckIcon::Pause,
+            tr(cx, "阻塞中"),
+            SharedString::from(count(TaskStatus::Blocked).to_string()),
+            extended.colors.warning,
+            SharedString::from(tr(cx, "均需外部输入才能推进")),
+            cx,
+        ))
+        .child(report_kpi(
+            "projects-kpi-overdue",
+            DuckIcon::TriangleAlert,
+            tr(cx, "逾期"),
+            SharedString::from(overdue.len().to_string()),
+            tokens.colors.destructive,
+            SharedString::from(trf(cx, "最久逾期 {} 天", &[&max_overdue.to_string()])),
+            cx,
+        ));
+
+    // 近 7 天完成趋势：一天一根柱，柱高按当周最大值归一。
+    let series: Vec<(CalendarDate, usize)> = (0..7)
+        .rev()
+        .map(|back| {
+            let day = today.add_days(-back);
+            let done = tasks
+                .iter()
+                .filter(|task| {
+                    task.status == TaskStatus::Done
+                        && task.completed_at.map(local_date) == Some(day)
+                })
+                .count();
+            (day, done)
+        })
+        .collect();
+    let peak = series
+        .iter()
+        .map(|(_, done)| *done)
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let mut bars = h_flex()
+        .flex_none()
+        .w_full()
+        .items_end()
+        .gap(tokens.spacing.xs)
+        .h(px(TREND_CHART_HEIGHT));
+    for (day, done) in &series {
+        let ratio = *done as f32 / peak as f32;
+        bars = bars.child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .justify_end()
+                .gap(tokens.spacing.xxs)
+                .child(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .text_size(tokens.typography.xs.size)
+                        .line_height(tokens.typography.xs.line_height)
+                        .text_color(tokens.colors.muted_foreground)
+                        .child(SharedString::from(if *done == 0 {
+                            String::new()
+                        } else {
+                            done.to_string()
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .h(px((ratio * (TREND_CHART_HEIGHT - 34.)).max(4.)))
+                        .rounded_t(tokens.spacing.xxs)
+                        .bg(tokens.colors.primary),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .text_size(tokens.typography.xs.size)
+                        .line_height(tokens.typography.xs.line_height)
+                        .text_color(tokens.colors.muted_foreground)
+                        .child(SharedString::from(trf(
+                            cx,
+                            "{}/{}",
+                            &[&day.month().to_string(), &day.day().to_string()],
+                        ))),
+                ),
+        );
+    }
+
+    // 按项目分布：一行一个项目，进度条按「完成 / 总数」。
+    let mut distribution = v_flex().w_full().flex_none().gap(tokens.spacing.xs);
+    for project in state.projects() {
+        let scope = state.project_counts(project.id);
+        distribution = distribution.child(project_bar(
+            SharedString::from(project.name.clone()),
+            color_from_hex(&project.color).unwrap_or(tokens.colors.muted_foreground),
+            scope.done,
+            scope.total,
+            cx,
+        ));
+    }
+    let inbox: Vec<&Task> = tasks
+        .iter()
+        .filter(|task| task.project_id.is_none())
+        .collect();
+    distribution = distribution.child(project_bar(
+        SharedString::from(tr(cx, "未归入项目")),
+        tokens.colors.muted_foreground,
+        inbox
+            .iter()
+            .filter(|task| task.status == TaskStatus::Done)
+            .count() as u32,
+        inbox.len() as u32,
+        cx,
+    ));
+
+    // 逾期清单。
+    let mut overdue_list = v_flex().w_full().flex_none().gap(tokens.spacing.xxs);
+    if overdue.is_empty() {
+        overdue_list = overdue_list.child(
+            div()
+                .w_full()
+                .p(tokens.spacing.sm)
+                .text_size(tokens.typography.sm.size)
+                .line_height(tokens.typography.sm.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(tr(cx, "当前没有逾期任务。"))),
+        );
+    } else {
+        for task in &overdue {
+            overdue_list = overdue_list.child(report_overdue_row(task, today, state, view, cx));
+        }
+    }
+
+    div()
+        .id("projects-report")
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .w_full()
+        .overflow_y_scroll()
+        .p(tokens.spacing.sm)
+        .child(
+            v_flex()
+                .w_full()
+                .gap(tokens.spacing.sm)
+                .child(kpis)
+                .child(report_panel(
+                    tr(cx, "近 7 天完成趋势"),
+                    tr(cx, "口径：按完成日计"),
+                    bars.into_any_element(),
+                    cx,
+                ))
+                .child(report_panel(
+                    tr(cx, "按项目分布"),
+                    tr(cx, "完成 / 总数"),
+                    v_flex()
+                        .w_full()
+                        .gap(tokens.spacing.sm)
+                        .child(distribution)
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(tokens.typography.xs.size)
+                                .line_height(tokens.typography.xs.line_height)
+                                .text_color(tokens.colors.muted_foreground)
+                                .child(SharedString::from(trf(
+                                    cx,
+                                    "平均进度（未完成项）{}%",
+                                    &[&avg_progress.to_string()],
+                                ))),
+                        )
+                        .into_any_element(),
+                    cx,
+                ))
+                .child(report_panel(
+                    tr(cx, "逾期清单"),
+                    trf(cx, "{} 项", &[&overdue.len().to_string()]),
+                    overdue_list.into_any_element(),
+                    cx,
+                )),
+        )
+        .into_any_element()
+}
+
+/// 趋势柱的高度（几何量，留裸值并写明来由：7 根柱 + 上下标签刚好排满一屏的三分之一）。
+const TREND_CHART_HEIGHT: f32 = 150.;
+
+/// 报表的一张 KPI 卡。
+fn report_kpi(
+    id: &'static str,
+    icon: DuckIcon,
+    label: &'static str,
+    value: SharedString,
+    value_color: Hsla,
+    note: SharedString,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    v_flex()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .gap(tokens.spacing.xxs)
+        .p(tokens.spacing.sm)
+        .rounded(theme.components().card_radius)
+        .border(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .bg(tokens.colors.surface)
+        .child(
+            h_flex()
+                .flex_none()
+                .gap(tokens.spacing.xs)
+                .text_color(tokens.colors.muted_foreground)
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .child(Icon::new(icon).size(tokens.typography.xs.size))
+                .child(SharedString::from(label)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xl.size)
+                .line_height(tokens.typography.xl.line_height)
+                .text_color(value_color)
+                .child(value),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(note),
+        )
+        .into_any_element()
+}
+
+/// 「进行中」那句附注（超 WIP 上限就点出来）。
+fn doing_note(doing: u32, cx: &App) -> String {
+    if doing > WIP_LIMIT {
+        trf(
+            cx,
+            "WIP 上限 {} · 超 {} 个",
+            &[&WIP_LIMIT.to_string(), &(doing - WIP_LIMIT).to_string()],
+        )
+    } else {
+        trf(cx, "WIP 上限 {} · 未超限", &[&WIP_LIMIT.to_string()])
+    }
+}
+
+/// 近 `days` 天内完成的任务数（按完成日算）。
+fn completed_within(tasks: &[Task], today: CalendarDate, days: i64) -> usize {
+    let from = today.add_days(-(days - 1));
+    tasks
+        .iter()
+        .filter(|task| task.status == TaskStatus::Done)
+        .filter(|task| {
+            task.completed_at
+                .map(local_date)
+                .is_some_and(|day| day >= from)
+        })
+        .count()
+}
+
+/// 报表的一张面板（标题 + 右上角口径 + 内容）。
+fn report_panel(
+    title: &'static str,
+    hint: impl Into<SharedString>,
+    body: AnyElement,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let hint = hint.into();
+    v_flex()
+        .w_full()
+        .gap(tokens.spacing.sm)
+        .p(tokens.spacing.sm)
+        .rounded(theme.components().card_radius)
+        .border(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .bg(tokens.colors.surface)
+        .child(
+            h_flex()
+                .flex_none()
+                .w_full()
+                .justify_between()
+                .child(caption_heading(title, cx))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(tokens.typography.xs.size)
+                        .line_height(tokens.typography.xs.line_height)
+                        .text_color(tokens.colors.muted_foreground)
+                        .child(hint),
+                ),
+        )
+        .child(body)
+        .into_any_element()
+}
+
+/// 按项目分布的横向进度条（`完成 / 总数`）。
+fn project_bar(name: SharedString, color: Hsla, done: u32, total: u32, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let ratio = if total == 0 {
+        0.
+    } else {
+        done as f32 / total as f32
+    };
+    h_flex()
+        .flex_none()
+        .w_full()
+        .gap(tokens.spacing.sm)
+        .child(
+            h_flex()
+                .flex_none()
+                .w(px(REPORT_NAME_WIDTH))
+                .min_w_0()
+                .gap(tokens.spacing.xs)
+                .child(
+                    div()
+                        .flex_none()
+                        .size(tokens.spacing.xs)
+                        .rounded_full()
+                        .bg(color),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_size(tokens.typography.sm.size)
+                        .line_height(tokens.typography.sm.line_height)
+                        .text_color(tokens.colors.foreground)
+                        .child(name),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(tokens.spacing.xs)
+                .rounded_full()
+                .bg(theme.extended().colors.hairline)
+                .overflow_hidden()
+                .child(div().h_full().w(relative(ratio)).bg(color)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(format!("{done} / {total}"))),
+        )
+        .into_any_element()
+}
+
+/// 按项目分布里项目名的宽度（几何量：容得下 8 个中文字符再省略）。
+const REPORT_NAME_WIDTH: f32 = 160.;
+
+/// 逾期清单里的一行。
+fn report_overdue_row(
+    task: &Task,
+    today: CalendarDate,
+    state: &ProjectsState,
+    view: &WeakEntity<ProjectsPage>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let id = task.id;
+    let days = task
+        .due_date
+        .map_or(0, |due| today.days_until(due).unsigned_abs());
+    let project_color = task
+        .project_id
+        .and_then(|project_id| state.projects().iter().find(|p| p.id == project_id))
+        .and_then(|project| color_from_hex(&project.color))
+        .unwrap_or(tokens.colors.muted_foreground);
+
+    h_flex()
+        .id(SharedString::from(format!("projects-overdue-{id}")))
+        .flex_none()
+        .w_full()
+        .gap(tokens.spacing.xs)
+        .px(tokens.spacing.xs)
+        .py(tokens.spacing.xxs)
+        .rounded(tokens.spacing.xxs)
+        .hover(move |style| style.bg(extended.colors.hover_tint))
+        .role(Role::Button)
+        .aria_label(SharedString::from(task.title.clone()))
+        .cursor_pointer()
+        .child(priority_dot(task.priority, cx))
+        .child(
+            div()
+                .flex_none()
+                .size(tokens.spacing.xs)
+                .rounded_full()
+                .bg(project_color),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .text_size(tokens.typography.sm.size)
+                .line_height(tokens.typography.sm.line_height)
+                .text_color(tokens.colors.foreground)
+                .child(SharedString::from(task.title.clone())),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.destructive)
+                .child(SharedString::from(trf(
+                    cx,
+                    "逾期 {} 天",
+                    &[&days.to_string()],
+                ))),
+        )
+        .on_click({
+            let view = view.clone();
+            move |_, _, cx| {
+                let _ = view.update(cx, |page, cx| page.select_task(Some(id), cx));
+            }
+        })
+        .into_any_element()
+}
+
+/// 工作日志视图：左清单 + 右正文，三档 tab。
+fn render_log(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let kind = state.log_kind();
+    let rows = state.logs_of_kind(kind);
+    let selected = state.selected_log();
+
+    let mut list = v_flex().w_full().flex_none().gap(tokens.spacing.xxs);
+    if rows.is_empty() {
+        list = list.child(
+            div()
+                .w_full()
+                .p(tokens.spacing.sm)
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(trf(
+                    cx,
+                    "最近 30 天还没有{}。",
+                    &[super::dialogs::log_kind_label(kind, cx)],
+                ))),
+        );
+    } else {
+        for log in &rows {
+            let id = log.id;
+            let active = selected.is_some_and(|current| current.id == id);
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("projects-log-row-{id}")))
+                    .w_full()
+                    .px(tokens.spacing.sm)
+                    .py(tokens.spacing.xs)
+                    .rounded(tokens.spacing.xs)
+                    .cursor_pointer()
+                    .text_size(tokens.typography.sm.size)
+                    .line_height(tokens.typography.sm.line_height)
+                    .text_color(if active {
+                        tokens.colors.primary
+                    } else {
+                        tokens.colors.foreground
+                    })
+                    .when(active, |this| this.bg(extended.colors.hover_tint))
+                    .role(Role::Button)
+                    .aria_label(SharedString::from(log.date.to_iso()))
+                    .hover(move |style| style.bg(extended.colors.hover_tint))
+                    .child(SharedString::from(log.date.to_iso()))
+                    .on_click({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |page, cx| page.select_log(id, cx));
+                        }
+                    }),
+            );
+        }
+    }
+
+    let body = match selected {
+        Some(log) if !log.content_md.trim().is_empty() => div()
+            .id("projects-log-body")
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .text_size(tokens.typography.sm.size)
+            .line_height(tokens.typography.sm.line_height)
+            .text_color(tokens.colors.foreground)
+            .child(SharedString::from(log.content_md.clone()))
+            .into_any_element(),
+        Some(_) => div()
+            .flex_1()
+            .min_w_0()
+            .text_size(tokens.typography.sm.size)
+            .line_height(tokens.typography.sm.line_height)
+            .text_color(tokens.colors.muted_foreground)
+            .child(SharedString::from(tr(
+                cx,
+                "这篇还是空的 —— 点「编辑」写点什么。",
+            )))
+            .into_any_element(),
+        None => div()
+            .flex_1()
+            .min_w_0()
+            .text_size(tokens.typography.sm.size)
+            .line_height(tokens.typography.sm.line_height)
+            .text_color(tokens.colors.muted_foreground)
+            .child(SharedString::from(tr(
+                cx,
+                "左侧选一篇，或点「新建」写下今天的事。",
+            )))
+            .into_any_element(),
+    };
+
+    v_flex()
+        .size_full()
+        .min_h_0()
+        .min_w_0()
+        .child(log_header(kind, selected.map(|log| log.date), view, cx))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .w_full()
+                .flex()
+                .flex_row()
+                .child(
+                    div()
+                        .id("projects-log-list")
+                        .flex_none()
+                        .w(px(LOG_LIST_WIDTH))
+                        .h_full()
+                        .overflow_y_scroll()
+                        .p(tokens.spacing.sm)
+                        .border_r(extended.stroke.thin)
+                        .border_color(extended.colors.hairline)
+                        .child(list),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .p(tokens.spacing.sm)
+                        .child(body),
+                ),
+        )
+        .into_any_element()
+}
+
+/// 工作日志左侧清单的宽度。
+const LOG_LIST_WIDTH: f32 = 200.;
+
+/// 工作日志工具条：三档 tab + 日期 + 右动作。
+fn log_header(
+    kind: LogKind,
+    date: Option<CalendarDate>,
+    view: &WeakEntity<ProjectsPage>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let items: Vec<SegmentItem> = LogKind::ALL
+        .iter()
+        .map(|kind| {
+            SegmentItem::new(SharedString::from(super::dialogs::log_kind_label(
+                *kind, cx,
+            )))
+        })
+        .collect();
+    let selected = LogKind::ALL.iter().position(|k| *k == kind).unwrap_or(0);
+
+    let tabs = segmented_tabs_with_icons(
+        "projects-log-tabs",
+        items,
+        selected,
+        {
+            let view = view.clone();
+            move |index, _window, cx| {
+                let Some(kind) = LogKind::ALL.get(index).copied() else {
+                    return;
+                };
+                let _ = view.update(cx, |page, cx| page.set_log_kind(kind, cx));
+            }
+        },
+        cx,
+    );
+
+    h_flex()
+        .flex_none()
+        .w_full()
+        .gap(tokens.spacing.sm)
+        .px(tokens.spacing.sm)
+        .py(tokens.spacing.xs)
+        .border_b(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .child(tabs)
+        .child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(
+                    date.map_or_else(String::new, |day| day.to_iso()),
+                )),
+        )
+        .child(div().flex_1().min_w_0())
+        .child({
+            let view = view.clone();
+            button(
+                "projects-log-edit",
+                tr(cx, "编辑"),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .on_click(move |_, window, cx| {
+                let _ = view.update(cx, |page, cx| page.open_today_log(window, cx));
+            })
+        })
+        .into_any_element()
 }
 
 /// 右栏。

@@ -47,8 +47,7 @@ pub use mouse::{
 };
 pub use palette::Palette;
 pub use session::{
-    CellSize, SelectionKind, Session, SessionEvent, ShellMark, SpawnOptions, TermLink,
-    prompt_bars,
+    CellSize, SelectionKind, Session, SessionEvent, ShellMark, SpawnOptions, TermLink, prompt_bars,
 };
 
 // ── 渲染层需要的 alacritty 类型（重导出，避免上层再依赖 vendored crate）──────────

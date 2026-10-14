@@ -437,6 +437,12 @@ pub struct Task {
     pub archived_at: Option<i64>,
     /// 归档的级联归属（见 [`ArchiveRoot`]）；未归档时为 `None`。
     pub archived_root: Option<ArchiveRoot>,
+    /// 是否置顶（置顶的卡片在列内排在最前，见 `crate::query` 的 `ORDER BY`）。
+    pub starred: bool,
+    /// 阻塞原因（`status = 'blocked'` 时的说明；空串 = 没填）。
+    pub block_reason: String,
+    /// 备注（「只给自己看的提示」，与面向交付的 `description_md` 分开）。
+    pub note: String,
     /// 标签（派生字段，由查询填充）。
     pub tags: Vec<Tag>,
     /// 子任务进度（派生字段，由查询填充）。
@@ -763,6 +769,9 @@ pub struct NewTask {
     pub(crate) progress: u8,
     pub(crate) estimate_hours: Option<f64>,
     pub(crate) actual_hours: Option<f64>,
+    pub(crate) starred: bool,
+    pub(crate) block_reason: String,
+    pub(crate) note: String,
     pub(crate) tag_ids: Vec<i64>,
     pub(crate) sort_order: Option<i64>,
 }
@@ -785,6 +794,9 @@ impl NewTask {
             progress: 0,
             estimate_hours: None,
             actual_hours: None,
+            starred: false,
+            block_reason: String::new(),
+            note: String::new(),
             tag_ids: Vec::new(),
             sort_order: None,
         }
@@ -862,6 +874,27 @@ impl NewTask {
         self
     }
 
+    /// 置顶。
+    #[must_use]
+    pub const fn starred(mut self, starred: bool) -> Self {
+        self.starred = starred;
+        self
+    }
+
+    /// 阻塞原因（空串 = 清空）。
+    #[must_use]
+    pub fn block_reason(mut self, reason: impl Into<String>) -> Self {
+        self.block_reason = reason.into();
+        self
+    }
+
+    /// 备注。
+    #[must_use]
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = note.into();
+        self
+    }
+
     /// 标签 id 列表（不存在的 id 会被忽略）。
     #[must_use]
     pub fn tags(mut self, tag_ids: impl IntoIterator<Item = i64>) -> Self {
@@ -893,6 +926,9 @@ pub struct TaskPatch {
     pub(crate) progress: Option<u8>,
     pub(crate) estimate_hours: Option<Option<f64>>,
     pub(crate) actual_hours: Option<Option<f64>>,
+    pub(crate) starred: Option<bool>,
+    pub(crate) block_reason: Option<String>,
+    pub(crate) note: Option<String>,
     pub(crate) sort_order: Option<i64>,
     pub(crate) tag_ids: Option<Vec<i64>>,
 }
@@ -994,6 +1030,27 @@ impl TaskPatch {
     pub const fn hours(mut self, estimate: Option<f64>, actual: Option<f64>) -> Self {
         self.estimate_hours = Some(estimate);
         self.actual_hours = Some(actual);
+        self
+    }
+
+    /// 改置顶。
+    #[must_use]
+    pub const fn starred(mut self, starred: bool) -> Self {
+        self.starred = Some(starred);
+        self
+    }
+
+    /// 改阻塞原因（空串 = 清空）。
+    #[must_use]
+    pub fn block_reason(mut self, reason: impl Into<String>) -> Self {
+        self.block_reason = Some(reason.into());
+        self
+    }
+
+    /// 改备注（空串 = 清空）。
+    #[must_use]
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
         self
     }
 

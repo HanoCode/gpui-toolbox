@@ -16,8 +16,9 @@ use std::collections::HashMap;
 
 use duck_project::{
     ArchiveCounts, ArchivedProject, ArchivedTask, BoardColumn, BoardStats, CalendarDate,
-    ClearScope, DueFilter, Group, Project, ProjectStore, Tag, Task, TaskCounts, TaskPatch,
-    TaskQuery, TaskSort, TaskStatus, now_seconds,
+    ClearScope, ColumnSpec, DueFilter, Group, LogKind, Milestone, NewMilestone, Project,
+    ProjectPatch, ProjectStore, Tag, Task, TaskCounts, TaskPatch, TaskQuery, TaskSort, TaskStatus,
+    WorkLog, now_seconds,
 };
 use gpui::App;
 
@@ -161,8 +162,12 @@ pub(crate) struct UndoSlot {
 /// 时刻来自内核（Unix 秒），时区偏移来自平台层 —— 两步都在这里合起来，内核与
 /// 平台层各自保持单一职责。
 pub(crate) fn local_today() -> CalendarDate {
-    let now = now_seconds();
-    CalendarDate::from_local_unix_seconds(now, duck_platform::local_utc_offset_seconds(now))
+    local_date(now_seconds())
+}
+
+/// 把一个 Unix 秒换算成**用户眼中**的日历日（日历视图按完成日归位时用）。
+pub(crate) fn local_date(seconds: i64) -> CalendarDate {
+    CalendarDate::from_local_unix_seconds(seconds, duck_platform::local_utc_offset_seconds(seconds))
 }
 
 /// 项目管理页的全部状态。
@@ -210,6 +215,14 @@ pub(crate) struct ProjectsState {
     search: String,
     /// 主区显示哪一块（看板 / 列表 / 归档中心）。
     view: ViewMode,
+    /// 日历视图锚定的月份（取锚定日所在月；`None` = 本地今天所在月）。
+    calendar_month: Option<CalendarDate>,
+    /// 工作日志视图最近一段的日志（读口径见 [`Self::reload_logs`]）。
+    logs: Vec<WorkLog>,
+    /// 工作日志视图当前看的是哪一档（日报 / 周报 / 周计划）。
+    log_kind: LogKind,
+    /// 工作日志视图选中的那一篇（`None` = 落该档最近的一篇）。
+    log_selected: Option<i64>,
     /// 归档中心的搜索词（空串 = 不筛）。
     ///
     /// 与左栏的项目过滤框**不是**同一份：左栏那个筛项目，归档中心的这个筛档案，
@@ -258,6 +271,10 @@ impl ProjectsState {
             sidebar: SidebarCounts::default(),
             search: String::new(),
             view: prefs.view_mode(),
+            calendar_month: None,
+            logs: Vec::new(),
+            log_kind: LogKind::Daily,
+            log_selected: None,
             archive_search: String::new(),
             archive_tasks: Vec::new(),
             archive_projects: Vec::new(),
@@ -326,6 +343,7 @@ impl ProjectsState {
         self.reload_sidebar_counts();
         self.reload_tasks();
         self.reload_archive();
+        self.reload_logs();
     }
 
     /// 读左栏那两处计数（底部三格 + 智能列表四条）。
@@ -706,6 +724,23 @@ impl ProjectsState {
             self.archive_selected = None;
         }
         self.reload_archive();
+        self.reload_logs();
+    }
+
+    /// 读工作日志（只在日志视图可见时读；口径 = 最近 30 天，含今天）。
+    fn reload_logs(&mut self) {
+        if self.view != ViewMode::Log {
+            return;
+        }
+        let Some(store) = &self.store else {
+            return;
+        };
+        let to = self.today;
+        let from = to.add_days(-29);
+        match store.list_logs_between(from, to) {
+            Ok(logs) => self.logs = logs,
+            Err(err) => self.fail(err),
+        }
     }
 
     /// 改归档中心的搜索词。
@@ -756,6 +791,9 @@ impl ProjectsState {
                     .collect();
                 self.archive_selected = step(&order, self.archive_selected, delta);
             }
+            // 日历 / 时间线 / 报表 / 日志四个视图没有「视觉顺序的选中」概念：
+            // 它们的主体是网格 / 分段 / 统计卡，不是一张张可选中的卡片。
+            ViewMode::Calendar | ViewMode::Timeline | ViewMode::Report | ViewMode::Log => {}
         }
     }
 
@@ -1062,6 +1100,353 @@ impl ProjectsState {
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // S5：完整表单 / 置顶 / 复制 / 里程碑 / 看板列 / 标签管理 / 工作日志
+    // ------------------------------------------------------------------
+
+    /// 用完整表单的字段建项目（项目编辑弹窗「创建」）。
+    ///
+    /// 与 [`Self::create_project`]（只给名字、自动去重的老路径）并存：后者是左栏
+    /// 「点一下就多一个项目」的快捷入口，这里是带名字 / 描述 / 色板 / 日期的完整表单。
+    pub(crate) fn create_project_full(&mut self, new: duck_project::NewProject) -> Option<i64> {
+        let store = self.store.as_ref()?;
+        match store.create_project(new) {
+            Ok(id) => {
+                self.reload();
+                self.scope = BoardScope::Project(id);
+                Some(id)
+            }
+            Err(err) => {
+                self.fail(err);
+                None
+            }
+        }
+    }
+
+    /// 用完整表单的字段建任务（编辑弹窗「创建」与快速新建 Spotlight 共用）。
+    pub(crate) fn create_task_full(&mut self, new: duck_project::NewTask) -> Option<i64> {
+        let store = self.store.as_ref()?;
+        match store.create_task(new) {
+            Ok(id) => {
+                self.reload();
+                self.selected = Some(id);
+                Some(id)
+            }
+            Err(err) => {
+                self.fail(err);
+                None
+            }
+        }
+    }
+
+    /// 快速新建（Spotlight）：把自然语言解析结果落成任务。
+    ///
+    /// `#标签` 里**不存在的标签直接创建**（内核 `ensure_tag` 的语义，颜色取默认
+    /// 项目色）；`@项目` 只认名字完全一致（ASCII 不敏感）的项目，认不出就落收集箱
+    /// —— 静默把任务挂到一个猜出来的项目上比落收集箱更危险。
+    pub(crate) fn create_task_from_quick(
+        &mut self,
+        parsed: &super::quickparse::QuickParse,
+        preset_project: Option<i64>,
+    ) -> Option<i64> {
+        let store = self.store.as_ref()?;
+        let project_id = parsed
+            .project
+            .as_ref()
+            .and_then(|name| {
+                self.projects
+                    .iter()
+                    .find(|project| project.name.eq_ignore_ascii_case(name))
+                    .map(|project| project.id)
+            })
+            .or(preset_project);
+        let mut tag_ids = Vec::new();
+        // 内层收口：`store` 是对 `self` 的不可变借用，`self.fail` 是可变借用 ——
+        // 两者不能在同一个循环里交错，先把可能失败的整段跑完再统一处理错误。
+        let ensured: duck_project::Result<Vec<i64>> = (|| {
+            tag_ids.clear();
+            for name in &parsed.tags {
+                tag_ids.push(store.ensure_tag(name, duck_project::DEFAULT_PROJECT_COLOR)?);
+            }
+            Ok(std::mem::take(&mut tag_ids))
+        })();
+        let tag_ids = match ensured {
+            Ok(ids) => ids,
+            Err(err) => {
+                self.fail(err);
+                return None;
+            }
+        };
+        let mut new = duck_project::NewTask::new(parsed.title.clone()).tags(tag_ids);
+        if let Some(project_id) = project_id {
+            new = new.project(project_id);
+        }
+        if let Some(priority) = parsed.priority {
+            new = new.priority(priority);
+        }
+        if parsed.due.is_some() {
+            new = new.dates(None, parsed.due);
+        }
+        if let Some(time) = &parsed.due_time {
+            new = new.due_time(time.clone());
+        }
+        match store.create_task(new) {
+            Ok(id) => {
+                self.reload();
+                self.selected = Some(id);
+                Some(id)
+            }
+            Err(err) => {
+                self.fail(err);
+                None
+            }
+        }
+    }
+
+    /// 置顶 / 取消置顶（卡片星标与右栏头动作共用）。
+    pub(crate) fn set_starred(&mut self, id: i64, starred: bool) {
+        self.patch_task(id, TaskPatch::new().starred(starred))
+            .unwrap_or_else(|err| self.fail(err));
+    }
+
+    /// 复制任务：新建一条字段相同（含标签 / 优先级 / 四象限 / 日期 / 工时 / 进度）
+    /// 的任务，标题加「（副本）」。子任务与里程碑**不**复制（原型同口径：
+    /// `duplicateTask` 只拷贝卡片本身的字段）。
+    pub(crate) fn duplicate_task(&mut self, id: i64) -> duck_project::Result<Option<i64>> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        let Some(source) = store.get_task(id)? else {
+            return Err(duck_project::ProjectError::NotFound("task"));
+        };
+        let mut new = duck_project::NewTask::new(format!("{}（副本）", source.title))
+            .description(source.description_md.clone())
+            .status(TaskStatus::Todo)
+            .priority(source.priority)
+            .quadrant(source.quadrant)
+            .dates(source.start_date, source.due_date)
+            .hours(source.estimate_hours, source.actual_hours)
+            .starred(source.starred)
+            .block_reason(source.block_reason.clone())
+            .note(source.note.clone())
+            .tags(source.tags.iter().map(|tag| tag.id));
+        if let Some(project_id) = source.project_id {
+            new = new.project(project_id);
+        }
+        if source.due_time.is_some() {
+            new = new.due_time(source.due_time.clone().unwrap_or_default());
+        }
+        let created = store.create_task(new)?;
+        self.reload_tasks();
+        Ok(Some(created))
+    }
+
+    /// 给任务添加一个里程碑（详情面板「添加里程碑」）。
+    pub(crate) fn add_milestone(&mut self, new: NewMilestone) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.create_milestone(new)?;
+        self.reload();
+        Ok(())
+    }
+
+    /// 删除一个里程碑。
+    pub(crate) fn remove_milestone(&mut self, id: i64) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.delete_milestone(id)?;
+        self.reload();
+        Ok(())
+    }
+
+    /// 达成 / 取消达成一个里程碑。
+    pub(crate) fn toggle_milestone_reached(
+        &mut self,
+        id: i64,
+        reached: bool,
+    ) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        if reached {
+            store.reach_milestone(id)?;
+        } else {
+            store.unreach_milestone(id)?;
+        }
+        self.reload();
+        Ok(())
+    }
+
+    /// 某个任务的里程碑（详情面板用）。
+    pub(crate) fn task_milestones(&self, task_id: i64) -> Vec<Milestone> {
+        let Some(store) = &self.store else {
+            return Vec::new();
+        };
+        store.list_task_milestones(task_id).unwrap_or_default()
+    }
+
+    /// 整体替换看板列（列设置弹窗的「保存」）。
+    pub(crate) fn replace_columns(&mut self, columns: &[ColumnSpec]) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.replace_columns(columns)?;
+        self.reload();
+        Ok(())
+    }
+
+    /// 新建 / 重命名 / 改色标签；返回新 id（重命名与改色返回 `None`）。
+    pub(crate) fn create_tag(&mut self, name: &str, color: &str) -> duck_project::Result<i64> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        let id = store.create_tag(duck_project::NewTag::new(name).color(color))?;
+        self.reload();
+        Ok(id)
+    }
+
+    pub(crate) fn update_tag(
+        &mut self,
+        id: i64,
+        name: Option<&str>,
+        color: Option<&str>,
+    ) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.update_tag(id, name, color)?;
+        self.reload();
+        Ok(())
+    }
+
+    pub(crate) fn delete_tag(&mut self, id: i64) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.delete_tag(id)?;
+        // 选中的标签刚被删掉，筛选跟着放下（`reload` 里的守卫也会兜一道）。
+        if self.tag == Some(id) {
+            self.tag = None;
+        }
+        self.reload();
+        Ok(())
+    }
+
+    /// 更新项目（项目编辑弹窗「保存」）。
+    pub(crate) fn update_project(
+        &mut self,
+        id: i64,
+        patch: ProjectPatch,
+    ) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.update_project(id, patch)?;
+        self.reload();
+        Ok(())
+    }
+
+    /// 删除项目（项目编辑弹窗的「删除项目」——**不可逆**，调用方先二次确认）。
+    pub(crate) fn delete_project(&mut self, id: i64) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.delete_project(id)?;
+        if self.scope.is_project(id) {
+            self.scope = BoardScope::All;
+        }
+        self.reload();
+        Ok(())
+    }
+
+    /// 日历视图锚定的月份；`None` = 今天所在月。
+    pub(crate) fn calendar_month(&self) -> Option<CalendarDate> {
+        self.calendar_month
+    }
+
+    /// 换日历视图的锚月（前后翻页 / 回到今天）。
+    pub(crate) fn set_calendar_month(&mut self, anchor: Option<CalendarDate>) {
+        self.calendar_month = anchor;
+    }
+
+    /// 工作日志视图最近一段的日志（三种档位都在里面，按档筛是界面的事）。
+    pub(crate) fn logs(&self) -> &[WorkLog] {
+        &self.logs
+    }
+
+    /// 工作日志视图当前档位。
+    pub(crate) const fn log_kind(&self) -> LogKind {
+        self.log_kind
+    }
+
+    /// 换工作日志的档位（日报 / 周报 / 周计划）。
+    ///
+    /// 换档时**放下选中项**：选中态是「某档里的一篇」，跨档沿用会指到一篇不在清单里的
+    /// 日志上（右栏就会空着，看着像坏了）。
+    pub(crate) fn set_log_kind(&mut self, kind: LogKind) {
+        if self.log_kind == kind {
+            return;
+        }
+        self.log_kind = kind;
+        self.log_selected = None;
+    }
+
+    /// 当前档位下的日志，按日期倒序。
+    pub(crate) fn logs_of_kind(&self, kind: LogKind) -> Vec<&WorkLog> {
+        let mut rows: Vec<&WorkLog> = self.logs.iter().filter(|log| log.kind == kind).collect();
+        rows.sort_by(|a, b| b.date.days_since_epoch().cmp(&a.date.days_since_epoch()));
+        rows
+    }
+
+    /// 某天某档的日志。
+    pub(crate) fn log_of(&self, date: CalendarDate, kind: LogKind) -> Option<&WorkLog> {
+        self.logs
+            .iter()
+            .find(|log| log.date == date && log.kind == kind)
+    }
+
+    /// 工作日志视图右侧展开的是哪一篇。
+    ///
+    /// 选中的那篇被删掉（或还没选）时回落到该档最近的一篇 —— 空着右栏会让人以为
+    /// 「日志丢了」，而不是「还没选」。
+    pub(crate) fn selected_log(&self) -> Option<&WorkLog> {
+        let kind = self.log_kind;
+        if let Some(id) = self.log_selected {
+            // ⚠️ 不写 `let` 链：`let_chains` 到 1.88 才稳定，本仓 MSRV 是 1.85。
+            if let Some(log) = self.logs.iter().find(|log| log.id == id) {
+                if log.kind == kind {
+                    return Some(log);
+                }
+            }
+        }
+        self.logs
+            .iter()
+            .filter(|log| log.kind == kind)
+            .max_by_key(|log| log.date.days_since_epoch())
+    }
+
+    /// 选中一篇日志。
+    pub(crate) fn select_log(&mut self, id: i64) {
+        self.log_selected = Some(id);
+    }
+
+    /// 写某天某档的日志（工作日志编辑弹窗「保存」），写完重读日志清单。
+    pub(crate) fn save_log(
+        &mut self,
+        date: CalendarDate,
+        kind: LogKind,
+        content: &str,
+    ) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.upsert_log(date, kind, content, false, &[])?;
+        self.reload_logs();
+        Ok(())
+    }
 }
 
 /// 「内核没打开」时交回去的错误。
@@ -1141,6 +1526,10 @@ mod tests {
             sidebar: SidebarCounts::default(),
             search: String::new(),
             view: ViewMode::Board,
+            calendar_month: None,
+            logs: Vec::new(),
+            log_kind: LogKind::Daily,
+            log_selected: None,
             archive_search: String::new(),
             archive_tasks: Vec::new(),
             archive_projects: Vec::new(),

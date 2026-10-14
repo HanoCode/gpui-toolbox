@@ -20,9 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use duck_platform::OpenRequest;
-use duck_platform::{
-    IpcError, IpcListener, forward_to_running_instance, listen_for_requests,
-};
+use duck_platform::{IpcError, IpcListener, forward_to_running_instance, listen_for_requests};
 
 /// 全局串行化锁：避免 `HOME` 等环境变量在多测试并发时被互相覆盖。
 ///
@@ -102,10 +100,7 @@ fn forward_to_listener_round_trip() {
     let received: Arc<Mutex<Vec<Vec<OpenRequest>>>> = Arc::new(Mutex::new(Vec::new()));
     let received_clone = Arc::clone(&received);
     let _listener = listen_for_requests(move |requests| {
-        received_clone
-            .lock()
-            .expect("not poisoned")
-            .push(requests);
+        received_clone.lock().expect("not poisoned").push(requests);
     })
     .expect("listener should start in the temp dir");
 
@@ -185,5 +180,8 @@ fn listener_drop_runs_cleanly() {
     drop(l);
     // 再起一个：在同一 endpoint 应当成功（上一个已经清掉）。
     let l2 = listen_for_requests(|_| {});
-    assert!(matches!(l2, Ok(_)), "after drop, new listener should bind: {l2:?}");
+    assert!(
+        matches!(l2, Ok(_)),
+        "after drop, new listener should bind: {l2:?}"
+    );
 }

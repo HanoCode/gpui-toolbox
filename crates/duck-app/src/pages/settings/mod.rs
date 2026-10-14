@@ -72,6 +72,7 @@ use gpui_component::{
 use crate::ai::{self, AiSettings};
 use crate::app::{Desktop, WindowKind};
 use crate::diagnostics;
+use crate::hotkey::HotkeySlot;
 use crate::pages::logs::LogView;
 use crate::pages::status_support::{
     NumberConfirm, TextConfirm, format_bytes, open_number_prompt, open_text_prompt,
@@ -452,6 +453,59 @@ pub(super) const KB_POLL_INTERVAL: Duration = Duration::from_millis(120);
 /// 一次误选整个盘会刷出上万条「已写入 N 块」；不设上限就是把内存当垃圾桶。
 pub(super) const KB_LOG_LIMIT: usize = 24;
 
+/// 一个全局热键槽位在设置页里的界面状态。
+///
+/// 收成一个小结构而不是散成六个字段：两个槽位（将来可能更多）要各有一份焦点句柄、
+/// 录入态、开关快照与失焦订阅，散着写迟早漏掉一个（`_blur` 漏了就是「点了别处还在录」）。
+pub(super) struct HotkeyEntry {
+    /// 键帽框的焦点句柄。没有焦点的话按键根本派发不过来。
+    pub(super) focus: FocusHandle,
+    /// 是否正在录入。`true` 时下一次按键被当成新键位。
+    pub(super) recording: bool,
+    /// 开关的快照（构造时从 `kv` 读一次；切换失败时按真实值回摆）。
+    pub(super) enabled: bool,
+    /// 录入控件失焦时退出录入的订阅。**必须留着** —— drop 掉监听就没了。
+    _blur: Subscription,
+}
+
+impl HotkeyEntry {
+    /// 建一个槽位的界面状态：焦点句柄、开关快照、失焦退出录入。
+    ///
+    /// 不做这一步的话，界面会一直停在「按下组合键…」，而按键早就跑到别的控件那里去了。
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<SettingsWindowView>,
+        slot: crate::hotkey::HotkeySlot,
+    ) -> Self {
+        let focus = cx.focus_handle();
+        let blur = cx.on_blur(&focus, window, move |this, _, cx| {
+            let entry = this.hotkey_entry_mut(slot);
+            if entry.recording {
+                entry.recording = false;
+                cx.notify();
+            }
+        });
+        Self {
+            focus,
+            recording: false,
+            enabled: settings::hotkey_enabled(cx, slot),
+            _blur: blur,
+        }
+    }
+}
+
+impl SettingsWindowView {
+    /// 某个热键槽位的录入 / 开关状态。
+    pub(super) fn hotkey_entry(&self, slot: HotkeySlot) -> &HotkeyEntry {
+        &self.hotkeys[slot.index()]
+    }
+
+    /// 同上，可变借用。
+    pub(super) fn hotkey_entry_mut(&mut self, slot: HotkeySlot) -> &mut HotkeyEntry {
+        &mut self.hotkeys[slot.index()]
+    }
+}
+
 pub struct SettingsWindowView {
     pub(super) search: Entity<InputState>,
     /// 当前选中分类的 key。
@@ -496,16 +550,11 @@ pub struct SettingsWindowView {
     /// 日志保留天数（[`crate::pages::logs::RETENTION_CHOICES`] 里的一档，0 = 永久保留）。
     /// 构造时从 `kv` 读一次快照，改档位时同步更新。
     pub(super) log_retention_days: u32,
-    /// 「唤起快捷键」录入控件的焦点句柄（键帽框）。
-    pub(super) hotkey_focus: FocusHandle,
-    /// 是否正在录入快捷键。`true` 时下一次按键被当成新键位。
-    pub(super) hotkey_recording: bool,
-    /// 「唤起快捷键」开关的快照（构造时从 `kv` 读一次；切换失败时按真实值回摆）。
-    pub(super) hotkey_enabled: bool,
+    /// 两个全局热键槽位（命令面板 / 随手看）的录入与开关状态，按
+    /// [`HotkeySlot::index`] 索引。
+    pub(super) hotkeys: [HotkeyEntry; HotkeySlot::ALL.len()],
     /// 「唤起时打开主窗口」开关的快照（构造时从 `kv` 读一次）。
     pub(super) launcher_opens_main_window: bool,
-    /// 录入控件失焦时退出录入的订阅。**必须留着** —— drop 掉监听就没了。
-    pub(super) _hotkey_blur: Subscription,
     #[allow(dead_code)]
     pub(super) _font_subscription: Subscription,
 
@@ -623,15 +672,8 @@ impl SettingsWindowView {
                 }
             },
         );
-        // 快捷键录入框：点到别处就退出录入。不做这一步的话，界面会一直停在
-        // 「按下组合键…」，而按键早就跑到别的控件那里去了。
-        let hotkey_focus = cx.focus_handle();
-        let hotkey_blur = cx.on_blur(&hotkey_focus, window, |this, _, cx| {
-            if this.hotkey_recording {
-                this.hotkey_recording = false;
-                cx.notify();
-            }
-        });
+        // 快捷键录入框：两个槽位各一份（焦点句柄 / 录入态 / 开关快照 / 失焦退出录入）。
+        let hotkeys = HotkeySlot::ALL.map(|slot| HotkeyEntry::new(window, cx, slot));
         // AI 页的四个生成参数控件：初值取当前快照，之后只在「保存」时回写。
         let ai_settings = ai::load_settings(cx);
         let ai_temperature = cx.new(|cx| {
@@ -676,11 +718,8 @@ impl SettingsWindowView {
             logs_summary: (0, 0),
             market_source,
             log_retention_days: crate::pages::logs::retention_days(cx),
-            hotkey_focus,
-            hotkey_recording: false,
-            hotkey_enabled: settings::hotkey_enabled(cx),
+            hotkeys,
             launcher_opens_main_window: settings::launcher_opens_main_window(cx),
-            _hotkey_blur: hotkey_blur,
             _font_subscription: font_subscription,
             // 审计页的筛选默认全空（= 最近一批记录）；带 trace 的跳转由
             // `apply_pending_page` 在渲染前填上。

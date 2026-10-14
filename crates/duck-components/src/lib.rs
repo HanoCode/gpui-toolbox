@@ -25,12 +25,13 @@ pub use dialog::{
 };
 pub use icons::{ComponentAssets, DuckIcon, LOGO_ASSET_PATH};
 pub use kit::{
-    ControlExt, DROPDOWN_MIN_WIDTH, IconControlExt, NavItem, ROW_MIN_PADDING, TITLE_MIN_WIDTH,
-    body_text, caption_heading, caption_number, check_row, detail_title_text, dropdown_select,
-    field_error, field_hint, field_label, field_success, form, form_field, form_gap, form_row,
-    input_with_action, meta_text, nav_list, option_group, option_row, option_row_stacked,
-    segmented_tabs, settings_section, status_button, status_button_content, switch_control,
-    title_text, toolbar_dropdown_button, toolbar_text_dropdown_button,
+    ControlExt, DROPDOWN_MIN_WIDTH, IconControlExt, NavItem, ROW_MIN_PADDING, SegmentItem,
+    TITLE_MIN_WIDTH, body_text, caption_heading, caption_number, check_row, detail_title_text,
+    dropdown_select, field_error, field_hint, field_label, field_success, form, form_field,
+    form_gap, form_row, input_with_action, meta_text, nav_list, option_group, option_row,
+    option_row_stacked, segmented_tabs, segmented_tabs_with_icons, settings_section, status_button,
+    status_button_content, switch_control, title_text, toolbar_dropdown_button,
+    toolbar_text_dropdown_button,
 };
 pub use maillogos::MailLogo;
 pub use motion::{SlidingHighlight, SlidingRowHighlight, StateLayer, color_transition};

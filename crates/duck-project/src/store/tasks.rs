@@ -86,8 +86,9 @@ impl ProjectStore {
         transaction.execute(
             "INSERT INTO tasks(project_id, parent_id, title, description_md, status, priority, \
              quadrant, start_date, due_date, due_time, completed_at, progress, estimate_hours, \
-             actual_hours, sort_order, created_at, updated_at) \
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
+             actual_hours, sort_order, created_at, updated_at, starred, block_reason, note) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16, \
+             ?17, ?18, ?19)",
             rusqlite::params![
                 new.project_id,
                 new.parent_id,
@@ -105,6 +106,9 @@ impl ProjectStore {
                 new.actual_hours,
                 sort_order,
                 now,
+                i64::from(new.starred),
+                new.block_reason,
+                new.note,
             ],
         )?;
         let id = transaction.last_insert_rowid();
@@ -132,6 +136,9 @@ impl ProjectStore {
             progress,
             estimate_hours,
             actual_hours,
+            starred,
+            block_reason,
+            note,
             sort_order,
             tag_ids,
         } = patch;
@@ -185,6 +192,11 @@ impl ProjectStore {
         set.push_optional("actual_hours", actual_hours, |hours| {
             hours.map_or(Value::Null, Value::Real)
         });
+        set.push_optional("starred", starred, |starred| {
+            Value::Integer(i64::from(starred))
+        });
+        set.push_optional("block_reason", block_reason, Value::Text);
+        set.push_optional("note", note, Value::Text);
         set.push_optional("sort_order", sort_order, Value::Integer);
 
         // 状态不走 `push_optional`：它还牵着 `completed_at` 与 `progress`，
@@ -710,6 +722,47 @@ mod tests {
             store.update_task(9_999, TaskPatch::new()),
             Err(ProjectError::NotFound("task"))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn starred_block_reason_and_note_round_trip() -> Result<()> {
+        let store = ProjectStore::open_in_memory()?;
+        let id = store.create_task(
+            NewTask::new("t")
+                .starred(true)
+                .block_reason("等上游开权限")
+                .note("先查日志"),
+        )?;
+        let task = store.get_task(id)?.unwrap();
+        assert!(task.starred);
+        assert_eq!(task.block_reason, "等上游开权限");
+        assert_eq!(task.note, "先查日志");
+
+        // patch 语义：给就改；不给就不碰。空串 = 清空。
+        store.update_task(
+            id,
+            TaskPatch::new().starred(false).block_reason("").note(""),
+        )?;
+        let task = store.get_task(id)?.unwrap();
+        assert!(!task.starred);
+        assert_eq!(task.block_reason, "");
+        assert_eq!(task.note, "");
+        Ok(())
+    }
+
+    #[test]
+    fn starred_tasks_float_to_the_top_of_every_sort() -> Result<()> {
+        let store = ProjectStore::open_in_memory()?;
+        let plain = store.create_task(NewTask::new("plain"))?;
+        let pinned = store.create_task(NewTask::new("pinned").starred(true))?;
+
+        let ids: Vec<i64> = store
+            .list_tasks(&TaskQuery::new().sort(crate::query::TaskSort::TitleAsc))?
+            .into_iter()
+            .map(|task| task.id)
+            .collect();
+        assert_eq!(ids, [pinned, plain], "置顶的排在前面（即使标题序在它后面）");
         Ok(())
     }
 

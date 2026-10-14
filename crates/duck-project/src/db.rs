@@ -151,6 +151,22 @@ const MIGRATIONS: &[&str] = &[
         UNIQUE (date, kind)
     );
     ",
+    // v2：对齐 `docs/projects-mock.html` 原型的三个任务字段。
+    //
+    // - `starred`：置顶。查询层把它排进 `ORDER BY` 首位（见 `crate::query`），
+    //   界面在卡片与详情面板给星标入口。
+    // - `block_reason`：阻塞原因。卡片上的「阻塞」标签 tooltip 与详情面板的
+    //   警示块都读它；`''` = 没填原因（阻塞态本身由 `status = 'blocked'` 表达）。
+    // - `note`：备注（「只给自己看的提示」），与 `description_md`（面向交付的描述）
+    //   分开 —— 原型里是两个输入框，语义不同。
+    //
+    // `ALTER TABLE ADD COLUMN` 的默认值都是常量，直接加列即可；旧行自动落到
+    // 默认值，无需回填。
+    r"
+    ALTER TABLE tasks ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE tasks ADD COLUMN block_reason TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT '';
+    ",
 ];
 
 /// 打开数据库、应用 PRAGMA 并把 schema 迁到最新版本。

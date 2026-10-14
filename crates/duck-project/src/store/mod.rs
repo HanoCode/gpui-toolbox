@@ -25,6 +25,7 @@ use crate::time::CalendarDate;
 mod archive;
 mod columns;
 mod groups;
+mod logs;
 mod milestones;
 mod projects;
 mod tags;
@@ -96,7 +97,8 @@ fn default_path() -> PathBuf {
 pub(crate) const TASK_COLUMNS: &str = "t.id, t.project_id, t.parent_id, t.title, t.description_md, \
      t.status, t.priority, t.quadrant, t.start_date, t.due_date, t.due_time, \
      t.completed_at, t.progress, t.estimate_hours, t.actual_hours, t.sort_order, \
-     t.created_at, t.updated_at, t.archived_at, t.archived_root";
+     t.created_at, t.updated_at, t.archived_at, t.archived_root, \
+     t.starred, t.block_reason, t.note";
 
 /// `projects` 的列清单，顺序与 [`project_from_row`] 的下标严格对应。
 pub(crate) const PROJECT_COLUMNS: &str = "p.id, p.group_id, p.name, p.description, p.color, p.icon, \
@@ -128,6 +130,9 @@ pub(crate) fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         archived_root: row
             .get::<_, Option<String>>(19)?
             .and_then(|text| ArchiveRoot::parse(&text)),
+        starred: row.get::<_, i64>(20)? != 0,
+        block_reason: row.get(21)?,
+        note: row.get(22)?,
         tags: Vec::new(),
         subtasks: crate::models::SubtaskProgress::default(),
     })

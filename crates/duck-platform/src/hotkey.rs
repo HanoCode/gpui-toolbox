@@ -19,6 +19,20 @@
 //! 两条路都**不需要**辅助功能 / 输入监控授权，代价是都必须在**主线程**上创建管理器
 //! ——这也是[`bind`]只从主线程调的原因。
 //!
+//! # 多个热键（槽位）
+//!
+//! 一个进程里会有不止一个全局键（唤起命令面板、唤起「随手看」悬浮窗……），所以登记表
+//! 按 [`Slot`] 分槽：每个槽位独立登记 / 换绑 / 注销，互不干扰。按下时回调带着**槽名**
+//! 回来，落点自己分发 —— 平台层不认识「launcher」或「task_float」这类业务概念，
+//! 那些名字由应用层定义（见 `duck-app/src/hotkey.rs`）。
+//!
+//! 两条由此而来的约束：
+//!
+//! - **跨槽不许撞键**。[`bind`] 会拒绝「另一个槽已经登记着同一个组合」——注册库内部
+//!   按 id 存表，两个槽位用同一个 `HotKey` 时会互相覆盖句柄，注销不掉（macOS 上
+//!   Carbon 甚至允许重复登记，靠返回值看不出问题）。
+//! - **失败原因也按槽存**：哪个键位没生效，设置页只关心它自己那一栏。
+//!
 //! # 已知限制（写在这里而不是藏起来）
 //!
 //! - **冲突检测只覆盖「系统拒绝」**。Windows 的 `RegisterHotKey` 在组合被占用时
@@ -31,6 +45,7 @@
 //!   表现为[`HotkeyError::Rejected`]。本仓的发布目标只有 macOS 与 Windows（见
 //!   `.github/workflows/release.yml`），所以这里不做额外补偿。
 
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr as _;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -43,7 +58,7 @@ use std::cell::RefCell;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-/// 默认唤起键位（规范串，见 [`Hotkey::spec`]）。
+/// 唤起命令面板（「launcher」槽）的默认键位（规范串，见 [`Hotkey::spec`]）。
 ///
 /// 平台不同，理由也不同：
 /// - macOS 用 `⌥Space`。它**不是**系统默认（`⌘Space` 才是 Spotlight，
@@ -54,11 +69,25 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 ///
 /// 写成规范形（`Space` 大写）是必须的：注册库的 `Display` 输出 `Space`，
 /// 而它只接受大小写不敏感的名字 —— 但本仓把「规范串」当存档格式用，
-/// 常量与存档必须是同一个形状（`the_default_spec_round_trips` 守着这件事）。
-pub const DEFAULT_SPEC: &str = if cfg!(target_os = "macos") {
+/// 常量与存档必须是同一个形状（`the_default_specs_round_trip` 守着这件事）。
+pub const LAUNCHER_SPEC: &str = if cfg!(target_os = "macos") {
     "alt+Space"
 } else {
     "control+alt+Space"
+};
+
+/// 「随手看」悬浮窗（`task_float` 槽）的默认键位。
+///
+/// 设计文档（`docs/projects-design.md` §4.3 ⑤）指定 macOS 用 `⌥⌘T`。
+/// - macOS：`alt+super+KeyT`（`⌥⌘T`）。这个组合系统不占、三个键里也没有输入法
+///   热键，是「一个字母 + 两个修饰键」里最好记的一个。
+/// - Windows / Linux：不能用 `super+KeyT`（那是系统的任务栏循环），落到
+///   `Ctrl+Alt+T`。它在部分 Linux 发行版上是终端的默认组合，但**Linux 不在本仓的
+///   发布目标里**（见模块文档），而 Windows 上 `Ctrl+Alt+T` 是空的。
+pub const FLOAT_SPEC: &str = if cfg!(target_os = "macos") {
+    "alt+super+KeyT"
+} else {
+    "control+alt+KeyT"
 };
 
 /// 键表：`(gpui 键名, 注册库键名, 给人看的名字)`。
@@ -180,6 +209,12 @@ const MEDIA_KEYS: &[Code] = &[
     Code::AudioVolumeDown,
     Code::AudioVolumeMute,
 ];
+
+/// 槽位名：一个进程里可以同时登记多个全局热键，各槽位独立换绑 / 注销、互不影响。
+///
+/// 平台层不认识业务概念 —— 「launcher」「task_float」这类名字由应用层定义
+/// （见 `duck-app/src/hotkey.rs`），这里只当一个不透明的键用。
+pub type Slot = &'static str;
 
 /// 修饰键状态。
 ///
@@ -349,19 +384,20 @@ impl fmt::Display for Hotkey {
     }
 }
 
-/// 把键位登记到操作系统，并在**首次**调用时起一条投递线程。
+/// 把**某个槽位**登记到操作系统；`start` 则在**首次**调用时起一条投递线程。
 ///
-/// `on_press` 是「热键按下时做什么」，**只在第一次调用时生效**：进程内的服务与落点
-/// 都只有一处（重复调用会记一条 warn，而不是悄悄换成新的）。它跑在后台线程上，见模块文档。
+/// `on_press` 收槽位名，是「哪个热键被按下了」的答案。**只在第一次调用 `start` 时
+/// 生效**：进程内的服务与落点都只有一处（重复调用会记一条 warn，而不是悄悄换成新的）。
+/// 它跑在后台线程上，见模块文档。
 ///
 /// 返回 `false` 表示这条服务已经起过了。
-pub fn start(on_press: impl Fn() + Send + Sync + 'static) -> bool {
+pub fn start(on_press: impl Fn(Slot) + Send + Sync + 'static) -> bool {
     if SHARED.get().is_some() {
         tracing::warn!("the global hotkey service is already running; the new handler is ignored");
         return false;
     }
     let shared = Arc::new(Shared {
-        active_id: Mutex::new(active_spec_id()),
+        routes: Mutex::new(active_routes()),
         on_press: Box::new(on_press),
     });
     if SHARED.set(shared.clone()).is_err() {
@@ -371,26 +407,29 @@ pub fn start(on_press: impl Fn() + Send + Sync + 'static) -> bool {
     true
 }
 
-/// 登记 / 换绑 / 注销全局唤起键位。`None` 表示注销当前那个。
+/// 登记 / 换绑 / 注销**一个槽位**的全局键位。`None` 表示注销该槽位当前那个。
 ///
 /// 换绑是**先登记新的、成功之后才注销旧的** —— 中间不留「按了没反应」的真空；
 /// 反过来一旦新组合被系统拒绝，旧的那份仍然好着（错误原样交回，状态一个字没改）。
 ///
+/// 两个槽位不许共用同一个组合：注册库按 id 存表，同 id 两次登记会互相覆盖句柄
+/// （见模块文档），所以这里**先查再登记**，撞上就当作拒绝。
+///
 /// 只在主线程调（macOS 的 Carbon 事件处理器要挂在主线程的 run loop 上）。
-pub fn bind(hotkey: Option<&Hotkey>) -> Result<(), HotkeyError> {
+pub fn bind(slot: Slot, hotkey: Option<&Hotkey>) -> Result<(), HotkeyError> {
     with_manager(|manager| {
         if manager.is_none() {
             match GlobalHotKeyManager::new() {
                 Ok(created) => {
                     *manager = Some(Manager {
                         manager: created,
-                        active: None,
+                        active: HashMap::new(),
                     });
                 }
                 Err(error) => {
                     let reason = HotkeyError::Rejected(error.to_string());
                     tracing::warn!(%error, "failed to create the global hotkey manager");
-                    *lock(&LAST_ERROR) = Some(reason.clone());
+                    set_last_error(slot, Some(reason.clone()));
                     return Err(reason);
                 }
             }
@@ -401,101 +440,147 @@ pub fn bind(hotkey: Option<&Hotkey>) -> Result<(), HotkeyError> {
         let Some(state) = manager.as_mut() else {
             let reason = HotkeyError::Rejected("hotkey manager unavailable".to_owned());
             tracing::warn!("hotkey manager missing right after initialization");
-            *lock(&LAST_ERROR) = Some(reason.clone());
+            set_last_error(slot, Some(reason.clone()));
             return Err(reason);
         };
 
         let Some(wanted) = hotkey else {
-            if let Some((_, old)) = state.active.take() {
+            if let Some((_, old)) = state.active.remove(slot) {
                 // 注销失败不该拦住「关掉这个功能」：登记表已经在上面清空了，
                 // 最坏的结果是系统里残留一个按不响的登记。
                 if let Err(error) = state.manager.unregister(old) {
-                    tracing::warn!(%error, "failed to unregister the global hotkey");
+                    tracing::warn!(%error, slot, "failed to unregister the global hotkey");
                 }
             }
-            publish(None);
-            *lock(&LAST_ERROR) = None;
+            publish();
+            set_last_error(slot, None);
             return Ok(());
         };
 
         if state
             .active
-            .as_ref()
+            .get(slot)
             .is_some_and(|(spec, _)| spec == wanted.spec())
         {
             // 同一个组合：不重复登记。macOS 上再登记一次会留下一个野 `EventHotKeyRef`
             // （库内部按 id 存表，第二次会覆盖掉第一次的句柄，注销不掉）。
-            // 仍然要 `publish`：`bind` 可能先于 `start` 被调到，那时投递侧还没有 `active_id`。
-            publish(Some(wanted.inner.id()));
-            *lock(&LAST_ERROR) = None;
+            // 仍然要 `publish`：`bind` 可能先于 `start` 被调到，那时投递侧还没有路由表。
+            publish();
+            set_last_error(slot, None);
             return Ok(());
+        }
+
+        if let Some(other) = spec_owner(&state.active, slot, wanted.spec()) {
+            let reason = HotkeyError::Rejected(format!(
+                "the combination is already registered for \"{other}\""
+            ));
+            tracing::warn!(spec = wanted.spec(), slot, other, "global hotkey collision");
+            set_last_error(slot, Some(reason.clone()));
+            return Err(reason);
         }
 
         if let Err(error) = state.manager.register(wanted.inner) {
             let reason = HotkeyError::Rejected(error.to_string());
-            tracing::warn!(%error, spec = wanted.spec(), "the system refused the global hotkey");
-            *lock(&LAST_ERROR) = Some(reason.clone());
+            tracing::warn!(%error, spec = wanted.spec(), slot, "the system refused the global hotkey");
+            set_last_error(slot, Some(reason.clone()));
             return Err(reason);
         }
-        if let Some((_, old)) = state.active.take()
+        if let Some((_, old)) = state.active.remove(slot)
             && let Err(error) = state.manager.unregister(old)
         {
-            tracing::warn!(%error, "failed to unregister the previous global hotkey");
+            tracing::warn!(%error, slot, "failed to unregister the previous global hotkey");
         }
-        state.active = Some((wanted.spec.clone(), wanted.inner));
-        publish(Some(wanted.inner.id()));
-        *lock(&LAST_ERROR) = None;
-        tracing::info!(spec = wanted.spec(), "global hotkey registered");
+        state
+            .active
+            .insert(slot, (wanted.spec.clone(), wanted.inner));
+        publish();
+        set_last_error(slot, None);
+        tracing::info!(spec = wanted.spec(), slot, "global hotkey registered");
         Ok(())
     })
 }
 
-/// 当前登记成功的热键 id；没登记时为 `None`。
-fn active_spec_id() -> Option<u32> {
+/// 除了 `slot` 之外，还有哪个槽位占着 `spec`。
+///
+/// 抽成纯函数是为了能单测：真正的 [`bind`] 会碰操作系统（建 `GlobalHotKeyManager`），
+/// 单测不碰系统是本模块的地基（见 `the_service_starts_out_idle`）。
+fn spec_owner<'a>(
+    active: &'a HashMap<Slot, (String, HotKey)>,
+    slot: Slot,
+    spec: &str,
+) -> Option<&'a Slot> {
+    active
+        .iter()
+        .find(|(other, (bound, _))| **other != slot && bound == spec)
+        .map(|(other, _)| other)
+}
+
+/// 「注册 id → 槽位名」的投递路由表。投递线程拿按下事件的 id 来这里查该叫哪个落点。
+fn active_routes() -> HashMap<u32, Slot> {
     with_manager(|manager| {
         manager
             .as_ref()
-            .and_then(|state| state.active.as_ref().map(|(_, hotkey)| hotkey.id()))
+            .map(|state| {
+                state
+                    .active
+                    .iter()
+                    .map(|(slot, (_, hotkey))| (hotkey.id(), *slot))
+                    .collect()
+            })
+            .unwrap_or_default()
     })
 }
 
-/// 把「当前该听哪个 id」告知投递线程。服务没起来时是空操作（`start` 会补一次）。
-fn publish(id: Option<u32>) {
+/// 把「当前各槽位在听哪个 id」告知投递线程。服务没起来时是空操作（`start` 会补一次）。
+fn publish() {
     if let Some(shared) = SHARED.get() {
-        *lock(&shared.active_id) = id;
+        *lock(&shared.routes) = active_routes();
     }
 }
 
-/// 当前**登记成功**的键位规范串；没登记（关着 / 注册失败 / 平台不支持）时为 `None`。
+/// 某个槽位当前**登记成功**的键位规范串；没登记（关着 / 注册失败 / 平台不支持）时为 `None`。
 #[must_use]
-pub fn active_spec() -> Option<String> {
+pub fn active_spec(slot: Slot) -> Option<String> {
     with_manager(|manager| {
         manager
             .as_ref()
-            .and_then(|state| state.active.as_ref().map(|(spec, _)| spec.clone()))
+            .and_then(|state| state.active.get(slot).map(|(spec, _)| spec.clone()))
     })
 }
 
-/// 上一次登记失败的原因；成功一次之后清空。
+/// 某个槽位上一次登记失败的原因；成功一次之后清空。
 ///
 /// 设置页用它显示「未生效：…」——这是 macOS 上唯一能拿到的「冲突」信号（见模块文档）。
 #[must_use]
-pub fn last_error() -> Option<HotkeyError> {
-    lock(&LAST_ERROR).clone()
+pub fn last_error(slot: Slot) -> Option<HotkeyError> {
+    lock(last_errors()).get(slot).cloned()
 }
 
-/// 进程内唯一的管理器与当前登记。
+/// 记 / 清某个槽位的失败原因。
+fn set_last_error(slot: Slot, error: Option<HotkeyError>) {
+    let mut errors = lock(last_errors());
+    match error {
+        Some(error) => {
+            errors.insert(slot, error);
+        }
+        None => {
+            errors.remove(slot);
+        }
+    }
+}
+
+/// 进程内唯一的管理器与各槽位的当前登记。
 struct Manager {
     manager: GlobalHotKeyManager,
-    /// `(规范串, 登记用的键位)`。`None` = 当前没登记。
-    active: Option<(String, HotKey)>,
+    /// 槽位 → `(规范串, 登记用的键位)`。没登记的槽位不在表里。
+    active: HashMap<Slot, (String, HotKey)>,
 }
 
-/// 投递侧：线程按 [`Shared::active_id`] 判断「这条事件是不是我们那个键」。
+/// 投递侧：线程按 [`Shared::routes`] 判断「这条事件属于哪个槽位」。
 struct Shared {
-    /// 当前该响应的注册 id（`HotKey::id()`）。换绑时更新，线程不必重启。
-    active_id: Mutex<Option<u32>>,
-    on_press: Box<dyn Fn() + Send + Sync>,
+    /// 注册 id → 槽位名。换绑时整体重建，线程不必重启。
+    routes: Mutex<HashMap<u32, Slot>>,
+    on_press: Box<dyn Fn(Slot) + Send + Sync>,
 }
 
 /// 管理器。建过之后常驻——`Drop for GlobalHotKeyManager` 会注销并摘掉事件处理器，
@@ -540,12 +625,20 @@ fn with_manager<T>(f: impl FnOnce(&mut Option<Manager>) -> T) -> T {
     }
 }
 
-/// 上一次登记失败的原因。
-static LAST_ERROR: Mutex<Option<HotkeyError>> = Mutex::new(None);
+/// 各槽位上一次登记失败的原因（成功一次就从这个表里删掉）。
+///
+/// 用 `OnceLock` 而不是 `static Mutex<HashMap<..>>`：`HashMap::new()` 不是 `const fn`，
+/// 装不进 `static` 初始化器。
+static LAST_ERROR: OnceLock<Mutex<HashMap<Slot, HotkeyError>>> = OnceLock::new();
 /// 投递侧的那一半。`OnceLock` 保证「落点只有一处」。
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 
-/// 起一条常驻线程，把「按下了」搬给落点。
+/// 取失败原因表（首次访问时建）。
+fn last_errors() -> &'static Mutex<HashMap<Slot, HotkeyError>> {
+    LAST_ERROR.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 起一条常驻线程，把「哪个槽位的键被按下了」搬给落点。
 ///
 /// 用阻塞式 `iter()` 而不是轮询：空转一条线程去等一个可能几小时才来一次的事件，
 /// 在笔记本上就是白白耗电。线程活到进程结束（事件通道是 `static`，永不关闭），
@@ -559,9 +652,9 @@ fn spawn_listener(shared: Arc<Shared>) {
                 if event.state != HotKeyState::Pressed {
                     continue;
                 }
-                let ours = lock(&shared.active_id).is_some_and(|id| id == event.id);
-                if ours {
-                    (shared.on_press)();
+                let slot = lock(&shared.routes).get(&event.id).copied();
+                if let Some(slot) = slot {
+                    (shared.on_press)(slot);
                 }
             }
         });
@@ -621,15 +714,46 @@ fn label_of(code: Code) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Code, DEFAULT_SPEC, Hotkey, HotkeyError, KEYS, ModifierState, Modifiers, has_real_modifier,
-        is_modifier_key_name, label_of,
+        Code, FLOAT_SPEC, HotKey, Hotkey, HotkeyError, KEYS, LAUNCHER_SPEC, ModifierState,
+        Modifiers, has_real_modifier, is_modifier_key_name, label_of, spec_owner,
     };
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
-    fn the_default_spec_round_trips() {
-        let parsed = Hotkey::parse(DEFAULT_SPEC).expect("the default must be registrable");
-        assert_eq!(parsed.spec(), DEFAULT_SPEC, "默认串本身就是规范形");
+    fn the_default_specs_round_trip() {
+        // 两个默认键位都必须是「规范形」：常量与存档要是同一个形状，否则重启后
+        // 读档会得到一个「看起来设过了、其实登记不上」的键位。
+        for spec in [LAUNCHER_SPEC, FLOAT_SPEC] {
+            let parsed = Hotkey::parse(spec).unwrap_or_else(|error| {
+                panic!("默认键位 {spec} 必须可登记：{error}");
+            });
+            assert_eq!(parsed.spec(), spec, "默认串本身就是规范形");
+        }
+        // 两个槽位的默认键位不能撞（`bind` 会拒，但撞了就是出厂即报错）。
+        assert_ne!(LAUNCHER_SPEC, FLOAT_SPEC);
+    }
+
+    /// 槽位判重是 `bind` 的前置闸门。跨槽撞键在 macOS 上**不会**被系统拒绝
+    /// （Carbon 允许重复登记），所以这条闸门是唯一的拦截点，必须自己钉住。
+    #[test]
+    fn a_spec_can_only_be_owned_by_one_slot() {
+        let hotkey = Hotkey::parse("alt+KeyT").expect("合法");
+        let other = Hotkey::parse("alt+Space").expect("合法");
+        let mut active: HashMap<&'static str, (String, HotKey)> = HashMap::new();
+        assert_eq!(spec_owner(&active, "b", "alt+KeyT"), None, "空表里谁都不占");
+        active.insert("a", (hotkey.spec().to_owned(), hotkey.inner));
+        active.insert("b", (other.spec().to_owned(), other.inner));
+        assert_eq!(
+            spec_owner(&active, "b", "alt+KeyT"),
+            Some(&"a"),
+            "别的槽位占着 → 报出是谁"
+        );
+        assert_eq!(
+            spec_owner(&active, "a", "alt+KeyT"),
+            None,
+            "自己那一份不算撞"
+        );
+        assert_eq!(spec_owner(&active, "b", "alt+KeyZ"), None);
     }
 
     /// 键表是这个模块的地基：两列都不能重名，否则查找会静默命中错的条目
@@ -910,9 +1034,13 @@ mod tests {
 
     /// 没 `start` / 没 `bind` 之前，状态是干净的 —— 这条同时守着「单测不碰操作系统」：
     /// 上面所有用例都只走纯解析，不会真的去注册一个系统热键。
+    ///
+    /// 逐槽查（而不是只查一个）：槽位表是 `HashMap`，漏查一个槽位就可能漏掉一处串号。
     #[test]
     fn the_service_starts_out_idle() {
-        assert!(super::active_spec().is_none());
-        assert!(super::last_error().is_none());
+        for slot in ["launcher", "task_float", "never-bound"] {
+            assert!(super::active_spec(slot).is_none(), "{slot} 应当没有登记");
+            assert!(super::last_error(slot).is_none(), "{slot} 应当没有失败记录");
+        }
     }
 }

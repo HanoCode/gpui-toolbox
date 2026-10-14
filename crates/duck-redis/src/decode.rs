@@ -884,7 +884,11 @@ mod tests {
     #[test]
     fn php_reports_position_and_rejects_trailing_junk() {
         let error = decode(DecodeKind::Php, b"i:42").unwrap_err();
-        assert!(error.render().contains("PHP serialize 解析在第 4 字节处失败"));
+        assert!(
+            error
+                .render()
+                .contains("PHP serialize 解析在第 4 字节处失败")
+        );
 
         let error = decode(DecodeKind::Php, b"i:42;tail").unwrap_err();
         assert!(error.render().contains("还剩内容"));

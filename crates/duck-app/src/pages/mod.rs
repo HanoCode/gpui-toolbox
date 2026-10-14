@@ -12,7 +12,7 @@ mod module_settings;
 mod onboarding;
 mod overview;
 pub(crate) mod plugin_center;
-mod projects;
+pub(crate) mod projects;
 mod redis;
 mod settings;
 mod status_support;

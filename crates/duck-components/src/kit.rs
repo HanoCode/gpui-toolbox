@@ -27,7 +27,7 @@ use gpui::{
     prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
-    Sizable as _, Size,
+    Icon, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     input::Input,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
@@ -144,6 +144,33 @@ impl ControlExt for Input {
 type TabSelect = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 type NavSelect = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
+/// 分段标签的一项：可选图标 + 文案。
+///
+/// 图标是可选的而不是必填：同一个分段控件在别处只放文字（比如设置页的语言档），
+/// 强行给每处都配一个图标只会多出一堆凑数的装饰。
+#[derive(Clone)]
+pub struct SegmentItem {
+    label: SharedString,
+    icon: Option<DuckIcon>,
+}
+
+impl SegmentItem {
+    /// 纯文字项。
+    pub fn new(label: impl Into<SharedString>) -> Self {
+        Self {
+            label: label.into(),
+            icon: None,
+        }
+    }
+
+    /// 带前置图标。
+    #[must_use]
+    pub fn icon(mut self, icon: DuckIcon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+}
+
 /// 分段标签（macOS segmented control 风格）：浅灰轨道内，选中项白底 + 细阴影 +
 /// 正文色中等字重，未选中为二级文字色。轨道高 `density.control`，项高再减 4。
 ///
@@ -151,6 +178,26 @@ type NavSelect = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub fn segmented_tabs(
     id: impl Into<ElementId>,
     labels: impl IntoIterator<Item = SharedString>,
+    selected: usize,
+    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Div {
+    segmented_tabs_with_icons(
+        id,
+        labels.into_iter().map(SegmentItem::new),
+        selected,
+        on_select,
+        cx,
+    )
+}
+
+/// 带图标的分段标签：外观与 [`segmented_tabs`] 完全一致，只是每一项可以前置一个图标。
+///
+/// 与 `segmented_tabs` 共用同一条渲染路径（前者只是把文案包成 [`SegmentItem`]），
+/// 所以两处的几何量、选中块动效、无障碍语义不可能走偏。
+pub fn segmented_tabs_with_icons(
+    id: impl Into<ElementId>,
+    items: impl IntoIterator<Item = SegmentItem>,
     selected: usize,
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
     cx: &App,
@@ -172,7 +219,7 @@ pub fn segmented_tabs(
         .bg(theme.extended().colors.nav_hover)
         .child(SegmentedTabs {
             id: id.into(),
-            labels: labels.into_iter().collect(),
+            items: items.into_iter().collect(),
             selected,
             on_select: Rc::new(on_select),
             style: SegmentedStyle {
@@ -180,6 +227,7 @@ pub fn segmented_tabs(
                 height: control - tokens.spacing.xxs * 2.,
                 radius: tab_radius,
                 padding_x: tokens.spacing.md,
+                icon_size: tokens.typography.sm.size,
                 text_size: tokens.typography.sm.size,
                 line_height: tokens.typography.sm.line_height,
                 surface: colors.surface,
@@ -197,6 +245,7 @@ struct SegmentedStyle {
     height: Pixels,
     radius: Pixels,
     padding_x: Pixels,
+    icon_size: Pixels,
     text_size: Pixels,
     line_height: Pixels,
     surface: Hsla,
@@ -218,7 +267,7 @@ struct SegmentGeometry(Rc<RefCell<Vec<(Pixels, Pixels)>>>);
 #[derive(IntoElement)]
 struct SegmentedTabs {
     id: ElementId,
-    labels: Vec<SharedString>,
+    items: Vec<SegmentItem>,
     selected: usize,
     on_select: TabSelect,
     style: SegmentedStyle,
@@ -228,12 +277,12 @@ impl RenderOnce for SegmentedTabs {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let Self {
             id,
-            labels,
+            items,
             selected,
             on_select,
             style,
         } = self;
-        let count = labels.len();
+        let count = items.len();
 
         let (geometry, highlight, text_colors) = window.with_id(id.clone(), |window| {
             let geometry =
@@ -300,13 +349,21 @@ impl RenderOnce for SegmentedTabs {
                     // 而 `.id()` 会把类型变成 `Stateful<Div>`，之后就叫不到了。
                     .id(ElementId::from(format!("{id}-tablist")))
                     .role(Role::TabList)
-                    .children(labels.into_iter().zip(text_colors).enumerate().map(
-                        |(index, (label, text_color))| {
+                    .children(items.into_iter().zip(text_colors).enumerate().map(
+                        |(index, (item, text_color))| {
                             let active = index == selected;
                             let on_select = Rc::clone(&on_select);
+                            let SegmentItem { label, icon } = item;
                             // 未选中标签：悬停底色走强调色薄层 + 文字转强调色。
                             let (foreground, ring) = (style.accent_text, style.ring);
                             let hover_tint = style.hover_tint;
+                            // 没有图标时不留间隙：`gap` 是容器级的，留着会让纯文字项
+                            // 多出一段看不见的左内边距。
+                            let icon_gap = if icon.is_some() {
+                                active_theme(cx).tokens().spacing.xxs
+                            } else {
+                                px(0.)
+                            };
                             div()
                                 .id(ElementId::NamedInteger(
                                     SharedString::from(format!("{id}-tab")),
@@ -316,6 +373,7 @@ impl RenderOnce for SegmentedTabs {
                                 .px(style.padding_x)
                                 .flex()
                                 .items_center()
+                                .gap(icon_gap)
                                 .rounded(style.radius)
                                 .text_size(style.text_size)
                                 .line_height(style.line_height)
@@ -323,6 +381,7 @@ impl RenderOnce for SegmentedTabs {
                                 .text_color(text_color)
                                 // 无障碍：分段控件对屏幕阅读器是一组「页签」，选中态必须报出去，
                                 // 否则读屏只会念到两个标签名，用户不知道当前在哪一档。
+                                // 图标是纯装饰，不进名字 —— 名字只取文案。
                                 .role(Role::Tab)
                                 .aria_selected(active)
                                 .aria_label(label.clone())
@@ -347,6 +406,9 @@ impl RenderOnce for SegmentedTabs {
                                 .tab_stop(true)
                                 .focus_visible(move |focus| focus.border_color(ring))
                                 .on_click(move |_, window, cx| on_select(index, window, cx))
+                                // 图标不显式上色：它继承容器的 `text_color`，
+                                // 于是选中 / 悬停的文字色变化会连图标一起带走。
+                                .children(icon.map(|icon| Icon::new(icon).size(style.icon_size)))
                                 .child(label)
                         },
                     )),

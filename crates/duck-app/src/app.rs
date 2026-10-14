@@ -16,6 +16,7 @@ use gpui::{
 };
 use gpui_component::{Icon, Root};
 
+use crate::pages::projects::float::{FloatWindow, float_window_options};
 use crate::pages::{
     ASSISTANT_ROUTE, AssistantPage, Clear, CloseTab, CopySelection, DATABASE_ROUTE, DatabasePage,
     DeleteToLineEnd, DeleteToLineStart, DeleteWordForward, EMAIL_ROUTE, Find, MailPage,
@@ -73,6 +74,11 @@ pub enum WindowKind {
     Onboarding,
     /// 命令面板浮窗（自己关自己，句柄可能陈旧，判「还开着没」走 `update(..).is_ok()`）。
     Palette,
+    /// 项目管理页的「随手看」悬浮窗（同上：自己关自己，句柄可能陈旧）。
+    ///
+    /// 与 [`Self::Palette`] 分开而不是共用一个「浮窗」槽：两个窗口可以**同时**开着
+    /// （一边打字搜命令、一边瞥待办），共用一个槽位会让后开的那个把先开的句柄顶掉。
+    Float,
 }
 
 /// 跨窗口跳转目标。
@@ -201,6 +207,13 @@ impl Desktop {
     #[must_use]
     pub(crate) fn palette_window(cx: &App) -> Option<WindowHandle<Root>> {
         Self::window_handle(cx, WindowKind::Palette)
+    }
+
+    /// 「随手看」悬浮窗的句柄快照。与 [`Self::palette_window`] 同形：窗口会自己关自己，
+    /// 所以这个句柄**可能是陈旧的** —— 判「还开着没」用 `update(..).is_ok()`。
+    #[must_use]
+    pub(crate) fn float_window(cx: &App) -> Option<WindowHandle<Root>> {
+        Self::window_handle(cx, WindowKind::Float)
     }
 
     // ── 跨窗口跳转队列（§6.1 pending_jumps 队列） ──────────────────────────
@@ -506,6 +519,11 @@ pub fn install(cx: &mut App) {
     // 联网刷新排在窗口就绪之后，见 `main.rs`。
     crate::market::init(cx);
 
+    // 项目管理数据的变更广播：主窗那一页与「随手看」悬浮窗各开一个 `duck-project`
+    // 连接，靠它互相同步（口径见 `pages::projects::bus` 的模块文档）。
+    // 放在这里而不是页面构造里 —— 它是**进程级**的，两个视图必须拿到同一个实例。
+    crate::pages::projects::bus::install(cx);
+
     // 更新器状态：更新源与阶段。后台顺带清扫上一次安装留下的旧 bundle。
     crate::update::init(cx);
 
@@ -565,8 +583,8 @@ fn on_window_closed(cx: &mut App, id: WindowId) {
             // 不需要先把 `desktop` 释放。
             Desktop::remember_aux_open(cx);
         }
-        WindowKind::Onboarding | WindowKind::Palette => {
-            // 引导窗 / 调色盘各自有「自关」语义，无须额外收尾。
+        WindowKind::Onboarding | WindowKind::Palette | WindowKind::Float => {
+            // 引导窗 / 调色盘 / 悬浮窗各自有「自关」语义，无须额外收尾。
         }
     }
 }
@@ -779,6 +797,71 @@ pub fn open_palette_window(cx: &mut App) {
 /// 少一处状态就少一处会忘记同步的地方。
 fn close_palette_window(cx: &mut App) {
     if let Some(handle) = Desktop::palette_window(cx) {
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+    }
+}
+
+/// 「随手看」悬浮窗的落点：开 / 收（全局键 `⌥⌘T`，或概览页 / 托盘里的入口）。
+///
+/// 与 [`toggle_launcher`] 同一套直觉：同一个键按第二遍是**收起来**。
+/// 但这里不转交任何开关 —— 悬浮窗与命令面板是两个**独立的窗口**，
+/// 「唤起时打开主窗口」那个开关只描述命令面板的行为。
+///
+/// 与命令面板的一处**刻意不同**：悬浮窗**不抢焦点**（`focus: false`）——它的用途是
+/// 「瞄一眼」而不是「现在开始打字」，抢走前台会让「顺手瞥一下」变成「切走一次」。
+/// 代价是 `Esc` 收不起来（键盘事件根本不到它那儿），收起只有再按一次全局键、
+/// 点窗口上的 ✕ 两条路。
+pub fn toggle_task_float(cx: &mut App) {
+    if float_window_is_open(cx) {
+        close_task_float(cx);
+        return;
+    }
+    open_task_float(cx);
+}
+
+/// 悬浮窗是否开着；句柄陈旧（它自己关掉了）时返回 `false`。
+fn float_window_is_open(cx: &mut App) -> bool {
+    Desktop::float_window(cx).is_some_and(|handle| handle.update(cx, |_, _, _| {}).is_ok())
+}
+
+/// 开悬浮窗；已经开着则只把它抬到前面并**保持打开**。
+///
+/// 抬到前面用的是 `activate_window`（与 [`open_palette_window`] 同款），但窗口本身
+/// `focus: false`，所以这不会把前台应用切走 —— 只是让置顶的那一块露出来。
+///
+/// 两条出口都在最后广播一次 `bus`：悬浮窗订阅着它，于是**每次唤起都重读一遍库**。
+/// 这就是「改了别的窗口、切回来一看还是旧的」那类问题的兜底 —— 写动作该广播的都已
+/// 广播（见 `pages/projects/mod.rs` 模块头第 3 条），多这一次只是几次本地 SELECT。
+pub fn open_task_float(cx: &mut App) {
+    if let Some(handle) = Desktop::float_window(cx)
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        crate::pages::projects::bus::notify(cx);
+        return;
+    }
+    match cx.open_window(float_window_options(cx), |window, cx| {
+        let float = cx.new(|cx| FloatWindow::new(window, cx));
+        // 系统外观变化 → 「跟随系统」时重解析主题（与其它窗口同形）。
+        observe_system_appearance(window);
+        cx.new(|cx| Root::new(float, window, cx))
+    }) {
+        Ok(handle) => {
+            Desktop::set_window(cx, WindowKind::Float, handle);
+            // 新窗的订阅在 `FloatWindow::new` 里已经挂好，所以这一条它能收到。
+            crate::pages::projects::bus::notify(cx);
+        }
+        Err(error) => report_window_failure("随手看", &error, cx),
+    }
+}
+
+/// 收起悬浮窗（再按一次全局键 / 窗口上的隐藏按钮）。
+///
+/// 与 [`close_palette_window`] 同一条路子：只 `remove_window`，句柄保持陈旧，
+/// 全靠 `update(..).is_ok()` 探活。
+pub fn close_task_float(cx: &mut App) {
+    if let Some(handle) = Desktop::float_window(cx) {
         let _ = handle.update(cx, |_, window, _| window.remove_window());
     }
 }

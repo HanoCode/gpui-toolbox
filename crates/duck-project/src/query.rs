@@ -107,17 +107,18 @@ impl TaskSort {
     ///
     /// 每条都带 `t.id` 作为末位键：没有它，`sort_order` / `due_date` 相同的行在两次
     /// 查询里可能以不同顺序返回，界面会看到卡片「自己换位置」。
+    /// 置顶（`starred DESC`）压在一切口径之前：钉住的卡片永远在列内最前（原型同款）。
     #[must_use]
     const fn order_by(self) -> &'static str {
         match self {
-            Self::Manual => "t.sort_order ASC, t.id ASC",
+            Self::Manual => "t.starred DESC, t.sort_order ASC, t.id ASC",
             // `IS NULL` 先排，保证「没排期的」沉到最后（SQLite 里 NULL 是排在最前的）。
-            Self::DueAsc => "t.due_date IS NULL ASC, t.due_date ASC, t.id ASC",
-            Self::DueDesc => "t.due_date IS NULL ASC, t.due_date DESC, t.id DESC",
-            Self::PriorityFirst => "t.priority ASC, t.sort_order ASC, t.id ASC",
-            Self::ProgressDesc => "t.progress DESC, t.sort_order ASC, t.id ASC",
-            Self::CreatedDesc => "t.created_at DESC, t.id DESC",
-            Self::TitleAsc => "t.title COLLATE NOCASE ASC, t.id ASC",
+            Self::DueAsc => "t.starred DESC, t.due_date IS NULL ASC, t.due_date ASC, t.id ASC",
+            Self::DueDesc => "t.starred DESC, t.due_date IS NULL ASC, t.due_date DESC, t.id DESC",
+            Self::PriorityFirst => "t.starred DESC, t.priority ASC, t.sort_order ASC, t.id ASC",
+            Self::ProgressDesc => "t.starred DESC, t.progress DESC, t.sort_order ASC, t.id ASC",
+            Self::CreatedDesc => "t.starred DESC, t.created_at DESC, t.id DESC",
+            Self::TitleAsc => "t.starred DESC, t.title COLLATE NOCASE ASC, t.id ASC",
         }
     }
 }
@@ -484,7 +485,10 @@ mod tests {
             "默认必须排除归档项，实际：{sql}"
         );
         assert!(args.is_empty());
-        assert!(sql.contains("ORDER BY t.sort_order ASC, t.id ASC"));
+        assert!(
+            sql.contains("ORDER BY t.starred DESC, t.sort_order ASC, t.id ASC"),
+            "默认排序 = 置顶优先 + 手动顺序，实际：{sql}"
+        );
         assert!(TaskQuery::new().archive_scope().is_live());
     }
 

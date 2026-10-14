@@ -15,13 +15,17 @@
 //! - **S3-I**：归档中心（两段清单 + 搜索 + 恢复 / 彻底删除 / 清空）+
 //!   页面级快捷键 + 归档撤销条 + UI 偏好落 `kv: projects_ui`（补上 §6.2 那条
 //!   「S2 未落」的欠账）。
-//! - **S3-II（本增量）**：列表视图（`ViewMode::List`）+ 视图切换 tab + 快捷筛选
+//! - **S3-II**：列表视图（`ViewMode::List`）+ 视图切换 tab + 快捷筛选
 //!   chips（今天 / 本周 / 逾期 / 未排期 / 已完成）+ 主区搜索 + 排序切换器 +
 //!   `1` / `2` 切视图。
-//! - **未做（见设计文档 §7）**：编辑弹窗（完整任务表单）、日历 / 时间线 / 报表 /
-//!   工作日志（S5）、AI 拆解与周报（S6）。
+//! - **S3-III**：按 `docs/projects-mock.html` 对齐呈现与操作路径（结构差异 13 项全收口）。
+//! - **S4（本增量）**：「随手看」悬浮窗（[`float`]，§4.3 ⑤）+ 两处视图之间的变更广播
+//!   （[`bus`]）+ 全局键 `⌥⌘T`（两槽位热键，见 `crate::hotkey`）。悬浮窗是**独立窗口、
+//!   独立连接**，所以两处视图靠广播互相同步 —— 本页既订阅它也广播它。
+//! - **未做（见设计文档 §7）**：完整任务编辑器（编辑表单弹窗，与日历 / 时间线 /
+//!   报表 / 工作日志同属 S5）、AI 拆解与周报（S6）。
 //!
-//! # 两条本页特有的口径
+//! # 三条本页特有的口径
 //!
 //! 1. **归档不做二次确认，彻底删除 / 删除 / 清空才做**（§5.6 的可见性原则）。
 //!    归档可逆、不丢数据，拦一道弹窗只会让「收掉一件事」变得啰嗦；所以它改用
@@ -31,9 +35,20 @@
 //!    「撤销」按钮，而 `notify` 没暴露 `Notification::action`。提示条本身照抄
 //!    `pages/db.rs` 的 `Toast` 骨架（绝对定位 + 序号守卫的定时器），
 //!    见 [`ProjectsPage::show`]。
+//! 3. **落库之后要广播一声**（[`bus::notify`]）。写动作**绝大多数**收口在
+//!    [`ProjectsPage::show`]（凡弹回执的都走它），所以广播就发在那一处；剩下四条
+//!    **不弹回执**的写路径得各自再叫一声 —— 拖拽改列（`move_task_to`）、
+//!    `Space` 标完成（`complete_task` / `toggle_selected`）、快速新建（`submit_quick`）、
+//!    列内新建落在 Todo 列那一支（`submit_new_task`）。漏掉的症状很隐蔽：主窗改了、
+//!    悬浮窗还显示旧的。兜底在 `app::open_task_float` —— 每次唤起都广播一次，
+//!    所以最坏情况也会在「唤起来看一眼」时对齐。
 
 mod archive;
+mod bus;
+mod dialogs;
+mod float;
 mod prefs;
+mod quickparse;
 mod state;
 mod view;
 mod widgets;
@@ -59,7 +74,7 @@ use duck_components::{
     ButtonVariant, SidebarPanel, SidebarState, body_text, button, dialog_top_offset, modal_drag,
     modal_drag_area, modal_offset, modal_title_row,
 };
-use duck_project::{Priority, Quadrant, TaskPatch, TaskSort, TaskStatus};
+use duck_project::{ColumnSpec, LogKind, Priority, Quadrant, TaskPatch, TaskSort, TaskStatus};
 use duck_theme::{active_theme, tr, trf, trn};
 
 use prefs::ViewMode;
@@ -172,6 +187,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
 enum ConfirmScope {
     /// 物理删除一条**未归档**任务（看板 `⌫`）。
     DeleteTask(i64),
+    /// 删除一个**项目**（项目设置弹窗的「删除项目」）——连带它的任务，不可逆。
+    DeleteProject(i64),
     /// 彻底删除一条归档记录（归档中心的行内按钮 / 右栏按钮 / `⌫`）。
     Purge(ArchiveRow),
     /// 清空整个归档区。
@@ -298,6 +315,16 @@ impl ProjectsPage {
         // 页面自己订阅状态实体：`ProjectsPage` 读 `state` 渲染，不订阅的话
         // 状态变了页面不会重绘。
         subscriptions.push(cx.observe(&state, |_this, _state, cx| cx.notify()));
+        // 「随手看」悬浮窗（§4.3 ⑤）改了库要能传过来 —— 它开的是**另一个**连接，
+        // 两边不会自动互知。订阅的是「变了」这条广播而不是某个具体动作：谁改的都一样，
+        // 重读一遍就是最新状态（口径与 `float.rs` 的订阅完全对称）。
+        subscriptions.push(cx.subscribe(
+            &bus::handle(cx),
+            |this: &mut Self, _bus, _event: &bus::ProjectChanged, cx| {
+                this.state.update(cx, |state, _| state.reload());
+                cx.notify();
+            },
+        ));
 
         Self {
             state,
@@ -411,6 +438,9 @@ impl ProjectsPage {
         // 落在列首（`sort_order` 0）—— 跨列时列内次序由内核重排，这里不猜位置。
         self.state
             .update(cx, |state, _| state.move_task(id, status, 0));
+        // 这几条写动作**不弹回执**，所以拿不到 [`Self::show`] 里那次广播，得自己叫一声
+        // （口径见模块头第 3 条）。
+        bus::notify(cx);
         cx.notify();
     }
 
@@ -418,6 +448,7 @@ impl ProjectsPage {
     pub(crate) fn complete_task(&mut self, id: i64, cx: &mut Context<Self>) {
         self.state
             .update(cx, |state, _| state.move_task(id, TaskStatus::Done, 0));
+        bus::notify(cx);
         cx.notify();
     }
 
@@ -717,6 +748,22 @@ impl ProjectsPage {
                     SharedString::from(tr(cx, "删除")),
                 )
             }
+            ConfirmScope::DeleteProject(id) => {
+                let name = state
+                    .projects()
+                    .iter()
+                    .find(|project| project.id == id)
+                    .map_or_else(String::new, |project| project.name.clone());
+                (
+                    SharedString::from(tr(cx, "删除项目？")),
+                    SharedString::from(trf(
+                        cx,
+                        "「{}」及该项目下的任务将被永久删除，无法恢复。",
+                        &[&name],
+                    )),
+                    SharedString::from(tr(cx, "删除项目")),
+                )
+            }
             ConfirmScope::Purge(ArchiveRow::Task(id)) => {
                 let title = state
                     .archive_tasks()
@@ -770,6 +817,18 @@ impl ProjectsPage {
                 let outcome = self.state.update(cx, |state, _| state.delete_task(id));
                 match outcome {
                     Ok(()) => self.show(Tone::Success, tr(cx, "已删除任务。"), None, cx),
+                    Err(err) => self.show(
+                        Tone::Error,
+                        trf(cx, "删除失败：{}", &[&err.to_string()]),
+                        None,
+                        cx,
+                    ),
+                }
+            }
+            ConfirmScope::DeleteProject(id) => {
+                let outcome = self.state.update(cx, |state, _| state.delete_project(id));
+                match outcome {
+                    Ok(()) => self.show(Tone::Success, tr(cx, "已删除项目。"), None, cx),
                     Err(err) => self.show(
                         Tone::Error,
                         trf(cx, "删除失败：{}", &[&err.to_string()]),
@@ -852,6 +911,8 @@ impl ProjectsPage {
             return;
         };
         self.state.update(cx, |state, _| state.toggle_done(id));
+        // 不弹回执 ⇒ 自己广播（同上）。
+        bus::notify(cx);
         cx.notify();
     }
 
@@ -889,6 +950,8 @@ impl ProjectsPage {
             match state.view() {
                 ViewMode::Board | ViewMode::List => state.selected().map(ConfirmScope::DeleteTask),
                 ViewMode::Archive => state.archive_selected().map(ConfirmScope::Purge),
+                // 其余视图没有「选中的可删对象」。
+                ViewMode::Calendar | ViewMode::Timeline | ViewMode::Report | ViewMode::Log => None,
             }
         };
         if let Some(scope) = scope {
@@ -934,6 +997,8 @@ impl ProjectsPage {
             self.quick.update(cx, |input, cx| {
                 input.set_value(SharedString::default(), window, cx);
             });
+            // 快速新建不发回执（输入框清空本身就是回执），所以广播也自己叫一声。
+            bus::notify(cx);
         }
         cx.notify();
     }
@@ -1026,6 +1091,8 @@ impl ProjectsPage {
         else {
             return;
         };
+        // 建成功了就先广播：下面「落 Todo 列」这一支不弹回执，走不到 `show` 里那次广播。
+        bus::notify(cx);
         if status != TaskStatus::Todo {
             let added = trf(cx, "已添加到「{}」。", &[status_label(status, cx)]);
             let outcome = self
@@ -1040,6 +1107,329 @@ impl ProjectsPage {
                     cx,
                 ),
             }
+        }
+        cx.notify();
+    }
+
+    // ------------------------------------------------------------------
+    // 弹窗接线（`dialogs.rs` 只画，动作与落库全在页面层）
+    // ------------------------------------------------------------------
+    //
+    // 每个 `open_*` 都是一层薄壳：弹窗的几何 / 表单状态在 `dialogs.rs`，而「弹出来」
+    // 这件事会用到页面的私有字段（`state` / `view`），所以由页面转一手。
+
+    /// 打开任务编辑弹窗（`task_id` 为 `None` = 新建）。
+    pub(crate) fn open_task_editor(
+        &mut self,
+        task_id: Option<i64>,
+        preset_project: Option<i64>,
+        preset_status: TaskStatus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        dialogs::open_task_editor(self, task_id, preset_project, preset_status, window, cx);
+    }
+
+    /// 「新建任务」按钮 / `⌘N`：在当前范围里新建。
+    pub(crate) fn new_task_in_scope(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (project, status) = {
+            let state = self.state.read(cx);
+            let project = match state.scope() {
+                BoardScope::Project(id) => Some(id),
+                BoardScope::All | BoardScope::Inbox => None,
+            };
+            // 落在看板的**第一列**（不是硬编码 `Todo`）：列是可自定义的，第一列才是
+            // 用户心里的「入口列」。
+            let status = state
+                .columns()
+                .first()
+                .map_or(TaskStatus::Todo, |column| column.status_key);
+            (project, status)
+        };
+        self.open_task_editor(None, project, status, window, cx);
+    }
+
+    /// 任务编辑弹窗的「保存」。
+    ///
+    /// 状态**不**走 `TaskPatch`（[`dialogs::CollectedTask::into_patch`] 刻意不带
+    /// status）：状态迁移有内核状态机把关（比如「已取消」只许回 `todo`），绕过去就
+    /// 等于在界面层另写一份。所以先提交其余字段，再按需过一次 `set_task_status`。
+    pub(crate) fn submit_task_editor(
+        &mut self,
+        task_id: Option<i64>,
+        collected: dialogs::CollectedTask,
+        cx: &mut Context<Self>,
+    ) {
+        let status = collected.status;
+        match task_id {
+            Some(id) => {
+                let patch = collected.into_patch();
+                let unchanged = self
+                    .state
+                    .read(cx)
+                    .tasks()
+                    .iter()
+                    .find(|task| task.id == id)
+                    .is_some_and(|task| task.status == status);
+                let outcome = self.state.update(cx, |state, _| {
+                    state.patch_task(id, patch)?;
+                    // 状态没变就不碰：`move_task` 对「原地不动」不是空操作，会写
+                    // `completed_at` / `progress` 的联动（等于把用户的进度改掉）。
+                    if !unchanged {
+                        state.set_task_status(id, status)?;
+                    }
+                    Ok(())
+                });
+                self.report(outcome, tr(cx, "已保存任务。").to_owned(), cx);
+            }
+            None => {
+                let created = self.state.update(cx, |state, _| {
+                    state.create_task_full(collected.into_new_task())
+                });
+                match created {
+                    Some(_) => self.show(Tone::Success, tr(cx, "已新建任务。"), None, cx),
+                    None => cx.notify(),
+                }
+            }
+        }
+    }
+
+    /// 打开项目编辑弹窗（`project_id` 为 `None` = 新建）。
+    pub(crate) fn open_project_editor(
+        &mut self,
+        project_id: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        dialogs::open_project_editor(self, project_id, window, cx);
+    }
+
+    /// 项目编辑弹窗的「保存」。
+    pub(crate) fn submit_project_editor(
+        &mut self,
+        project_id: Option<i64>,
+        collected: dialogs::CollectedProject,
+        cx: &mut Context<Self>,
+    ) {
+        match project_id {
+            Some(id) => {
+                let outcome = self.state.update(cx, |state, _| {
+                    state.update_project(id, collected.into_patch())
+                });
+                self.report(outcome, tr(cx, "已保存项目。").to_owned(), cx);
+            }
+            None => {
+                let created = self.state.update(cx, |state, _| {
+                    state.create_project_full(collected.into_new_project())
+                });
+                match created {
+                    Some(_) => self.show(Tone::Success, tr(cx, "已新建项目。"), None, cx),
+                    None => cx.notify(),
+                }
+            }
+        }
+    }
+
+    /// 项目设置弹窗里的「删除项目」——**不可逆**，先弹二次确认。
+    pub(crate) fn confirm_delete_project(
+        &mut self,
+        id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm(ConfirmScope::DeleteProject(id), window, cx);
+    }
+
+    /// 打开标签管理弹窗。
+    pub(crate) fn open_tag_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::open_tag_manager(self, window, cx);
+    }
+
+    /// 新建标签（标签管理弹窗的「添加」）。颜色按现有标签数在色板上轮转 ——
+    /// 让新建的标签一眼能和已有的区分开，同时**不引入**随机数（同一次操作可重现）。
+    pub(crate) fn create_tag(&mut self, name: &str, cx: &mut Context<Self>) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let color = {
+            let state = self.state.read(cx);
+            if state.tags().iter().any(|tag| tag.name == name) {
+                // 同名的已经在了：不重复建（内核会拒，但错误文案对用户没意义），
+                // 静默重绘就够 —— 清单里那个标签本来就在。
+                cx.notify();
+                return;
+            }
+            dialogs::PROJECT_COLORS[state.tags().len() % dialogs::PROJECT_COLORS.len()]
+        };
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.create_tag(name, color));
+        match outcome {
+            Ok(_) => self.show(
+                Tone::Success,
+                trf(cx, "已新建标签「{}」。", &[name]),
+                None,
+                cx,
+            ),
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "新建失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
+        }
+    }
+
+    /// 换一个标签颜色（色板上往后挪一格）。
+    pub(crate) fn cycle_tag_color(&mut self, id: i64, cx: &mut Context<Self>) {
+        let next = {
+            let state = self.state.read(cx);
+            let Some(tag) = state.tags().iter().find(|tag| tag.id == id) else {
+                return;
+            };
+            let current = dialogs::PROJECT_COLORS
+                .iter()
+                .position(|color| color.eq_ignore_ascii_case(&tag.color))
+                // 认不出的自定义色：从色板头开始（用户按一下就落到一个已知颜色上）。
+                .unwrap_or(dialogs::PROJECT_COLORS.len() - 1);
+            dialogs::PROJECT_COLORS[(current + 1) % dialogs::PROJECT_COLORS.len()]
+        };
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.update_tag(id, None, Some(next)));
+        self.report(outcome, tr(cx, "已换标签颜色。").to_owned(), cx);
+    }
+
+    /// 删除标签（**不可逆**，但只解除关联、不删任务 —— 所以不弹二次确认，
+    /// 弹窗里那行「删除」本身就是那一次确认）。
+    pub(crate) fn delete_tag(&mut self, id: i64, cx: &mut Context<Self>) {
+        let outcome = self.state.update(cx, |state, _| state.delete_tag(id));
+        self.report(outcome, tr(cx, "已删除标签。").to_owned(), cx);
+    }
+
+    /// 打开看板列设置弹窗。
+    pub(crate) fn open_column_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::open_column_settings(self, window, cx);
+    }
+
+    /// 看板列设置的「保存」：整份列定义替换。
+    pub(crate) fn submit_columns(&mut self, specs: Vec<ColumnSpec>, cx: &mut Context<Self>) {
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.replace_columns(&specs));
+        self.report(outcome, tr(cx, "已保存看板列。").to_owned(), cx);
+    }
+
+    /// 打开快速新建（Spotlight）。
+    pub(crate) fn open_spotlight(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let project = match self.state.read(cx).scope() {
+            BoardScope::Project(id) => Some(id),
+            BoardScope::All | BoardScope::Inbox => None,
+        };
+        dialogs::open_spotlight(self, project, window, cx);
+    }
+
+    /// Spotlight 的「创建」：把一句话解析成任务。
+    pub(crate) fn submit_spotlight(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let parsed = quickparse::parse(text, self.state.read(cx).today());
+        let created = self
+            .state
+            .update(cx, |state, _| state.create_task_from_quick(&parsed, None));
+        match created {
+            Some(_) => self.show(Tone::Success, tr(cx, "已新建任务。"), None, cx),
+            None => cx.notify(),
+        }
+    }
+
+    /// 打开某天（某档）的工作日志编辑弹窗。
+    pub(crate) fn open_log_editor(
+        &mut self,
+        date: duck_project::CalendarDate,
+        kind: LogKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        dialogs::open_log_editor(self, date, kind, window, cx);
+    }
+
+    /// 工作日志弹窗的「保存」。
+    pub(crate) fn submit_log(
+        &mut self,
+        date: duck_project::CalendarDate,
+        kind: LogKind,
+        content: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.save_log(date, kind, content));
+        self.report(outcome, tr(cx, "已保存日志。").to_owned(), cx);
+    }
+
+    /// 换工作日志的档位（日报 / 周报 / 周计划）。
+    pub(crate) fn set_log_kind(&mut self, kind: LogKind, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.set_log_kind(kind));
+        cx.notify();
+    }
+
+    /// 选中工作日志清单里的一篇。
+    pub(crate) fn select_log(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.select_log(id));
+        cx.notify();
+    }
+
+    /// 换日历视图的锚月（`delta` = 前后翻几个月；`None` = 回到今天所在月）。
+    pub(crate) fn step_calendar_month(&mut self, delta: Option<i32>, cx: &mut Context<Self>) {
+        let next = match delta {
+            None => None,
+            Some(delta) => {
+                let state = self.state.read(cx);
+                let anchor = state.calendar_month().unwrap_or_else(|| state.today());
+                // 月份加减走整数运算再夹回合法日：`CalendarDate::new` 对越界的
+                // 「1 月 31 日 + 1 月」是 `None`，先取当月 1 号就不会踩到。
+                let total = i64::from(anchor.year()) * 12 + i64::from(anchor.month()) - 1
+                    + i64::from(delta);
+                let year = i32::try_from(total.div_euclid(12)).unwrap_or(anchor.year());
+                let month = u32::try_from(total.rem_euclid(12) + 1).unwrap_or(1);
+                duck_project::CalendarDate::new(year, month, 1)
+            }
+        };
+        self.state
+            .update(cx, |state, _| state.set_calendar_month(next));
+        cx.notify();
+    }
+
+    /// 打开某天日志的编辑弹窗（当前档位）。
+    pub(crate) fn open_today_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (date, kind) = {
+            let state = self.state.read(cx);
+            let date = state
+                .selected_log()
+                .map_or_else(|| state.today(), |log| log.date);
+            (date, state.log_kind())
+        };
+        self.open_log_editor(date, kind, window, cx);
+    }
+
+    /// 「改一个字段」类动作的公共收尾：成功给回执、失败报错，最后重绘。
+    ///
+    /// 与私有的 [`Self::patch_task`] 并存：那个只收一条 `TaskPatch`，这里用在**多步**
+    /// 写入（比如「先 patch 再迁状态」）上 —— 两步只在同一个 `state.update` 里合成一次
+    /// 重绘，中途失败也不会留下半截状态。
+    fn report(&mut self, outcome: duck_project::Result<()>, done: String, cx: &mut Context<Self>) {
+        match outcome {
+            Ok(()) => self.show(Tone::Success, done, None, cx),
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "修改失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
         }
         cx.notify();
     }
@@ -1097,6 +1487,10 @@ impl ProjectsPage {
             undo,
             seq,
         });
+        // 提示条的时机就是「写入路径的收口」——本页所有成功 / 失败回执都走这里，
+        // 所以在这广播一声，就覆盖了全部写动作，不必在几十个动作函数里各插一次。
+        // （广播在**落库之后**：写动作都是「先改库、再 show」，见各 `apply_*`。）
+        bus::notify(cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(lifetime).await;

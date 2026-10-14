@@ -24,9 +24,10 @@ pub(crate) const KEY_PROJECTS_UI: &str = "projects_ui";
 
 /// 主区显示哪一块。
 ///
-/// `Board` / `List` 是**同一批任务的两个画法**（共用筛选 / 排序 / 选中），`Archive`
-/// 是另一块内容（归档记录），三者互斥。用 `is_archive()` 而不是逐个 `==` 比较：
-/// 将来再加第三个常规视图（日历 / 时间线）时，「不是归档」的分支自动跟着对。
+/// `Board` / `List` / `Calendar` / `Timeline` / `Report` / `Log` 是**同一批任务的
+/// 六个画法**（共用筛选 / 排序 / 选中，与原型 `VIEWS` 一一对应），`Archive` 是
+/// 另一块内容（归档记录）。用 `is_archive()` 而不是逐个 `==` 比较：「不是归档」
+/// 的分支自动覆盖全部常规视图。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ViewMode {
     /// 看板（默认）。
@@ -34,19 +35,38 @@ pub(crate) enum ViewMode {
     Board,
     /// 列表（表格式，列可排序）。
     List,
+    /// 日历（按截止日的月视图）。
+    Calendar,
+    /// 时间线（按周分段的截止排期）。
+    Timeline,
+    /// 报表（KPI + 趋势 + 分布 + 逾期清单）。
+    Report,
+    /// 工作日志（日报）。
+    Log,
     /// 归档中心。
     Archive,
 }
 
 impl ViewMode {
-    /// 常规视图（看板 / 列表）的取值，按工具条里 segmented tabs 的显示顺序。
-    pub(crate) const TABS: [Self; 2] = [Self::Board, Self::List];
+    /// 常规视图的取值，按工具条里 segmented tabs 的显示顺序（原型 `VIEWS` 同序）。
+    pub(crate) const TABS: [Self; 6] = [
+        Self::Board,
+        Self::List,
+        Self::Calendar,
+        Self::Timeline,
+        Self::Report,
+        Self::Log,
+    ];
 
     /// wire 键。
     const fn key(self) -> &'static str {
         match self {
             Self::Board => "board",
             Self::List => "list",
+            Self::Calendar => "calendar",
+            Self::Timeline => "timeline",
+            Self::Report => "report",
+            Self::Log => "log",
             Self::Archive => "archive",
         }
     }
@@ -56,6 +76,10 @@ impl ViewMode {
         match text {
             "board" => Some(Self::Board),
             "list" => Some(Self::List),
+            "calendar" => Some(Self::Calendar),
+            "timeline" => Some(Self::Timeline),
+            "report" => Some(Self::Report),
+            "log" => Some(Self::Log),
             "archive" => Some(Self::Archive),
             _ => None,
         }
@@ -182,15 +206,23 @@ mod tests {
     fn unknown_keys_fall_back_to_the_defaults_instead_of_failing() {
         // 旧版本写下、或被手改坏的 JSON 都不该让偏好读不出来。
         let prefs: ProjectsPrefs =
-            serde_json::from_str(r#"{"view":"calendar","sort":"by_vibes"}"#).expect("仍可解析");
+            serde_json::from_str(r#"{"view":"gantt","sort":"by_vibes"}"#).expect("仍可解析");
         assert_eq!(prefs.view_mode(), ViewMode::Board);
         assert_eq!(prefs.task_sort(), TaskSort::Manual);
     }
 
     #[test]
     fn every_view_mode_round_trips_through_its_wire_key() {
-        // 三个变体各走一遍 key → from_key；加了变体却忘了给键，这条立刻红。
-        for mode in [ViewMode::Board, ViewMode::List, ViewMode::Archive] {
+        // 七个变体各走一遍 key → from_key；加了变体却忘了给键，这条立刻红。
+        for mode in [
+            ViewMode::Board,
+            ViewMode::List,
+            ViewMode::Calendar,
+            ViewMode::Timeline,
+            ViewMode::Report,
+            ViewMode::Log,
+            ViewMode::Archive,
+        ] {
             assert_eq!(ViewMode::from_key(mode.key()), Some(mode), "{mode:?}");
         }
         assert_eq!(ViewMode::from_key("kanban"), None);
@@ -199,7 +231,17 @@ mod tests {
     #[test]
     fn view_tabs_are_the_regular_views_in_order() {
         // 工具条上的 segmented tabs 只该出现常规视图，且不含归档中心（它有左栏入口）。
-        assert_eq!(ViewMode::TABS, [ViewMode::Board, ViewMode::List]);
+        assert_eq!(
+            ViewMode::TABS,
+            [
+                ViewMode::Board,
+                ViewMode::List,
+                ViewMode::Calendar,
+                ViewMode::Timeline,
+                ViewMode::Report,
+                ViewMode::Log,
+            ]
+        );
         assert!(!ViewMode::TABS.iter().any(|mode| mode.is_archive()));
         assert!(ViewMode::Archive.is_archive());
         assert!(!ViewMode::Board.is_archive());

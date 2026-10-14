@@ -1,65 +1,115 @@
 //! 设置页「热键」：录入器与按键处理。
+//!
+//! 两段，结构相同（开关 + 键位），只是命令面板那段多一行「唤起时打开主窗口」：
+//!
+//! - **唤起命令面板**（`⌥Space`）—— 现行的全局唤起键。
+//! - **随手看悬浮窗**（`⌥⌘T`）—— 项目管理页的「随手看」入口（`docs/projects-design.md` §4.3 ⑤）。
+//!
+//! 两段各有自己的开关：全局热键会**占掉**一个组合，默认给两个键就得给用户两个关掉它的
+//! 出口（「不打扰」原则）。两个槽位的界面状态按 [`HotkeySlot::index`] 存在
+//! `SettingsWindowView::hotkeys` 里，行与录入器都由槽位参数化 —— 加第三个键时这里
+//! 不用再抄一遍。
 
 use super::*;
+
+use crate::hotkey::HotkeySlot;
 
 impl SettingsWindowView {
     // ── 唤起（全局快捷键）───────────────────────────────────────────────
     pub(super) fn hotkey_section(&self, cx: &mut Context<Self>) -> Div {
-        // 状态行的三种可能，按「用户最需要知道什么」排序：登记不上 → 说原因；关了 →
-        // 说关了；否则说用法。失败排在最前是因为它最容易被误解成「功能没做」——
-        // 后面那句「已关闭」还会盖住原因（开关之所以关，正是因为它登记不上）。
-        let status: SharedString = if let Some(error) = duck_platform::last_error() {
-            let reason = crate::hotkey::explain(cx, &error);
-            trf(cx, "未生效：{}", &[reason.as_ref()]).into()
-        } else if !self.hotkey_enabled {
-            tr(cx, "已关闭。").into()
-        } else {
-            tr(
-                cx,
-                "在别的程序里也能用；Duck 已经在前台时再按一次会把它收起来。",
-            )
-            .into()
-        };
+        let launcher = settings_section(
+            Some(tr(cx, "唤起命令面板").into()),
+            [
+                self.hotkey_enabled_row(HotkeySlot::Launcher, cx),
+                self.hotkey_binding_row(HotkeySlot::Launcher, cx),
+                self.launcher_main_window_row(cx),
+            ],
+            cx,
+        );
+        let float = settings_section(
+            Some(tr(cx, "随手看悬浮窗").into()),
+            [
+                self.hotkey_enabled_row(HotkeySlot::TaskFloat, cx),
+                self.hotkey_binding_row(HotkeySlot::TaskFloat, cx),
+            ],
+            cx,
+        );
+        let tokens = active_theme(cx).tokens();
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap(tokens.spacing.xl)
+            .child(launcher)
+            .child(float)
+    }
 
-        let enabled_row = option_row(
-            tr(cx, "启用唤起快捷键"),
-            Some(
+    /// 「启用…快捷键」那一行。
+    ///
+    /// 开关先按目标值落状态、失败再按真实值回摆 —— 与「开机自启」同一个形状，
+    /// 保证开关显示的就是真实情况（`active_spec` 问的是系统里到底有没有登记上）。
+    fn hotkey_enabled_row(&self, slot: HotkeySlot, cx: &mut Context<Self>) -> AnyElement {
+        let (title, hint) = match slot {
+            HotkeySlot::Launcher => (
+                tr(cx, "启用唤起快捷键"),
                 tr(
                     cx,
                     "全局生效，与上面的应用内键位互不影响：应用内键位只在 Duck 有焦点时管用，这一条在任何程序里都能把 Duck 叫出来。",
-                )
-                .into(),
+                ),
             ),
+            HotkeySlot::TaskFloat => (
+                tr(cx, "启用「随手看」快捷键"),
+                tr(
+                    cx,
+                    "在任何程序里按一下都能把「随手看」悬浮窗叫出来，再按一次收起来。它不抢焦点，适合瞄一眼进行中与待办。",
+                ),
+            ),
+        };
+        option_row(
+            title,
+            Some(hint.into()),
             switch_control(
-                "duck-settings-hotkey-enabled",
-                self.hotkey_enabled,
-                cx.listener(|this, next: &bool, window, cx| {
-                    // 先按目标值落状态，失败再按真实值回摆 —— 与「开机自启」同一个形状，
-                    // 保证开关显示的就是真实情况。
-                    this.hotkey_enabled = *next;
-                    if let Err(error) = crate::hotkey::set_enabled(cx, *next) {
-                        this.hotkey_enabled = duck_platform::active_spec().is_some();
-                        let spec = crate::hotkey::raw_spec(cx);
-                        crate::hotkey::report_failure(window, cx, &spec, &error);
+                ElementId::Name(SharedString::from(format!(
+                    "duck-settings-hotkey-enabled-{}",
+                    slot.name()
+                ))),
+                self.hotkey_entry(slot).enabled,
+                cx.listener(move |this, next: &bool, window, cx| {
+                    this.hotkey_entry_mut(slot).enabled = *next;
+                    if let Err(error) = crate::hotkey::set_enabled(cx, slot, *next) {
+                        this.hotkey_entry_mut(slot).enabled =
+                            duck_platform::active_spec(slot.name()).is_some();
+                        let spec = crate::hotkey::raw_spec(cx, slot);
+                        crate::hotkey::report_failure(window, cx, slot, &spec, &error);
                     }
                     cx.notify();
                 }),
             ),
             cx,
-        );
+        )
+        .into_any_element()
+    }
 
+    /// 键帽那一行：状态行 + 录入器。
+    fn hotkey_binding_row(&self, slot: HotkeySlot, cx: &mut Context<Self>) -> AnyElement {
         // `tr()` 返回 `&'static str`（`Copy`），两处都直接用，不需要 `.clone()`。
-        let hotkey_label = tr(cx, "快捷键");
-        let binding_row = option_row(
-            hotkey_label,
+        let label = tr(cx, "快捷键");
+        let status = hotkey_status(self, slot, cx);
+        option_row(
+            label,
             Some(status),
-            self.hotkey_recorder(hotkey_label.into(), cx),
+            self.hotkey_recorder(slot, label.into(), cx),
             cx,
-        );
+        )
+        .into_any_element()
+    }
 
-        // 唤起语义。缺省关：`⌥Space` 自带启动器语义，默认只弹浮层而不把主窗切到前台。
-        // 开着则回到旧行为（完整主窗），也是浮窗那条路出问题时的兜底。
-        let opens_main_window_row = option_row(
+    /// 「唤起时打开主窗口」那一行（只有命令面板有：悬浮窗本来就是窗口）。
+    ///
+    /// 缺省关：`⌥Space` 自带启动器语义，默认只弹浮层而不把主窗切到前台。
+    /// 开着则回到旧行为（完整主窗），也是浮窗那条路出问题时的兜底。
+    fn launcher_main_window_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        option_row(
             tr(cx, "唤起时打开主窗口"),
             Some(
                 tr(
@@ -78,17 +128,8 @@ impl SettingsWindowView {
                 }),
             ),
             cx,
-        );
-
-        settings_section(
-            Some(tr(cx, "唤起").into()),
-            [
-                enabled_row.into_any_element(),
-                binding_row.into_any_element(),
-                opens_main_window_row.into_any_element(),
-            ],
-            cx,
         )
+        .into_any_element()
     }
 
     /// 快捷键录入控件：一个可聚焦的「键帽框」。
@@ -102,6 +143,7 @@ impl SettingsWindowView {
     /// **兄弟节点**，不会自动并进控件的名字里去。
     pub(super) fn hotkey_recorder(
         &self,
+        slot: HotkeySlot,
         action_label: SharedString,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -109,15 +151,18 @@ impl SettingsWindowView {
         let tokens = theme.tokens();
         let extended = theme.extended();
         let chrome = extended.colors;
-        let recording = self.hotkey_recording;
+        let recording = self.hotkey_entry(slot).recording;
         let label: SharedString = if recording {
             tr(cx, "按下组合键…（Esc 取消）").into()
         } else {
-            crate::hotkey::pretty_spec(cx).into()
+            crate::hotkey::pretty_spec(cx, slot).into()
         };
 
         div()
-            .id("duck-settings-hotkey-recorder")
+            .id(ElementId::Name(SharedString::from(format!(
+                "duck-settings-hotkey-recorder-{}",
+                slot.name()
+            ))))
             // 无障碍：`track_focus` 只置 `focusable`、**不置 `tab_stop`**，所以此前这个
             // 控件 Tab 根本到不了。可访问名 = 行标签 + 当前键位（两段文案都取自既有
             // i18n 表，不新增待翻译串）；只报键位等于报了个值却没说它是什么。录入中
@@ -125,7 +170,7 @@ impl SettingsWindowView {
             .role(Role::Button)
             .aria_label(SharedString::from(format!("{action_label} {label}")))
             .tab_stop(true)
-            .track_focus(&self.hotkey_focus)
+            .track_focus(&self.hotkey_entry(slot).focus)
             .h(theme.density().control)
             // 快捷键录入按钮的最小宽度：要装得下「⌘⇧⌥⌃ + 字母」这类最长组合，
             // 属布局约束（不在 spacing 阶梯上），保留裸值。
@@ -158,16 +203,19 @@ impl SettingsWindowView {
             })
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(move |this, _, window, cx| {
                     // 先要焦点，再进录入：没有焦点的话按键根本不会派发到这里。
-                    window.focus(&this.hotkey_focus, cx);
-                    if !this.hotkey_recording {
-                        this.hotkey_recording = true;
+                    let focus = this.hotkey_entry(slot).focus.clone();
+                    window.focus(&focus, cx);
+                    if !this.hotkey_entry(slot).recording {
+                        this.hotkey_entry_mut(slot).recording = true;
                         cx.notify();
                     }
                 }),
             )
-            .on_key_down(cx.listener(Self::on_hotkey_key_down))
+            .on_key_down(cx.listener(move |this, event, window, cx| {
+                this.on_hotkey_key_down(slot, event, window, cx);
+            }))
             .child(label)
             .into_any_element()
     }
@@ -179,12 +227,13 @@ impl SettingsWindowView {
     /// 同一瞬间也生效，用户看到的是一边录一边跳页。
     pub(super) fn on_hotkey_key_down(
         &mut self,
+        slot: HotkeySlot,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
-        if !self.hotkey_recording {
+        if !self.hotkey_entry(slot).recording {
             // 键盘入口：鼠标是靠 `on_mouse_down` 进录入的，纯键盘本来没有入口——那样
             // `tab_stop(true)` 只是多了一个「能聚焦但动不了」的站，比不可聚焦更糟。
             // 这里补 Enter / Space（而且要**无修饰键**，免得抢走 `⌘↵` 之类的应用内键位）。
@@ -193,14 +242,14 @@ impl SettingsWindowView {
                     || keystroke.key.eq_ignore_ascii_case("space"))
             {
                 cx.stop_propagation();
-                self.hotkey_recording = true;
+                self.hotkey_entry_mut(slot).recording = true;
                 cx.notify();
             }
             return;
         }
         // Esc 取消（不带修饰键的那个 Esc，`⌘Esc` 是另一回事）。
         if keystroke.key.eq_ignore_ascii_case("escape") && !keystroke.modifiers.modified() {
-            self.hotkey_recording = false;
+            self.hotkey_entry_mut(slot).recording = false;
             cx.notify();
             return;
         }
@@ -212,12 +261,13 @@ impl SettingsWindowView {
         cx.stop_propagation();
         match duck_platform::Hotkey::from_key(&keystroke.key, modifiers) {
             Ok(hotkey) => {
-                self.hotkey_recording = false;
-                self.hotkey_enabled = true;
-                if let Err(error) = crate::hotkey::rebind(cx, &hotkey) {
+                self.hotkey_entry_mut(slot).recording = false;
+                self.hotkey_entry_mut(slot).enabled = true;
+                if let Err(error) = crate::hotkey::rebind(cx, slot, &hotkey) {
                     // 登记失败时 `kv` 与系统登记都没动，所以这里也要把开关摆回真实值。
-                    self.hotkey_enabled = duck_platform::active_spec().is_some();
-                    crate::hotkey::report_failure(window, cx, hotkey.spec(), &error);
+                    self.hotkey_entry_mut(slot).enabled =
+                        duck_platform::active_spec(slot.name()).is_some();
+                    crate::hotkey::report_failure(window, cx, slot, hotkey.spec(), &error);
                 }
                 cx.notify();
             }
@@ -225,10 +275,35 @@ impl SettingsWindowView {
                 // 还在按修饰键，继续等主键。不退出录入，也不提示。
             }
             Err(error) => {
-                self.hotkey_recording = false;
-                crate::hotkey::report_failure(window, cx, &keystroke.key, &error);
+                self.hotkey_entry_mut(slot).recording = false;
+                crate::hotkey::report_failure(window, cx, slot, &keystroke.key, &error);
                 cx.notify();
             }
         }
+    }
+}
+
+/// 状态行三种可能，按「用户最需要知道什么」排序：登记不上 → 说原因；关了 →
+/// 说关了；否则说用法。失败排在最前是因为它最容易被误解成「功能没做」——
+/// 后面那句「已关闭」还会盖住原因（开关之所以关，正是因为它登记不上）。
+fn hotkey_status(
+    this: &SettingsWindowView,
+    slot: HotkeySlot,
+    cx: &Context<SettingsWindowView>,
+) -> SharedString {
+    if let Some(error) = duck_platform::last_error(slot.name()) {
+        let reason = crate::hotkey::explain(cx, &error);
+        trf(cx, "未生效：{}", &[reason.as_ref()]).into()
+    } else if !this.hotkey_entry(slot).enabled {
+        tr(cx, "已关闭。").into()
+    } else {
+        match slot {
+            HotkeySlot::Launcher => tr(
+                cx,
+                "在别的程序里也能用；Duck 已经在前台时再按一次会把它收起来。",
+            ),
+            HotkeySlot::TaskFloat => tr(cx, "在别的程序里也能用；再按一次会把它收起来。"),
+        }
+        .into()
     }
 }

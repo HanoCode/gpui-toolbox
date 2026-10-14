@@ -183,24 +183,26 @@ fn priority_submenu(
     // 顶上给一句话说明这一组在选什么，比让人从选项反推要快。
     let heading = tr(cx, "设为");
     PopupMenu::build(window, cx, move |menu, _, cx| {
-        Priority::ALL.iter().fold(menu.label(heading), |menu, priority| {
-            let priority = *priority;
-            menu.item(
-                PopupMenuItem::new(SharedString::from(format!(
-                    "P{} {}",
-                    priority.as_i64(),
-                    priority_label(priority, cx)
-                )))
-                .icon(Icon::new(DuckIcon::Flag))
-                .checked(priority == current)
-                .on_click({
-                    let view = view.clone();
-                    move |_, _, cx| {
-                        let _ = view.update(cx, |page, cx| page.set_priority(id, priority, cx));
-                    }
-                }),
-            )
-        })
+        Priority::ALL
+            .iter()
+            .fold(menu.label(heading), |menu, priority| {
+                let priority = *priority;
+                menu.item(
+                    PopupMenuItem::new(SharedString::from(format!(
+                        "P{} {}",
+                        priority.as_i64(),
+                        priority_label(priority, cx)
+                    )))
+                    .icon(Icon::new(DuckIcon::Flag))
+                    .checked(priority == current)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |page, cx| page.set_priority(id, priority, cx));
+                        }
+                    }),
+                )
+            })
     })
 }
 
@@ -221,24 +223,26 @@ fn status_submenu(
         .collect();
     let heading = tr(cx, "移动到");
     PopupMenu::build(window, cx, move |menu, _, _cx| {
-        entries.iter().fold(menu.label(heading), |menu, (label, target)| {
-            let target = *target;
-            menu.item(
-                PopupMenuItem::new(label.clone())
-                    .icon(Icon::new(DuckIcon::SlidersHorizontal))
-                    // 从 `cancelled` 出发的非法迁移直接置灰：内核会拒，置灰比点了
-                    // 再弹一条错误更早把话说清楚。
-                    .disabled(!status.can_transition_to(target))
-                    .checked(target == status)
-                    .on_click({
-                        let view = view.clone();
-                        move |_, _, cx| {
-                            let _ =
-                                view.update(cx, |page, cx| page.set_task_status(id, target, cx));
-                        }
-                    }),
-            )
-        })
+        entries
+            .iter()
+            .fold(menu.label(heading), |menu, (label, target)| {
+                let target = *target;
+                menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .icon(Icon::new(DuckIcon::SlidersHorizontal))
+                        // 从 `cancelled` 出发的非法迁移直接置灰：内核会拒，置灰比点了
+                        // 再弹一条错误更早把话说清楚。
+                        .disabled(!status.can_transition_to(target))
+                        .checked(target == status)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view
+                                    .update(cx, |page, cx| page.set_task_status(id, target, cx));
+                            }
+                        }),
+                )
+            })
     })
 }
 
@@ -263,25 +267,27 @@ fn project_submenu(
             .collect();
     let heading = tr(cx, "所属项目");
     PopupMenu::build(window, cx, move |menu, _, _cx| {
-        entries.iter().fold(menu.label(heading), |menu, (label, target)| {
-            let target = *target;
-            menu.item(
-                PopupMenuItem::new(label.clone())
-                    .icon(Icon::new(if target.is_none() {
-                        DuckIcon::Inbox
-                    } else {
-                        DuckIcon::FolderOpen
-                    }))
-                    .checked(target == current)
-                    .on_click({
-                        let view = view.clone();
-                        move |_, _, cx| {
-                            let _ =
-                                view.update(cx, |page, cx| page.set_task_project(id, target, cx));
-                        }
-                    }),
-            )
-        })
+        entries
+            .iter()
+            .fold(menu.label(heading), |menu, (label, target)| {
+                let target = *target;
+                menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .icon(Icon::new(if target.is_none() {
+                            DuckIcon::Inbox
+                        } else {
+                            DuckIcon::FolderOpen
+                        }))
+                        .checked(target == current)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view
+                                    .update(cx, |page, cx| page.set_task_project(id, target, cx));
+                            }
+                        }),
+                )
+            })
     })
 }
 
@@ -301,19 +307,22 @@ fn quadrant_submenu(
         .collect();
     let heading = tr(cx, "四象限定位");
     PopupMenu::build(window, cx, move |menu, _, _cx| {
-        entries.iter().fold(menu.label(heading), |menu, (label, quadrant)| {
-            let quadrant = *quadrant;
-            menu.item(
-                PopupMenuItem::new(label.clone())
-                    .icon(Icon::new(DuckIcon::Columns2))
-                    .checked(quadrant == current)
-                    .on_click({
-                        let view = view.clone();
-                        move |_, _, cx| {
-                            let _ = view.update(cx, |page, cx| page.set_quadrant(id, quadrant, cx));
-                        }
-                    }),
-            )
-        })
+        entries
+            .iter()
+            .fold(menu.label(heading), |menu, (label, quadrant)| {
+                let quadrant = *quadrant;
+                menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .icon(Icon::new(DuckIcon::Columns2))
+                        .checked(quadrant == current)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ =
+                                    view.update(cx, |page, cx| page.set_quadrant(id, quadrant, cx));
+                            }
+                        }),
+                )
+            })
     })
 }

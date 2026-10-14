@@ -180,7 +180,9 @@ mod tests {
 
         // 名字不在表里时上游按前缀回退，`keyword.operator` 命中 `keyword`。
         assert_eq!(
-            overridden.style("keyword.operator").map(|style| style.color),
+            overridden
+                .style("keyword.operator")
+                .map(|style| style.color),
             Some(Some(color))
         );
     }
@@ -193,6 +195,9 @@ mod tests {
         let overridden = recolor(&base, &[("comment", color, false, true)]);
 
         let default_type = base.style("type");
-        assert_eq!(overridden.style("type").map(|s| s.color), default_type.map(|s| s.color));
+        assert_eq!(
+            overridden.style("type").map(|s| s.color),
+            default_type.map(|s| s.color)
+        );
     }
 }

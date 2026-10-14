@@ -17,6 +17,7 @@ use duck_shell::RouteId;
 use duck_store::Store;
 use duck_theme::{Appearance, AppearanceWire, active_theme, apply};
 
+use crate::hotkey::HotkeySlot;
 use crate::pages::{
     ASSISTANT_ROUTE, DATABASE_ROUTE, EMAIL_ROUTE, OVERVIEW_ROUTE, PROJECTS_ROUTE, REDIS_ROUTE,
     SSH_ROUTE, TOOLBOX_ROUTE,
@@ -36,15 +37,6 @@ const KEY_AUX_OPEN: &str = "window_aux_open";
 const KEY_RESTORE_WINDOWS: &str = "restore_windows_on_launch";
 /// 「唤起快捷键顺带打开主窗口」开关（`kv`；缺省**关**）。
 const KEY_LAUNCHER_MAIN_WINDOW: &str = "launcher_opens_main_window";
-/// 全局唤起快捷键的开关（`kv`；缺省**开**）。
-const KEY_HOTKEY_ENABLED: &str = "hotkey_enabled";
-/// 全局唤起快捷键的键位（`kv`，规范串；缺省用 [`duck_platform::DEFAULT_HOTKEY_SPEC`]）。
-const KEY_HOTKEY: &str = "hotkey";
-/// 已经把「登记不上」提示过的键位串（`kv`）。
-///
-/// 同一个键位每次启动都失败只提示一次 —— 每次开机弹同一句是打扰；但换了个键位
-/// 又失败，就值得再说一次（用户刚改过什么，正是最容易对上号的时候）。
-const KEY_HOTKEY_ANNOUNCED: &str = "hotkey_failure_announced";
 
 /// 「卸载插件前弹确认」在 `kv` 表里的键（设置 → 行为）。
 const KEY_CONFIRM_UNINSTALL: &str = "confirm_uninstall";
@@ -207,6 +199,32 @@ pub fn restore_main_window(cx: &App) -> Option<WindowBounds> {
 /// 记录主窗口几何与显示状态（去抖）。
 pub fn save_window_bounds(window: &Window, cx: &App) {
     save_bounds(WINDOW_MAIN, window, cx);
+}
+
+/// 「随手看」悬浮窗在 `windows` 表里的键。
+///
+/// 与辅助窗口分开一格（它们共用 `window_aux_open` 那份**会话**记录，但几何还是各存各的）：
+/// 悬浮窗不在「上次开着哪些窗口」的恢复列表里（缺省不自动现身，见「不打扰」原则），
+/// 但它一旦被打开就该回到上次待的地方。
+const WINDOW_TASK_FLOAT: &str = "task_float";
+
+/// 悬浮窗上次待的位置；没有存档时为 `None`（调用方取默认位置）。
+///
+/// 只取**原点**：悬浮窗不可缩放（尺寸是常量），也没有全屏 / 最大化这回事 ——
+/// 存档里那几个字段是 [`save_bounds`] 顺带写的，回读时不该当真。
+/// 位置同样过 [`clamp_bounds`]：外接屏拔掉之后不能把它丢在屏幕外。
+#[must_use]
+pub fn restore_task_float(cx: &App) -> Option<gpui::Point<Pixels>> {
+    let (bounds, _state) = load_saved(cx, WINDOW_TASK_FLOAT)?;
+    Some(clamp_bounds(bounds, cx).origin)
+}
+
+/// 记录悬浮窗位置（去抖）。
+///
+/// 拖动时会被连续调用：`window_put` 本身有 400ms 去抖（见 `duck-store`），
+/// 主窗走的是同一条路。
+pub fn save_task_float_bounds(window: &Window, cx: &App) {
+    save_bounds(WINDOW_TASK_FLOAT, window, cx);
 }
 
 // ── 显示器夹取 ──────────────────────────────────────────────────────────────
@@ -423,49 +441,60 @@ pub fn set_launcher_opens_main_window(cx: &App, on: bool) {
 
 // ── 全局唤起快捷键 ──────────────────────────────────────────────────────────
 
-/// 「全局唤起快捷键」是否开启；缺省为**开**。
+/// 某个槽位的「全局唤起快捷键」是否开启；缺省为**开**。
 ///
-/// 缺省开是有意的：这个开关存在的意义就是「随手把 Duck 叫出来」，默认关掉等于
-/// 让这个能力永远没人发现。代价是第一次运行时确实会占掉一个组合键 —— 所以
+/// 缺省开是有意的：这些键存在的意义就是「随手把 Duck 叫出来」，默认关掉等于
+/// 让这个能力永远没人发现。代价是第一次运行时确实会占掉几个组合键 —— 所以
 /// 设置页那一行会显示它**到底登记上没有**，登记不上还会弹一次提示（见 `main.rs`）。
+///
+/// 槽位与 `kv` 键名的对应见 [`HotkeySlot::keys`]（键名不是三处各写一遍的）。
 #[must_use]
-pub fn hotkey_enabled(cx: &App) -> bool {
+pub fn hotkey_enabled(cx: &App, slot: HotkeySlot) -> bool {
+    let (enabled_key, _, _) = slot.keys();
     Store::global(cx)
-        .and_then(|store| store.kv_get(KEY_HOTKEY_ENABLED))
+        .and_then(|store| store.kv_get(enabled_key))
         .is_none_or(|value| value == "true")
 }
 
-/// 设置「全局唤起快捷键」开关（去抖）。
-pub fn set_hotkey_enabled(cx: &App, on: bool) {
-    duck_store::kv_put(cx, KEY_HOTKEY_ENABLED, if on { "true" } else { "false" });
+/// 设置某个槽位的「全局唤起快捷键」开关（去抖）。
+pub fn set_hotkey_enabled(cx: &App, slot: HotkeySlot, on: bool) {
+    let (enabled_key, _, _) = slot.keys();
+    duck_store::kv_put(cx, enabled_key, if on { "true" } else { "false" });
 }
 
-/// 全局唤起快捷键的规范串；没有存档（或存档读不出）时为 None。
+/// 某个槽位的热键规范串；没有存档（或存档读不出）时为 `None`。
 ///
 /// 只做「读出来」这一步，**不在这里解析**：解析（与逐条错误）在
-/// [`duck_platform::Hotkey::parse`]，调用方拿到 `None` 时回落到默认串再解析一次。
+/// [`duck_platform::Hotkey::parse`]，调用方拿到 `None` 时回落到该槽位的默认串再解析。
 /// 这样「存档坏了」的表现是「回到默认键位」，而不是「功能静默失效」。
 #[must_use]
-pub fn hotkey_spec(cx: &App) -> Option<String> {
-    let stored = Store::global(cx)?.kv_get(KEY_HOTKEY)?;
+pub fn hotkey_spec(cx: &App, slot: HotkeySlot) -> Option<String> {
+    let (_, spec_key, _) = slot.keys();
+    let stored = Store::global(cx)?.kv_get(spec_key)?;
     let stored = stored.trim().to_owned();
     (!stored.is_empty()).then_some(stored)
 }
 
-/// 记录全局唤起快捷键的规范串（去抖）。
-pub fn set_hotkey_spec(cx: &App, spec: &str) {
-    duck_store::kv_put(cx, KEY_HOTKEY, spec);
+/// 记录某个槽位的热键规范串（去抖）。
+pub fn set_hotkey_spec(cx: &App, slot: HotkeySlot, spec: &str) {
+    let (_, spec_key, _) = slot.keys();
+    duck_store::kv_put(cx, spec_key, spec);
 }
 
-/// 已经把「登记不上」提示过的键位串。
+/// 某个槽位已经把「登记不上」提示过的键位串。
+///
+/// 同一个键位每次启动都失败只提示一次 —— 每次开机弹同一句是打扰；但换了个键位
+/// 又失败，就值得再说一次（用户刚改过什么，正是最容易对上号的时候）。
 #[must_use]
-pub fn hotkey_announced(cx: &App) -> Option<String> {
-    Store::global(cx)?.kv_get(KEY_HOTKEY_ANNOUNCED)
+pub fn hotkey_announced(cx: &App, slot: HotkeySlot) -> Option<String> {
+    let (_, _, announced_key) = slot.keys();
+    Store::global(cx)?.kv_get(announced_key)
 }
 
 /// 记下「这个键位登记不上，已经提示过了」（去抖）。
-pub fn set_hotkey_announced(cx: &App, spec: &str) {
-    duck_store::kv_put(cx, KEY_HOTKEY_ANNOUNCED, spec);
+pub fn set_hotkey_announced(cx: &App, slot: HotkeySlot, spec: &str) {
+    let (_, _, announced_key) = slot.keys();
+    duck_store::kv_put(cx, announced_key, spec);
 }
 
 // ── 卸载确认 ────────────────────────────────────────────────────────────────

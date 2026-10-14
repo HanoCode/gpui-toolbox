@@ -33,9 +33,10 @@ pub use crash::{crash_count, crash_log_path, install_panic_hook};
 pub use dialog::{AlertKind, alert, confirm, open_file, open_files, pick_folder, save_file};
 pub use foreground::{restore_visible, show_all_apps};
 pub use handlers::{PACKAGE_EXTENSION, register_open_handlers};
+/// 全局热键。多个键按 [`Slot`] 分槽登记 —— 槽名由应用层定义，平台层只当不透明的键。
 pub use hotkey::{
-    DEFAULT_SPEC as DEFAULT_HOTKEY_SPEC, Hotkey, HotkeyError, ModifierState, active_spec, bind,
-    last_error, start,
+    FLOAT_SPEC as FLOAT_HOTKEY_SPEC, Hotkey, HotkeyError, LAUNCHER_SPEC as LAUNCHER_HOTKEY_SPEC,
+    ModifierState, Slot, active_spec, bind, last_error, start,
 };
 pub use ipc::{IpcError, IpcListener, forward_to_running_instance, listen_for_requests};
 /// IPC 协议层（line-based，duck-open/1）。给跨进程契约测试用，生产代码不必
