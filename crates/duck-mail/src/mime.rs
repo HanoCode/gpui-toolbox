@@ -643,6 +643,12 @@ pub fn strip_remote_images(html: &str) -> String {
 /// 布局。真「数据表」也会被拍平——损失列对齐，换来整体可读，这笔交换在邮件阅读器
 /// 里是划算的，也是简版客户端的通行做法。
 ///
+/// 属性不再是「整段丢弃」：改写出的 `<div>` 会带上仍然有意义的样式——`style` 原样
+/// 保留，传统 `bgcolor` / `align` 翻成等价声明，`<center>` 补 `text-align:center`。
+/// 块级**背景 / 内边距 / 对齐**由文档模型真正渲染出来（`BlockNode::Root` 的块级
+/// 样式，见 `vendor/gpui-base/GPUI_BASE_PATCHES.md`）；拍平后确实没有意义的属性
+/// （`width` / `height` / `cellspacing` / `role="presentation"`）仍然丢。
+///
 /// 条件注释（`<!--[if mso]><table>…<![endif]-->`）整段跳过：那是给 Outlook 的降级
 /// 布局，解析器本来就把注释丢掉，改写进去只会留下孤儿闭合标签。
 pub fn flatten_email_tables(html: &str) -> String {
@@ -672,7 +678,7 @@ pub fn flatten_email_tables(html: &str) -> String {
             if let Some(end) = find_tag_end(html, i) {
                 let tag = &html[i..=end];
                 match table_tag_replacement(tag) {
-                    Some(replacement) => out.push_str(replacement),
+                    Some(replacement) => out.push_str(&replacement),
                     None => out.push_str(tag),
                 }
                 i = end + 1;
@@ -689,9 +695,13 @@ pub fn flatten_email_tables(html: &str) -> String {
 
 /// 表格族标签 → `<div>` / `</div>`；其它标签返回 `None`（原样保留）。
 ///
-/// 属性整段丢弃：`width` / `bgcolor` / `role="presentation"` 在拍平后的堆叠布局里
-/// 都没有意义，`style` 里的列宽更是注定被文档模型无视。
-fn table_tag_replacement(tag: &str) -> Option<&'static str> {
+/// 属性不再整段丢弃：`style` 现在承载块级背景 / 内边距 / 对齐，文档模型**已经能
+/// 渲染它**（`BlockNode::Root` 的块级样式），所以原样带过去；传统属性
+/// `bgcolor` / `align` 也翻成等价声明。仍然丢弃的只有 `width` `height`
+/// `cellspacing` `role="presentation"` 之类——在拍平后的堆叠布局里本就没有意义。
+///
+/// `<center>` 额外带上 `text-align:center`，否则拍成 `<div>` 就把居中丢了。
+fn table_tag_replacement(tag: &str) -> Option<String> {
     let (body, closing) = match tag.strip_prefix("</") {
         Some(rest) => (rest, true),
         None => (tag.strip_prefix('<')?, false),
@@ -703,11 +713,131 @@ fn table_tag_replacement(tag: &str) -> Option<&'static str> {
         .collect::<String>()
         .to_ascii_lowercase();
     match name.as_str() {
-        "table" | "tbody" | "thead" | "tfoot" | "tr" | "td" | "th" | "center" => {
-            Some(if closing { "</div>" } else { "<div>" })
-        }
+        "table" | "tbody" | "thead" | "tfoot" | "tr" | "td" | "th" | "center" => Some(if closing {
+            "</div>".to_string()
+        } else {
+            format!("<div{}>", div_style_attr(body, name == "center"))
+        }),
         _ => None,
     }
+}
+
+/// 把拍平后仍有意义的样式属性拼成 `<div>` 的 `style` 属性文本（含前导空格）。
+///
+/// 顺序即优先级：`<center>` 的居中最先，传统属性居中，标签自带的 `style` 最后
+/// ——同一份 `style` 里后者胜出，与 CSS 一致。
+fn div_style_attr(body: &str, force_center: bool) -> String {
+    let attrs = tag_attrs(body);
+    let value_of = |name: &str| {
+        attrs
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.trim())
+    };
+
+    let mut declarations: Vec<String> = Vec::new();
+    if force_center {
+        declarations.push("text-align:center".to_string());
+    }
+    // 传统居中属性（`<td align="center">` 是营销邮件里最常见的居中手段）。
+    if let Some(align) = value_of("align")
+        && matches!(
+            align.to_ascii_lowercase().as_str(),
+            "left" | "center" | "right"
+        )
+    {
+        declarations.push(format!("text-align:{}", align.to_ascii_lowercase()));
+    }
+    // 传统背景属性。
+    if let Some(bgcolor) = value_of("bgcolor")
+        && !bgcolor.is_empty()
+    {
+        declarations.push(format!("background-color:{}", bgcolor));
+    }
+    // 标签自带的 style 原样保留（去掉末尾分号，拼起来才不出现 `;;`）。
+    if let Some(style) = value_of("style") {
+        let style = style.trim_end_matches(';');
+        if !style.is_empty() {
+            declarations.push(style.to_string());
+        }
+    }
+
+    if declarations.is_empty() {
+        String::new()
+    } else {
+        format!(" style=\"{}\"", declarations.join(";"))
+    }
+}
+
+/// 按原始字节扫一遍标签体，取出 `name="value"` / `name='value'` / 裸 `name`。
+///
+/// 只用 ASCII 做分隔符（空白、`=`、引号），多字节字符必然整段落在名字或值里，
+/// 切片不会落到字符边界外。
+fn tag_attrs(body: &str) -> Vec<(String, String)> {
+    let bytes = body.as_bytes();
+    let mut attrs: Vec<(String, String)> = Vec::new();
+    let mut i = 0usize;
+    let mut first_token = true;
+    while i < bytes.len() {
+        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
+            i += 1;
+        }
+        let name_start = i;
+        while i < bytes.len()
+            && !bytes[i].is_ascii_whitespace()
+            && bytes[i] != b'='
+            && bytes[i] != b'/'
+        {
+            i += 1;
+        }
+        if name_start == i {
+            i += 1;
+            continue;
+        }
+        // 首个 token 是标签名本身，不是属性。
+        let is_tag_name = first_token;
+        first_token = false;
+        let name = body[name_start..i].to_ascii_lowercase();
+
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'=' {
+            // 裸属性（`disabled`）没有值。
+            if !is_tag_name {
+                attrs.push((name, String::new()));
+            }
+            continue;
+        }
+        i += 1; // `=`
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let value = if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+            let quote = bytes[i];
+            i += 1;
+            let value_start = i;
+            while i < bytes.len() && bytes[i] != quote {
+                i += 1;
+            }
+            let value = body[value_start..i].to_string();
+            if i < bytes.len() {
+                i += 1;
+            }
+            value
+        } else {
+            let value_start = i;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            body[value_start..i].to_string()
+        };
+        if !is_tag_name {
+            attrs.push((name, value));
+        }
+    }
+
+    attrs
 }
 
 /// 扫 `<img>`：返回 `(可能被改写后的 HTML, 是否出现过远程地址)`。
@@ -1605,7 +1735,7 @@ Content-Transfer-Encoding: base64\r\n";
                     <td>B</td></tr></tbody></table>";
         assert_eq!(
             flatten_email_tables(html),
-            "<div><div><div><div>A</div><div>B</div></div></div></div>"
+            "<div><div><div><div style=\"padding:8px\">A</div><div>B</div></div></div></div>"
         );
     }
 
@@ -1614,7 +1744,35 @@ Content-Transfer-Encoding: base64\r\n";
         let html = "<CENTER><TABLE><TR><TD>x</TD></TR></TABLE></CENTER>";
         assert_eq!(
             flatten_email_tables(html),
-            "<div><div><div><div>x</div></div></div></div>"
+            "<div style=\"text-align:center\"><div><div><div>x</div></div></div></div>"
+        );
+    }
+
+    #[test]
+    fn flatten_tables_keeps_block_style_and_legacy_attributes() {
+        // 拍平后块级背景 / 内边距 / 对齐还要靠这些属性，绝不能丢：
+        // `style` 原样带过去，传统 `bgcolor` / `align` 翻成等价声明，
+        // 且自带的 `style` 排在后面（同一份声明里后者胜出）。
+        let html = "<table bgcolor=\"#ffffff\" align=\"center\"><tr>\
+                    <td style=\"padding:0 16px;text-align:right\" align=\"left\">A</td>\
+                    </tr></table>";
+        assert_eq!(
+            flatten_email_tables(html),
+            "<div style=\"text-align:center;background-color:#ffffff\"><div>\
+             <div style=\"text-align:left;padding:0 16px;text-align:right\">A</div>\
+             </div></div>"
+        );
+    }
+
+    #[test]
+    fn flatten_tables_drops_meaningless_attributes_only() {
+        // `width` / `cellspacing` 在堆叠布局里没有意义，继续丢；没有样式就
+        // 不生成空的 `style=""`。
+        let html =
+            "<table width=\"600\" cellspacing=\"0\"><tr><td valign=\"top\">x</td></tr></table>";
+        assert_eq!(
+            flatten_email_tables(html),
+            "<div><div><div>x</div></div></div>"
         );
     }
 

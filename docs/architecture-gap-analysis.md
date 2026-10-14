@@ -63,7 +63,7 @@
 | P2-8 | ✅ 插件能力授权细化（子集授权） | P2 | 2.5 | 无 |
 | P2-9 | ✅ 插件 JS 网络能力落地 | P2 | 4.0 | P2-8（授权前提） |
 | P3-1 | 插件签名与市场治理 | P3 | 6.0 | P1-3（签名基建复用） |
-| P3-2 | i18n 深化（**复数 ✅ · 相对时间 ✅**；日期 / 数字 / 序数未做） | P3 | 3.0 | 无 |
+| P3-2 | i18n 深化（**复数 ✅ · 相对时间 ✅ · 数字分组 ✅ · 日期时间 ✅ · 字节大小下沉 ✅**；序数 / 货币未做 —— 本仓无消费者） | P3 | 3.0 | 无 |
 | P3-3 | 大文件拆分与架构治理 | P3 | 4.0 | 无 |
 | P3-4 | 多平台补齐（Linux / Windows 对齐） | P3 | 3.0 | 无 |
 | P3-5 | 主题深化 + 可选遥测 | P3 | 3.0 | 无 |
@@ -1415,14 +1415,138 @@ clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 `plural_entries_are_well_formed`（源串须同时登记在 `EN`、三列各含恰好一个 `{}`、
 单复数不得同形）、`plurals_and_relative_time`（单复数取词 + 三档边界 + 负数归零）。
 
-**仍未做**：日期时间本地化、数字千分位分组、序数、货币；`trf` 的显式 `{count}` 变体
+**（当时）仍未做**：日期时间本地化、数字千分位分组、序数、货币；`trf` 的显式 `{count}` 变体
 （当前用独立的 `tn` 而不是扩展 `trf`，避免改动 300+ 处既有 `trf` 调用点的语义）。
+—— 数字分组已在**第二批**、日期时间在**第三批**补上；序数与货币经复核**确无消费者**，不再做。
+
+#### 第二批（**2026-10-14 已实施**）：统计数字千分位分组
+
+**做了什么**（`duck-theme::i18n`，纯函数 + 单测）：
+
+| 新增 | 作用 |
+| --- | --- |
+| `number(i64) -> String` | 「统计数字」按千分位分组（`1234567` → `1,234,567`）；`i64::MIN` 走 `unsigned_abs`，取绝对值不溢出 |
+| 守卫 `number_groups_thousands` | 边界（0 / 999 / 1000 / 100 万 / 10 亿）、负数、`i64` 两端 |
+
+**为什么是独立入口、不进 `tn`**：这正是 `tn` 文档里留下的那条分工——`tn` 的「数量」按十进制
+原样输出（「1024 天前」比「1,024 天前」好读），分组只给**统计数字**。所以 `number` 不参与
+`tn` / `relative_time` 的取词路径，是独立入口。
+
+**为什么不收 `lang`**：简繁中文与英文的分组符都是 `,`、小数点都是 `.`，本函数**没有语言分支
+可写**；收一个被忽略的参数只会误导调用方。将来支持分组符不同的语言（法语用窄不换行空格、
+印地语按 2 位分组）再引入参数。
+
+**只用于展示**：输入框回填、写回配置、机器可读字段一律继续 `to_string()`——分组符混进可编辑
+文本会让用户改不了、解析失败（`max_tokens` 输入框即此类）。本批**未动任何输入侧**。
+
+**接入的落点（4 处，全是只读计数展示）**：`pages/assistant.rs` 的「累计用量 / 本轮用量 /
+上下文估算」三处 token 计数（源类型分别是 `u64` / `u32` / `usize`）、
+`pages/settings/pages_logs.rs` 的「{} 个文件」（`usize`）。
+
+**仍未做**：序数、货币。⚠️ 这两项经复核**确无真实消费者**——序数在中文里没有词形变化
+（「第 {} 步」由 `trf` 直接处理），英文侧本仓一律用「Step {} of {}」这种基数写法；货币无处使用。
+按「不许有演示项 / 每个 API 都要有真实功能」（P3-6）的判据，**无消费者就不加 API**。
+
+⚠️ 这里原先还把**日期时间**一并算作「无消费者」，**那个判断是错的**——邮件页有真实落点
+（列表行与阅读器头部都在格式化时间戳），只是当时搜的是 `chrono` / `strftime` 这类库调用，
+漏掉了手写实现。第三批已按真实落点补上。
+
+#### 第三批（**2026-10-14 已实施**）：日期时间 + 字节大小下沉到格式化层
+
+**起因**：清点同源实现时发现**重复规模比原估大得多**——字节可读化不是 3 份而是 **8 份**
+（`duck-app` 里 7 份），日期换算的 `civil_from_days` 更是被抄了 **7 份**。
+
+| 重复项 | 收敛前 | 处置 |
+| --- | --- | --- |
+| 字节可读化（**7 份**，全在 `duck-app`） | `status_support::format_bytes`、`data.rs::human_size`、`ai_tools.rs::human_size`、`mail_data::format_size`、`plugin_center::format_size`、`update.rs::read_progress`、`redis/panels.rs::human_bytes`。口径**四不像**：KB 有的取整有的留 1 位、redis 那份留 **2 位**；`data.rs` 与 `update.rs` **没有 GB 档**（`5 GB` 会印成 `5120.0 MB`） | 新增 `duck_theme::bytes(u64)` 收口；7 份全部删除，只留 `status_support::format_bytes` 一处**同名委派**（它那 6 个导入者一行不动） |
+| 日期时间 | `mail_data::{format_list_time, format_full_time}`、`terminal_data::format_modified`（**3 份**），外加 `mail_data` / `terminal_data` 各一份 `civil_from_days` | 新增 `duck_theme::{datetime_short, datetime_full}`（UTC，ISO 顺序）收口；两处本地实现与两份 `civil_from_days` 一并删除 |
+| 字节可读化（内核 **1 份**） | `duck-db::drivers::human_bytes`（B/KB/MB/GB/TB，1 位小数；sqlite / postgres 指标行共用） | **保留**——它是内核 crate、不许依赖 gpui，用不上 `duck-theme`（见下） |
+
+**新增 API**（`duck-theme::i18n`，纯函数 + 单测）：
+
+| 新增 | 作用 |
+| --- | --- |
+| `bytes(u64) -> String` | `512 B` / `4.0 KB` / `1.2 MB` / `3.0 GB` / `2.5 TB`；**只有 B 省小数**（`0.0 B` 是噪音），档位到 TB 封顶 |
+| `datetime_full(i64) -> String` | `YYYY-MM-DD HH:MM`（UTC）；`≤ 0` 给**空串**——内核解析不出 `Date` 头时写 0，不该印出 1970 年 |
+| `datetime_short(i64) -> String` | `MM-DD HH:MM`（UTC）；列表行宽度紧，省掉年份 |
+| `civil_parts` / `civil_from_days`（私有） | Unix 秒 → `(年, 月, 日, 时, 分)`（Howard Hinnant 算法） |
+| 守卫 | `bytes_use_binary_units_without_decimals_only_for_bytes`、`datetime_is_utc_and_iso_ordered`、`civil_calendar_matches_known_dates` |
+
+**为什么这次收进 `duck-theme`**：本层已是**既定的跨 crate 格式化层**（`t` / `tf` / `tn` / `number` /
+`relative_time` 都在这，第一批的相对时间收敛走的也是同一条路）。`mail_data.rs` 的文件头原先写着
+「收成一处公共依赖反而要跨 crate 暴露一个只为格式化服务的工具函数」——**这条理由现在不成立**了：
+该层已经存在、且 `duck-app` 已全面依赖它，日期与字节格式化没有引入任何**新**的跨 crate 概念。
+该段说明已随本批改写。
+
+**口径变化（两处，都是往「更准」走）**：① `status_support` / `plugin_center` / `update` 三份原先把
+KB **取整**（`1536 B` → `2 KB`），统一后输出 `1.5 KB`；② redis 内存面板原留 **2 位**
+（`1.23 MB`），统一后 1 位（`1.2 MB`）。GB 及以上档位原本就都是 1 位小数，无变化。
+其余（MB / GB 显示、UTC 口径、`data.rs` 与 `update.rs` 缺 GB 档的缺陷）要么不变，要么被修好。
+
+**顺带清掉一个模块**：`duck-app/src/units.rs`（`KB` / `MB` 两个常量）在最后两个消费者
+（`status_support`、`data.rs`、`update.rs`）改调格式化层后**已无人引用**，整个模块删除
+（`main.rs` 去掉 `mod units;`）。它的自测与 `update.rs` 里那条 `read_progress` 断言
+（`"4 KB"`）一并撤掉——口径断言现集中在 `duck-theme::i18n::bytes` 的守卫里。
+
+**`terminal_data` 的一处刻意变更**：修改时间恰好落在**纪元零点**（Unix 0）时原先印
+`01-01 00:00`，现归入「量不出」档给 `—`——不少系统用 0 表示「没有 mtime」，印成 1970 年是误读。
+远端列表的「修改时间」留白会被当成「还没加载出来」，所以给破折号而不是空串。
+
+**仍未收敛的（结构性，不是遗漏）**：内核 crate 里仍有 5 份 `civil_from_days`
+（`duck-platform::logging`、`duck-db::drivers::mssql`、`duck-redis::decode`、
+`duck-mail::{compose, db::repo::search}`）与 1 份字节可读化（`duck-db::drivers::human_bytes`）。
+它们**不许依赖 gpui**，于是**用不上** `duck-theme`（本层依赖 gpui）；这些实现都是对的、
+没有正确性缺陷可修（`human_bytes` 的输出与 `duck_theme::bytes` **逐字一致**），
+硬收口得另造一个 gpui-free 的公共 crate（新 crate + MSRV 审计），收益不成比例。
+已在 `duck-theme::i18n::{civil_from_days, bytes}` 的文档里逐一列名。
+
+**仍未做**：序数、货币（无消费者，见上）；时区换算（`docs/email-design.md` 的未决项，
+要先定「引入时区库 vs 走平台 API」）；英文的 `MM/DD/YYYY` + 12 小时制 —— 那是**可见的界面变更**，
+需产品决定，故 `datetime_*` 刻意**不收 `lang`**（与 `number` 同理，不收被忽略的参数）。
 
 ### P3-3 大文件拆分与架构治理
-**现状（证据）**：`pages/settings.rs` **2321 行**、`pages/plugin_center.rs` **1632 行**、`pages/toolbox.rs` **1441 行**。
-**方案**：按「**页面壳 / 数据快照 / 控件构造**」三块拆分；先拆 `settings.rs`（含 8 个页），
-再拆 `plugin_center.rs`、`toolbox.rs`。拆分期间**禁止混入功能改动**（AGENTS 3.1 不顺手重构的例外需先确认）。
-**涉及**：`duck-app/src/pages/**`。**估工 4.0 人日。**
+**现状（2026-10-14 实测；原文那三行行数记录已全部过期）**：`pages/db.rs` **22,447 行**（全仓第一大，**仍在被并发会话扩充**）、
+`pages/mail.rs` 6,377、`pages/terminal_canvas.rs` 3,475、
+`pages/assistant.rs` 2,706、`pages/plugin_center.rs` 1,747、`pages/toolbox.rs` 1,214。
+（`pages/redis.rs` 原 6,427 行 → **10-14 已拆**为 `pages/redis/`；`pages/terminal.rs` 原 5,416 行 → **同日已拆**为 `pages/terminal/`。）
+**方案**：按「**页面壳 / 数据快照 / 控件构造**」三块拆分；其中「控件构造」仍会很大，再按页面细分。
+**进度**：
+- `pages/settings.rs`（5,557 行）**已拆**（2026-10-14）→ `pages/settings/` 13 个文件（最大 `pages_ai.rs` 1,478 行）。
+- `pages/redis.rs`（6,427 行）**已拆**（2026-10-14）→ `pages/redis/` 10 个文件（最大 `panels.rs` 1,326 行）。
+- `pages/terminal.rs`（5,416 行）**已拆**（2026-10-14）→ `pages/terminal/` 14 个文件（最大 `render_sftp.rs` 783 行）。
+- 三者均**零行为变更**，按 `pages/mod.rs` 的裸 `mod x;` 与 `pub use x::Foo;` **一字未改**（目录模块化对上层透明）。
+- **下一批是 `db.rs`（隔离编辑文件，须等并发会话收口）；再往后 `mail.rs` / `terminal_canvas.rs` / `assistant.rs`。**
+拆分期间**禁止混入功能改动**（AGENTS 3.1 不顺手重构的例外需先确认）。
+**涉及**：`duck-app/src/pages/**`。
+
+#### 拆分做法（2026-10-14 实测，可复用）
+
+1. **目录模块化对上层透明**：`pages/x.rs` → `pages/x/mod.rs` 之后，`pages/mod.rs` 里的裸 `mod x;`
+   一个字都不用改（`pub use x::{...}` 也可原样保留）。
+2. **子模块首行 `use super::*;` 就够**——实测它会一并带进父模块的**私有 `use` 绑定、私有类型
+   与 `#[macro_export]` 宏**（后代规则 + glob）。所以搬迁后的代码基本不用补 import。
+3. 搬出父模块的项补可见性：子模块里的 `pub(super)` == 「可见于父模块及其全部后代」，
+   与原先「模块私有」精确保留同一可见范围。**但类型要用 `pub`**——否则它作为
+   `pub struct XxxView` 的字段类型会触发 `private_interfaces`。
+4. ⚠️ **子模块里 `super::` 的含义变了**：从原先的「`pages`」变成「父模块」。
+   原来的 `super::licenses::stats()` 搬进子模块后必须写 `super::super::licenses::stats()`。
+5. ⚠️ **单个巨型 `impl` 必须按方法切开**（一个 `impl` 块没法跨文件）。做法：写「掩码 + 括号配对」
+   扫描器（先把字符串 / 字符 / 注释替换成等长空格，再数括号），按方法边界切成若干 `impl X { ... }`
+   块分放各文件——**inherent impl 允许写在同 crate 的任意模块**。搬出去的方法同样补 `pub(super)`。
+6. **验证靠「无损」而非「看着对」**：切分脚本内置三重断言——① 行范围无缝铺满目标区间；
+   ② 顶层段恰好铺满 impl 之外的区域；③ 把切出的片段按原序拼回去，逐字节等于原文件。
+7. 工具留在 `/tmp/splitkit/`（会话级，未入库）。
+8. ⚠️ **原 `pub(super)` 的方法搬进子模块后要升为 `pub(crate)`**：`pub(super)` 是**相对声明处所在模块**的
+   —— 原来在 `pages::terminal` 写 `pub(super)` 等于「可见于 `pages`」，搬进 `pages::terminal::xxx` 后会
+   降级成「只可见于 `terminal`」，而**兄弟模块** `pages::terminal_canvas` 与外部 `crate::actions` 真的在调
+   它们（`close_tab_at` / `close_active_tab` / `clear_session` / `active_tab` / `ssh_endpoint` / `ssh_target` /
+   `open_find` / `find_highlight` / `maybe_refresh_find` 等 17 个）。仓库既有 8 处跨页方法本就用 `pub(crate)`，
+   风格一致。**无修饰（模块私有）的方法在 `terminal` 之外本就不可调用**（Rust 可见性保证），补 `pub(super)` 即精确还原。
+9. **`#[cfg(test)] mod tests` 外迁成 `tests.rs`**：父模块留 `#[cfg(test)] mod tests;`，文件正文去掉
+   `mod tests {` 外壳（保留的 4 空格基础缩进交给 rustfmt 重排）。其中 `use super::*;` 指向的仍是 `terminal`，
+   **不能**做 `super::` → `super::super::` 替换 —— 本批唯一豁免点。
+10. ⚠️ **一个文件只包一个 `impl X { ... }`**：按方法切段后若逐段各包一层 `impl`，会生成 95 个 `impl` 块
+    （能编译，但 rustfmt 想删块间空行、可读性极差）。应「每文件一个 `impl X {`，段首尾相接」。
 
 ### P3-4 多平台补齐
 **现状**：`release.yml` build 矩阵为 **macos-arm64 / macos-x64 / windows-x64**，**无 Linux**。
@@ -1433,7 +1557,7 @@ clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 ### P3-5 主题深化 + 可选遥测
 **方案**：自定义主题的**导入 / 导出**（JSON，与 `duck-theme` 的 `ResolvedTheme::build(builtin, accent, scale, font_size)` 对齐）；
 可选匿名统计（**默认关闭**、明确告知、本地可查看已发送内容）。
-**涉及**：`duck-theme`、`pages/settings.rs`（外观页）、`i18n.rs`。**估工 3.0 人日。**
+**涉及**：`duck-theme`、`pages/settings/pages_appearance.rs`（外观页）、`i18n.rs`。**估工 3.0 人日。**
 
 ### P3-6 消灭「演示项」：图标不许是死按钮（**2026-10-12 已实施**）
 
@@ -1452,7 +1576,7 @@ clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 | `toolbox.rs` 状态栏：全部暂停 / 全部开始 | 弹「演示：…（未接入任务后端）」 | 本应用**没有全局任务队列**（工具箱是工具页签，不是下载任务队列 —— 与 P2-3 删 `compact_rows` 同一理由） | **删除**（含 `render_status_action`） |
 | `toolbox.rs` 状态栏：完成后关机（`Power` 图标 + 预设下拉） | 弹「演示：…（未接入宿主电源能力）」 | 「完成后」的前提（任务队列）不存在；独立定时关机是另一个功能，不在本次范围 | **删除**（含 `render_shutdown_control` / `SHUTDOWN_PRESETS_MIN`） |
 | `toolbox.rs` 状态栏：剩余空间 | 真实（`statfs`） | — | **保留**，并补上插件 / 工具**真实计数** |
-| `pages/terminal.rs` 模块头 | 仍写着「TabKind::Ssh / Sftp 仍是演示数据」 | 10-12 已接真实 `ssh` / `scp` | **改写注释**（代码早已真实，注释过期） |
+| `pages/terminal/mod.rs` 模块头 | 仍写着「TabKind::Ssh / Sftp 仍是演示数据」 | 10-12 已接真实 `ssh` / `scp` | **改写注释**（代码早已真实，注释过期） |
 
 **状态栏现在的内容**：左 = 「{} 个插件 · {} 个工具」（读注册表 —— 与侧栏同一份真源），右 = 家目录所在卷剩余空间。
 **两样都取不到时整条不渲染**（`render_status_bar` 返回 `Option<AnyElement>`），不留一条空栏占位。
@@ -1466,7 +1590,7 @@ i18n：新增 2 条（`{} 个插件 · {} 个工具` / `已重新扫描插件目
 `src/ai.rs` 当时有 **50 条中文尚无英译**，`duck-theme` 的 `every_chinese_literal_is_translated` 因此是红的。
 2026-10-12 14:30 复核：该守卫**已全绿**（P3-7 一轮的 `cargo test -p duck-theme` 通过）。
 
-**涉及文件**：`duck-app/src/actions.rs`、`duck-app/src/pages/toolbox.rs`、`duck-app/src/pages/terminal.rs`、
+**涉及文件**：`duck-app/src/actions.rs`、`duck-app/src/pages/toolbox.rs`、`duck-app/src/pages/terminal/mod.rs`、
 `duck-theme/src/i18n.rs`、本文档。**估工 0.5 人日（已完成）**
 
 ---
@@ -1668,8 +1792,12 @@ P2-6 通知（**已完成**）→ P2-8 子集授权（**已完成**）→ P2-9 �
 > 自绘 toast 让「系统通道」拿不到文本而按设计静默丢弃。两个都是**只有跑起来数得出来**的问题，
 > 所以先补了 9 条无头行为测试再去调界面。详见 P2-6 章节。
 
-### 第四步（P3 生态与治理，约 19 人日）— 进度 0 / 19
+### 第四步（P3 生态与治理，约 19 人日）— 进度 1.0 / 19（P3-3 进行中）
 P3-3 大文件拆分（**加功能前先拆，否则技术债复利**）→ P3-1 插件签名 → P3-2 i18n → P3-4 多平台 → P3-5 主题/遥测。
+> **P3-3 进度**：`pages/settings.rs`（5,557 行）→ `pages/settings/` 13 个文件、`pages/redis.rs`（6,427 行）→
+> `pages/redis/` 10 个文件、`pages/terminal.rs`（5,416 行）→ `pages/terminal/` 14 个文件（均 2026-10-14，零行为变更）。
+> 剩余大头按体量排：`db.rs`（22,447）→ `mail.rs`（6,377）→ `terminal_canvas.rs`（3,475）→ `assistant.rs`（2,706）。
+> ⚠️ `db.rs` 是隔离编辑文件，**必须等并发会话收口**再动。
 
 ### 贯穿性规则（来自 AGENTS.md，每项都必须满足）
 - 任何文件新增 / 修改 / 删除**先列清单取得确认**（3.1）；

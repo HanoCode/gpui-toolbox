@@ -256,16 +256,19 @@ mod tests {
     }
 
     /// 密文被动过一个字节就必须解不开 —— 这是 AEAD 的存在意义。
+    ///
+    /// 篡改落在**解码后的字节**上、最后再重新编码：早期写法直接在密文 hex 字符串的
+    /// 末位做 `wrapping_add(1)`，而末位字符域是 `0-9a-f`，取到 `9` / `f` 时会变成
+    /// `:` / `g` 这种**非法 hex**，于是命中的是 [`VaultError::Invalid`]（格式错）而
+    /// 不是 [`VaultError::Crypto`]（认证失败）—— 2/16 的概率间歇性报红，与被测的
+    /// 认证语义无关。
     #[test]
     fn tampered_ciphertext_is_rejected() {
         let sealed = seal("integrity matters").expect("加密");
-        let mut bytes = sealed.into_bytes();
+        let mut bytes = unhex(&sealed).expect("密文是 hex");
         let last = bytes.len() - 1;
-        bytes[last] = bytes[last].wrapping_add(1);
-        assert_eq!(
-            open(&String::from_utf8(bytes).unwrap()),
-            Err(VaultError::Crypto)
-        );
+        bytes[last] ^= 0x01;
+        assert_eq!(open(&hex(&bytes)), Err(VaultError::Crypto));
     }
 
     /// 坏格式（奇数长度、非 hex、过短）一律 `Invalid`，不是恐慌。

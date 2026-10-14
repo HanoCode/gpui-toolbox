@@ -45,3 +45,12 @@ objc2-app-kit.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-registry.workspace = true
+
+# 跨进程协议契约测试（`tests/ipc_protocol.rs`）需要临时目录。
+# 钉 `=3.27.0`——已在 lock 文件里（实测 3.27.0），避免锁链重排。
+# 许可证 MIT OR Apache-2.0。
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[lints]
+workspace = true

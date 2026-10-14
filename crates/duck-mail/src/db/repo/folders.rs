@@ -150,6 +150,50 @@ pub fn uidvalidity(conn: &Connection, id: i64) -> Result<Option<i64>> {
         .flatten())
 }
 
+/// 某文件夹的**正文回填进度**。
+///
+/// `folders` 表的 `backfill_cursor` / `backfill_done` 两列在 001 迁移里就建好了
+/// （对应 `docs/email-design.md` §4.6「首轮不把几万封正文全拖下来」的取舍），但直到
+/// 正文自动下载落地才出现第一个写者：**按本地行 id 从新到老推进**，推到底置 `done`，
+/// 之后每轮同步只做「最新若干封」的预取。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BackfillState {
+    /// 已经回填到哪。语义就是 SQL 里的 `messages.id < cursor`；`None` = 还没开始。
+    pub cursor: Option<i64>,
+    /// 历史正文是否已经回填干净（再取一批为空即置位）。
+    pub done: bool,
+}
+
+/// 读一个文件夹的正文回填进度。
+pub fn backfill_state(conn: &Connection, id: i64) -> Result<BackfillState> {
+    conn.query_row(
+        "SELECT backfill_cursor, backfill_done FROM folders WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(BackfillState {
+                cursor: row.get(0)?,
+                done: row.get::<_, i64>(1)? != 0,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| MailError::NotFound(format!("folder {id}")))
+}
+
+/// 写正文回填进度（游标 + 是否已完成）。
+pub fn set_backfill_state(
+    conn: &Connection,
+    id: i64,
+    cursor: Option<i64>,
+    done: bool,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE folders SET backfill_cursor = ?2, backfill_done = ?3 WHERE id = ?1",
+        params![id, cursor, done as i64],
+    )?;
+    Ok(())
+}
+
 /// 删除本账户里**不在 `keep` 中**的文件夹（服务端已删掉的）。
 ///
 /// 返回删掉的条数。邮件随外键级联删除。
@@ -286,6 +330,30 @@ mod tests {
         next.uidvalidity = Some(2);
         upsert(&conn, acct, &next).unwrap();
         assert_eq!(uidvalidity(&conn, id).unwrap(), Some(2));
+    }
+
+    /// 正文回填进度：新文件夹是「没推过游标、也没推完」，写完能原样读回，
+    /// 且**不与增量同步的水位串台**。
+    #[test]
+    fn backfill_state_round_trips_without_touching_the_sync_watermark() {
+        let (conn, acct) = mem();
+        let id = upsert(&conn, acct, &f("INBOX", FolderRole::Inbox)).unwrap();
+        assert_eq!(
+            backfill_state(&conn, id).unwrap(),
+            BackfillState {
+                cursor: None,
+                done: false
+            }
+        );
+
+        set_uid_state(&conn, id, Some(1), Some(9), 8).unwrap();
+        set_backfill_state(&conn, id, Some(42), true).unwrap();
+        let state = backfill_state(&conn, id).unwrap();
+        assert_eq!(state.cursor, Some(42));
+        assert!(state.done);
+        // 两套进度各管各的：回填推到底不该动 `last_seen_uid`——那是增量同步的水位，
+        // 被回填改掉会让「拉新邮件」从错误的位置继续。
+        assert_eq!(get(&conn, id).unwrap().last_seen_uid, 8);
     }
 
     #[test]

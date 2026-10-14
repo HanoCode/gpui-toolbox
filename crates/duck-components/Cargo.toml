@@ -21,6 +21,13 @@ gpui-component.workspace = true
 # （E0599）。`gpui-component` 没有开这个 feature，所以上游从未走过这条路径。
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+# 渲染快照测试（`tests/render_snapshot.rs`）：`Window::render_to_image` 返回
+# `image::RgbaImage`，基线指纹用 `sha2` SHA-256 算（不用 std `DefaultHasher`，
+# 因为后者跨 Rust 版本不稳定）。
+image = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

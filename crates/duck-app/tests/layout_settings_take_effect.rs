@@ -35,7 +35,7 @@ use gpui_component::{Root, init as component_init, v_flex};
 /// 下拉控件的 debug 选择器（定位点击坐标用）。
 const CONTROL: &str = "layout-side-control";
 
-/// 被测视图：按 `pages/settings.rs` 的同款方式渲染一行「右栏位置」，
+/// 被测视图：按 `pages/settings/pages_appearance.rs` 的同款方式渲染一行「右栏位置」，
 /// 并在渲染时把当前外观的 `nav_gap` 与侧别记进探针。
 ///
 /// 视图本身**从不** `cx.notify()`——工具箱侧栏就是这个形态，传播链守的就是它。

@@ -38,6 +38,10 @@ pub(super) struct InlineHighlight {
     pub(super) style: HighlightStyle,
     pub(super) font_family: Option<SharedString>,
     pub(super) font_size_scale: Option<f32>,
+    /// DUCK PATCH: absolute font size in CSS pixels from an inline
+    /// `style="font-size: …"`. Takes precedence over [`Self::font_size_scale`]
+    /// when converting to per-segment scales (see [`text_size_ranges`]).
+    pub(super) font_size: Option<Pixels>,
 }
 
 impl InlineHighlight {
@@ -50,6 +54,9 @@ impl InlineHighlight {
         if other.font_size_scale.is_some() {
             self.font_size_scale = other.font_size_scale;
         }
+        if other.font_size.is_some() {
+            self.font_size = other.font_size;
+        }
         self
     }
 }
@@ -60,6 +67,7 @@ impl From<HighlightStyle> for InlineHighlight {
             style,
             font_family: None,
             font_size_scale: None,
+            font_size: None,
         }
     }
 }
@@ -165,9 +173,15 @@ pub(super) fn text_runs(
 
 /// Splits text into contiguous ranges sharing one font size. GPUI runs can
 /// vary the font but not its size, so each range needs its own shaped line.
+///
+/// DUCK PATCH: `base_font_size` is the paragraph's unmodified font size; a
+/// highlight that names an absolute size (inline `style="font-size: …"`)
+/// converts to a scale against it. Relative scales (inline code) keep working
+/// when the absolute size is absent.
 pub(super) fn text_size_ranges(
     text_len: usize,
     highlights: &[(Range<usize>, InlineHighlight)],
+    base_font_size: Pixels,
 ) -> Vec<(Range<usize>, f32)> {
     let mut ranges: Vec<(Range<usize>, f32)> = Vec::new();
     let mut push = |range: Range<usize>, scale: f32| {
@@ -186,7 +200,12 @@ pub(super) fn text_size_ranges(
     let mut cursor = 0;
     for (range, highlight) in highlights {
         push(cursor..range.start, 1.);
-        push(range.clone(), highlight.font_size_scale.unwrap_or(1.));
+        let scale = highlight
+            .font_size
+            .map(|size| f32::from(size) / f32::from(base_font_size))
+            .or(highlight.font_size_scale)
+            .unwrap_or(1.);
+        push(range.clone(), scale);
         cursor = range.end;
     }
     push(cursor..text_len, 1.);
@@ -1958,6 +1977,7 @@ mod tests {
             style,
             font_family: Some(SharedString::from("Mono")),
             font_size_scale: None,
+            font_size: None,
         }
     }
 

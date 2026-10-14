@@ -22,7 +22,18 @@ const MOTION_DURATION: Duration = Duration::from_millis(200);
 /// 拖拽本身没有上限（`width_range` 只给下限与常规上限），窗口一窄就会把内容区挤没；
 /// 这里再压一道「占比上限」，保证面板旁边永远留得住东西。取自 herdr `panel_resize`
 /// 的同名约束（`MAX_SHARE = 0.6`）。
+///
+/// ⚠️ 它是**布局期的闸门**，不是只改 [`SidebarState::width`] 的建议值——布局真源是
+/// `ResizableState` 的实测尺寸（见 [`SidebarPanel::clamp_to_layout`]）。
 const MAX_SHARE: f32 = 0.6;
+
+/// 侧栏不论被拖多宽、窗口多窄，都必须给主内容留下的最小宽度。
+///
+/// 主内容侧是**业务页面**：编辑器工具条、结果网格、对象树各有自己的最小宽，被压到
+/// `PANEL_MIN_SIZE`（100px）时并不会变窄，而是从面板里**溢出来**（gpui 的 `div` 默认
+/// 不裁剪子内容），画到侧栏上去。2026-10-14 实机现象「右栏背景透出主内容」就是这条路：
+/// 侧栏占了内容区一大半 + 侧栏没有底色 + 溢出的内容画进了侧栏区域。
+const MIN_CONTENT_WIDTH: Pixels = px(240.);
 
 /// 侧栏宽度与透明度共用的展开量；反向切换从当前帧继续，不跳到端点。
 struct SidebarMotion {
@@ -266,6 +277,12 @@ impl SidebarPanel {
                 )
             })
         });
+        // 布局期投影：把记住的宽度收进「窗口占比」与「给主内容留量」两道上限里。
+        // 只改 `state.width` 不够 —— 布局真源是 `ResizableState` 的实测尺寸
+        // （`ResizablePanel` 用 `panel_state.size` 走 `flex_basis`），所以连 `size_range`
+        // 的上限一起收，`.min(size_range.end)` 那道夹子才落在同一道闸门上。
+        let (width, width_range) =
+            Self::clamp_to_layout(width, width_range, split.read(cx).container_size());
         Self {
             id: id.into(),
             state: state.clone(),
@@ -329,6 +346,79 @@ impl SidebarPanel {
         width.min(total * MAX_SHARE)
     }
 
+    /// 把侧栏宽度收进**布局期**的上限，返回（宽度，收紧后的宽度范围）。
+    ///
+    /// 上限取两道的较小者：
+    /// - `MAX_SHARE`：侧栏最多占内容区 60%；
+    /// - `container - MIN_CONTENT_WIDTH`：主内容至少留 [`MIN_CONTENT_WIDTH`]。
+    ///
+    /// 范围上限也一并收紧，是因为 `ResizablePanel` 最终用
+    /// `flex_basis(panel_state.size.min(size_range.end).max(size_range.start))` 定宽 ——
+    /// 只改宽度而不改范围，实测尺寸一超过范围上限就会**被放大回**上限之外的值。
+    ///
+    /// 分栏组还没量到尺寸时（首帧 `container == 0`）原样返回，与 [`Self::clamp_to_share`]
+    /// 同一口径；窗口极窄时下限仍然生效（`cap` 不会低于 `range.start`）。
+    fn clamp_to_layout(
+        width: Pixels,
+        range: Range<Pixels>,
+        container: Pixels,
+    ) -> (Pixels, Range<Pixels>) {
+        if container <= px(0.) {
+            return (width, range);
+        }
+        let cap = (container * MAX_SHARE)
+            .min(container - MIN_CONTENT_WIDTH)
+            .clamp(range.start, range.end);
+        (width.clamp(range.start, cap), range.start..cap)
+    }
+
+    /// 主内容单元格（展开态）：铺满分栏面板，并**必须裁剪**。
+    ///
+    /// gpui 的 `div` 默认不裁剪子内容：业务页面在窄面板里放不下自己的最小宽时，会直接
+    /// 画到侧栏区域上去（2026-10-14「右栏背景透明」的实机现象）。
+    ///
+    /// 裁剪挂在内层 `div` 而不是 `ResizablePanel` 上：面板的拖拽把手是绝对定位在面板
+    /// 左缘的子元素，给面板加 `overflow_hidden` 会把它切掉（见 `ResizablePanel` 的
+    /// 「Reserved styles」）。对 `deferred` 渲染的下拉 / 弹层无影响——gpui 的
+    /// `deferred` 走 `defer_draw(.., None)`，不继承祖先的裁剪。
+    fn content_cell(content: AnyElement) -> AnyElement {
+        div()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .child(content)
+            .into_any_element()
+    }
+
+    /// 主内容单元格（收起 / 动画态）：占满剩余宽度（`flex_1`），同样裁剪。
+    fn content_cell_flex(content: AnyElement) -> AnyElement {
+        div()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .child(content)
+            .into_any_element()
+    }
+
+    /// 侧栏单元格：一律自带**不透明底色**。
+    ///
+    /// 侧栏是「退后」的一层平面（与设置页左栏、活动栏同一族的 `chrome`），没有底色时
+    /// 任何位于其下的像素都会透出——包括主内容溢出画上来的部分，观感就是「侧栏背景
+    /// 透明」。底色画在整块单元格上（而不只是内容上），空态文案周围也才是完整平面。
+    fn surface_cell(sidebar: AnyElement, cx: &App) -> AnyElement {
+        div()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .bg(active_theme(cx).extended().colors.chrome)
+            .child(sidebar)
+            .into_any_element()
+    }
+
     fn split_has_content(state: &SidebarState, content_ix: usize, cx: &App) -> bool {
         state
             .split
@@ -355,6 +445,8 @@ impl RenderOnce for SidebarPanel {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         if self.amount == 1. {
             let state = self.state;
+            let content = Self::content_cell(self.content);
+            let sidebar = self.sidebar.map(|sidebar| Self::surface_cell(sidebar, cx));
             // 左侧布局：[侧栏(0) | 内容(1)]，把手改侧栏宽，读 sizes()[0]；
             // 右侧布局：[内容(0) | 侧栏(1)]，把手在侧栏左缘，改内容宽、余量给
             // 侧栏，侧栏宽读 sizes()[1]。两侧都复位内容面板，让它保持弹性重测。
@@ -371,13 +463,13 @@ impl RenderOnce for SidebarPanel {
                             state.update(cx, |state, cx| state.resize(width, cx));
                         }
                     })
-                    .child(resizable_panel().child(self.content))
+                    .child(resizable_panel().child(content))
                     .child(
                         resizable_panel()
                             .size(self.width)
                             .flex_none()
                             .size_range(self.width_range)
-                            .children(self.sidebar),
+                            .children(sidebar),
                     )
                     .into_any_element()
             } else {
@@ -397,19 +489,14 @@ impl RenderOnce for SidebarPanel {
                             .size(self.width)
                             .flex_none()
                             .size_range(self.width_range)
-                            .children(self.sidebar),
+                            .children(sidebar),
                     )
-                    .child(resizable_panel().child(self.content))
+                    .child(resizable_panel().child(content))
                     .into_any_element()
             }
         } else {
             let extended = active_theme(cx).extended();
-            let content_cell = div()
-                .flex_1()
-                .h_full()
-                .min_w_0()
-                .min_h_0()
-                .child(self.content);
+            let content_cell = Self::content_cell_flex(self.content);
             let mut row = h_flex().size_full().min_w_0().min_h_0();
             if self.amount > 0. {
                 // 动画尚未完全收起时仍需要侧栏内容，以完成淡出。
@@ -423,6 +510,9 @@ impl RenderOnce for SidebarPanel {
                             .w(self.width)
                             .h_full()
                             .opacity(self.amount)
+                            // 与展开态同一块平面：侧栏没有底色时，收缩动画会一路透出
+                            // 下面的内容（见 [`Self::surface_cell`]）。
+                            .bg(extended.colors.chrome)
                             .when(self.right, |edge| edge.border_l(extended.stroke.thin))
                             .when(!self.right, |edge| edge.border_r(extended.stroke.thin))
                             .border_color(extended.colors.hairline)
@@ -486,5 +576,43 @@ mod tests {
             "总宽 400 的上限应约 240，实得 {width:?}"
         );
         assert!(width < px(280.), "280 超过上限，必须被削");
+    }
+
+    /// 布局期钳制：宽度与**范围上限**一起收（范围上限是 `flex_basis` 的那道夹子）。
+    ///
+    /// 窗口 900、记住 400：60% 是 540、给主内容留 240 后还有 660 —— 两道上限都不咬，
+    /// 宽度原样保留（用户拖宽的结果要能存住）。
+    #[test]
+    fn layout_clamp_keeps_the_width_when_the_window_is_wide_enough() {
+        let (width, range) = SidebarPanel::clamp_to_layout(px(400.), px(260.)..px(400.), px(900.));
+        assert_eq!(width, px(400.));
+        assert_eq!(range, px(260.)..px(400.));
+    }
+
+    /// 两道上限取较小者；窗口极窄时顶到下限，而不是被压到下限之下。
+    #[test]
+    fn layout_clamp_prefers_the_tighter_of_the_two_limits() {
+        // 容器 600：60% = 360，留 240 后剩 360 → 上限 360（比记住的 400 紧），必须被削。
+        let (width, range) = SidebarPanel::clamp_to_layout(px(400.), px(260.)..px(400.), px(600.));
+        assert_eq!(width, px(360.));
+        assert_eq!(range, px(260.)..px(360.));
+
+        // 窗口够宽时上限不紧于 `width_range`：上限收到范围自身上限（400），宽度原样。
+        let (width, range) = SidebarPanel::clamp_to_layout(px(400.), px(260.)..px(400.), px(900.));
+        assert_eq!(width, px(400.));
+        assert_eq!(range, px(260.)..px(400.));
+
+        // 容器 400：60% = 240，留 240 后只剩 160 → 160 更小，但不得低于下限 260。
+        let (width, range) = SidebarPanel::clamp_to_layout(px(400.), px(260.)..px(400.), px(400.));
+        assert_eq!(range, px(260.)..px(260.));
+        assert_eq!(width, px(260.), "极窄窗口下顶到下限，而不是被压到下限之下");
+    }
+
+    /// 首帧（分栏组还没量到尺寸）原样返回：不能把侧栏当成「占比 0」压没。
+    #[test]
+    fn layout_clamp_leaves_everything_alone_before_the_group_has_bounds() {
+        let (width, range) = SidebarPanel::clamp_to_layout(px(400.), px(260.)..px(400.), px(0.));
+        assert_eq!(width, px(400.));
+        assert_eq!(range, px(260.)..px(400.));
     }
 }

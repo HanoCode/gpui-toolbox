@@ -450,6 +450,9 @@ pub trait KeyValueExt  { fn scan_keys(&self, ...) -> ...; }
 - 行上限：SQL 编辑器结果默认截断 10 000 行（`CAP+1` 探测"还有更多"），表浏览走真分页（主键稳定排序，`limit+1` 探测）。
 - **暂存式编辑**（dbui 模型）：单元格编辑先落 `pending_edits/inserts/deletes`（按主键），网格画删除线；⌘S 折叠成 `RowBatch` 单事务提交，⌘Z 丢弃。写路径统一经 `RelationalExt::apply_changes`。
 - 结果可编辑性判定：先问 `sqlintel`（语句是否可定位单表 + 主键，dbx `sql_editability` 思想），不可判定则只读。
+- **就地编辑的编辑态视觉**（2026-10-14 新增，dbx / dbflux 同款）：双击进入编辑后，编辑态必须**一眼可辨**——① 编辑格整体换 2px 强调描边（`extended.stroke.strong` + `tokens.colors.ring`）并提亮底色（`surface`），输入框本身 `appearance(false)`，视觉全靠这层框（后写的 `.border` 覆盖按边的 `border_r`）；② 进入编辑即聚焦 + **全选**（`select_all`），高亮选区本身就是「输入框已接管这一格」的信号，直接打字即可整格覆盖；③ 正在编辑的行，行号格用「文本选区底色 + 强调色文字」跟着点亮。
+- **复制永远作用于选区**（2026-10-14 新增，dbx 同款）：右键「复制 ▸」与 `⌘C` 的目标 = 勾选行（多选）> 单击选中行 > 整份结果；子菜单父项文案跟着目标走（「复制所选 N 行 / 复制选中行 / 复制全部」），toast 回执同口径。行子集复制 = 列原样共享 + 按下标取行重建 `ResultSet`（选中行通常个位数，克隆可忽略；整份结果仍走零拷贝原路）。要复制全部先全选（表头勾选框 / `⌘A`）。
+- **网格拥有剪贴板键**（2026-10-14 新增，dbx 同款）：结果区容器 `.track_focus` + 点击即聚焦（`grid_focus`）——按键派发沿焦点链走，不聚焦的话 `⌘C / ⌘A / ⌘X / ⌘V` 全被先前聚焦的 SQL 编辑器更深一层抢走（用户看到的就是「结果区不支持系统快捷键」）。四个键都绑在页面 `"Database"` 上下文：`⌘C` 复制所选行；`⌘A` 全选 / 清空勾选；`⌘X` 剪切选中格（复制文本 + 原格暂存 `NULL`）；`⌘V` 粘贴剪贴板文本到选中格（暂存新值）。剪切 / 粘贴都走 `pending_edits` 暂存路径（`⌘Z` 可退、提交前可整批丢弃）；就地编辑打开时这些键归输入框（更深的编辑器上下文先派发，原生语义）。
 
 ### 4.6 SQL 智能层（sqlintel）
 
@@ -721,6 +724,442 @@ status / duration_ms），同时在 `DatabasePage::hook_log` 留一份**会话�
 日志 / `ai.db`），**不含 `audit` 表**——「留证」这条链还差一步（审计目前既没有独立导出
 入口，也不跟随备份）。所以「保留条数」那条提示语说的是「要长期留证就把上限调大」，而不是
 「去导出」：界面文案不许承诺一个不存在的功能。
+
+### 4.13 右栏的自动展开 / 收起（2026-10-14 新增）
+
+**问题**：右栏（`with_right_sidebar`）是 **shell 级**的 —— 一条路由一个 `Entity<SidebarState>`，
+页面既拿不到它的展开态、也改不动它。于是「点按钮 → 内容落在右栏」这一类入口在右栏恰好收着时，
+用户什么都看不见。此前 db 页唯一的兜底是往状态栏写一句「查询历史已切到右侧栏。」（代码注释
+原话：*状态栏那句话是唯一能让「右栏恰好收着」这种情形下也看得见反馈的地方*）—— 文案看得见，
+内容仍然看不见；单元格详情（网格行尾 ⓘ / 右键「单元格详情」）连文案都没有。
+
+**修法**（三层，零新增依赖）：
+
+| 层 | 位置 | 内容 |
+| --- | --- | --- |
+| shell | `duck-shell/src/view.rs` | `active_right_sidebar_open(&self, cx) -> bool`（只读；**不**复用 `active_right_sidebar()` 的 `.expect` —— 它在点击处理器里被调用，无活跃路由时按「收起」回答优于 panic）；`set_active_right_sidebar_open(open, cx)`（正向极性别名，内转既有的 `set_active_right_sidebar_collapsed(!open)`，避免调用点写双否定） |
+| app | `duck-app/src/app.rs` | `right_sidebar_open(cx) -> Option<bool>` / `set_right_sidebar_open(cx, open) -> bool`，与 `navigate_to` / `open_tool` 同层，走 `Desktop::main_views` → shell，**不新增全局状态** |
+| 页面 | `duck-app/src/pages/db.rs` | `reveal_right_dock(dock, cx)` / `dismiss_cell_dock_if_auto(cx)` + 页面级 `right_dock_auto: bool` |
+
+**交互口径**（核心是「不跟用户对抗」—— 只有右栏是**页面替用户展开**的，页面才会自动收起它）：
+
+1. 工具条「历史」按钮在**右栏已展开且正显示历史**时再点 = **收起右栏**（对齐 IDE 工具窗开关
+   习惯）；右栏收着、或当前停在别的分段时 = 展开并切到历史。想换右栏内容走顶部的分段 tab，
+   不再让这一个按钮兼任「切回详情」与「收起」两种相反语义。
+2. 单元格详情失效（执行新查询 / 切换结果标签 / 关掉最后一条结果）→ **自动收起右栏**，但**仅当**
+   「右栏正显示单元格详情、且它是页面替用户展开的」。用户自己展开的、或右栏正显示别的分段
+   （历史 / 详情）的，原地留下 —— 页面绝不关用户手动开的右栏，也不该因为一次查询清空了格子
+   就把正在看的历史一起收走。
+3. 用户在右栏里点分段 tab = 右栏归用户，`right_dock_auto` 清零，此后页面不再自动收它。
+4. **状态联动**：右栏的开合必须**在按钮 / 图标上看得见**，否则收起之后用户以为它还开着 ——
+   - 工具条「历史」按钮的高亮 = 「右栏开着 **且** 停在这一栏」，右栏一收起就灭。
+   - 顶栏的右栏开关在展开态给一块选中底（`nav_selected` 底 + `nav_selected_icon` 图标色，
+     这一对对比度 ≥ 3:1，由无障碍守卫 `selected_nav_icon_meets_non_text_contrast` 钉住），
+     收起态回常态。只改 tooltip 文案不够 —— 指针不悬停时用户看不出开合。
+   - ⚠️ **页面实体是 `AnyView`，shell 重绘不连带重绘它**（子视图有自己的渲染缓存；这也正是
+     右栏内容走 `Fn(&App) -> AnyElement` 闭包、而主内容走 `AnyView` 的原因）。所以「按钮
+     高亮跟着右栏走」只能由页面自己 `cx.observe` 右栏实体
+     （`app::right_sidebar_state` → `ShellView::active_right_sidebar_state`）、在回调里
+     `cx.notify()`，且**只订阅一次**（路由与右栏实体都常驻，重复订阅只会堆回调）。
+
+**⚠️ 已知耦合**：右栏展开态是**全局单键** `window_right_sidebar_open`（`settings.rs:32`），经
+`on_right_sidebar_changed` → `save_right_sidebar_open` 落盘。所以页面自动展开会被持久化 ——
+下次启动在任何路由右栏都是展开的，与现在手动点开关的行为一致。改成按路由存是另一个决定。
+
+**✅ 组件层保障（宽度与不透明平面）**：右栏「展开后背景透出主内容」**不是页面层的问题** ——
+侧栏宽度钳制（不超过容器 60%）、内容面板留 240px 下限、以及**不透明 chrome 平面**三件事，
+统一由 `duck-components::SidebarPanel`（`crates/duck-components/src/sidebar.rs`）保证，
+配套 `tests/sidebar_layout.rs` 钉住 900 / 700 / 600 / 500 四个宽度下的分配。
+页面（db 页含 `dock_body`）**不重复实现，也不该假设自己能拿到右栏实际宽度**。
+
+### 4.14 结果区「来源语句」chip：可点击复制（2026-10-14 新增）
+
+**对位**：dbx 结果底栏那个「SQL 结果」tag 实际是**可点击的 SQL 单行文本**（左键复制该 SQL、
+悬停看全）。本仓的对应点是结果区**读数条**（`resbar`）里的「来源语句」段 —— 而**不是**
+编辑器工具条右组那个 `neutral_tag("SQL 结果")`（那是模式标签：查询 / 表浏览 / 实例档 /
+仪表板，语义不同，保持不可点）。
+
+**实现**（`db.rs::result_sql_chip`）：
+
+- **显示**用单行化文本（`split_whitespace()` 合一，换行与缩进压成一个空格）；**复制**拿**原文**
+  （含换行与缩进）—— 粘回编辑器能直接用。截断只影响显示，完整语句在悬停 `Tooltip` 里。
+- **取数零成本**：`query_sql` 由 `install_query_result` 写入，**恒等于当前结果标签的语句**，
+  于是多语句批次切标签时「显示与复制的内容」自动跟着换（与 `query_result` 同一套设计）。
+- 没有结果时不渲染（`.children()` 摊平 `None`）—— 空态不摆一个点了没反应的壳。
+
+**「已复制」这类动作回执的归宿**：dbx 是底部居中 toast（2s 消失）。本仓当时定为「一次独立
+重构」并推迟；**2026-10-14 已落地**，口径与实现见 **§4.15**。关键是先划清范围：只有
+**动作回执**走 toast（复制 / 格式化 / 压缩 / 注释），**查询生命周期读数**留在状态栏。
+
+### 4.15 工具条对位 dbx 三改：运行内联选区 / Tx 两态按钮 / 底部 toast（2026-10-14 新增）
+
+本轮把 dbx 差异清单里用户拍板的四项一次收口（第 1、2、3、4 项；第 4 项见本节末）。
+
+#### 4.15.1 「运行」内联选区判断（删掉独立的「选中执行」）
+
+dbx 的工具条**没有**独立的「选中执行」按钮：主按钮自己判断 —— 有选区跑选区、没选区跑全部。
+本仓第 9 轮曾按设计稿加了那枚钮，本轮按 dbx 口径**删除**。
+
+- `run_query`（快捷键 ⌘↵ 与主按钮共用的唯一入口）现在**选区优先**：`editor_selection()`
+  非空就只跑那一段（`stmt_index = None`，选段可以是半条语句、不对应语句槽），否则跑全文。
+- 原 `run_editor_selection` 整函数删除（逻辑并入 `run_query`）；危险闸门在两条路上共用
+  ——「只是选了一段」不是跳过确认的理由。
+- **提示即口径**：删掉按钮后，「这一下跑哪一段」只由 tooltip 说明，所以 `run_tip` 随选区
+  动态取值：有选区 `只执行选中的语句`，无选区 `执行全部语句（⌘↵）`。
+
+#### 4.15.2 「执行计划」支持选区（不再只能看编辑器里的那一条）
+
+原先 `explain_editor_sql` 恒取编辑器**全文**，而 `explain_sql_for` 只接受**单条**语句 ——
+于是编辑器里写了两条语句就永远只能看计划失败（`执行计划一次只看一条语句。`）。
+现在同 `run_query` 口径：**选区优先**，选中一条就只看这一条。
+
+#### 4.15.3 Tx 两态按钮（内核新增 `TxControl`）
+
+**内核**（`duck-db::sqlintel::TxControl`，纯函数 + 单测）：
+
+| 动作 | SQLite / PG / CH 等 | MySQL |
+| --- | --- | --- |
+| `Begin` | `BEGIN` | `START TRANSACTION` |
+| `Commit` | `COMMIT` | `COMMIT` |
+| `Rollback` | `ROLLBACK` | `ROLLBACK` |
+
+配 `TxControl::effect()` → `TxEffect`，与既有的 `tx_effect()`（**读**语句判断状态）构成闭环：
+
+- `tx_control_statements_round_trip_through_tx_effect`：7 引擎 × 3 动作，造出来的语句必须被
+  `tx_effect` 认出来。**这是这条路径上唯一的致命失败** —— 认不出来，点一下 `in_tx` 不变，
+  界面就卡在旧态。
+- `only_begin_is_dialect_specific`：只有「开启」按引擎分叉。
+
+**界面**（`db.rs`）：工具条右组的 Tx **徽标改成两态按钮** `db-tx-toggle`：
+
+- 自动提交态（Ghost，`Tx · 自动提交`）→ 点击发 `Begin`；
+- 事务中态（Secondary，`Tx · 事务中`）→ 点击发 `Commit`；
+- **回滚不在这枚钮上**：它更少用、也更该刻意决定，留在状态栏（那里另有「事务中」读数与
+  提交 / 回滚两个出口）。
+
+语句走**既有的** `execute_sql`，因此取消 / 超时 / 审计 / `in_tx` 状态更新全部复用同一条路径。
+
+#### 4.15.4 底部居中 toast（动作回执）
+
+**分工**（这是本节唯一需要记住的口径）：
+
+| | 状态栏 `self.status` | toast |
+| --- | --- | --- |
+| 内容 | **常驻读数**：正在执行… / 查询完成 / 连接状态 / 就绪 | **动作回执**：已复制该行。/ 已格式化。/ 已注释 N 行。 |
+| 去向 | 一直挂着，被下一条读数替换 | 约 **2 秒**自动消失 |
+
+为什么不把 48 处 `self.status = …` 全改掉：其中多数是**查询生命周期读数**，本来就该常驻；
+本批只把**动作回执**那一族改走 toast（`put_on_clipboard` / `format_editor_sql` /
+`minify_editor_sql` / `toggle_comment_editor_sql`，共 4 个入口、覆盖全部复制与编辑器动作）。
+
+**实现**（`db.rs`）：
+
+- `Toast { message, tone, seq }` + `DatabasePage::toast()`；`seq` 是自增序号，定时器到点时
+  **只有 `seq` 还是自己那条才清** —— 否则两秒内连点两次，「已复制」的定时器会把第二条
+  （如「已格式化」）一起抹掉，第二次等于没弹。后来的 toast 直接**替换**前一条，页面上永远
+  只有一枚（不堆叠）。
+- 浮层 `render_toast()`：`.absolute().bottom(status_bar + lg).left(0).right(0)` + 内层
+  `justify_center`，锚在**状态栏上沿之上**居中。外层容器不接鼠标事件（无 hitbox），
+  所以底边这条浮层**不挡下面网格的点击**。
+- 配色用既有的 `extended.colors.chrome` 平面 + `hairline` 描边 + `shadow_md()`，与状态栏 /
+  工具条同一套「浮起的 chrome 平面」，不引入深色药丸（那是 dbx 的皮肤，不是本仓的语言）。
+- 语义档 `notify::Tone`：复制 / 格式化 / 压缩 / 注释用 `Success`；唯一例外是「已格式化；N 段
+  解析不了」用 `Warning` —— 那是要用户**留意**的。
+
+### 4.16 结果区对位 dbx：tab 栏 / 工具条 / 列宽拖拽 / 分页跳页 / 格式化选项（2026-10-14 新增）
+
+用户反馈的五点（结果表格不能调宽、表头与 dbx 不一致、「SQL 结果」按钮点不动、格式化没有
+换行缩进、缺「小写关键字 / 自动换行」）本轮一次收口。
+
+#### 4.16.1 结果区 tab 栏 + 常驻动作组
+
+`db.rs::ResultAreaTab`（`Data / Summary / Chart / Messages / Plan`）+ `render_result_tabbar`：
+左侧五档 tab 换掉网格本体，右侧动作组把原「编辑条」的写操作**提到常驻位置**（刷新 / 保存结果 /
+新增行 / 删除行 / 提交 / 回滚）。**不可用时置灰而不是消失** —— 按钮忽隐忽现会让工具条自身的位置
+也跟着跳。
+
+- 「数据表」= 网格本体（原行 / 列 / JSON 三档 `ResultViewMode` 在这里生效）；「执行计划」的
+  **原始输出**档也复用网格（计划树档另画缩进树）。
+- 摘要 tab：总量读数（行数 / 列数 / 耗时）+ 逐列清单（列名 / 类型 / **空值计数**）。空值计数
+  **一次性预计算**（1 万行 × 20 列 ≈ 20 万次分支，微秒级），不放进逐帧渲染路径。
+- 消息 tab：`ExecLogEntry` 执行流水（新在前，`EXEC_LOG_CAP = 200` 裁头）。成功 / 失败由
+  `extended.colors.success` / `status_failed` 分色。
+- **去掉了「SQL 结果 / 表浏览」两个 `neutral_tag`**：它们本来就是不可交互的徽标（用户报告
+  「点了没反应」），当前模式已由 tab 栏与界面形态自明。
+
+⚠️ `uniform_list` 的渲染闭包是 `'static`，跨不进去 `tokens` / `extended` / `cx`：摘要与消息两个
+视图都按网格既有口径**先把 `Copy` 值拷成局部变量**再进闭包（否则报 `borrowed data escapes`）。
+
+#### 4.16.2 列宽拖拽（表头右缘 4px 把手）
+
+- `COLUMN_RESIZE_HANDLE = 4.`；把手**绝对定位挂在列头行**上（不是塞进列头格 —— 列头格自带
+  `overflow_x_hidden` 负责列名截断，嵌进去的把手会被裁掉一半而够不着），并在 `.children()`
+  里**最后追加**：绘制顺序靠后 = 优先接到拖拽，否则列头自己的「点一下排序」会吃掉按下的那一下。
+- 拖拽载荷 `ColResizeDrag { col }`（照 gpui-component Table 的做法，`on_drag` + `on_drag_move`，
+  只认这个类型，别的拖拽不会误触）；页面侧状态 `col_resize: Option<(usize, f32, f32)>` =
+  `(列, 起拖指针 x, 起拖列宽)`。**只记位移**：`新宽 = 起宽 + (当前 x − 起拖 x)`，与网格在窗口里的
+  位置、横向滚动偏移都无关，滚动条拖到一半也不会跳。
+- 手动拖拽上限是 `COLUMN_RESIZE_MAX = 1200`（**不是**估宽用的 `COLUMN_MAX_WIDTH = 260`）：
+  估宽夹在 260 是为了「一屏塞得下」，手动拖的人明确要放宽看长文本。
+- 双击把手 = 按内容自适应该列（与初始估宽同一套 `compute_column_widths` 口径）。
+- 拖拽结果写进 `SessionView.column_widths` → `result_widths()` → 「字段筛选 / 跳转列 / 网格」
+  三处共用同一份宽度（不搞第二处真源）。
+
+#### 4.16.3 分页支持跳页
+
+`page_jump: Entity<InputState>` 由查询（客户端分页）与表浏览（服务器侧分页）**两套翻页组共用**；
+回车触发 `jump_to_page`（1 起页码，空 / 非数字 / 0 一律当没输入 —— 静默跳第 1 页会让人以为
+「按了回车页面乱跳」）。查询模式改序号即刻生效；表浏览改 `table_page` 后走 `load_table_page`
+重新按新 `OFFSET` 取一页。用完即清（一次性输入）。**不订阅 `Change`**：边打边跳会在输入「12」
+的中途先跳到第 1 页。
+
+#### 4.16.4 SQL 格式化：接入 `sqlformat` + 四个可配档
+
+- **依赖**：`sqlformat = "0.5.0"`（`rust-version = 1.84` ≤ MSRV 1.85，MIT OR Apache-2.0，
+  默认无 feature；传递依赖 `winnow` 已在图内，新增 `unicode_categories` 一个小包）。
+  过「依赖准入三关」，`THIRD_PARTY_LICENSES.md` 已重生成。
+- **内核**（`duck-db::sqlintel`）：`SqlFormatOptions { keyword_case, indent_tabs, indent_width }`
+  + `format_sql_with`；`format_sql` = 历史默认（**关键字大写**，空格缩进 2）。**解析门仍保留**：
+  解析得了的才交给 `sqlformat` 排版，解析不了的**原样保留**并记进 `FormattedSql::kept_verbatim`
+  —— 宁可不动，也不要把用户手上跑得通的半截语句改成跑不了的。
+- **真源**：设置页 `DbSettings`（`sql_keyword_case` / `sql_indent_tabs` / `sql_indent_width` /
+  `editor_word_wrap`），全部 `Option`/`serde(default)` + 默认值回落既有常量。
+- 格式化完成后按「有没有解析不了的段落」分 `Success` / `Warning` 档 toast（`kept_verbatim`
+  非空 = 要用户留意）。
+
+#### 4.16.5 工具条新增两个开关（纯图标 + 悬停提示）
+
+`opt()` 辅助（紧挨 `tb()`）：**开 = `Primary`、关 = `Ghost`**，状态由按钮底色体现，文字只进
+无障碍名与 tooltip，不占横向宽度（这一行已经有十来个按钮）。
+
+- **小写关键字**（`DuckIcon::CaseLower`）：在大写 ⇄ 小写之间切换，写的是设置页同一个键；
+  **只改「格式化时用哪种大小写」，不动编辑器里已有的文本** —— 想看到效果再点一次「格式化」。
+- **自动换行**（`DuckIcon::WrapText`）：`EditorState::set_soft_wrap`。⚠️ 这个入口来自
+  `impl<M: MultiLineMode> InputBaseState<M>`（`EditorMode: MultiLineMode`，见
+  `gpui-base/src/input/base/kind.rs:67`），**不需要 vendor 补丁** —— 早前误判为只有
+  `InputMode` / `TextareaMode` 有，写了重复定义才发现。
+- 两个图标（`case-lower` / `wrap-text`，Lucide ISC 子集，线宽 1.75）已并入 `DuckIcon`。
+
+#### 4.16.6 回归修复：提示只能挂一次（2026-10-14 当晚）
+
+上面这两处开关（以及结果区动作组）上线的当口，**打开数据库页直接 panic 秒退**：
+
+```
+calling tooltip more than once on the same element is not supported
+```
+
+根因：`duck_components::icon_button` **内部已经**用 `with_icon_tooltip` 挂了提示
+（`crates/duck-components/src/lib.rs:52`），而调用点又补了一次 `.tooltip()`。
+gpui 对同一元素二次挂载是**硬 panic**（abort 级），编译期不报，只有真渲染到那个元素才炸。
+
+改法（组件层收口，让调用方没有「再挂一次」的机会）：
+
+- `icon_button_frame` → **只做外观与无障碍名，不含提示**；
+  `icon_button` = frame + 提示（用 label）。
+- 新增 `icon_button_tip(id, label, icon, tip, variant, cx)`：无障碍名用 `label`（简短），
+  提示用 `tip`（可带状态 / 动态读数）。
+- `db.rs` 的 `opt()` 与 `act()` 改走 `icon_button_tip` / `icon_button`，**不再挂第二次**；
+  提交 / 回滚的动态提示（`提交 N 条暂存改动`）改由 `tip` 参数传入（新增 `act_tip` 辅助）。
+- 约定已写进 `AGENTS.md` §3.6：**图标按钮的提示由组件内部挂**，调用点不要再挂。
+
+静态核对口径：`db.rs` 里凡出现 `icon_button(` / `icon_button_tip(` / `toolbar_action_button(`
+的语句，其后 18 行内不得再出现 `.tooltip(`（改用脚本扫，当前 0 命中）。
+
+#### 4.16.7 结果区二轮调整（2026-10-14 晚，用户截图反馈）
+
+1. **残留编辑条整条移除**：上批把写操作提到 tab 栏动作组后，旧「编辑条」（新增行按钮 +
+   排序读数 + 待提交组）成了重复入口。`render_edit_bar` 整函数删除；其中**唯一不重复**的
+   排序读数（`按 {} 降序/升序`）迁往读数条（隐藏列读数之后）。
+2. **「在结果中搜索」上移到 tab 栏行**：找行是「看着结果」时的动作，跟档位与写动作同排；
+   读数条只留事实读数（结果 · N 行 · 耗时 · 已隐藏 N 列 · 排序 · 来源语句）。搜索词仍不进
+   快照（`result_search` 页面级单例）。
+3. **摘要 tab 重构为两段**：
+   - **执行过程**（dbx 摘要同款语义）：状态（成功 ✓；失败不产出结果，走报错条）、耗时、
+     行数、列数、已达上限 tag + 来源语句 chip（可复制、悬停看全文）。
+   - **列统计**：原逐列清单（列名 / 类型 / 空值计数）原样保留。
+4. **执行报错进结果区**（`render_result_error_banner`）：`last_error` 存在时在结果区顶部
+   渲染报错条（alert 图标 + `执行失败：{原文}` 全文 + 失败语句单行），三处接入：
+   tab 面板骨架（摘要 / 消息 / 图表 / 计划都看得见）、网格路径、**无结果空态** —— 失败后
+   结果区不再只是空着，tab 栏照常可切「消息」看流水。编辑器上方那条带 AI 动作的
+   报错条保持不变（两条并存：一条给动作、一条给现场）。
+5. **对象头条整行撤除**（`render_result_header` 删除，四个调用点收拢）：
+   - **对象名**（表名 / 查询目标）迁到 **tab 栏行首**当「标题」（图标 + 名，>320px 截断，
+     悬停看全名）；⚠️ **本节已被 §4.16.8 取代**：对象名最终落在**结果标签**上
+     （标签名 = `表名-结果`），tab 栏行首不再有标题块 —— 同一信息只留一处。
+   - **字段筛选 / 跳转列**两个图标下放到**读数条**右端 —— 顺带在 `toolbar_dropdown_button`
+     组件内部补上悬停提示（gpui-component 的 Button 自带 `tooltip(SharedString)` 字段，
+     必须在 `dropdown_menu_with_anchor` **之前**给，之后只剩 `DropdownMenuPopover` 包装层；
+     它不走 gpui 的 div 挂载，无「二次挂载」panic 之说）。语言切换 / 邮件工具条等既有
+     调用点一并受益；
+   - **DDL 入口**（表浏览 + 已取到 DDL）迁到读数条右端，仍是文字按钮，`stage_sql` 路径不变。
+6. **编辑器工具条整排纯图标**（用户反馈「要用图标就都用图标」）：`tb()` 辅助从
+   `icon_text_button`（图标 + 文字）改为 `icon_button` / `icon_button_tip`（纯图标）——
+   图标/文字混排让这排忽宽忽窄，也不成体系。运行/停止、格式化、注释、压缩、执行计划、
+   保存查询、历史全部转纯图标，`label` 只进无障碍名，原有的 `tip`（动作 + 快捷键）继续
+   由 `icon_button_tip` 内部挂；与右侧两个开关（小写关键字 / 自动换行）、查询选项同一
+   规格（`density.control` 方形 + 14px 图标）。主按钮「运行」也随图标化（▶），悬停提示
+   保留「执行全部语句（⌘↵）」。
+7. **去重：结果读数只说一遍**（用户反馈「放在摘要/消息里就不要再显示了」）：
+   - **顶部工具栏**撤掉中间的 status 弹性带（`208 行 · 1 条语句 · N ms`）与
+     「SQL 结果 / 表浏览」模式标签 —— 摘要「执行过程」与底部状态栏都在说；
+     `status` 的操作反馈仍在底部状态栏 + 右上角通知，实例信息页的档位标签保留。
+   - **读数条**改为纯「结果标签行」：撤掉 `结果 · N 行`、耗时与来源语句 chip
+     （语句在摘要「执行过程」里可复制），保留结果标签、已隐藏 N 列、排序读数、
+     字段筛选 / 跳转列 / DDL 入口。⚠️ **后两项已被 §4.16.8 调整**：字段筛选 / 跳转列
+     移到档位行的动作组（回滚之后），这一条整条**上移到结果区第一行**。
+
+#### 4.16.8 结果区三轮调整：结果标签置顶 + 标签带表名（2026-10-14 晚，用户截图反馈）
+
+1. **结果标签行上移到结果区第一行**（用户反馈「tab 这行要上移一行，放在顶上」）。
+   行序由「档位行 → 结果标签行 → …」改为「**结果标签行 → 档位行 → …**」，四个渲染
+   路径**同一口径**，避免各自漂移：
+   - 网格路径（`Render` 里的 grid 分支，`panel.child` 两行）；
+   - 列模式 / JSON 模式分支；
+   - `result_tab_panel`（摘要 / 消息 / 图表三档的公共骨架）；
+   - 执行计划树分支（`ResultAreaTab::Plan` 且非「原始输出」）。
+   理由与 dbx 一致：`ResultSetNavigator` 在结果工具条的最左侧，视图切换器在其后 ——
+   标签说的是「现在看的是哪条语句的结果」，是这块区域的标题，压在档位之前。
+   ⚠️ `result_tab_panel` 同时补上了结果标签行（此前只有档位行）：多结果批次切进
+   摘要之后既看不见也切不了结果标签，等于「进去容易出来难」。
+2. **单结果也显示标签**（用户反馈「点击顶部的执行，不会出现查询结果 tab」）。原条件
+   `mode == Query && result_tabs.len() > 1` 里的 `len() > 1` 是错的：一条语句执行完，
+   `result_tabs` 恰好 1 条，标签被整排藏掉 —— 用户点「执行」后**看不到结果落在哪条
+   语句上**。改为 `mode == Query && !result_tabs.is_empty()`。单标签不是噪音，
+   它是这份结果的**身份**（dbx 同样恒摆）。
+3. **标签名带目标表：`表名-结果`**（用户反馈「选中的表名不要显示在这个地方，显示在
+   结果 tab 上，类似：表名-结果」）。新增 `result_tab_label(index, multiple, cx)`：
+   - 表名取 `ResultTab::target`（执行时由 SQL 解析出的可编辑目标表，与结果集来源同一
+     份解析），用**裸表名**（`schema` 不进标签，标签格宽有限）；
+   - `multiple`（标签数 > 1）时补序号：`{表名}-结果{n}`。同一条 SQL 跑两遍会有两个同名
+     标签，光看名字分不出谁是谁；
+   - 解析不出目标表（`SELECT 1`、多表连接取不到唯一源、DDL 等）回落 `结果 {n}` ——
+     名字退化了，标签本身不消失。
+   i18n 新增两条格式键：`{}-结果`（单结果）与 `{}-结果{}`（多结果）。
+   口径对齐 dbx 的 `resultTabNamingMode = source`（默认档，取 `resultNamingLabel` 解析出
+   的来源表），不是它的 `ordinal` 档。
+4. **字段筛选 / 跳转列改挂档位行的动作组**（用户反馈「放在丢弃全部暂存改动图标后面」）：
+   从读数条右端移到 `render_result_tabbar` 的动作组末尾（「回滚」之后）。这两件事都是
+   「看着结果」时用的网格工具，跟刷新 / 删除 / 提交排在同一条；悬停提示仍由
+   `toolbar_dropdown_button` 组件内部挂（§4.16.6 的约定不变）。
+5. **空条让位**：`render_result_resbar` 现在会顶在结果区最上面，没内容时不能留一条
+   空行 + 一条悬空分隔线。加前置判据 —— 标签（查询模式且已有结果）与读数（藏列 /
+   排序 / DDL）两边都没有时，整条返回空 div。表浏览下「没排过序、没藏列、没取到 DDL」
+   是最常见的情形，正是这条要挡的。
+
+### 4.17 SQL 补全词表：按引擎分层（2026-10-14 新增）
+
+**问题**：补全的关键字与函数原本是 `db.rs` 里两张**写死的通用表**（`SQL_KEYWORDS` 63 条 /
+`SQL_FUNCTIONS` 21 条，偏 SQLite 口味）。在 PostgreSQL / MySQL / ClickHouse / SQL Server
+上，用户敲不出 `RETURNING` / `AUTO_INCREMENT` / `PREWHERE` / `TOP`，也敲不出自己引擎的
+内置函数 —— 补全等于「只认识通用 SQL」。
+
+**改动**：词表下沉到内核新模块 `crates/duck-db/src/sqlwords.rs`，按引擎给。
+
+选词口径照抄两个参考实现的分层（dbx 的 `DATABASE_SQL_KEYWORDS`、
+`apps/desktop/src/lib/sql/sqlCompletion.ts`；dbflux 的 `sql_keyword_candidates`,
+`dbflux_ui_document/src/code/completion.rs`）：**通用核心 + 引擎增量**。
+
+| 层 | 内容 | 归属 |
+| --- | --- | --- |
+| 通用核心 | 五个 SQL 引擎都认得、名字语义都一致的词（129 关键字 + 43 函数） | `COMMON_KEYWORDS` / `COMMON_FUNCTIONS` |
+| 引擎增量 | 只有该引擎有、或名字/语义不同的词 | `SQLITE_*` / `POSTGRES_*` / `MYSQL_*` / `CLICKHOUSE_*` / `SQLSERVER_*` |
+| 非 SQL 引擎 | 各自查询语言的词 | `MONGO_OPERATORS` + `MONGO_COMMANDS` / `ELASTICSEARCH_KEYWORDS` |
+
+几条**刻意**的取舍：
+
+1. **判不准的宁可下沉**。`GREATEST` / `LEAST` 在 SQLite 与服务端 SQL Server 上不存在 →
+   只进 PostgreSQL / MySQL 增量。放通用表里的代价是教人写错：在 SQLite 里补出 `JSONB`、
+   在 PostgreSQL 里补出 `AUTO_INCREMENT`，写出来一执行就报错。
+2. **ClickHouse 的函数名大小写规则分两档**（已核官方文档与实际行为）：常见**聚合与
+   类型转换**函数（`sum` / `count` / `toDate` 那类）注册为大小写不敏感，写 `SUM` 也认；
+   **专有**函数（`arrayJoin` / `multiIf` / `toStartOfDay`）大小写敏感，必须照官方拼写。
+   所以 `CLICKHOUSE_FUNCTIONS` 只收专有函数 / 官方拼写就是小写或 camelCase 的那些，
+   通用聚合交给通用桶 —— 免得菜单里同时冒出 `SUM` 与 `sum` 两个候选（同一件事两份
+   写法，用户不知道该挑哪个）。
+3. **MongoDB 收命令名，不收 shell 外壳语法**。`drivers/mongo.rs` 的编辑器吃的是**一个
+   JSON 命令文档**（`{"aggregate": "users", "pipeline": [...]}`，即 `db.runCommand(<doc>)`
+   的参数），不是 `db.coll.find({})`。所以收「服务端命令名 + 聚合阶段 + 查询/更新操作符」，
+   而 dbflux 的 `MONGO_METHODS`（shell 方法）对我们**不适用** —— 补出来就是让人白写。
+   命令名在补全菜单里按「**命令名**」分类（新 i18n 键），不叫「函数」。
+4. **Elasticsearch 收控制台语法的词**：`drivers/elasticsearch.rs` 走 REST，编辑器吃的是
+   **Kibana 控制台**（`GET /logs-*/_search` + JSON 体），所以收请求动词、端点与检索 DSL 键。
+   它没有函数调用，函数桶是空的。
+5. 非 SQL 引擎**连通用 SQL 核心都不给**：Mongo 里补出 `SELECT` 毫无意义。
+
+**API**：`sqlwords::words(kind) -> (SqlWords /*核心*/, SqlWords /*增量*/)`（两段切片，
+调用方依次遍历，不分配、不去重）；`sqlwords::common_words()` 给「还没连上、没有活跃
+会话」的兜底（那时补的是「SQL 长什么样」，不该替某个引擎说话）；
+`sqlwords::language(kind) -> QueryLanguage` 给界面选分类文案的唯一判据（界面不再自己
+按 `DatabaseKind` 分叉一遍）。当前引擎从 `Session::kind` 取。
+
+**候选限额改为分类限额**：`COMPLETION_LIMIT = 80` 现在是**表 / 关键字 / 函数各一份**，
+另有 `COMPLETION_TOTAL_LIMIT = 240` 兜底。原实现只有总量截断 —— 词表按引擎展开后光
+关键字就有一百多条，会把「函数」整桶挤掉，用户敲 `count` 反而什么都补不出来。
+
+**测试**（`cargo test -p duck-db --lib sqlwords`，5 条）：表内无重复；
+增量不与通用核心撞车（这条当场抓到 `CHAR_LENGTH` 同时进了通用桶与 MySQL 桶）；
+每个引擎都有词可补且 SQL 引擎带通用核心；SQL 词一律大写（ClickHouse 函数名是已知
+例外）；**不串台** —— 每个引擎「该有该引擎的专有词、不该有别家的专有词」逐条断言
+（在 SQLite 上补出 `AUTO_INCREMENT`、在 MySQL 上补出 `RETURNING` 都会被它挡下）。
+
+⚠️ 与 `sqlintel::WRITE_KEYWORDS` **不是一回事**，也不是第二真源：那张表只收「会写库的
+语句动词」（语义判定，用来证明只读），这张收**全部语法词**（给用户补全）。两张表之间
+没有「改一处另一处要跟着改」的耦合。
+
+### 4.18 SQL 语义诊断 + dbx 版式 footer + 滚动时显示的纵向滚动条（2026-10-14 深夜，用户截图反馈）
+
+三项对齐 dbx：语义诊断开关、grid-foot 版式、滚动条现身时机。
+
+**4.18.1 SQL 语义诊断（内核 `duck-db::sqldiag`）**
+
+dbx 的 `useQueryEditorDiagnostics` 做解析报错 + 未知对象高亮。本仓落地为纯函数内核：
+
+- 输入 `(DatabaseKind, sql, &[CatalogTable])`，输出 `Vec<SqlDiagnostic>`
+  （`line` / `column` 1 起或 0 = 未知、`Severity::{Error, Warning}`、英文 `message`）。
+- **解析报错**：`sqlparser` 按引擎方言（SQLite / PG / MySQL / ClickHouse / MSSQL 各自
+  的 Dialect）整段解析；报错消息自带的 ` at Line: N, Column: M` 后缀被解出成位置、
+  从消息里剥掉。MongoDB / Elasticsearch 的编辑器内容不是 SQL → 恒空表。
+- **未知表**（`Warning`）：`visitor` feature 遍历 AST 收表引用。目录（`CatalogTable`
+  裸名 + `schema.name` 限定名，不分大小写）与 **CTE 别名**（每层 `WITH`，嵌套子查询
+  也算）里都没有的引用才报；表值函数（`TableFactor::Table { args: Some(..) }`）不是
+  目录对象，跳过。匹配口径按引用段数走：裸名对裸名、≥2 段取末两段对限定名
+  （`other.users` 不能因为目录里有裸 `users` 就放行）。
+- **目录为空时不做表校验**：元数据没加载就报「全是未知表」是误报洪水。解析报错照报。
+
+UI 层（db 页）：工具条「SQL 语义诊断」开关（`spell-check` 图标，提示随状态翻转
+「已开启（点击关闭）」dbx 同款文案），偏好落 `DbSettings::semantic_diagnostics`
+（默认开，dbx `SQL_SEMANTIC_DIAGNOSTICS_AUTO_ENABLED` 同款）；编辑器文本变化即重算
+（observe 里同步跑，微秒级）。**问题条**挂编辑器面板底部：gpui-base 编辑器没有
+装饰通道（画不了下划线 / 波浪线，这是与 dbx 的实质差距），折衷为列表条 —— 至多
+3 行 + 「共 N 个问题」，位置 + 内核英文消息原样给出（消息不翻壳，`Unknown table
+"x"` 是让用户照着搜的）；干净时不摆任何东西。
+
+**测试**（`cargo test -p duck-db --lib sqldiag`，7 条）：非 SQL 引擎恒空；解析报错
+带行号且消息剥离位置后缀；未知表带行号；CTE 与表函数不误报；空目录跳过表校验但
+保留解析错误；schema 限定匹配（`public.users` 放行、`other.users` 报）；上限 50 条。
+
+**4.18.2 footer 对齐 dbx grid-foot**
+
+右端三件套：「N 行/页」下拉（查询 / 表浏览各自既有下拉，触发文案从「每页 N 行」改
+「N 行/页」）→ **紧凑翻页组** `« ‹ [页码] › »` → 导出菜单。要点：
+
+- 翻页组**常驻**：只有一页时按钮置灰但整条还在（dbx 同款；旧实现「一页整组消失」
+  连页码输入框都找不到）。查询模式总页数已知、五钮全判；表浏览总页数未知，
+  「»」恒置灰（装作知道再点空是骗人）。
+- 翻页动作**只走既有路径**：查询改 `query_page`；表浏览前进走 `table_next_page`
+  （带「满页才前进」守卫）、回退 / 跳转直接设页码重取（与「跳至某页」同口径）。
+- 旧的文字版翻页组（`« 上一页 第 x/y 页 下一页 »`）与表浏览旧翻页条（含重复的
+  「刷新」—— tab 栏已有）整体删除。
+- 导出菜单落 footer（用户截图指定位置）；tab 栏「保存结果」保留（dbx 两处都有）。
+- dbx footer 的 ChevronsDown「载入全部行」不搬：那是服务端大表 `loadAllRows` 的
+  交互，本仓表浏览是逐页取、查询整批在手，没有这层语义，搬来是个点了没用的钮。
+
+**4.18.3 纵向滚动条：滚动时现身**
+
+结果网格（`uniform_list`）此前**没有纵向滚动条**（只有横向常驻那条）。补
+`result_v_scroll: Arc<UniformListScrollHandle>`（`uniform_list` 挂 `track_scroll`）
++ `Scrollbar::vertical` overlay，档位 [`ScrollbarMode::Scrolling`] —— 滚动时现身、
+停下淡出（gpui-base scrollbar.rs 默认档）。横向维持 `Always`（4.16.2 的结论不变）。
 
 ## 5. 数据库支持矩阵（M1→M2 引擎与依赖）
 

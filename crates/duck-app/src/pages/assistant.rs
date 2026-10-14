@@ -37,7 +37,7 @@ use duck_components::{
     notify::Tone,
     sidebar_navigation_button,
 };
-use duck_theme::{DuckThemeState, active_theme, tr, trf};
+use duck_theme::{DuckThemeState, active_theme, number, tr, trf};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Div, Entity, Focusable as _,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, Render, SharedString,
@@ -1840,8 +1840,8 @@ impl AssistantPage {
                     cx,
                     "输入 {} / 输出 {}",
                     &[
-                        &conversation.input_tokens.to_string(),
-                        &conversation.output_tokens.to_string(),
+                        &number(conversation.input_tokens as i64),
+                        &number(conversation.output_tokens as i64),
                     ],
                 ),
                 &mut rows,
@@ -1856,11 +1856,10 @@ impl AssistantPage {
             trf(
                 cx,
                 "约 {} tokens",
-                &[&duck_ai::estimate_conversation(
+                &[&number(duck_ai::estimate_conversation(
                     Some(self.settings.system_prompt.as_str()),
                     &self.messages,
-                )
-                .to_string()],
+                ) as i64)],
             ),
             &mut rows,
         );
@@ -1872,8 +1871,8 @@ impl AssistantPage {
                     cx,
                     "输入 {} / 输出 {}",
                     &[
-                        &streaming.usage.input_tokens.to_string(),
-                        &streaming.usage.output_tokens.to_string(),
+                        &number(i64::from(streaming.usage.input_tokens)),
+                        &number(i64::from(streaming.usage.output_tokens)),
                     ],
                 ),
                 &mut rows,

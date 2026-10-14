@@ -40,9 +40,17 @@ duck-ai = { path = "crates/duck-ai" }
 duck-term = { path = "crates/duck-term" }
 duck-ssh = { path = "crates/duck-ssh" }
 duck-mail = { path = "crates/duck-mail" }
+# 项目管理内核（crates/duck-project，docs/projects-design.md）：自管 SQLite、零 gpui、
+# 全同步。依赖全部已在图内（rusqlite 由 duck-store / duck-db 引入），零新增下载。
+duck-project = { path = "crates/duck-project" }
 
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1"
+# 渲染快照测试（`crates/duck-components/tests/render_snapshot.rs`）直接用：
+# `Window::render_to_image()` 返回 `image::RgbaImage`。该 crate 已经在依赖图里
+# （gpui-pre 传递），这里提成直接依赖，并钉 `=0.25.10` 避免再次锁链重排。
+# 许可证 Apache-2.0 OR MIT，MSRV 与全仓一致。
+image = "=0.25.10"
 
 # 更新器三件：语义化版本比较、流式 SHA-256、阻塞式 HTTPS（三者均为 MIT OR Apache-2.0）。
 # `ureq` 关掉默认再显式开 `rustls` + `gzip`：TLS 走 rustls（`ring` 提供者），
@@ -106,7 +114,9 @@ rquickjs = { version = "=0.11.0", default-features = false, features = ["std", "
 #   `aws-lc-rs`，一开就会拖进 `aws-lc-sys` + `cmake`（要 C 工具链、体积翻倍），
 #   而本仓全仓单一 crypto 库就是 ring（与 ureq / mysql / 终端一致）。
 #   信任链用 `webpki-roots`（编译进二进制）而非系统钥匙串，与更新器 / 插件出网同一份根集。
-# - `sqlparser` 0.52：Apache-2.0，语句分类 / 风险分级 / 只读证明（duck-db::sqlintel）。
+# - `sqlparser` 0.52：Apache-2.0，语句分类 / 风险分级 / 只读证明（duck-db::sqlintel）
+#   与语义诊断（duck-db::sqldiag，开 `visitor` feature 遍历 AST；随之引入
+#   `sqlparser_derive` 0.2.2，Apache-2.0，无 rust-version 声明、仅 syn/quote 1.0）。
 #   0.6x 未声明 MSRV，钉缓存既有且被 dbx 验证过的 0.52。
 #
 # SQL Server（`tiberius`，docs/database-design.md §5 的 M2 选型）：
@@ -129,6 +139,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "tls1
 tokio-rustls = { version = "0.26", default-features = false }
 webpki-roots = "1"
 sqlparser = "0.52"
+# SQL 格式化（duck-db::sqlintel::format_sql）：Rust 版 sql-formatter，支持关键字
+# 大小写 / 缩进类型 / 缩进宽度等选项。MSRV 1.84（≤ 全仓 1.85），MIT OR Apache-2.0；
+# 默认无 feature（`debug` 才会拉 anstream/anstyle/okhsl，不启用）。
+# 传递依赖 `winnow 0.7` 早已在 Cargo.lock 内，零版本新增。
+sqlformat = "0.5.0"
 
 # MongoDB（docs/database-design.md §5 的 M2 选型）：**必须精确钉 `=3.6.0`**。
 # 与本仓其它「钉版本」的理由不同，这条不是 API 兼容问题而是**硬门**问题：

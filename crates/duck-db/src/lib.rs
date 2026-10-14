@@ -36,7 +36,9 @@ pub mod hooks;
 pub mod plan;
 pub mod proxy;
 pub mod result;
+pub mod sqldiag;
 pub mod sqlintel;
+pub mod sqlwords;
 pub mod ssm;
 
 /// 第三方连接档案导入（DBeaver / TablePlus）。
@@ -61,10 +63,12 @@ pub use hooks::{
 pub use plan::{PlanNode, PlanTree, parse_plan};
 pub use proxy::{ProxyConfig, ProxyKind, ProxyTunnel, ProxyTunnelSpec};
 pub use result::{BinaryEncoding, Column, ExecOutcome, ResultSet, Value, tsv_field};
+pub use sqldiag::{Severity as SqlSeverity, SqlDiagnostic, diagnose_sql};
 pub use sqlintel::{
-    EditTarget, ExplainSkip, FormattedSql, covers_columns, edit_target, explain_sql,
-    explain_sql_for, fingerprint, format_sql, normalize_for_fingerprint, risk_of_statements,
-    split_statements,
+    EditTarget, ExplainSkip, FormattedSql, SqlFormatOptions, SqlKeywordCase, covers_columns,
+    edit_target, explain_sql, explain_sql_for, fingerprint, format_sql, format_sql_with,
+    normalize_for_fingerprint, risk_of_statements, split_statements,
 };
+pub use sqlwords::{QueryLanguage, SqlWords};
 pub use ssm::{SsmConfig, SsmTunnel, SsmTunnelSpec};
 pub use tunnel::{SshTunnel, SshTunnelSpec};

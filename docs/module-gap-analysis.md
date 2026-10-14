@@ -119,7 +119,9 @@ CID 内联图）、一次性全量+增量同步（UIDVALIDITY 失效重建、删
 无差距勿重做项：凭据 vault 链路、明文连接双协议拒绝、远程图默认拦截——安全基线已达标。
 
 > ⚠️ **状态同步（2026-10-13 重核）**：本表是 Phase 1 之前的快照，此后又落了六批 —— **G-MAIL-3**（§7 已记）、**G-MAIL-5 附件发送**（`compose.rs` 的 `multipart/mixed` + `proto/smtp.rs` + 出站队列 `queue.rs` / `db/repo/queue.rs`）、**G-MAIL-6 OAuth2 内核协议层**（`src/oauth.rs`）、**G-MAIL-7 线程聚合内核**（`src/threading.rs` + `db/repo/threads.rs`）、**G-MAIL-10 的草稿半**（`db/repo/drafts.rs`）、**邮箱标签**（`db/repo/labels.rs` 394 行 + `007_account_label_ownership.sql`）。
-> **仍缺（已核源码）**：发件身份（`008_sender_identities.sql` 只有迁移，`db/repo/` 下没有 `identities.rs`）、写回「已发送」（`proto/imap.rs` 里零 `APPEND` 调用）、路由 / 定时（表在、repo 无）、**OAuth2 的宿主侧**（loopback 回调服务器 / 打开浏览器 / 刷新令牌持久化；内核协议层已落地）、线程视图接界面、草稿推到服务器 `\Drafts`、检索中文分词、附件进全文检索与下载进度。
+> **仍缺（已核源码）**：发件身份（`008_sender_identities.sql` 只有迁移，`db/repo/` 下没有 `identities.rs`）、路由 / 定时（表在、repo 无）、**OAuth2 的宿主侧**（loopback 回调服务器 / 打开浏览器 / 刷新令牌持久化；内核协议层已落地）、线程视图接界面、草稿推到服务器 `\Drafts`、检索中文分词、附件进全文检索与下载进度。
+>
+> ✅ **已补（2026-10-14）**：**写回「已发送」**——`proto/imap.rs` 从「零 `APPEND`」变成有 `append_message`，发信成功后后台写回服务端 `\Sent`（按角色找）+ 单夹增量同步 + `MessagesAdded` 刷新列表（`docs/email-design.md` §4.18）。
 
 ## 5. P0 汇总与分阶段实施计划
 
@@ -128,8 +130,8 @@ CID 内联图）、一次性全量+增量同步（UIDVALIDITY 失效重建、删
 | # | 项 | 模块 | 主要落点（受影响文件） |
 | --- | --- | --- | --- |
 | 1 | G-TERM-1 终端 IME 组合输入 | 终端 | duck-app/terminal_canvas.rs（实现 gpui InputHandler）；duck-term 不动 |
-| 2 | G-SFTP-1 传输队列/取消/重试 | 终端 | duck-ssh/remote.rs（.output()→spawn+轮询可 kill）；duck-app/terminal.rs 状态机 |
-| 3 | G-CONN-1 断线重连 MVP（快照+重放→30s 宽限） | 终端 | duck-app/terminal.rs、duck-term/session.rs |
+| 2 | G-SFTP-1 传输队列/取消/重试 | 终端 | duck-ssh/remote.rs（.output()→spawn+轮询可 kill）；duck-app/pages/terminal/ 状态机 |
+| 3 | G-CONN-1 断线重连 MVP（快照+重放→30s 宽限） | 终端 | duck-app/pages/terminal/、duck-term/session.rs |
 | 4 | G-DB-1 查询结果流式分页「加载更多」 | 数据库 | duck-db/drivers/mod.rs（execute_paged 原语）；db.rs UI 追加 |
 | 5 | G-AI-1 db 页 key 通道收敛到档案体系 | AI | db.rs、duck-app/ai.rs |
 | 6 | G-AI-2 DB AI 三动作 generate/fix/explain + lastError 注入 | AI | duck-db/ai.rs（prompt 工厂）、db.rs |

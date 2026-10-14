@@ -187,7 +187,7 @@ fn table_header(columns: &[DataColumn], cx: &App) -> Option<Div> {
     let extended = theme.extended();
     let hairline = extended.colors.hairline;
     // 列间竖线：宽取 hairline token（1px、不随缩放变粗），高取最大档图标高
-    // ——与终端工具栏那处竖分隔线同款（`terminal.rs`）。
+    // ——与终端工具栏那处竖分隔线同款（`terminal/`）。
     let divider_w = extended.stroke.thin;
     let divider_h = extended.icon.lg;
     let mut header = h_flex()

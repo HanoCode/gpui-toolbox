@@ -90,6 +90,12 @@
 //! | 阅读器「回信」 | 收件人 = 原发件人、主题 = `回复：…`、正文带归属行与引用块 |
 //! | 草稿箱里点一条草稿 | 整条草稿（含附件）回填，改存走同一行 |
 //!
+//! 发出去之后，内核会**另起一条后台任务**把本报文写回服务端「已发送」（`APPEND`，
+//! `duck-mail/src/lib.rs::write_back_sent`）。写回成功那封信经 `MessagesAdded` 事件
+//! 落到列表上——所以「已发送」这一屏**不必手动刷新**（`apply_event` 已经写好了这条
+//! 通路）；写回失败只记日志（信已经发出去了，没有补救动作），弹窗里那行说明据此写成
+//! 「会自动写回（需已同步出该文件夹）」。
+//!
 //! **仍然不做的**（后端没有，做了就是 P3-6 禁止的空控件）：转发、定时发送、
 //! 把草稿推到服务器的 `\Drafts` 文件夹（`drafts_meta.remote_uid` 先留空）、
 //! 关弹窗自动存草稿（没有去抖自动保存，只有显式「存草稿」按钮）。
@@ -120,7 +126,7 @@ use duck_mail::{
     Folder, FolderRole, Label, MailCore, MailEvent, Mailbox, MessageDetail, MessageSummary,
     NewAccount, OutgoingAttachment, SyncState, presets,
 };
-use duck_theme::{Lang, active_theme, tr, trf};
+use duck_theme::{Lang, active_theme, bytes, datetime_full, datetime_short, tr, trf};
 use gpui::{
     Anchor, AnyElement, App, AppContext, ClickEvent, Context, Entity, FontWeight,
     InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement, Render, Role,
@@ -137,10 +143,7 @@ use gpui_component::{
     v_flex,
 };
 
-use super::mail_data::{
-    format_full_time, format_list_time, format_size, join_addresses, sender_display,
-    subject_or_placeholder,
-};
+use super::mail_data::{join_addresses, sender_display, subject_or_placeholder};
 
 /// 左栏宽度档位（与 `db.rs` / `redis.rs` / `terminal.rs` 保持一致：
 /// 四个页面互相切换时侧栏不跳宽）。
@@ -348,7 +351,10 @@ fn render_body(
     if use_html && let Some(raw) = html {
         // 表格布局拍平成块级流：营销邮件的嵌套 `<table>` 在文档模型里挤成一团
         // （`duck_mail::mime::flatten_email_tables` 的文档有根因），拍平后按单元格
-        // 堆叠，可读性立回来。这一步是打开 / 切换时跑一次，不在 render 每帧。
+        // 堆叠，可读性立回来。拍平时**保留 `style`**（并把 `bgcolor` / `align`
+        // 翻成等价声明）——块级背景 / 内边距 / 对齐靠它，见
+        // `vendor/gpui-base/GPUI_BASE_PATCHES.md`。这一步是打开 / 切换时跑一次，
+        // 不在 render 每帧。
         let flattened = duck_mail::mime::flatten_email_tables(raw);
         let has_remote = duck_mail::mime::has_remote_images(&flattened);
         let rendered = if has_remote && !allow_remote_images {
@@ -734,12 +740,18 @@ impl MailPage {
 
     /// 新邮件到达、且**不是**当前正在看的那个文件夹时推一条通知（G-MAIL-2）。
     ///
-    /// 两道闸门：
+    /// 三道闸门：
     /// 1. **只对「常驻增量」出声**：账户处于 `Syncing`（首次全量 / 手动同步那一轮）时
     ///    静默——否则第一次打开邮箱会被几十条「新邮件」淹没，而那一轮的结论已经由同步
     ///    按钮的结果条说清楚了。只有 IDLE 推送 / 增量轮（`Idle`）到达的才算「真的来了
     ///    一封新信」。
     /// 2. **不打扰正在看的**：调用方已经排除了「当前账户 + 当前文件夹」，这里不再重复。
+    /// 3. ⚠️ **「已发送」与「草稿」出声的是错的内容**（10-14 补）：这两个文件夹里的
+    ///    东西都是**用户自己产生的**——尤其是发信之后的写回（内核
+    ///    `duck-mail/src/lib.rs::write_back_sent` 把副本 `APPEND` 进 `\Sent` 再同步），
+    ///    那条 `MessagesAdded` 若照常出声，用户会在「刚发完一封信」的一两秒后收到一条
+    ///    「新邮件 · 已发送：1 封新邮件」——通知的是自己刚干的动作。所以按**角色**
+    ///    （不是名字）把这两类挡掉。
     ///
     /// 通道走 [`notify::system_with_toast`]：新邮件既要在应用内横幅看得见，也要落到
     /// 系统通知中心（用户可能正在别的应用里）。两条通道各自看自己的开关，历史只记一条
@@ -758,6 +770,23 @@ impl MailPage {
             return;
         };
         if account.sync_state != SyncState::Idle {
+            return;
+        }
+        // 闸门 3：见函数头第 3 条。文件夹清单没加载过（别的账户）时回落到一次本地读
+        // ——`MailCore::folders` 是纯 SQLite 查询，不连网。
+        let role = self
+            .folders
+            .iter()
+            .find(|f| f.id == folder_id)
+            .map(|f| f.role)
+            .or_else(|| {
+                self.core
+                    .as_ref()
+                    .and_then(|core| core.folders(account_id).ok())
+                    .and_then(|folders| folders.into_iter().find(|f| f.id == folder_id))
+                    .map(|f| f.role)
+            });
+        if matches!(role, Some(FolderRole::Sent) | Some(FolderRole::Drafts)) {
             return;
         }
         let account_name = account
@@ -2288,7 +2317,7 @@ impl MailPage {
             cx,
             "在 {}，{} 写道：",
             &[
-                &format_full_time(detail.date),
+                &datetime_full(detail.date),
                 sender_display(
                     detail.from_name.as_deref(),
                     detail.from_addr.as_deref(),
@@ -4039,12 +4068,13 @@ fn render_compose_form(
     if let Some(error) = &state.error {
         body = body.child(duck_components::field_error(error.clone(), cx));
     }
-    // 「发出去了但没有已发送副本」是**用户看得见**的差异（换台机器打开邮箱就找不到
-    // 这封信），所以常驻一行说明，而不是等用户来问。
+    // 写回「已发送」是**后台尽力而为**的一步（内核 `write_back_sent`）：真发出去了、
+    // 但副本没写上的差异用户看得见（换台机器打开邮箱就找不到这封信），所以常驻一行
+    // 说明「会有副本 + 什么时候才写得上」，而不是等用户来问。
     body = body.child(field_hint(
         tr(
             cx,
-            "信由本机直接经 SMTP 发出；不会自动写进服务器的「已发送」文件夹。",
+            "信由本机经 SMTP 发出，并自动写回服务器的「已发送」文件夹（需已同步出该文件夹）。",
         ),
         cx,
     ));
@@ -4135,9 +4165,7 @@ fn render_compose_attachments(
                         .font_features(tabular_numbers())
                         .text_size(tokens.typography.xs.size)
                         .text_color(extended.colors.text_tertiary)
-                        .child(SharedString::from(format_size(
-                            attachment.payload.len() as i64
-                        ))),
+                        .child(SharedString::from(bytes(attachment.payload.len() as u64))),
                 )
                 .child(remove),
         );
@@ -5037,7 +5065,7 @@ impl MailPage {
         );
         let subject =
             SharedString::from(subject_or_placeholder(&message.subject, no_subject).to_string());
-        let time = SharedString::from(format_list_time(message.date));
+        let time = SharedString::from(datetime_short(message.date));
         // 读屏读不出「加粗」「小圆点」与那个星形图标，所以未读与旗标两个状态都必须
         // 进可访问名。四种组合各写一条，而不是拼一个「，已加旗标」的尾巴——尾巴那种
         // 写法把标点交给译者，换个语序就散了。
@@ -5179,7 +5207,7 @@ impl MailPage {
         let subject: SharedString = SharedString::from(
             subject_or_placeholder(&draft.subject, tr(cx, "(无主题)")).to_owned(),
         );
-        let time: SharedString = SharedString::from(format_list_time(draft.date));
+        let time: SharedString = SharedString::from(datetime_short(draft.date));
         let attachment_count = draft.attachment_count;
         // 读屏读不出加粗与纸夹图标，所以「这是草稿」「发给谁」「几个附件」都得进可访问名
         // （同 `message_row` 的口径：四种组合各写一条完整文案，不拼尾巴）。
@@ -5612,8 +5640,8 @@ impl MailPage {
                         .to_string(),
                     ))
                     .child(div().flex_1())
-                    .child(SharedString::from(format_full_time(detail.date)))
-                    // 时间按 UTC 显示（见 `mail_data` 的说明），标出来免得用户
+                    .child(SharedString::from(datetime_full(detail.date)))
+                    // 时间按 UTC 显示（见 `duck_theme::datetime_full` 的说明），标出来免得用户
                     // 以为是本地时间。改成时区换算要先把依赖口径定下来。
                     .child(SharedString::from(tr(cx, "UTC"))),
             )
@@ -5632,7 +5660,7 @@ impl MailPage {
                     trf(
                         cx,
                         "大小：{}",
-                        &[&format_size(detail.size.unwrap_or_default())],
+                        &[&bytes(detail.size.unwrap_or_default().max(0) as u64)],
                     ),
                     cx,
                 ))
@@ -5811,7 +5839,7 @@ impl MailPage {
                                 .font_features(tabular_numbers())
                                 .text_size(tokens.typography.xs.size)
                                 .text_color(extended.colors.text_tertiary)
-                                .child(SharedString::from(format_size(attachment.size))),
+                                .child(SharedString::from(bytes(attachment.size.max(0) as u64))),
                         )
                         .when_some(revealed, |this, path| {
                             this.child(

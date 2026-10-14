@@ -322,16 +322,32 @@ impl MailCore {
         sync::fetch_body(self, message_id)
     }
 
-    /// 后台预取：把某账户**收件箱**里最新的、还没拉过正文的若干封正文抓下来，返回
+    /// 后台正文下载：把某账户**收件箱**里最新的、还没拉过正文的若干封抓下来，返回
     /// 成功拉取的封数（阻塞；调用方负责放进 `background_executor`）。
     ///
-    /// 一轮同步收尾时内核自己会跑一次（见 [`sync::prefetch_bodies`] 的说明与
-    /// [`PREFETCH_BODY_LIMIT`]）。这个公开入口是给宿主在别处补一次用的——例如用户
-    /// 切到某个账户、或刚把「默认正文形态」改成 HTML 而本地正文还空着的时候。
+    /// **只做最新批**——历史全量回填走 [`Self::prefetch_and_backfill_bodies`]。常规
+    /// 路径由内核自己跑（每轮同步收尾、以及每次 IDLE 增量结束后），宿主不必操心；
+    /// 这个窄入口留给「切到某个账户、想先补一下最上面几封」之类场景。
     ///
     /// **best-effort**：单封失败即结束本轮，不返回错误（返回的是已成功的封数）。
     pub fn prefetch_bodies(&self, account_id: i64, limit: i64) -> Result<usize> {
         sync::prefetch_bodies(self, account_id, limit)
+    }
+
+    /// 后台正文下载（完整版）：**最新批 + 一批历史回填**，返回本批成功拉取的封数。
+    ///
+    /// 历史回填按 `folders.backfill_cursor` 从新往老推进，每调用一次推一批（默认
+    /// [`sync::BACKFILL_BODY_BATCH`] 封），推到底后置 `done`，此后只剩最新批。因此
+    /// 反复调用是**幂等且可累积**的：已缓存的封会被 `missing_body_ids*` 直接过滤掉，
+    /// 不会重复联网。内核在每轮同步收尾时已自动跑一次；公开出来是为了让宿主能主动补
+    /// （例如将来在设置里点「下载全部正文」）。
+    pub fn prefetch_and_backfill_bodies(
+        &self,
+        account_id: i64,
+        latest_limit: i64,
+        backfill_batch: i64,
+    ) -> Result<usize> {
+        sync::prefetch_and_backfill_bodies(self, account_id, latest_limit, backfill_batch)
     }
 
     /// 把一个附件另存到 `dest`（阻塞；调用方负责放进 `background_executor`）。
@@ -522,6 +538,9 @@ impl MailCore {
     /// 发件身份取自档案（`smtp_host` / `smtp_port` / `security` / 用户名 + 口令）；
     /// 收件人取自 [`compose::envelope_recipients`]（**含密送**）；`draft` 里
     /// `date_unix` / `message_id` 留空时由 [`compose::Draft::stamp`] 补上。
+    ///
+    /// 发出成功后**另起一条后台任务**把本报文写回服务端「已发送」（见
+    /// [`Self::schedule_sent_write_back`]）——那条路的成败与本函数的返回值无关。
     pub fn send(&self, account_id: i64, draft: &compose::Draft) -> Result<()> {
         let runtime = self.runtime()?;
         let core = self.clone();
@@ -529,6 +548,25 @@ impl MailCore {
         runtime
             .spawn(async move { send_inner(&core, account_id, &draft).await })
             .wait()?
+    }
+
+    /// 把刚发出的原始报文**写回服务端「已发送」**（`APPEND` + 一轮单夹同步）。
+    ///
+    /// **fire-and-forget**：`send` 的结论只由 SMTP 决定，这一步既不该拖住弹窗关闭，
+    /// 也不该把「已发出」翻成失败——它整个包在后台任务里，失败只落一条 warn 日志
+    /// （`MailRuntime::spawn` 拿到 `Task` 后立刻丢掉即等于「别等结果」；任务照常在
+    /// runtime 的 worker 上跑完）。
+    fn schedule_sent_write_back(&self, account_id: i64, message: String) {
+        let Ok(runtime) = self.runtime() else {
+            return;
+        };
+        let core = self.clone();
+        let task = runtime.spawn(async move {
+            if let Err(error) = write_back_sent(&core, account_id, message).await {
+                tracing::warn!(account_id, %error, "sent copy was not written back");
+            }
+        });
+        drop(task);
     }
 
     // ---- 草稿（本地）----
@@ -640,7 +678,80 @@ async fn send_inner(core: &MailCore, account_id: i64, draft: &compose::Draft) ->
     // 无论成败都发 `QUIT`：失败时直接丢连接会让服务端留一条半开会话。
     // `quit` 自己吞掉错误，所以这里不会把真正的失败原因盖掉。
     session.quit().await;
-    outcome
+    outcome?;
+    // 真发出去了才写回副本（`write_back_sent`）。它不是「发送」的一部分：那条后台
+    // 任务在本函数返回后才跑，界面上「邮件已发出」的结论已经定下来了。
+    core.schedule_sent_write_back(account_id, message);
+    Ok(())
+}
+
+/// 把刚发出的原始报文写进服务端「已发送」文件夹，并让本地副本跟上。
+///
+/// # 为什么必须有这一步
+///
+/// 惯例是 **SMTP 只投递，副本由发信方自己塞**（RFC 3501 §6.3.11 的 `APPEND`）：
+/// 服务端不会把从 SMTP 发出去的信自动托管进 `\Sent`。缺了它，用户发完信在「已发送」
+/// 里找不着自己，换台设备打开更是完全没有——界面早先只能常驻一行说明告知用户。
+///
+/// # 三条口径
+///
+/// 1. **尽力而为**：调用点只记日志（`schedule_sent_write_back`）。信已经发出去了，
+///    写回失败不能让「发送」判失败。
+/// 2. **本地副本靠同步补齐，不手工插行**：手工往 `messages` 里插的行没有服务端 UID，
+///    下一轮删除对账会把它当「服务端已删」清掉（`sync.rs::reconcile_deletions`）。
+/// 3. **目标按角色找**（[`FolderRole::Sent`]）而不是按名字：`Sent` / `已发送` /
+///    `&XfJT0ZAB-` 都可能是它。账户还没同步过（文件夹表空）就跳过——那说明连
+///    「已发送叫什么」都还不知道。
+///
+/// 写完就地跑一轮**单夹**增量同步（`sync::sync_folder`）而不是整账户同步：只有这一个
+/// 文件夹变了，整账户跑一遍在有几万个文件夹的企业账号上纯属浪费。新增的行由
+/// `MessagesAdded` 事件推给界面——「正看着已发送」的列表因此自己刷新（事件通道口径，
+/// 见 `duck-app/src/pages/mail.rs` 的 `apply_event`）。
+async fn write_back_sent(core: &MailCore, account_id: i64, message: String) -> Result<()> {
+    let sent = core
+        .db()
+        .read(|conn| db::repo::folders::find_by_role(conn, account_id, FolderRole::Sent))?;
+    // 名字是服务端 `LIST` 回的原始串（可能是 Modified UTF-7），`APPEND` 要的就是它。
+    let Some(folder) = sent else {
+        return Err(MailError::NotFound(
+            "no \\Sent folder known for this account; sync it first".into(),
+        ));
+    };
+
+    let (account, password) = accounts::load_with_password(core.db(), core.secrets(), account_id)?;
+    let cfg = proto::ImapConfig {
+        host: account.imap_host.clone(),
+        port: account.imap_port,
+        security: account.security,
+        username: account.username.clone(),
+        password,
+        auth: account.auth_kind,
+    };
+
+    let mut session = proto::imap::ImapSession::connect(&cfg).await?;
+    session
+        .append_message(&folder.name, message.as_bytes())
+        .await?;
+    // 副本已经在服务端了，所以这一步失败也不回滚（下一轮同步照样会把它收下来）——
+    // 只记日志，让本轮结论停在「已写回」而不是「写回失败」。
+    match crate::sync::sync_folder(core.db(), &mut session, account_id, folder.id, &folder.name)
+        .await
+    {
+        Ok((new, _removed)) => {
+            if new > 0 {
+                core.emit(MailEvent::MessagesAdded {
+                    account_id,
+                    folder_id: folder.id,
+                    count: new as u64,
+                });
+            }
+        }
+        Err(error) => {
+            tracing::warn!(account_id, %error, "sent folder sync after append failed");
+        }
+    }
+    session.logout().await;
+    Ok(())
 }
 
 /// `EHLO` 里自报的域名：取发件地址的域名。
@@ -666,6 +777,22 @@ mod tests {
         let core =
             MailCore::open_with_secrets(MailPaths::with_root(&dir), secrets::memory()).unwrap();
         (core, dir)
+    }
+
+    /// 一份最小可用的账户档案。写回相关测试只关心「账户存在」，主机名指哪都行
+    /// （真正的连接分支在无服务器环境里跑不到）。
+    fn account_seed(email: &str) -> NewAccount {
+        NewAccount {
+            email: email.into(),
+            display_name: None,
+            username: email.into(),
+            imap_host: "imap.example.com".into(),
+            imap_port: 993,
+            smtp_host: "smtp.example.com".into(),
+            smtp_port: 465,
+            security: ConnectionSecurity::Tls,
+            password: "pw".into(),
+        }
     }
 
     #[test]
@@ -842,6 +969,69 @@ mod tests {
         let b = core.runtime().unwrap();
         // 两次拿到的是同一个 runtime（`OnceLock` 只建一次）。
         assert!(std::ptr::eq(a, b));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写回目标按**角色**找，不按名字：`Sent` / `已发送` / `&XfJT0ZAB-` 都可能是它，
+    /// 名字是各服务商自定的。这里故意用 Modified UTF-7 形态的「已发送」落库。
+    #[test]
+    fn sent_folder_is_found_by_role_not_by_name() {
+        let (core, dir) = core("sent-role");
+        let account = core
+            .add_account(&account_seed("sent-role@example.com"))
+            .unwrap();
+        for (name, role) in [
+            ("Archive", FolderRole::Archive),
+            // `&XfJT0ZAB-` = Modified UTF-7 的「已发送」（各服务商叫法不同，角色才稳）。
+            ("&XfJT0ZAB-", FolderRole::Sent),
+        ] {
+            core.db()
+                .write_tx(|tx| {
+                    db::repo::folders::upsert(
+                        tx,
+                        account,
+                        &db::repo::folders::FolderUpsert {
+                            name: name.into(),
+                            delimiter: Some("/".into()),
+                            role,
+                            uidvalidity: None,
+                            uidnext: None,
+                        },
+                    )
+                })
+                .unwrap();
+        }
+
+        let found = core
+            .db()
+            .read(|conn| db::repo::folders::find_by_role(conn, account, FolderRole::Sent))
+            .unwrap()
+            .expect("role lookup must find the \\Sent folder");
+        assert_eq!(found.name, "&XfJT0ZAB-");
+        assert_eq!(found.role, FolderRole::Sent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 账户还没同步过（文件夹表里没有 `\Sent`）时，写回**不连网**就带错误返回。
+    ///
+    /// 这是无真实 IMAP 服务器环境里唯一能验的写回分支，也钉住了一条口径：
+    /// 找不到目标文件夹是「跳过并记日志」，不是「尝试 `APPEND` 到一个猜出来的名字」。
+    #[test]
+    fn sent_write_back_stops_before_connecting_without_a_sent_folder() {
+        let (core, dir) = core("sent-back");
+        let account = core
+            .add_account(&account_seed("sent-back@example.com"))
+            .unwrap();
+
+        let error = core
+            .runtime()
+            .unwrap()
+            .block_on(async {
+                write_back_sent(&core, account, "Subject: x\r\n\r\nbody".into()).await
+            })
+            .unwrap_err();
+        // 是 `NotFound`（查不到文件夹）而不是 `Connect` / `Timeout`——说明没去碰网络。
+        assert!(matches!(&error, MailError::NotFound(_)), "got {error:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

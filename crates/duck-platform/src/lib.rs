@@ -23,6 +23,7 @@ mod open;
 mod paths;
 pub mod secret;
 mod shell;
+mod time;
 pub mod vault;
 
 pub use autostart::{LaunchAtLoginError, launch_at_login_enabled, set_launch_at_login};
@@ -37,6 +38,9 @@ pub use hotkey::{
     last_error, start,
 };
 pub use ipc::{IpcError, IpcListener, forward_to_running_instance, listen_for_requests};
+/// IPC 协议层（line-based，duck-open/1）。给跨进程契约测试用，生产代码不必
+/// 直接调——`listen_for_requests` / `forward_to_running_instance` 是更高层的接口。
+pub use ipc::{decode, encode, endpoint_path as ipc_endpoint_path};
 pub use lock::{InstanceLock, LockOutcome, acquire as acquire_instance_lock};
 pub use logging::{
     LOG_DIR_MAX_BYTES, LOG_FILE_MAX_BYTES, LOG_RETENTION_DEFAULT_DAYS, LOG_RETENTION_FOREVER,
@@ -46,3 +50,4 @@ pub use logging::{
 pub use open::{OpenRequest, URL_SCHEME};
 pub use paths::{app_data_dir, cache_dir, config_dir, db_path, ensure_dir, lock_path, log_dir};
 pub use shell::{open_url, reveal_in_finder};
+pub use time::local_utc_offset_seconds;

@@ -1,5 +1,7 @@
 //! 应用装配：全局状态、主窗口打开、路由与活动栏动作。
 
+use std::collections::{HashMap, VecDeque};
+
 use duck_command::{ActionSlot, primary_modifier};
 use duck_components::DuckIcon;
 use duck_shell::{
@@ -18,7 +20,7 @@ use crate::pages::{
     ASSISTANT_ROUTE, AssistantPage, Clear, CloseTab, CopySelection, DATABASE_ROUTE, DatabasePage,
     DeleteToLineEnd, DeleteToLineStart, DeleteWordForward, EMAIL_ROUTE, Find, MailPage,
     MoveToLineEnd, MoveToLineStart, NewTab, OVERVIEW_ROUTE, OverviewPage, PROJECTS_ROUTE,
-    PasteFromClipboard, PlaceholderPage, REDIS_ROUTE, RedisPage, SSH_ROUTE, ScrollLineDown,
+    PasteFromClipboard, ProjectsPage, REDIS_ROUTE, RedisPage, SSH_ROUTE, ScrollLineDown,
     ScrollLineUp, ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, SelectAll, SendCtrlC,
     SendTab, SendTabPrev, SplitPane, TOOLBOX_ROUTE, TerminalPage, ToolboxPage, ZoomIn, ZoomOut,
     ZoomReset, open_licenses, open_logs, open_plugin_center, open_settings,
@@ -34,36 +36,58 @@ const MAIN_WINDOW_ORIGIN: gpui::Point<gpui::Pixels> = point(px(160.), px(120.));
 
 /// 应用级全局状态。
 pub struct Desktop {
-    main_window: Option<WindowHandle<Root>>,
-    settings_window: Option<WindowHandle<Root>>,
-    logs_window: Option<WindowHandle<Root>>,
-    /// 插件中心窗口句柄，与设置窗口同一条路子。
-    plugin_center_window: Option<WindowHandle<Root>>,
-    /// 开源许可窗口句柄，与日志窗口同一条路子。
-    licenses_window: Option<WindowHandle<Root>>,
-    /// 首启引导窗口句柄。它只在该窗口开着时有效——引导关掉就是真的关了。
-    onboarding_window: Option<WindowHandle<Root>>,
-    /// 命令面板浮窗（全局唤起键的落点）。
+    /// 窗口注册表：所有窗口句柄按 [`WindowKind`] 索引一处。
     ///
-    /// 它自己关自己（失焦 / Esc / 确认），所以这个句柄会**变陈旧**；
-    /// 判「还开着没」一律走 `update(..).is_ok()`，与其它窗口同一条路子。
-    palette_window: Option<WindowHandle<Root>>,
-    /// 设置窗口的待处理跳转：`(分类 key, 选中的工具 id)`。
-    ///
-    /// 窗口句柄的类型是 `Root`，从外部拿不到窗口里的内容视图，所以「让已打开的设置
-    /// 窗口切页」不走视图直连，而是把目标投递到这里，由设置窗口渲染时取走。
-    settings_pending: Option<(&'static str, Option<String>)>,
-    /// 主窗里两个关键视图的弱引用（主窗重建时刷新）。
+    /// 替代原先散落的 7 个具名字段（main_window / settings_window / logs_window /
+    /// plugin_center_window / licenses_window / onboarding_window / palette_window）。
+    /// 添加新窗口 = `WindowKind` 多一个变体 + 注册表一项即可，不必动 `Desktop` 字段。
+    /// ——这是 §6.1「WindowRegistry 收口」的核心抽象。
+    windows: HashMap<WindowKind, WindowHandle<Root>>,
+    /// 主窗内两个关键视图的弱引用（主窗重建时刷新）。
     ///
     /// 深链接、命令行唤起、文件拖放都从**窗口之外**触发，需要一个能直达
     /// 「切路由」与「打开工具」的入口；没有它，这些入口各自还得再存一套句柄。
     /// 存弱引用而不是强引用：主窗关掉之后它们应当自然失效，而不是让窗口活不下来。
     main_views: Option<MainViews>,
-    /// 主窗还没开时先记下的工具 id，窗口就绪后补跳一次。
+    /// 待消费的跨窗口跳转请求。
     ///
-    /// 与 [`Self::settings_pending`] 同一个形状：调用方可能比窗口先到
-    /// （`on_open_urls` 在启动早期就可能触发）。
-    pending_tool: Option<String>,
+    /// 替代原先散落的 `settings_pending`（设置窗跳转）与 `pending_tool`（主窗工具跳转）
+    /// 两个并列 ad-hoc slot：原本「形」各异、各走一套 setter / getter，现在收敛到
+    /// `JumpTarget` 枚举 + 队列。**同类覆盖**语义保留（设窗连点两次时取后者），不同类
+    /// 并存；消费方按类型 pop，其他不动。详见 `push_jump` / `set_settings_pending` /
+    /// `remember_pending_tool` / `take_settings_pending` / `take_pending_tool`。
+    pending_jumps: VecDeque<JumpTarget>,
+}
+
+/// 窗口种类——[`Desktop::windows`] 注册表的索引键。
+///
+/// 加新窗口只需扩这个枚举（不必动 `Desktop` 字段），是 §6.1「WindowRegistry 收口」
+/// 的核心抽象：消除「窗口句柄字段膨胀」这条熵增。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowKind {
+    /// 主窗口（与 `Desktop::main_views` 强耦合，单独存视图弱引用）。
+    Main,
+    /// 辅助窗口（设置 / 日志 / 插件中心 / 开源许可）。会进「上次开着哪些窗口」那份记录。
+    Aux(AuxWindow),
+    /// 首启引导窗口（一次性，关掉即失效）。
+    Onboarding,
+    /// 命令面板浮窗（自己关自己，句柄可能陈旧，判「还开着没」走 `update(..).is_ok()`）。
+    Palette,
+}
+
+/// 跨窗口跳转目标。
+///
+/// 替代原先散落的两个 ad-hoc slot（`settings_pending` 与 `pending_tool`）。
+/// 各变体的 consumer 独立，按类型 pop。
+#[derive(Debug)]
+pub(crate) enum JumpTarget {
+    /// 让设置窗口跳到某页（可选附带选中的工具 id）。
+    Settings {
+        page: &'static str,
+        tool: Option<String>,
+    },
+    /// 让主窗（开窗后）打开一个工具。
+    Tool { id: String },
 }
 
 /// 主窗内两个关键视图的弱引用。
@@ -81,21 +105,15 @@ impl Desktop {
     /// [`install`] 与单元测试共用——字段一多，两处各写一遍必然漂移。
     fn empty() -> Self {
         Self {
-            main_window: None,
-            settings_window: None,
-            logs_window: None,
-            plugin_center_window: None,
-            licenses_window: None,
-            onboarding_window: None,
-            palette_window: None,
-            settings_pending: None,
+            windows: HashMap::new(),
             main_views: None,
-            pending_tool: None,
+            pending_jumps: VecDeque::new(),
         }
     }
 
     /// 读取全局状态；必须先执行 [`install`]。
     #[must_use]
+    #[allow(dead_code)] // 公开 getter：二进制下没有现成调用者，保留供外部模块未来用
     pub fn global(cx: &App) -> &Self {
         cx.global::<Self>()
     }
@@ -107,6 +125,33 @@ impl Desktop {
         cx.global_mut::<Self>()
     }
 
+    // ── 窗口注册表（§6.1 WindowRegistry 收口） ───────────────────────────────
+
+    /// 取 [`WindowKind`] 对应窗口的句柄快照（不改动全局状态）。
+    ///
+    /// 替代原先 7 个具名 getter 各自查询一个字段的散落实现。**注意**：返回的句柄可能
+    /// 陈旧——窗口已关但回调未跑到清理时，调用方一律按 `update(..).is_ok()` 探活
+    /// （与既有路径一致；这一约束在本函数之后立即定型，见 `on_window_closed`）。
+    #[must_use]
+    pub(crate) fn window_handle(cx: &App, kind: WindowKind) -> Option<WindowHandle<Root>> {
+        cx.try_global::<Self>()
+            .and_then(|desktop| desktop.windows.get(&kind).copied())
+    }
+
+    /// 注册（或替换）[`WindowKind`] 对应窗口的句柄。
+    ///
+    /// 替代原先 `*Desktop::xxx_window(cx) = Some(handle)` 的散落直接字段赋值。
+    pub(crate) fn set_window(cx: &mut App, kind: WindowKind, handle: WindowHandle<Root>) {
+        Self::global_mut(cx).windows.insert(kind, handle);
+    }
+
+    /// 注销 [`WindowKind`] 对应窗口的句柄。
+    pub(crate) fn clear_window(cx: &mut App, kind: WindowKind) {
+        Self::global_mut(cx).windows.remove(&kind);
+    }
+
+    // ── 兼容 getter（保留 §6.1 前的 API 形状，避免页模块散落改动） ──────────
+
     /// 主窗口句柄；没开过（或已经关掉）时为 `None`。
     ///
     /// 托盘要用它：菜单命令走的是「先把窗口弄出来，再对着它派发动作」，而窗口句柄
@@ -114,51 +159,12 @@ impl Desktop {
     /// 这条路径上不该有 panic。
     #[must_use]
     pub(crate) fn main_window(cx: &App) -> Option<WindowHandle<Root>> {
-        cx.try_global::<Self>()
-            .and_then(|desktop| desktop.main_window)
-    }
-
-    /// 设置窗口句柄的存取：设置页打开 / 聚焦时复用。
-    pub(crate) fn settings_window(cx: &mut App) -> &mut Option<WindowHandle<Root>> {
-        Self::aux_window(cx, AuxWindow::Settings)
-    }
-
-    /// 日志窗口句柄的存取，与设置窗口同一条路子。
-    pub(crate) fn logs_window(cx: &mut App) -> &mut Option<WindowHandle<Root>> {
-        Self::aux_window(cx, AuxWindow::Logs)
-    }
-
-    /// 插件中心窗口句柄的存取，与设置窗口同一条路子。
-    pub(crate) fn plugin_center_window(cx: &mut App) -> &mut Option<WindowHandle<Root>> {
-        Self::aux_window(cx, AuxWindow::PluginCenter)
-    }
-
-    /// 开源许可窗口句柄的存取，与日志窗口同一条路子。
-    pub(crate) fn licenses_window(cx: &mut App) -> &mut Option<WindowHandle<Root>> {
-        Self::aux_window(cx, AuxWindow::Licenses)
-    }
-
-    /// 按 [`AuxWindow`] 取对应字段的可写引用。
-    ///
-    /// 上面四个具名存取器都走这里 —— 字段映射只此一处，加窗口时不会漏掉某条路径。
-    pub(crate) fn aux_window(cx: &mut App, aux: AuxWindow) -> &mut Option<WindowHandle<Root>> {
-        let desktop = Self::global_mut(cx);
-        match aux {
-            AuxWindow::Settings => &mut desktop.settings_window,
-            AuxWindow::Logs => &mut desktop.logs_window,
-            AuxWindow::PluginCenter => &mut desktop.plugin_center_window,
-            AuxWindow::Licenses => &mut desktop.licenses_window,
-        }
+        Self::window_handle(cx, WindowKind::Main)
     }
 
     /// 按 [`AuxWindow`] 取句柄快照（不改动全局状态）。
     fn aux_handle(&self, aux: AuxWindow) -> Option<WindowHandle<Root>> {
-        match aux {
-            AuxWindow::Settings => self.settings_window,
-            AuxWindow::Logs => self.logs_window,
-            AuxWindow::PluginCenter => self.plugin_center_window,
-            AuxWindow::Licenses => self.licenses_window,
-        }
+        self.windows.get(&WindowKind::Aux(aux)).copied()
     }
 
     /// 当前开着的辅助窗口，顺序固定（[`AuxWindow::ALL`]）。
@@ -178,11 +184,6 @@ impl Desktop {
         settings::save_aux_open(&Self::open_aux_windows(cx), cx);
     }
 
-    /// 首启引导窗口句柄的存取。
-    pub(crate) fn onboarding_window(cx: &mut App) -> &mut Option<WindowHandle<Root>> {
-        &mut Self::global_mut(cx).onboarding_window
-    }
-
     /// 引导窗口句柄的快照；没开过（或已经关掉）时为 `None`。
     ///
     /// 通知投递要用它把引导窗口从候选里剔掉（见 `update::on_notify_window`）：它是首启
@@ -190,8 +191,7 @@ impl Desktop {
     /// 与 [`Self::main_window`] 同形：`try_global`，全局状态还没装时不 panic。
     #[must_use]
     pub(crate) fn onboarding_handle(cx: &App) -> Option<WindowHandle<Root>> {
-        cx.try_global::<Self>()
-            .and_then(|desktop| desktop.onboarding_window)
+        Self::window_handle(cx, WindowKind::Onboarding)
     }
 
     /// 命令面板浮窗的句柄快照。浮窗自己会关自己，所以这个句柄**可能是陈旧的**——
@@ -200,19 +200,78 @@ impl Desktop {
     /// 与 [`Self::main_window`] 同形：`try_global`，全局状态还没装时不 panic。
     #[must_use]
     pub(crate) fn palette_window(cx: &App) -> Option<WindowHandle<Root>> {
-        cx.try_global::<Self>()
-            .and_then(|desktop| desktop.palette_window)
+        Self::window_handle(cx, WindowKind::Palette)
     }
 
-    /// 投递一次设置窗口跳转（覆盖上一次未取走的请求）。
+    // ── 跨窗口跳转队列（§6.1 pending_jumps 队列） ──────────────────────────
+
+    /// 投递一次跨窗口跳转（追加到队列尾部）。
+    #[allow(dead_code)] // §6.1 留口：未来 JumpTarget 加新变体时由它统一入队
+    pub(crate) fn push_jump(cx: &mut App, target: JumpTarget) {
+        Self::global_mut(cx).pending_jumps.push_back(target);
+    }
+
+    /// 投递一次设置窗口跳转。同类覆盖——保留「连点两次设窗时取后者」的既有行为；
+    /// 不同类（如 Tool）保留在队列里，等对应窗口消费。
+    ///
+    /// 窗口句柄的类型是 `Root`，从外部拿不到窗口里的内容视图，所以「让已打开的设置
+    /// 窗口切页」不走视图直连，而是把目标投递到这里，由设置窗口渲染时取走。
     pub(crate) fn set_settings_pending(cx: &mut App, page: &'static str, tool: Option<String>) {
-        Self::global_mut(cx).settings_pending = Some((page, tool));
+        let desktop = Self::global_mut(cx);
+        desktop
+            .pending_jumps
+            .retain(|t| !matches!(t, JumpTarget::Settings { .. }));
+        desktop
+            .pending_jumps
+            .push_back(JumpTarget::Settings { page, tool });
     }
 
-    /// 取走设置窗口跳转；没有则返回 `None`。
+    /// 取出最早的设置窗口跳转；没有则返回 `None`。非设置类目标保留在队列里。
     pub(crate) fn take_settings_pending(cx: &mut App) -> Option<(&'static str, Option<String>)> {
-        Self::global_mut(cx).settings_pending.take()
+        let desktop = Self::global_mut(cx);
+        let pos = desktop
+            .pending_jumps
+            .iter()
+            .position(|t| matches!(t, JumpTarget::Settings { .. }))?;
+        // 位置查到了 `Settings`，remove 之后不可能变成别的变体；其它分支是给
+        // 编译器补全非穷举检查兜底用的。
+        match desktop.pending_jumps.remove(pos) {
+            Some(JumpTarget::Settings { page, tool }) => Some((page, tool)),
+            _ => None,
+        }
     }
+
+    /// 主窗还没开时记下待跳转的工具。同类覆盖——主窗 build 后消费一次即可。
+    pub(crate) fn remember_pending_tool(cx: &mut App, id: &str) {
+        tracing::info!(
+            tool = id,
+            "the main window is not up yet; queueing the jump"
+        );
+        let desktop = Self::global_mut(cx);
+        desktop
+            .pending_jumps
+            .retain(|t| !matches!(t, JumpTarget::Tool { .. }));
+        desktop
+            .pending_jumps
+            .push_back(JumpTarget::Tool { id: id.to_owned() });
+    }
+
+    /// 取出最早的工具跳转；没有则返回 `None`。非工具类目标保留在队列里。
+    pub(crate) fn take_pending_tool(cx: &mut App) -> Option<String> {
+        let desktop = Self::global_mut(cx);
+        let pos = desktop
+            .pending_jumps
+            .iter()
+            .position(|t| matches!(t, JumpTarget::Tool { .. }))?;
+        // 位置查到了 `Tool`，remove 之后不可能变成别的变体；其它分支是给
+        // 编译器补全非穷举检查兜底用的。
+        match desktop.pending_jumps.remove(pos) {
+            Some(JumpTarget::Tool { id }) => Some(id),
+            _ => None,
+        }
+    }
+
+    // ── 主窗视图弱引用 ──────────────────────────────────────────────────────
 
     /// 记下主窗里的两个关键视图（每次建主窗时覆盖）。
     ///
@@ -233,20 +292,6 @@ impl Desktop {
     /// 返回克隆而非借用：调用方拿到之后要 `update` 它们，那时不能再借住全局状态。
     fn main_views(cx: &App) -> Option<MainViews> {
         cx.try_global::<Self>()?.main_views.clone()
-    }
-
-    /// 主窗还没开时记下待跳转的工具。
-    pub(crate) fn remember_pending_tool(cx: &mut App, id: &str) {
-        tracing::info!(
-            tool = id,
-            "the main window is not up yet; queueing the jump"
-        );
-        Self::global_mut(cx).pending_tool = Some(id.to_owned());
-    }
-
-    /// 取走待跳转的工具。
-    pub(crate) fn take_pending_tool(cx: &mut App) -> Option<String> {
-        Self::global_mut(cx).pending_tool.take()
     }
 }
 
@@ -289,6 +334,52 @@ pub fn open_tool(cx: &mut App, id: &str) -> bool {
     views
         .toolbox
         .update(cx, |page, cx| page.open_route(tool, cx))
+        .is_ok()
+}
+
+/// 当前路由的右栏是否展开；主窗还没开时为 `None`。
+///
+/// 「右栏到底开没开」归 shell 管（每条路由一个 [`SidebarState`]，见
+/// `duck_shell`），页面只是查询方。页面的「内容落在右栏」按钮先问它：收着就展开，
+/// 已经开着就别再动 —— 免得把用户自己调好的开合状态顶掉。
+///
+/// [`SidebarState`]: duck_components::SidebarState
+pub fn right_sidebar_open(cx: &App) -> Option<bool> {
+    let views = Desktop::main_views(cx)?;
+    views
+        .shell
+        .read_with(cx, |shell, cx| shell.active_right_sidebar_open(cx))
+        .ok()
+}
+
+/// 当前路由的右栏状态实体；主窗还没开时为 `None`。
+///
+/// 给**页面**订阅用：页面实体是 `AnyView`，shell 重绘不连带重绘它，所以「工具条上的
+/// 按钮高亮要跟着右栏开合走」得由页面自己 observe 这个实体、在回调里重绘。页面只在
+/// 拿到它之后订阅**一次** —— 路由与右栏实体都是常驻的，重复订阅只会堆回调。
+pub fn right_sidebar_state(cx: &App) -> Option<Entity<duck_components::SidebarState>> {
+    let views = Desktop::main_views(cx)?;
+    views
+        .shell
+        .read_with(cx, |shell, _| shell.active_right_sidebar_state())
+        .ok()
+        .flatten()
+}
+
+/// 请求把当前路由的右栏设为展开 / 收起，返回是否送达。
+///
+/// 页面用它把「用户点了只往右栏输出的按钮」这件事变成一次**真实的**展开 ——
+/// 在这之前页面够不到 shell 的右栏状态，只能往状态栏写一句话兜底。
+/// 主窗不可用（辅助窗口、或还没建主窗）时返回 `false`，调用方据此决定换别的反馈。
+pub fn set_right_sidebar_open(cx: &mut App, open: bool) -> bool {
+    let Some(views) = Desktop::main_views(cx) else {
+        return false;
+    };
+    views
+        .shell
+        .update(cx, |shell, cx| {
+            shell.set_active_right_sidebar_open(open, cx)
+        })
         .is_ok()
 }
 
@@ -391,6 +482,13 @@ pub fn install(cx: &mut App) {
     // `gpui_base::Root` 的默认表里不存在（该表只有 `cmd-c`，已逐条核对），全仓也
     // 没有别的动作占它，所以这条只在邮箱页有焦点时生效，不会与别处抢。
     crate::pages::bind_mail_keys(cx);
+    // —— 项目管理页 ——
+    // 绑在页面自己的 `"Projects"` 上下文（`pages::projects::bind_keys`）。这一页的
+    // 键位以**裸字母**为主（`N` / `J` / `K` / `A` / `Space` / `⌫`），所以谓词多带一个
+    // `!Input`：`gpui_base::Root` 的默认表只有 `tab` / `⇧tab` / `⌘C` / `Ctrl-C`，
+    // 裸字母在那儿是空的，但**输入框的字符输入**要靠 `!Input` 让开（`prefer_character_input`
+    // 在所有平台都是 false，按键一律先走 `KeyBindings`，见 `projects/mod.rs` 的说明）。
+    crate::pages::bind_projects_keys(cx);
     duck_command::refresh_menus(cx);
     actions::install_stateless_handlers(cx);
 
@@ -440,28 +538,36 @@ pub fn install(cx: &mut App) {
 /// 主窗也要清。留着过期句柄不会 panic（每条路径都先 `update` 探活），但 `main_views`
 /// 里那两个弱引用是**死的**，而「主窗还开着吗」会一直得到 `Some` —— 托盘、深链接、
 /// 全局唤起键据此判断都会绕远路（白等一次 `update` 失败），日志里也看不出差异。
+///
+/// 注册表走法：按 WindowId 在 `windows` 里反查匹配的 [`WindowKind`]，再分别清理
+/// 主窗的视图弱引用或辅窗的「上次开着哪些窗口」记录。原先散落 7 个字段的 if-else
+/// 链塌成一处迭代。
 fn on_window_closed(cx: &mut App, id: WindowId) {
     let Some(desktop) = cx.try_global::<Desktop>() else {
         return;
     };
-    let closed_main = desktop
-        .main_window
-        .is_some_and(|handle| AnyWindowHandle::from(handle).window_id() == id);
-    let closed_aux = AuxWindow::ALL.into_iter().find(|aux| {
-        desktop
-            .aux_handle(*aux)
-            .is_some_and(|handle| AnyWindowHandle::from(handle).window_id() == id)
-    });
-    if closed_main {
-        // 主窗不进「上次开着哪些窗口」那份记录：它不在恢复列表里（辅窗才在）。
-        let desktop = Desktop::global_mut(cx);
-        desktop.main_window = None;
-        desktop.main_views = None;
-        return;
-    }
-    if let Some(aux) = closed_aux {
-        *Desktop::aux_window(cx, aux) = None;
-        Desktop::remember_aux_open(cx);
+    let closed_kind = desktop
+        .windows
+        .iter()
+        .find(|(_, handle)| AnyWindowHandle::from(**handle).window_id() == id)
+        .map(|(kind, _)| *kind);
+    let Some(kind) = closed_kind else { return };
+
+    let desktop = Desktop::global_mut(cx);
+    desktop.windows.remove(&kind);
+    match kind {
+        WindowKind::Main => {
+            // 主窗不进「上次开着哪些窗口」那份记录：它不在恢复列表里（辅窗才在）。
+            desktop.main_views = None;
+        }
+        WindowKind::Aux(_) => {
+            // `remember_aux_open` 只走 `try_global::<&App>` 的不可变路径，
+            // 不需要先把 `desktop` 释放。
+            Desktop::remember_aux_open(cx);
+        }
+        WindowKind::Onboarding | WindowKind::Palette => {
+            // 引导窗 / 调色盘各自有「自关」语义，无须额外收尾。
+        }
     }
 }
 
@@ -488,7 +594,7 @@ pub fn restore_aux_windows(cx: &mut App) {
 /// 打开主窗口；已存在则前置激活。
 pub fn open_main_window(cx: &mut App) {
     // `is_ok()` 为假说明句柄过期了（窗口已经被关掉）：那就往下走，重新开一个。
-    if let Some(handle) = Desktop::global(cx).main_window
+    if let Some(handle) = Desktop::main_window(cx)
         && handle
             .update(cx, |_, window, _| window.activate_window())
             .is_ok()
@@ -506,7 +612,7 @@ pub fn open_main_window(cx: &mut App) {
 
     match cx.open_window(options, build_main_window) {
         Ok(handle) => {
-            Desktop::global_mut(cx).main_window = Some(handle);
+            Desktop::set_window(cx, WindowKind::Main, handle);
             cx.activate(true);
         }
         Err(error) => report_window_failure("主窗口", &error, cx),
@@ -660,7 +766,7 @@ pub fn open_palette_window(cx: &mut App) {
         observe_system_appearance(window);
         cx.new(|cx| Root::new(palette, window, cx))
     }) {
-        Ok(handle) => Desktop::global_mut(cx).palette_window = Some(handle),
+        Ok(handle) => Desktop::set_window(cx, WindowKind::Palette, handle),
         Err(error) => report_window_failure("命令面板", &error, cx),
     }
 }
@@ -690,13 +796,14 @@ pub(crate) fn observe_system_appearance(window: &Window) {
         .detach();
 }
 
-/// 构造 shell：概览 / 工具箱 / SSH 终端 / 数据库 / Redis / AI 助手 / 邮箱七条已实现
-/// 路由 + 1 条功能占位路由（项目管理），以及活动栏底部的外观切换与设置动作。
+/// 构造 shell：概览 / 工具箱 / SSH 终端 / 数据库 / Redis / 项目管理 / AI 助手 /
+/// 邮箱八条已实现路由，以及活动栏底部的外观切换与设置动作。
 ///
 /// 路由一旦登记，活动栏按钮、`⌘n` 键位、原生菜单项、命令面板条目会**同时**出现
-/// （四输出面派生自同一份动作清单）。项目管理页曾按 P2-4 整体移除，现按用户要求
-/// 恢复入口：点开是「功能正在建设中」的空白页，该模块落地后换掉视图即可
-/// （SSH 终端、数据库、AI 助手、邮箱四页即按这条路径从占位页换成了真实页面）。
+/// （四输出面派生自同一份动作清单）。项目管理页曾按 P2-4 整体移除，又按用户要求
+/// 以占位页恢复入口，S2（`docs/projects-design.md` §7）把它换成了真实页面 ——
+/// 至此 `pages/placeholder.rs` 已无路由使用，随本批一并删除（SSH 终端、数据库、
+/// AI 助手、邮箱四页此前也走的是同一条「占位页 → 真实页面」路径）。
 fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
     let overview = cx.new(|_| OverviewPage::new());
     let toolbox = cx.new(ToolboxPage::new);
@@ -706,7 +813,8 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
     let ssh_for_actions = ssh.downgrade();
     let database = cx.new(|cx| DatabasePage::new(window, cx));
     let redis = cx.new(|cx| RedisPage::new(window, cx));
-    let projects = cx.new(|_| PlaceholderPage::new("项目管理", DuckIcon::Kanban));
+    // 项目管理：S2 起接上 `duck-project` 内核（左栏项目树 / 看板 / 任务详情）。
+    let projects = cx.new(|cx| ProjectsPage::new(window, cx));
     // 邮箱：已接上 `duck-mail` 内核（M1：账户 CRUD、IMAP 拉取、增量同步、正文按需下载）。
     // 构造时会在后台打开库并拉账户，所以需要 `window`（同数据库 / Redis 页）。
     let email = cx.new(|cx| MailPage::new(window, cx));
@@ -728,6 +836,9 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
     // Redis：与数据库页同款挂法（左栏连接列表 / 右栏连接信息 + 键详情）。
     let redis_sidebar = redis.read(cx).sidebar_state();
     let redis_right_view = redis.clone();
+    // 项目管理：左栏项目树 + 右栏任务详情，与数据库 / Redis 页同款挂法。
+    let projects_sidebar = projects.read(cx).sidebar_state();
+    let projects_right_view = projects.clone();
     // AI 助手：左栏会话历史、右栏会话参数，挂法与数据库 / Redis 页一致。
     let assistant_sidebar = assistant.read(cx).sidebar_state();
     let assistant_right_view = assistant.clone();
@@ -807,7 +918,9 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
             Icon::new(DuckIcon::Kanban),
             projects,
         )
-        .with_label_fn(|cx| SharedString::from(tr(cx, "项目管理"))),
+        .with_label_fn(|cx| SharedString::from(tr(cx, "项目管理")))
+        .with_sidebar(projects_sidebar)
+        .with_right_sidebar(move |cx| projects_right_view.read(cx).render_right_sidebar(cx)),
         ShellRoute::new(
             ASSISTANT_ROUTE,
             "duck-route-assistant",
@@ -953,7 +1066,7 @@ fn activity_actions(cx: &App) -> Vec<ShellAction> {
 
 #[cfg(test)]
 mod tests {
-    use super::Desktop;
+    use super::{Desktop, WindowKind};
     use gpui::{
         AnyWindowHandle, App, AppContext as _, Context, IntoElement, ParentElement as _, Render,
         Styled as _, TestAppContext, VisualTestContext, Window, WindowHandle, div,
@@ -1007,7 +1120,7 @@ mod tests {
 
         cx.update(|cx| {
             cx.set_global(Desktop::empty());
-            *Desktop::onboarding_window(cx) = Some(wizard);
+            Desktop::set_window(cx, WindowKind::Onboarding, wizard);
             push_app_toast(cx);
         });
         assert_eq!(
@@ -1024,7 +1137,7 @@ mod tests {
         // 对照组：撤掉登记（等于「这不是引导窗口」），同一条路径就该照常投给活跃窗口。
         // 少了这一半，上面的「0 条」也可能只是通知本来就推不出去。
         cx.update(|cx| {
-            *Desktop::onboarding_window(cx) = None;
+            Desktop::clear_window(cx, WindowKind::Onboarding);
             push_app_toast(cx);
         });
         assert_eq!(

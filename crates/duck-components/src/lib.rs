@@ -30,7 +30,7 @@ pub use kit::{
     field_error, field_hint, field_label, field_success, form, form_field, form_gap, form_row,
     input_with_action, meta_text, nav_list, option_group, option_row, option_row_stacked,
     segmented_tabs, settings_section, status_button, status_button_content, switch_control,
-    title_text, toolbar_dropdown_button,
+    title_text, toolbar_dropdown_button, toolbar_text_dropdown_button,
 };
 pub use maillogos::MailLogo;
 pub use motion::{SlidingHighlight, SlidingRowHighlight, StateLayer, color_transition};
@@ -128,7 +128,10 @@ fn text_button_frame(id: impl Into<ElementId>, variant: ButtonVariant, cx: &App)
 }
 
 /// 创建仅图标的方形按钮（`density.control` 尺寸，与同行输入框等高）。
-/// `label` 仅用作无障碍标签，不渲染文字。
+///
+/// `label` 只进无障碍名与悬停提示，不渲染文字 —— 两者本来就该是同一句话
+/// （见 [`with_icon_tooltip`]）。提示想比无障碍名多说一句（例如带上当前状态）
+/// 用 [`icon_button_tip`]。
 pub fn icon_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -136,9 +139,32 @@ pub fn icon_button(
     variant: ButtonVariant,
     cx: &App,
 ) -> Button {
-    icon_button_frame(id, label, variant, cx).child(icon)
+    let label: SharedString = label.into();
+    with_icon_tooltip(icon_button_frame(id, label.clone(), variant, cx), label).child(icon)
 }
 
+/// 同 [`icon_button`]，但悬停提示单独给：无障碍名用 `label`（简短、读屏友好），
+/// 提示用 `tip`（可带状态、补充说明或动态读数）。
+///
+/// ⚠️ **提示只能挂一次**：gpui 对同一元素二次 `.tooltip()` 会直接 panic
+/// （`div.rs` 里那句 `calling tooltip more than once on the same element`，
+/// 且是 abort 级别，整个程序秒退）。所以提示统一在组件内部挂，
+/// 调用方**不要**再在这个返回值上挂 `.tooltip()`。
+pub fn icon_button_tip(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    tip: impl Into<SharedString>,
+    variant: ButtonVariant,
+    cx: &App,
+) -> Button {
+    with_icon_tooltip(icon_button_frame(id, label, variant, cx), tip.into()).child(icon)
+}
+
+/// 图标按钮的公共外观与其无障碍名（**不含提示**）。
+///
+/// 提示单独由 [`icon_button`] / [`icon_button_tip`] 挂：挂载点唯一，
+/// 调用方就没有「再挂一次」的机会。
 fn icon_button_frame(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -153,24 +179,21 @@ fn icon_button_frame(
     let disabled_opacity = theme.extended().opacity.disabled;
     let label: SharedString = label.into();
 
-    with_icon_tooltip(
-        Button::new(id)
-            .size(theme.density().control)
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .rounded(radius)
-            .border(stroke)
-            .border_color(palette.border)
-            .bg(palette.background)
-            .text_color(palette.foreground)
-            .focus_visible(move |style| style.border_color(tokens.colors.ring))
-            .styles(move |styles| styles.disabled(move |style| style.opacity(disabled_opacity)))
-            .accessibility_label(label.clone())
-            .child(palette.state_layer(radius, stroke)),
-        label,
-    )
+    Button::new(id)
+        .size(theme.density().control)
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .rounded(radius)
+        .border(stroke)
+        .border_color(palette.border)
+        .bg(palette.background)
+        .text_color(palette.foreground)
+        .focus_visible(move |style| style.border_color(tokens.colors.ring))
+        .styles(move |styles| styles.disabled(move |style| style.opacity(disabled_opacity)))
+        .accessibility_label(label)
+        .child(palette.state_layer(radius, stroke))
 }
 
 /// 创建带前置图标的主要操作按钮。

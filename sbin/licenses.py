@@ -277,6 +277,34 @@ def normalize_text(raw: str) -> str:
     return "\n".join(lines).strip("\n") + "\n"
 
 
+def vendored_crates(root: Path) -> dict[str, Path]:
+    """`[patch.crates-io]` 里指向 `vendor/` 的包 → `{包名: 源码目录}`。
+
+    vendored 的第三方依赖在 `Cargo.lock` 里同样是「无 source 的 path 包」，与
+    本仓自己的 crate 无法按 lock 字段区分——历史版本按 `kind == "local"` 一律
+    跳过，结果 alacritty_terminal / vte 被**静默丢出许可表**（它们照样编进二进制，
+    Apache-2.0 的署名要求不因 vendor 而消失）。这里按根清单的 patch 段还原名单：
+    patch 指到 `vendor/` 下的就是第三方，按包名（可能与目录名不同）对照。
+    """
+    manifest = read_toml(root / "Cargo.toml")
+    if not manifest:
+        return {}
+    patches = (manifest.get("patch") or {}).get("crates-io") or {}
+    out: dict[str, Path] = {}
+    for spec in patches.values():
+        if not isinstance(spec, dict):
+            continue
+        rel = spec.get("path")
+        if not rel or "vendor" not in Path(rel).parts:
+            continue
+        crate = root / rel
+        data = read_toml(crate / "Cargo.toml")
+        name = ((data or {}).get("package") or {}).get("name")
+        if name:
+            out[name] = crate
+    return out
+
+
 def collect(cargo: Path) -> tuple[list[dict], list[dict], list[str]]:
     """扫一遍依赖图。
 
@@ -286,6 +314,8 @@ def collect(cargo: Path) -> tuple[list[dict], list[dict], list[str]]:
     if not lock or "package" not in lock:
         unsupported(f"读不到依赖图：{LOCK}")
 
+    vendored = vendored_crates(REPO)
+
     rows: list[dict] = []
     groups: dict[str, dict] = {}
     missing: list[str] = []
@@ -293,13 +323,20 @@ def collect(cargo: Path) -> tuple[list[dict], list[dict], list[str]]:
     for entry in lock["package"]:
         row = package_manifest(entry)
         if row["kind"] == "local":
-            continue
+            # 无 source 的 path 包只有两种：本仓自己的 crate（跳过），以及
+            # `[patch.crates-io]` 指进 `vendor/` 的第三方（照常入表）。
+            if row["name"] not in vendored:
+                continue
+            row["kind"] = "vendored"
         if row["name"].startswith(OWN_PREFIX):
             continue
 
         name = row["name"]
         label = f"{name} {row['version']}"
-        crate_dir = find_crate_dir(row, cargo)
+        if row["kind"] == "vendored":
+            crate_dir: Path | None = vendored.get(name)
+        else:
+            crate_dir = find_crate_dir(row, cargo)
         if crate_dir is None:
             missing.append(label)
             row["license"] = "未定位"

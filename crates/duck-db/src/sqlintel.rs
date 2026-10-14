@@ -9,6 +9,7 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
+use std::ops::Range;
 
 use crate::config::DatabaseKind;
 
@@ -832,6 +833,50 @@ pub fn tx_effect(stmt: &str) -> Option<TxEffect> {
     }
 }
 
+/// 显式事务的**控制动作**：工具条 Tx 开关按下一个时到底发哪条语句。
+///
+/// 与 [`tx_effect`] 是一对：那个负责「把发出去的语句认出来」（状态显示），这个负责
+/// 「按用户意图造出语句」。两者必须闭环 —— 造出来的语句若认不出来，点一下开关后
+/// `in_tx` 不会变，界面就卡在旧状态（见 [`TxControl::statement`] 的测试）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxControl {
+    /// 开启事务。
+    Begin,
+    /// 提交。
+    Commit,
+    /// 回滚。
+    Rollback,
+}
+
+impl TxControl {
+    /// 按引擎给出控制语句。
+    ///
+    /// 三家只有「开启」有方言差异：SQLite / PostgreSQL 用 `BEGIN`，MySQL 用
+    /// `START TRANSACTION`（`BEGIN` 在 MySQL 里是同义词，但 `START TRANSACTION`
+    /// 不与 `BEGIN…END` 复合语句歧义，也允许带 `WITH CONSISTENT SNAPSHOT` 之类的选项）。
+    /// 提交 / 回滚三家一致，`END` 虽然 PG 也认，但 `COMMIT` 更直白。
+    #[must_use]
+    pub fn statement(self, kind: DatabaseKind) -> &'static str {
+        match self {
+            Self::Begin => match kind {
+                DatabaseKind::Mysql => "START TRANSACTION",
+                _ => "BEGIN",
+            },
+            Self::Commit => "COMMIT",
+            Self::Rollback => "ROLLBACK",
+        }
+    }
+
+    /// 这个动作对显式事务的影响类别（与 [`tx_effect`] 同域）。
+    #[must_use]
+    pub const fn effect(self) -> TxEffect {
+        match self {
+            Self::Begin => TxEffect::Begin,
+            Self::Commit | Self::Rollback => TxEffect::End,
+        }
+    }
+}
+
 /// 取语句的首个关键字（大写；跳过前导空白与 `--` / `/* */` 注释）。
 fn statement_head(stmt: &str) -> String {
     let mut rest = stmt.trim_start();
@@ -1035,6 +1080,42 @@ pub fn covers_columns(projected: &[String], needed: &[String]) -> bool {
         .all(|column| projected.iter().any(|name| name == column))
 }
 
+/// 关键字大小写档位（对齐主流格式化工具的 keywordCase）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SqlKeywordCase {
+    /// 保留原样（dbx / sql-formatter 的默认档）。
+    #[default]
+    Preserve,
+    /// 全部大写（本仓历史默认）。
+    Upper,
+    /// 全部小写。
+    Lower,
+}
+
+/// SQL 格式化选项：主流格式化工具的最小可配集合。
+///
+/// 真源在设置页 `DbSettings::sql_format`（duck-app），这里只定义内核侧的取值域；
+/// `Default` 即「历史行为」：关键字大写、空格缩进、宽度 2。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqlFormatOptions {
+    /// 关键字大小写。
+    pub keyword_case: SqlKeywordCase,
+    /// `true` 用 Tab 缩进，`false` 用空格。
+    pub indent_tabs: bool,
+    /// 空格缩进宽度（`indent_tabs == false` 时生效）。
+    pub indent_width: u8,
+}
+
+impl Default for SqlFormatOptions {
+    fn default() -> Self {
+        SqlFormatOptions {
+            keyword_case: SqlKeywordCase::Upper,
+            indent_tabs: false,
+            indent_width: 2,
+        }
+    }
+}
+
 /// 重新排版后的 SQL。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormattedSql {
@@ -1044,19 +1125,45 @@ pub struct FormattedSql {
     pub kept_verbatim: Vec<String>,
 }
 
-/// 把一段 SQL 重新排版：按语句拆分 → 解析 → 换成解析树的规范输出。
+/// 把一段 SQL 重新排版：按语句拆分 → 解析门 → [`sqlformat`] 主流式排版。
 ///
-/// 关键字大小写、空白、逗号与括号间距由 `Statement` 的 `Display` 统一 ——
-/// 它同时也是「这段 SQL 能不能被理解」的证明：**解析不了的语句一律原样保留**
-/// 并记进 [`FormattedSql::kept_verbatim`]。宁可不动，也不要把一段用户手上跑得通的
+/// **解析门仍然保留**：解析得了的语句才交给 `sqlformat`（换行、缩进、关键字
+/// 大小写都由 [`SqlFormatOptions`] 控制）；解析不了的**原样保留**并记进
+/// [`FormattedSql::kept_verbatim`] —— 宁可不动，也不要把一段用户手上跑得通的
 /// SQL 改成跑不了的（半截语句、方言特有语法都会走到这条路）。
 #[must_use]
 pub fn format_sql(sql: &str) -> FormattedSql {
+    format_sql_with(sql, &SqlFormatOptions::default())
+}
+
+/// [`format_sql`] 的可配版本：设置页与工具条开关由此接入。
+#[must_use]
+pub fn format_sql_with(sql: &str, options: &SqlFormatOptions) -> FormattedSql {
+    let sqlformat_options = sqlformat::FormatOptions {
+        indent: if options.indent_tabs {
+            sqlformat::Indent::Tabs
+        } else {
+            sqlformat::Indent::Spaces(options.indent_width)
+        },
+        uppercase: match options.keyword_case {
+            SqlKeywordCase::Preserve => None,
+            SqlKeywordCase::Upper => Some(true),
+            SqlKeywordCase::Lower => Some(false),
+        },
+        ..sqlformat::FormatOptions::default()
+    };
     let mut formatted = Vec::new();
     let mut kept_verbatim = Vec::new();
     for statement in split_statements(sql) {
         match parse_one(&statement) {
-            Some(parsed) => formatted.push(parsed.to_string()),
+            // 解析门通过：交给 sqlformat 做主流式换行与缩进。
+            Some(_) => {
+                formatted.push(sqlformat::format(
+                    &statement,
+                    &sqlformat::QueryParams::None,
+                    &sqlformat_options,
+                ));
+            }
             None => {
                 kept_verbatim.push(statement.clone());
                 formatted.push(statement);
@@ -1066,6 +1173,145 @@ pub fn format_sql(sql: &str) -> FormattedSql {
     FormattedSql {
         text: formatted.join(";\n\n"),
         kept_verbatim,
+    }
+}
+
+/// 把一段 SQL 压成单行：去掉 `-- 行注释` 与 `/* 块注释 */`，连续空白折叠成一个空格。
+///
+/// **字符串字面量与带引号的标识符原样保留**——`'a  b'` 里的双空格、`"col"` 的内容
+/// 都是数据的一部分，压掉就是改语义。这里不需要理解语句本身：注释与空白是仅有的
+/// 两类「怎么动都不改变语义」的成分，其余一律照抄。
+#[must_use]
+pub fn minify_sql(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    // 引号态：`'…'` / `"…"` / `` `…` `` 三种成对出现，内部不折叠空白、不理会注释记号。
+    let mut quote: Option<char> = None;
+    let mut pending_space = false;
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            out.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' | '`' => {
+                if pending_space && !matches!(c, ',' | ';' | ')' | ']') {
+                    out.push(' ');
+                }
+                pending_space = false;
+                quote = Some(c);
+                out.push(c);
+            }
+            // 行注释：吃掉到行尾（不含换行——换行交给空白折叠统一处理）。
+            '-' if chars.peek() == Some(&'-') => {
+                chars.next();
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+                pending_space = !out.is_empty();
+            }
+            // 块注释：吃掉到 `*/`；没有闭合就吃到结尾（半截注释同样不参与语义）。
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        break;
+                    }
+                }
+                pending_space = !out.is_empty();
+            }
+            c if c.is_whitespace() => {
+                pending_space = !out.is_empty();
+            }
+            c => {
+                // 逗号 / 右括号 / 分号**前**不留空格、左括号**后**不留空格
+                // （`f( a , b ) ;` → `f(a,b);`），其余保一个空格。
+                let snug_before = matches!(c, ',' | ';' | ')' | ']');
+                let snug_after = matches!(out.as_bytes().last(), Some(b'(' | b'['));
+                if pending_space && !snug_before && !snug_after {
+                    out.push(' ');
+                }
+                pending_space = false;
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// 「注释切换」做完之后的样子（编辑器「注释」按钮的回执素材）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineCommentToggle {
+    /// 切换后的完整文本（行数不变，只有覆盖到的行被加 / 剥 `-- `）。
+    pub text: String,
+    /// `true` = 这次是**去掉**注释（首行已有 `--`）；`false` = 这次是**加上**。
+    pub removed: bool,
+    /// 被切换的行数（界面据此报「已注释 N 行」）。
+    pub lines: usize,
+}
+
+/// 切换选区 `[start..end]` 覆盖到的**整行**的 `-- ` 行注释。
+///
+/// 方向以**首行**为准：首行已有注释就整段剥掉，没有就整段补上——混合状态时
+/// 按一次只做一件事，行为可预期。字节越界按文本长度截住（编辑器给的选区
+/// 理论上不会越界，但内核不赌调用方）。
+#[must_use]
+pub fn toggle_line_comments(sql: &str, range: Range<usize>) -> LineCommentToggle {
+    let clamp = |at: usize| at.min(sql.len());
+    // 选区边界落在多字节字符中间时退到字符边界，别把 UTF-8 切出 panic。
+    let snap = |mut at: usize| {
+        while at > 0 && !sql.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let start = snap(clamp(range.start));
+    let end = snap(clamp(range.end)).max(start);
+    let first_line = sql[..start].matches('\n').count();
+    let last_line = sql[..end].matches('\n').count();
+    let removed = sql
+        .lines()
+        .nth(first_line)
+        .is_some_and(|line| line.trim_start().starts_with("--"));
+    let mut text = sql
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            if index < first_line || index > last_line {
+                return line.to_owned();
+            }
+            if removed {
+                strip_line_comment(line)
+            } else {
+                format!("-- {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // `lines()` 会把结尾的换行丢掉：编辑器文本以换行收尾时原样补回，别悄悄改行数。
+    if sql.ends_with('\n') {
+        text.push('\n');
+    }
+    LineCommentToggle {
+        text,
+        removed,
+        lines: last_line - first_line + 1,
+    }
+}
+
+/// 剥掉一行的 `-- ` 注释前缀（连同其后**一个**空格；缩进原样保留）。
+fn strip_line_comment(line: &str) -> String {
+    let indent = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent);
+    match rest.strip_prefix("--") {
+        Some(body) => format!("{indent}{}", body.strip_prefix(' ').unwrap_or(body)),
+        None => line.to_owned(),
     }
 }
 
@@ -1424,6 +1670,50 @@ mod tests {
         assert_eq!(tx_effect("SELECT 1"), None);
         assert_eq!(tx_effect("SAVEPOINT s1"), None);
         assert_eq!(tx_effect("UPDATE t SET a = 'COMMIT'"), None);
+    }
+
+    /// 控制语句与状态判定必须**闭环**：造出来的语句一定要被 [`tx_effect`] 认出来。
+    /// 认不出来 = 点一下开关后状态纹丝不动（界面卡在旧态），这是这条路径上唯一的
+    /// 致命失败，值得单独钉死。
+    #[test]
+    fn tx_control_statements_round_trip_through_tx_effect() {
+        for kind in [
+            DatabaseKind::Sqlite,
+            DatabaseKind::Postgres,
+            DatabaseKind::Mysql,
+            DatabaseKind::ClickHouse,
+            DatabaseKind::SqlServer,
+            DatabaseKind::Mongo,
+            DatabaseKind::Elasticsearch,
+        ] {
+            for control in [TxControl::Begin, TxControl::Commit, TxControl::Rollback] {
+                let statement = control.statement(kind);
+                assert_eq!(
+                    tx_effect(statement),
+                    Some(control.effect()),
+                    "{kind:?} 的 {control:?} 造出 `{statement}` 却认不出来"
+                );
+            }
+        }
+    }
+
+    /// 方言：只有「开启」按引擎分叉（MySQL 用 `START TRANSACTION`），提交 / 回滚三家一致。
+    #[test]
+    fn only_begin_is_dialect_specific() {
+        assert_eq!(
+            TxControl::Begin.statement(DatabaseKind::Mysql),
+            "START TRANSACTION"
+        );
+        assert_eq!(TxControl::Begin.statement(DatabaseKind::Sqlite), "BEGIN");
+        assert_eq!(TxControl::Begin.statement(DatabaseKind::Postgres), "BEGIN");
+        for kind in [
+            DatabaseKind::Sqlite,
+            DatabaseKind::Postgres,
+            DatabaseKind::Mysql,
+        ] {
+            assert_eq!(TxControl::Commit.statement(kind), "COMMIT");
+            assert_eq!(TxControl::Rollback.statement(kind), "ROLLBACK");
+        }
     }
 
     /// 拆分：普通分号、字符串里的分号、注释、结尾无分号。
@@ -1790,12 +2080,15 @@ mod tests {
     #[test]
     fn formatting_normalises_the_parsable_and_keeps_the_rest_verbatim() {
         let tidy = format_sql("select id,name from users where id=1");
-        assert_eq!(tidy.text, "SELECT id, name FROM users WHERE id = 1");
+        assert_eq!(
+            tidy.text,
+            "SELECT\n  id,\n  name\nFROM\n  users\nWHERE\n  id = 1"
+        );
         assert!(tidy.kept_verbatim.is_empty(), "这一句应该能解析");
 
         // 多语句用空行分隔，各自以 `;` 收尾。
         let two = format_sql("select 1;select 2");
-        assert_eq!(two.text, "SELECT 1;\n\nSELECT 2");
+        assert_eq!(two.text, "SELECT\n  1;\n\nSELECT\n  2");
 
         // 半截语句 / 方言语法：原样保留，并**列出来**让界面能提示。
         let broken = format_sql("select from where; this is not sql");
@@ -1807,6 +2100,38 @@ mod tests {
         let empty = format_sql("   ");
         assert_eq!(empty.text, "");
         assert!(empty.kept_verbatim.is_empty());
+    }
+
+    /// 关键字大小写与缩进档位要真正生效（对齐主流格式化工具的选项面）。
+    #[test]
+    fn formatting_honors_case_and_indent_options() {
+        let lower = SqlFormatOptions {
+            keyword_case: SqlKeywordCase::Lower,
+            ..SqlFormatOptions::default()
+        };
+        assert_eq!(
+            format_sql_with("SELECT id FROM users", &lower).text,
+            "select\n  id\nfrom\n  users"
+        );
+
+        let preserve = SqlFormatOptions {
+            keyword_case: SqlKeywordCase::Preserve,
+            ..SqlFormatOptions::default()
+        };
+        assert_eq!(
+            format_sql_with("SELECT id FROM users", &preserve).text,
+            "SELECT\n  id\nFROM\n  users"
+        );
+
+        let tabs = SqlFormatOptions {
+            indent_tabs: true,
+            ..SqlFormatOptions::default()
+        };
+        assert!(
+            format_sql_with("select id from users", &tabs)
+                .text
+                .contains("\n\tid")
+        );
     }
 
     /// 排版是幂等的：对已经规范化过的文本再跑一次不变（否则「点两次格式化」会一直抖）。
@@ -1907,5 +2232,47 @@ mod tests {
                 "{kind:?} 的计划语句被当成写语句了：{sql}"
             );
         }
+    }
+
+    #[test]
+    fn minify_sql_folds_whitespace_and_strips_comments() {
+        assert_eq!(
+            minify_sql("SELECT a , b\n-- 备注\nFROM t ;"),
+            "SELECT a, b FROM t;"
+        );
+        // 块注释整段吃掉（含未闭合的）。
+        assert_eq!(minify_sql("/* 头部 */ SELECT 1 /* 尾"), "SELECT 1");
+        // 字符串字面量内部原样：双空格、注释记号、引号都不动；逗号后照常保一个空格。
+        assert_eq!(
+            minify_sql("SELECT 'a  -- b' , \"c /* d\" FROM t"),
+            "SELECT 'a  -- b', \"c /* d\" FROM t"
+        );
+        // 括号内侧不留空格（`f(` 直接连住）；逗号后照常保一个空格。
+        assert_eq!(minify_sql("f( a , b ) ;"), "f(a, b);");
+        assert_eq!(minify_sql("   "), "");
+    }
+
+    #[test]
+    fn toggle_line_comments_follows_first_line_direction() {
+        let sql = "SELECT 1;\nSELECT 2;\nSELECT 3;\n";
+        // 覆盖第 2 行（字节 10..=18 是 "SELECT 2;"）：加注释。
+        let range = Range { start: 10, end: 19 };
+        let toggled = toggle_line_comments(sql, range.clone());
+        assert_eq!(toggled.text, "SELECT 1;\n-- SELECT 2;\nSELECT 3;\n");
+        assert!(!toggled.removed);
+        assert_eq!(toggled.lines, 1);
+        // 再按一次（首行已有注释）→ 剥掉，缩进保留。
+        let back = toggle_line_comments(&toggled.text, range);
+        assert_eq!(back.text, sql);
+        assert!(back.removed);
+        // 选区跨多行：整段一起切。
+        let wide = toggle_line_comments(sql, Range { start: 0, end: 29 });
+        assert_eq!(wide.lines, 3);
+        assert!(
+            wide.text
+                .starts_with("-- SELECT 1;\n-- SELECT 2;\n-- SELECT 3;")
+        );
+        // 结尾换行不被 `lines()` 吃掉。
+        assert!(wide.text.ends_with('\n'));
     }
 }

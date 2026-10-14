@@ -307,7 +307,7 @@ fn fit_into(bounds: Bounds<Pixels>, area: Bounds<Pixels>) -> Bounds<Pixels> {
 /// 会被记住几何 / 会被恢复的辅助窗口。
 ///
 /// 引导窗口**不在其中**：它是一次性流程，记住几何没有意义，重开更是打扰。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AuxWindow {
     /// 设置。
     Settings,

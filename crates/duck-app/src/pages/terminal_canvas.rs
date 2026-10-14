@@ -594,7 +594,7 @@ impl TerminalSession {
 
     /// 底层会话（标签还没起来时是 `None`）。
     ///
-    /// `pub(super)`：`terminal.rs` 的清屏路径也要拿它调 `scroll_to_bottom` ——
+    /// `pub(super)`：`terminal/tabs.rs` 的清屏路径也要拿它调 `scroll_to_bottom` ——
     /// 与画布层共用同一个会话句柄，不另存一份。
     pub(super) fn session(&self) -> Option<&Arc<Session>> {
         self.handle.as_ref()
@@ -602,7 +602,7 @@ impl TerminalSession {
 
     /// 画布的焦点句柄。
     ///
-    /// `pub(super)`：搜索条收起时要把键盘交还画布（`terminal.rs` 的 `close_find`），
+    /// `pub(super)`：搜索条收起时要把键盘交还画布（`terminal/find.rs` 的 `close_find`），
     /// 而不该把 `focus` 字段整个开出去 —— 别的模块只需要「能聚焦」这一件事。
     pub(super) fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
@@ -2274,7 +2274,7 @@ impl TerminalPage {
                 move |this, _: &SelectAll, _window, cx| this.select_all(&tab_id, cx)
             }))
             // —— 标签 ——
-            // 与工具条那条「新建 / 关闭」是同一份状态机（`terminal.rs`），
+            // 与工具条那条「新建 / 关闭」是同一份状态机（`terminal/tabs.rs`），
             // 这里只是把 `⌘T` / `⌘W` 接到它上面。
             .on_action(cx.listener(|this, _: &NewTab, _window, cx| this.new_local_tab(cx)))
             .on_action(cx.listener(|this, _: &CloseTab, _window, cx| this.close_active_tab(cx)))

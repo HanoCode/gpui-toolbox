@@ -27,7 +27,7 @@ use gpui::{
 };
 use gpui_component::{Root, h_flex, scroll::ScrollableElement as _, v_flex};
 
-use crate::app::Desktop;
+use crate::app::{Desktop, WindowKind};
 
 /// 引导是否已完成的 `kv` 键。
 ///
@@ -98,7 +98,7 @@ fn open_or_focus(cx: &mut App) {
         cx.new(|cx| Root::new(chrome, window, cx))
     }) {
         Ok(handle) => {
-            *Desktop::onboarding_window(cx) = Some(handle);
+            Desktop::set_window(cx, WindowKind::Onboarding, handle);
             cx.activate(true);
         }
         Err(error) => crate::app::report_window_failure("引导窗口", &error, cx),
@@ -110,7 +110,7 @@ fn open_or_focus(cx: &mut App) {
 /// 形状照 `pages::logs::focus_open_logs`（`let ... else` + 独立 `if`，
 /// 而不是会被 clippy 判为「可折叠」的 `if let { if ... }`）。
 fn focus_open(cx: &mut App) -> bool {
-    let Some(handle) = *Desktop::onboarding_window(cx) else {
+    let Some(handle) = Desktop::window_handle(cx, WindowKind::Onboarding) else {
         return false;
     };
     if handle
@@ -120,7 +120,7 @@ fn focus_open(cx: &mut App) -> bool {
         cx.activate(true);
         true
     } else {
-        *Desktop::onboarding_window(cx) = None;
+        Desktop::clear_window(cx, WindowKind::Onboarding);
         false
     }
 }

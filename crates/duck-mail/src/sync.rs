@@ -106,10 +106,18 @@ async fn sync_account_inner(core: &MailCore, account_id: i64) -> Result<SyncRepo
                 removed = report.removed_messages,
                 "mail sync finished"
             );
-            // 收尾的后台预取：把收件箱里最新几封还没正文的抓下来，用户点开时就不必
-            // 再等一次 IMAP 往返。排在**状态已回到 `Idle`、事件已发之后**——它不该
-            // 拖长用户感知的「同步完成」。预取失败不影响同步结论，所以只记日志。
-            if let Err(error) = prefetch_bodies_inner(core, account_id, PREFETCH_BODY_LIMIT).await {
+            // 收尾的后台正文下载：把收件箱里最新几封**还没正文的**抓下来，再推一批
+            // 历史回填，用户点开时就不必再等一次 IMAP 往返。排在**状态已回到 `Idle`、
+            // 事件已发之后**——它不该拖长用户感知的「同步完成」。下载失败不影响同步
+            // 结论，所以只记日志。
+            if let Err(error) = prefetch_and_backfill_inner(
+                core,
+                account_id,
+                PREFETCH_BODY_LIMIT,
+                BACKFILL_BODY_BATCH,
+            )
+            .await
+            {
                 tracing::debug!(account_id, %error, "body prefetch skipped");
             }
         }
@@ -352,6 +360,16 @@ async fn actor_session(
             tracing::warn!(account_id, error = %e, "incremental sync after idle failed");
         }
 
+        // 收尾的正文下载：**新到的邮件**必须立刻落地，否则用户点开还得等一次往返
+        // ——这正是「每次打开都要去远程取正文」的来源。顺带推一批历史回填。两者共用
+        // 一条自建连接（不占 IDLE 那条长连接），失败只记日志，不影响同步结论。
+        if let Err(error) =
+            prefetch_and_backfill_inner(core, account_id, PREFETCH_BODY_LIMIT, BACKFILL_BODY_BATCH)
+                .await
+        {
+            tracing::debug!(account_id, %error, "body download after idle skipped");
+        }
+
         // IDLE 会让邮箱脱出「选中」状态，下一轮 IDLE 前必须重新 SELECT。
         session.select(&watch).await?;
     }
@@ -478,7 +496,16 @@ fn persist_folders(
 }
 
 /// 同步一个文件夹，返回 `(新增, 删除)`。
-async fn sync_folder(
+///
+/// **「新增」的口径是「本地真的插入了新的 `messages` 行」**，不是「本次拉回了几封信封」
+/// ——服务端会用 `n:*` 的范围语义回吐区间外的那一封（见
+/// [`crate::proto::imap::fetch_envelopes`]），按拉回数计数会凭空报出新邮件。
+///
+/// `pub(crate)`：`lib.rs` 的「写回已发送」在 `APPEND` 之后要**对着刚写进去的那个
+/// 文件夹**补一轮增量，好让新信落进本地库（界面据此收到 `MessagesAdded` 刷列表）。
+/// 不手工往 `messages` 插行——插出来的行没有服务端 UID，下一轮删除对账（`reconcile_deletions`）会把它当
+/// 「服务端已删」清掉。
+pub(crate) async fn sync_folder(
     db: &crate::db::MailDb,
     session: &mut ImapSession,
     account_id: i64,
@@ -535,13 +562,19 @@ async fn sync_folder(
             date: headers.date,
             is_read: fetched.seen,
             is_starred: fetched.flagged,
-            // 附件要等正文拉下来才知道；列表阶段先按头部猜（有 attachment 字样才置位）。
+            // 附件要等正文拉下来才知道；列表阶段一律给 `false`，且这个值**只在
+            // 新插入时生效**——`upsert_envelope_tracking` 的更新路径不碰这一列，
+            // 否则正文解析阶段置位的「有附件」会被每轮同步抹回 0。
             has_attachments: false,
             size: fetched.size.map(i64::from),
             snippet,
         };
-        let message_id =
-            db.write_tx(|tx| repo::messages::upsert_envelope(tx, account_id, folder_id, &row))?;
+        // 只有**真的插入了新行**才算新邮件。`from_uid` 之后仍可能收到越界回吐的老
+        // 信封（协议层已在该函数里挡掉，这里是第二道保险），而按「拉回几封」计数
+        // 会把它报成新邮件——上游据此推的通知就是「一直提示有新邮件」。
+        let (message_id, is_new) = db.write_tx(|tx| {
+            repo::messages::upsert_envelope_tracking(tx, account_id, folder_id, &row)
+        })?;
         // 引用链落 `message_refs`——会话合并（`threading`）靠它把往来邮件串起来。
         // 头部本来就拉下来了（`BODY.PEEK[HEADER]`），这里不额外连网。
         db.write_tx(|tx| repo::messages::replace_references(tx, message_id, &headers.references))?;
@@ -556,7 +589,9 @@ async fn sync_folder(
                 &row.snippet,
             )
         })?;
-        new_count += 1;
+        if is_new {
+            new_count += 1;
+        }
         max_uid = max_uid.max(i64::from(fetched.uid));
     }
 
@@ -869,54 +904,92 @@ async fn finish_body_fetch(
     Ok(detail)
 }
 
-/// 一轮后台预取的规模上限（封）。
+/// 一轮**最新批**预取的规模上限（封）：收件箱里最新的、还没有正文的那些。
 ///
 /// 20 是「一屏多几行、够覆盖用户打开后头几封」的量级。每封正文一次 IMAP 往返，
-/// 再大就会让弱网下的一轮同步明显变长（预取排在同步收尾之后，但仍在这个任务里）。
+/// 再大就会让弱网下的一轮同步明显变长（它排在同步收尾之后，但仍在这个任务里）。
 pub const PREFETCH_BODY_LIMIT: i64 = 20;
 
-/// 后台预取：把收件箱里**最新**的、还没拉过正文的若干封正文抓下来（阻塞版）。
+/// 一次**历史回填**批次的大小（封）。
+///
+/// 与 [`PREFETCH_BODY_LIMIT`] 是两条独立的路子：预取每轮同步都跑一遍（保证「点开
+/// 就有」），回填按游标从新往老推进、每轮只推一批（保证「最终全在本地」）。50 是
+/// 「弱网下一批十几秒」的量级——太小则几万封的账号要上千轮同步才追完，太大则单轮
+/// 同步被拖长到用户有感。
+pub const BACKFILL_BODY_BATCH: i64 = 50;
+
+/// 后台正文下载（阻塞版）：**最新批 + 一批历史回填**，一次连接拉完。
 ///
 /// # 为什么要有这一步
 ///
 /// 列表阶段只拉 `BODY.PEEK[HEADER]`（§4.6 的取舍：首轮不把几万封信的正文全拖下来），
 /// 正文原先只在用户点开时才拉。弱网下这意味着**每次点开都要等一次往返**——用户的
-/// 第一反应是「邮件怎么打不开」。预取把这份等待挪到后台：同步收尾后顺手抓最近
-/// [`PREFETCH_BODY_LIMIT`] 封，用户点开时大概率已经命中本地副本（[`fetch_body`] 的
-/// `cached` 短路直接回本地，不连网）。
+/// 第一反应是「邮件怎么打不开」。这一轮把这份等待挪到后台：同步收尾后顺手抓下来，
+/// 用户点开时大概率已经命中本地副本（[`fetch_body`] 的 `cached` 短路直接回本地，
+/// 不连网）。
 ///
-/// 「分批」的含义是**本轮 20 封、下轮再 20 封**：每轮同步各推进一批，不会一次性把
-/// 整个收件箱拖空（对照 Flectar 的 `missing_bodies_at` + `pending_body_page` 分页）。
+/// # 两条路子，各管一段
+///
+/// - **最新批**（[`PREFETCH_BODY_LIMIT`] 封）：最新的、还没正文的那些。新到的邮件
+///   id 最大、`date` 最新，必然落在这里——这就是「点开就能看」的那几封。
+/// - **回填批**（[`BACKFILL_BODY_BATCH`] 封）：按 [`repo::folders::BackfillState`] 的
+///   游标从新往老推进，取一批拉一批，推到底置 `done`。老邮件不急着看，但要**最终
+///   补齐**——这正是「同步时自动下载正文、不必每次打开都去远程取」的含义。
 ///
 /// # 只做收件箱
 ///
-/// 用户真正会读的就是收件箱。把所有文件夹都预取会让首轮流量翻好几倍，而「已发送 /
+/// 用户真正会读的就是收件箱。把所有文件夹都一起拉会让首轮流量翻好几倍，而「已发送 /
 /// 垃圾箱」里的正文基本没人看。
 ///
-/// **best-effort**：任何一封失败都只记日志并**结束本轮**——连续失败通常说明网络或
-/// 认证出了问题，硬撑完 20 次只会白等 20 个超时。
+/// **best-effort**：任何一封失败都只记日志并**结束该批**——连续失败通常说明网络或
+/// 认证出了问题，硬撑完整批只会白等一批超时。回填游标的推进口径见
+/// [`fetch_body_ids_on_session`]：单封拉不动**不会**把整箱回填永久卡住。
+pub fn prefetch_and_backfill_bodies(
+    core: &MailCore,
+    account_id: i64,
+    latest_limit: i64,
+    backfill_batch: i64,
+) -> Result<usize> {
+    let runtime = core.runtime()?;
+    let core = core.clone();
+    runtime
+        .spawn(async move {
+            prefetch_and_backfill_inner(&core, account_id, latest_limit, backfill_batch).await
+        })
+        .wait()?
+}
+
+/// 只补**最新批**（收件箱最新 `limit` 封），不做历史回填。
+///
+/// 给「宿主想手动补一下最上面几封」的场景留的窄入口；常规路径走
+/// [`prefetch_and_backfill_bodies`]，两条一起推进。
 pub fn prefetch_bodies(core: &MailCore, account_id: i64, limit: i64) -> Result<usize> {
     let runtime = core.runtime()?;
     let core = core.clone();
     runtime
-        .spawn(async move { prefetch_bodies_inner(&core, account_id, limit).await })
+        .spawn(async move { prefetch_and_backfill_inner(&core, account_id, limit, 0).await })
         .wait()?
 }
 
-/// [`prefetch_bodies`] 的异步本体。
+/// [`prefetch_and_backfill_bodies`] 的异步本体。
 ///
-/// **调用方若已经在 runtime 任务里（例如 [`sync_account_inner`] 的收尾），必须直接
-/// `.await` 它**，不要走上面的同步包装——那会 `spawn` 一个新任务再 `wait`，在
-/// worker 线程数少时叠出「等自己」的嵌套等待。
+/// **调用方若已经在 runtime 任务里（例如 [`sync_account_inner`] 的收尾、actor 的
+/// IDLE 增量轮），必须直接 `.await` 它**，不要走上面的同步包装——那会 `spawn` 一个
+/// 新任务再 `wait`，在 worker 线程数少时叠出「等自己」的嵌套等待。
 ///
-/// # 一条连接拉完整轮
+/// # 一条连接拉完两批
 ///
 /// 早先每封都走一遍 `connect → SELECT → fetch → logout`（[`fetch_body_inner`] 的
-/// 路径），20 封就是 20 次登录——163 这类服务端单次登录要 1~3s，一轮预取拖到几十
-/// 秒，用户在这中间点开邮件就只能看「正文还没下载」的兜底文案。预取的 id 全部来自
-/// 同一个收件箱，`connect` 一次、`SELECT` 一次、逐封 `UID FETCH` 就够了；单封的
-/// 抢占 / 落库 / 释放口径不变（[`finish_body_fetch`]）。
-async fn prefetch_bodies_inner(core: &MailCore, account_id: i64, limit: i64) -> Result<usize> {
+/// 路径），几十封就是几十次登录——163 这类服务端单次登录要 1~3s，一轮预取拖到几十
+/// 秒，用户在这中间点开邮件就只能看「正文还没下载」的兜底文案。两批 id 都来自同一个
+/// 收件箱，`connect` 一次、`SELECT` 一次、逐封 `UID FETCH` 就够了；单封的抢占 / 落库 /
+/// 释放口径不变（[`finish_body_fetch`]）。
+async fn prefetch_and_backfill_inner(
+    core: &MailCore,
+    account_id: i64,
+    latest_limit: i64,
+    backfill_batch: i64,
+) -> Result<usize> {
     let db = core.db().clone();
     let folder =
         db.read(|conn| repo::folders::find_by_role(conn, account_id, FolderRole::Inbox))?;
@@ -924,8 +997,34 @@ async fn prefetch_bodies_inner(core: &MailCore, account_id: i64, limit: i64) -> 
         // 还没有识别出收件箱（首轮 LIST 之前、或服务端没给 `\Inbox`）：不预取。
         return Ok(0);
     };
-    let ids = db.read(|conn| repo::messages::missing_body_ids(conn, folder.id, limit))?;
-    if ids.is_empty() {
+
+    // ---- 取两批 id（纯本地读，不连网） ----
+    let latest_ids = if latest_limit > 0 {
+        db.read(|conn| repo::messages::missing_body_ids(conn, folder.id, latest_limit))?
+    } else {
+        Vec::new()
+    };
+
+    let mut backfill_cursor: Option<i64> = None;
+    let mut backfill_ids: Vec<i64> = Vec::new();
+    let mut mark_backfill_done = false;
+    if backfill_batch > 0 {
+        let state = db.read(|conn| repo::folders::backfill_state(conn, folder.id))?;
+        backfill_cursor = state.cursor;
+        if !state.done {
+            let before = state.cursor.unwrap_or(i64::MAX);
+            backfill_ids = db.read(|conn| {
+                repo::messages::missing_body_ids_before(conn, folder.id, before, backfill_batch)
+            })?;
+            // 取空 = 这个文件夹已经没有「没正文」的邮件了（游标刚推到底，或者整箱
+            // 本来就都缓存着）。落一次 `done`，此后每轮同步只剩最新批。
+            mark_backfill_done = backfill_ids.is_empty();
+        }
+    }
+    if mark_backfill_done {
+        db.write_tx(|tx| repo::folders::set_backfill_state(tx, folder.id, backfill_cursor, true))?;
+    }
+    if latest_ids.is_empty() && backfill_ids.is_empty() {
         return Ok(0);
     }
 
@@ -951,40 +1050,95 @@ async fn prefetch_bodies_inner(core: &MailCore, account_id: i64, limit: i64) -> 
         return Ok(0);
     }
 
+    // 最新批先拉——用户马上会点开的正是这几封。它不推游标（那批 id 可能在游标之后，
+    // 也就是刚到的邮件），所以只取成功封数。
+    let (latest_fetched, _) = fetch_body_ids_on_session(core, &db, &mut session, &latest_ids).await;
+
+    // 回填批后拉，并按**本批推进到哪**写回游标。
+    let mut backfill_fetched = 0usize;
+    if !backfill_ids.is_empty() {
+        let (fetched, reached) =
+            fetch_body_ids_on_session(core, &db, &mut session, &backfill_ids).await;
+        backfill_fetched = fetched;
+        if let Some(index) = reached {
+            db.write_tx(|tx| {
+                repo::folders::set_backfill_state(tx, folder.id, Some(backfill_ids[index]), false)
+            })?;
+        }
+    }
+    let _ = session.logout().await;
+    let total = latest_fetched + backfill_fetched;
+    if total > 0 {
+        tracing::debug!(
+            account_id,
+            latest = latest_fetched,
+            backfill = backfill_fetched,
+            "mail bodies fetched"
+        );
+    }
+    Ok(total)
+}
+
+/// 在既有会话上逐封拉正文，返回 `(成功封数, 处理到的下标)`。
+///
+/// **失败即停**（沿用原预取的口径）：连续失败通常说明网络或认证出了问题，硬撑完整批
+/// 只会白等一批超时。
+///
+/// # 为什么连「处理到的下标」一起返回
+///
+/// 回填的游标要靠它推。`ids` 按 id 从大到小排，只要进了循环就记一次下标，于是：
+///
+/// - 整批跑完 → 下标 = 最后一封，游标推到底（下次取更老的）；
+/// - 中间某一封失败 → 下标 = **失败的那一封**，游标推过它（下次从它之后继续）。
+///
+/// 第二条是关键：不推过它，这一封会永远堵在游标上，把后面所有邮件的回填一起卡死。
+/// 被跳过的单封不必担心没人管——用户点开它时 [`fetch_body`] 仍会实时去拉，那条
+/// 路径不经过游标。
+async fn fetch_body_ids_on_session(
+    core: &MailCore,
+    db: &MailDb,
+    session: &mut ImapSession,
+    ids: &[i64],
+) -> (usize, Option<usize>) {
     let mut done = 0usize;
-    for message_id in ids {
+    let mut reached: Option<usize> = None;
+    for (index, &message_id) in ids.iter().enumerate() {
+        // 进了循环就算「处理过」——抢不到（已缓存 / 别处正在拉）同样不阻塞游标。
+        reached = Some(index);
         // 单封仍走完整的「抢占 → 拉取 → 落库 → `BodyReady` → 失败释放」口径，只是
-        // 网络部分复用这条会话。已缓存 / 前台正在拉的（抢不到）直接跳过。
-        let claimed = db.write_tx(|tx| repo::messages::claim_body_fetch(tx, message_id))?;
+        // 网络部分复用这条会话。
+        let claimed = match db.write_tx(|tx| repo::messages::claim_body_fetch(tx, message_id)) {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                tracing::debug!(message_id, %error, "body batch could not claim the message");
+                break;
+            }
+        };
         if !claimed {
             continue;
         }
         let uid = match db.read(|conn| repo::messages::get_detail(conn, message_id)) {
             Ok(detail) => detail.uid,
             Err(error) => {
-                tracing::debug!(message_id, %error, "body prefetch could not read the uid");
+                tracing::debug!(message_id, %error, "body batch could not read the uid");
                 break;
             }
         };
         let Some(uid) = uid else {
-            // 没有 UID 的行（本地草稿之类混进来）不该占预取名额，放回 `none`。
+            // 没有 UID 的行（本地草稿之类混进来）不该占名额，放回 `none`。
             let _ = db.write_tx(|tx| repo::messages::release_body_fetch(tx, message_id));
             continue;
         };
-        let result = fetch_from_session(&mut session, uid).await;
-        match finish_body_fetch(core, &db, message_id, result).await {
+        let result = fetch_from_session(session, uid).await;
+        match finish_body_fetch(core, db, message_id, result).await {
             Ok(_) => done += 1,
             Err(error) => {
-                tracing::debug!(message_id, %error, "body prefetch stopped early");
+                tracing::debug!(message_id, %error, "body batch stopped early");
                 break;
             }
         }
     }
-    let _ = session.logout().await;
-    if done > 0 {
-        tracing::debug!(account_id, fetched = done, "mail body prefetch finished");
-    }
-    Ok(done)
+    (done, reached)
 }
 
 // ---------------------------------------------------------------------------

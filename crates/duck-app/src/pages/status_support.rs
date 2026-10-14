@@ -27,21 +27,15 @@ pub type TextConfirm = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 /// 输入弹窗（[`open_prompt`]）宽度：正文只有一行输入 + 提示，与插件市场的安装弹窗同宽。
 const PROMPT_DIALOG_WIDTH: f32 = 520.;
 
-use crate::units::{GB, KB, MB};
-
-/// 人类可读的字节数：≥1 GB / MB 保留 1 位小数，KB 取整，其余原样。
+/// 人类可读的字节数：`512 B` / `4.0 KB` / `1.2 MB` / `3.0 GB` / `2.5 TB`。
+///
+/// 实现已下沉到 `duck-theme` 的格式化层（[`duck_theme::bytes`]）——本仓原先在
+/// `data.rs` / `ai_tools.rs` / `mail_data.rs` / `plugin_center.rs` 与本文件各写了一份，
+/// 口径互不一致（本文件 KB 取整、`data.rs` 那份没有 GB 档）。保留同名入口只为
+/// 不动状态栏那几处调用点的导入行，形态与 `plugin_center::format_age` 一致。
 #[must_use]
 pub fn format_bytes(bytes: u64) -> String {
-    let value = bytes as f64;
-    if value >= GB {
-        format!("{:.1} GB", value / GB)
-    } else if value >= MB {
-        format!("{:.1} MB", value / MB)
-    } else if value >= KB {
-        format!("{:.0} KB", value / KB)
-    } else {
-        format!("{bytes} B")
-    }
+    duck_theme::bytes(bytes)
 }
 
 /// 数字输入校验：空串 / 非法输入返回 `None`（弹窗保持打开），低于下限收敛到 `min`。

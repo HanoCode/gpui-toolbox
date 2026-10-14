@@ -58,7 +58,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::app::Desktop;
+use crate::app::{Desktop, WindowKind};
 use crate::pages::settings::{CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT};
 use crate::pages::status_support::format_bytes;
 use crate::settings::{self, AuxWindow};
@@ -956,7 +956,7 @@ fn open_logs_or_focus(cx: &mut App) {
         cx.new(|cx| Root::new(chrome, window, cx))
     }) {
         Ok(handle) => {
-            *Desktop::logs_window(cx) = Some(handle);
+            Desktop::set_window(cx, WindowKind::Aux(AuxWindow::Logs), handle);
             // 记下「这个窗口开着」，供下次启动恢复（见「设置 → 行为」的开关）。
             Desktop::remember_aux_open(cx);
             cx.activate(true);
@@ -967,7 +967,7 @@ fn open_logs_or_focus(cx: &mut App) {
 
 /// 已开着的日志窗口前置激活；没有、或已经关掉了则返回 `false`（顺手清掉死句柄）。
 fn focus_open_logs(cx: &mut App) -> bool {
-    let Some(handle) = *Desktop::logs_window(cx) else {
+    let Some(handle) = Desktop::window_handle(cx, WindowKind::Aux(AuxWindow::Logs)) else {
         return false;
     };
     if handle
@@ -977,7 +977,7 @@ fn focus_open_logs(cx: &mut App) -> bool {
         cx.activate(true);
         true
     } else {
-        *Desktop::logs_window(cx) = None;
+        Desktop::clear_window(cx, WindowKind::Aux(AuxWindow::Logs));
         false
     }
 }

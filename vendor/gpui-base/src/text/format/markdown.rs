@@ -1014,6 +1014,9 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             Ok(el) => BlockNode::Root {
                 children: Arc::unwrap_or_clone(el.blocks),
                 span: new_span(val.position, cx),
+                // DUCK PATCH: `BlockNode::Root` carries a block style now; the
+                // parsed HTML blocks inside bring their own.
+                style: node::BlockStyle::default(),
             },
             Err(err) => {
                 if cfg!(debug_assertions) {

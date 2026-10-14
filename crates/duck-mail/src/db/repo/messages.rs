@@ -96,6 +96,82 @@ pub fn upsert_envelope(
     Ok(id)
 }
 
+/// 与 [`upsert_envelope`] 同口径，但**额外报告这一封是不是新落库的行**。
+///
+/// 增量同步必须按「真的插入了新行」计数，不能按「拉回几封信封」计数：
+/// [`upsert_envelope`] 是 `ON CONFLICT(account_id, folder_id, uid) DO UPDATE`，
+/// 重复拉到的老邮件照样写成功；而服务端确实会重复回吐（见
+/// [`crate::proto::imap::uid_in_requested_range`] 说明的范围语义）。按「拉回几封」
+/// 计数，就会每轮上报一封并不存在的新邮件——「一直提示有新邮件、其实什么都没有」
+/// 的直接成因。
+///
+/// 第二处差别：**冲突更新路径不写 `has_attachments`**。列表阶段只有头部，附件要从
+/// MIME 结构里才看得出来（见 [`set_has_attachments`]），此刻传的 `false` 只是
+/// 「还不知道」；覆盖上去会把正文解析阶段已经置位的「有附件」抹回 0，回形针角标
+/// 会随着每轮同步反复消失。**新插入**的行仍用传入值。
+///
+/// 刻意与 [`upsert_envelope`] 并存而不是改它的签名：那个函数另有 10 余处调用点
+/// （草稿 / 队列 / 写回已发送 / 测试），它们的语义不该被这次同步修复顺手改动。
+pub fn upsert_envelope_tracking(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    env: &EnvelopeRow,
+) -> Result<(i64, bool)> {
+    let existed = conn
+        .query_row(
+            "SELECT id FROM messages WHERE account_id = ?1 AND folder_id = ?2 AND uid = ?3",
+            params![account_id, folder_id, env.uid],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+
+    let to_json = serde_json::to_string(&env.to).unwrap_or_else(|_| "[]".into());
+    let cc_json = serde_json::to_string(&env.cc).unwrap_or_else(|_| "[]".into());
+    conn.execute(
+        "INSERT INTO messages
+           (account_id, folder_id, uid, message_id, subject, from_name, from_addr,
+            to_json, cc_json, date, is_read, is_starred, has_attachments, size, snippet)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+         ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
+             message_id  = excluded.message_id,
+             subject     = excluded.subject,
+             from_name   = excluded.from_name,
+             from_addr   = excluded.from_addr,
+             to_json     = excluded.to_json,
+             cc_json     = excluded.cc_json,
+             date        = excluded.date,
+             is_read     = excluded.is_read,
+             is_starred  = excluded.is_starred,
+             size        = excluded.size,
+             snippet     = excluded.snippet",
+        params![
+            account_id,
+            folder_id,
+            env.uid,
+            env.message_id,
+            env.subject,
+            env.from_name,
+            env.from_addr,
+            to_json,
+            cc_json,
+            env.date,
+            env.is_read as i64,
+            env.is_starred as i64,
+            env.has_attachments as i64,
+            env.size,
+            env.snippet,
+        ],
+    )?;
+    let id: i64 = conn.query_row(
+        "SELECT id FROM messages WHERE account_id = ?1 AND folder_id = ?2 AND uid = ?3",
+        params![account_id, folder_id, env.uid],
+        |row| row.get(0),
+    )?;
+    Ok((id, !existed))
+}
+
 /// 替换一封邮件的引用链（`message_refs`）：先删旧、再插新。
 ///
 /// 走「先删后插」而不是「只插不删」：重同步时引用可能变（服务端修正了头部，
@@ -396,6 +472,33 @@ pub fn missing_body_ids(conn: &Connection, folder_id: i64, limit: i64) -> Result
     )?;
     let rows = stmt
         .query_map(params![folder_id, limit], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<i64>>>()?;
+    Ok(rows)
+}
+
+/// 按**本地行 id 游标**取一批还需要拉正文的邮件（新→旧），最多 `limit` 条。
+///
+/// 与 [`missing_body_ids`] 的分工：那个固定取「最新若干封」（覆盖刚到的邮件，每轮
+/// 同步都跑一遍），这个往老推进，是收件箱全量回填的推进器。游标语义就是
+/// `messages.id < before_id`——本地主键单调递增，拿它当游标比拿 `date` 稳：同一秒
+/// 到达的两封不会互相越位，也不会因为服务端时间戳乱序而漏拉。`before_id` 传
+/// `i64::MAX` 就等于「从头开始」。
+///
+/// 排序与 `idx_messages_body_backfill`（013 迁移）**完全对齐**——那是专为这条查询
+/// 建的部分索引，写成别的顺序会退化成扫整表。
+pub fn missing_body_ids_before(
+    conn: &Connection,
+    folder_id: i64,
+    before_id: i64,
+    limit: i64,
+) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM messages
+         WHERE folder_id = ?1 AND uid IS NOT NULL AND body_state = 'none' AND id < ?2
+         ORDER BY id DESC LIMIT ?3",
+    )?;
+    let rows = stmt
+        .query_map(params![folder_id, before_id, limit], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<i64>>>()?;
     Ok(rows)
 }
@@ -787,6 +890,53 @@ mod tests {
         assert_eq!(d.text_body.as_deref(), Some("正文"));
     }
 
+    /// 「新邮件」必须按**真的插入了新行**判定，而不是按「拉回了几封信封」。
+    ///
+    /// 服务端会用 `n:*` 的范围语义回吐区间外的那一封（见
+    /// `proto::imap::uid_in_requested_range`），而重复 upsert 同一封照样成功——
+    /// 同步层若照「拉回几封」计数，用户每轮都会收到一条并不存在的新邮件通知。
+    #[test]
+    fn tracking_upsert_reports_only_real_inserts() {
+        let (conn, acct, folder) = mem();
+        let (first_id, first_is_new) =
+            upsert_envelope_tracking(&conn, acct, folder, &env(1, "Hi", 100)).unwrap();
+        assert!(first_is_new, "首次落库必须报「新」");
+        // 重复同步同一封（越界回吐、或重启后增量重跑）：同一个主键，不算新增。
+        let (again_id, again_is_new) =
+            upsert_envelope_tracking(&conn, acct, folder, &env(1, "Hi", 100)).unwrap();
+        assert_eq!(first_id, again_id);
+        assert!(!again_is_new, "重复 upsert 不是新邮件");
+        assert_eq!(count_in_folder(&conn, folder).unwrap(), 1);
+    }
+
+    /// 更新路径**不得**碰 `has_attachments`：列表阶段只有头部、猜不出附件，
+    /// 覆盖上去会把正文解析出来的「有附件」抹掉，回形针角标随每轮同步反复消失。
+    #[test]
+    fn tracking_upsert_keeps_the_attachment_flag_from_the_body_pass() {
+        let (conn, acct, folder) = mem();
+        let (id, _) = upsert_envelope_tracking(&conn, acct, folder, &env(1, "Hi", 100)).unwrap();
+        // 正文拉下来后解析出附件。
+        set_has_attachments(&conn, id, true).unwrap();
+        // 下一轮同步又拉到同一封信封（此刻还不知道有没有附件，传 `false`）。
+        upsert_envelope_tracking(&conn, acct, folder, &env(1, "Hi", 100)).unwrap();
+        assert!(
+            get_detail(&conn, id).unwrap().has_attachments,
+            "重同步不该抹掉正文阶段判定出的附件标记"
+        );
+        // 反过来：**新插入**时传进来的值必须生效（新行没有历史可保留）。
+        let (fresh, _) = upsert_envelope_tracking(
+            &conn,
+            acct,
+            folder,
+            &EnvelopeRow {
+                has_attachments: true,
+                ..env(2, "With file", 200)
+            },
+        )
+        .unwrap();
+        assert!(get_detail(&conn, fresh).unwrap().has_attachments);
+    }
+
     #[test]
     fn body_fetch_claim_is_atomic_and_one_shot() {
         let (conn, acct, folder) = mem();
@@ -838,6 +988,39 @@ mod tests {
         assert_eq!(missing_body_ids(&conn, folder, 10).unwrap(), vec![new, old]);
         // `limit` 取的是**最新**的 n 封（排序方向不能反）。
         assert_eq!(missing_body_ids(&conn, folder, 1).unwrap(), vec![new]);
+    }
+
+    /// 历史回填的游标语义：`id < before_id` 且**从新往老**取，同样跳过已有正文的封。
+    ///
+    /// 这三条就是「收件箱全量回填」不会重复联网、也不会漏拉的全部依据。
+    #[test]
+    fn backfill_cursor_walks_newest_first_and_stops_at_the_cursor() {
+        let (conn, acct, folder) = mem();
+        let a = upsert_envelope(&conn, acct, folder, &env(1, "a", 100)).unwrap();
+        let b = upsert_envelope(&conn, acct, folder, &env(2, "b", 200)).unwrap();
+        let c = upsert_envelope(&conn, acct, folder, &env(3, "c", 300)).unwrap();
+
+        // 从头开始（`i64::MAX`）：新→旧全都要。
+        assert_eq!(
+            missing_body_ids_before(&conn, folder, i64::MAX, 10).unwrap(),
+            vec![c, b, a]
+        );
+        // 一批只取 `limit` 封，且取的是**最新**的那几封（排序方向不能反）。
+        assert_eq!(
+            missing_body_ids_before(&conn, folder, i64::MAX, 2).unwrap(),
+            vec![c, b]
+        );
+        // 游标推过 `c`（`id < c`）：下一批从 `b` 起，`c` 不再出现。
+        assert_eq!(
+            missing_body_ids_before(&conn, folder, c, 10).unwrap(),
+            vec![b, a]
+        );
+        // 已有正文的封不进清单——游标推进不会把同一封下载两遍。
+        save_body(&conn, b, Some("已有正文"), None).unwrap();
+        assert_eq!(
+            missing_body_ids_before(&conn, folder, c, 10).unwrap(),
+            vec![a]
+        );
     }
 
     #[test]

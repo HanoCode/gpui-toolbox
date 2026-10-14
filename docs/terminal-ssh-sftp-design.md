@@ -781,7 +781,7 @@ controlpath "/tmp/a b/x.sock"                                            # 带�
 
 **落点**：
 - `crates/duck-term/src/session.rs:614` `Session::buffer_contains(&str)`——整块网格（含回滚区）正则子串匹配的**阻塞加锁**版本。刻意**不复用** `search_matches`（它走 `try_with_term`）：退出判定是一次性的，**一次抢不到锁就把安全告警丢掉不可接受**。
-- `crates/duck-app/src/pages/terminal.rs:867` `TerminalPage::ssh_endpoint(session_id)`（+ 私有 `endpoint_of(kind, owner)`）：会话键 → 所属连接 id 的归属口径**与 `ensure_sessions` 完全一致**（主窗格 = 标签 id；分屏看 `split_owner`），只读档案的 host/port，**不解密口令**。
+- `crates/duck-app/src/pages/terminal/conn.rs:14` `TerminalPage::ssh_endpoint(session_id)`（+ 私有 `endpoint_of(kind, owner)`）：会话键 → 所属连接 id 的归属口径**与 `ensure_sessions` 完全一致**（主窗格 = 标签 id；分屏看 `split_owner`），只读档案的 host/port，**不解密口令**。
 - `crates/duck-app/src/pages/terminal_canvas.rs:2019-2131`：`HOST_KEY_CHANGED_MARKER` / `HOST_KEY_VERIFY_FAILED_MARKER` / `HOST_KEY_REVOKED_MARKER`、`HostKeySignals`、`HostKeyNotice{Changed,Revoked,Mismatch}`、`scan_host_key_signals()`、纯函数 `host_key_notice(signals, status)`、`ssh_keygen_target(host,port)`、`host_key_notice_text()`。
 - `:399-466` `poll_sessions`：SSH 会话 `ChildExit` 时置标记，**在 `drain_events` 之外**扫描屏幕信号（避免与事件队列锁纠缠）。
 - `:506-530`：解析主机 → `duck_ssh::host_key_status()` → 判定 → 命中推 `notify::sticky`，固定 key `terminal-host-key-<host>:<port>`（同主机反复触发只占一条）；Changed = `Error`，Revoked / Mismatch = `Warning`。投递走 `crate::update::on_notify_window`（poller 任务里没有 `window`）。

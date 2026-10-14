@@ -7,6 +7,7 @@
 //! 业务 feature 不在本 crate 中。
 
 mod builtin;
+mod color;
 mod i18n;
 mod manager;
 mod syntax;
@@ -14,9 +15,10 @@ mod tokens;
 mod wire;
 
 pub use builtin::{BuiltinThemeId, base_tokens, button_surface, extended_tokens, foreground_for};
+pub use color::{color_from_hex, color_from_rgb};
 pub use i18n::{
-    Lang, Locale, UnderMinute, relative_time, system_lang, t, tf, tn, tr, tr_relative_time, trf,
-    trn,
+    Lang, Locale, UnderMinute, bytes, datetime_full, datetime_short, number, relative_time,
+    system_lang, t, tf, tn, tr, tr_relative_time, trf, trn,
 };
 pub use manager::{
     Appearance, DEFAULT_ACCENT_RGB, Density, DuckThemeState, NAV_GAP_RANGE, SidebarSide,

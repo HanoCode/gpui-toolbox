@@ -39,7 +39,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::app::Desktop;
+use crate::app::{Desktop, WindowKind};
 use crate::market::{self, MarketEntry};
 use crate::pages::settings::{CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT};
 use crate::plugins;
@@ -67,7 +67,7 @@ pub fn open_plugin_center(cx: &mut App) {
 }
 
 fn open_or_focus(cx: &mut App) {
-    if let Some(handle) = *Desktop::plugin_center_window(cx) {
+    if let Some(handle) = Desktop::window_handle(cx, WindowKind::Aux(AuxWindow::PluginCenter)) {
         if handle
             .update(cx, |_, window, _| window.activate_window())
             .is_ok()
@@ -76,7 +76,7 @@ fn open_or_focus(cx: &mut App) {
             return;
         }
     }
-    *Desktop::plugin_center_window(cx) = None;
+    Desktop::clear_window(cx, WindowKind::Aux(AuxWindow::PluginCenter));
 
     let mut options = duck_shell::auxiliary_window_options(SharedString::from(tr(cx, "插件中心")));
     // 上次的位置尺寸（已夹回可见区域）；没有存档则主屏居中。
@@ -102,7 +102,7 @@ fn open_or_focus(cx: &mut App) {
         cx.new(|cx| Root::new(chrome, window, cx))
     }) {
         Ok(handle) => {
-            *Desktop::plugin_center_window(cx) = Some(handle);
+            Desktop::set_window(cx, WindowKind::Aux(AuxWindow::PluginCenter), handle);
             // 记下「这个窗口开着」，供下次启动恢复（见「设置 → 行为」的开关）。
             Desktop::remember_aux_open(cx);
             cx.activate(true);
@@ -1001,7 +1001,9 @@ impl PluginCenterView {
                     tr(cx, "包体积"),
                     None,
                     body_text(
-                        entry.archive_size.map_or_else(|| dash.clone(), format_size),
+                        entry
+                            .archive_size
+                            .map_or_else(|| dash.clone(), duck_theme::bytes),
                         cx,
                     ),
                     cx,
@@ -1585,18 +1587,6 @@ fn capability_value(value: String, is_new: bool, cx: &App) -> gpui::AnyElement {
         .child(body_text(value, cx))
         .children(is_new.then(|| content::accent_tag(tr(cx, "新增"), cx)))
         .into_any_element()
-}
-
-/// 把字节数说成「512 B / 4.0 KB / 1.2 MB」。
-fn format_size(bytes: u64) -> String {
-    let value = bytes as f64;
-    if value >= 1024.0 * 1024.0 {
-        format!("{:.1} MB", value / (1024.0 * 1024.0))
-    } else if value >= 1024.0 {
-        format!("{:.0} KB", value / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 /// 把秒数说成「刚刚 / N 分钟前 / N 小时前 / N 天前」。

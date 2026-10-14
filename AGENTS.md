@@ -96,6 +96,12 @@ retained mode / scroll layers 默认开启，`GPUI_VIEW_RETENTION=0`、
   （状态行、空态文案、卡片元信息）。
 - 下拉一律 `dropdown_select`（outline Button + `control(cx)` + caret + 勾选菜单，min_w 160）；
   布尔项一律 `switch_control`（gpui-component `Switch`）；**不用** gpui-component `Checkbox`。
+- **图标按钮的悬停提示由组件内部挂，调用点不要再挂一次**：`icon_button`（提示 = label）、
+  `icon_button_tip`（无障碍名用 label、提示单独给 `tip`，可带状态或动态读数）、
+  `toolbar_action_button`、`toolbar_dropdown_button`（纯图标下拉）都已内置 tooltip。
+  ⚠️ 对同一元素二次 `.tooltip()` 会让 gpui **直接 panic 秒退**（`calling tooltip more
+  than once on the same element`，且是 abort 级），**编译期不报**——新增图标按钮时
+  先看它出自哪个构造函数。
 - 对比度：主色按钮文字 ≥ 4.5:1；强调色文字 ≥ 4.5:1；选中导航图标 ≥ 3:1。
 
 ### 3.7 主题统一入口
@@ -149,6 +155,65 @@ macOS 关掉所有窗口后应用仍驻留，菜单栏照旧可点，此时没�
 - 对外 `pub` 数据结构用 builder + reader 方法，**不暴露 `pub` 字段**。
 - GPUI 的 `cx` 是保留名；其他持有物按内容命名，不要也叫 `cx`。
 - 注释与文档使用中文，与现有代码保持一致。
+
+### 4.1 新 Entity 模板（State / View / App 三件套）
+
+GPUI 把「一切皆 `Entity<T>`」当作头等抽象——一个 `Entity<T: Render>` 经常同时承担
+**渲染、状态、副作用、键盘绑定宿主**四件事。这在 6 个以内还能撑，新增第 7 个工具页时
+就开始巨型化（`app.rs` / `view.rs` 早已破千行）。规定**新 Entity 必须按三件套拆开**：
+
+| 层 | 职责 | 依赖 |
+| --- | --- | --- |
+| **`XxxState`** | 只持有数据（字段 + 不依赖渲染的逻辑）。**不**实现 `Render`。 | 纯 std + 业务 crate |
+| **`XxxView`** | 纯函数 `View<&S> -> Element`，**不**持有状态字段，只读 store。 | duck-theme / duck-components |
+| **`XxxApp`** | 把 state 与 view 粘起来：建 store `Entity<XxxState>`，再在视图里读。 | duck-shell 装配 |
+
+**最小可用模板**：
+
+```rust
+// state.rs —— 零渲染依赖，可单测。
+#[derive(Default)]
+pub struct XxxState {
+    pub items: Vec<Item>,
+    pub filter: String,
+}
+
+impl XxxState {
+    pub fn filtered(&self) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(|i| i.matches(&self.filter))
+    }
+    pub fn set_filter(&mut self, s: String) { self.filter = s; }
+}
+
+// view.rs —— 不持有状态，只读 store。
+pub fn render_xxx(state: &XxxState, cx: &App) -> impl IntoElement {
+    v_flex()
+        .child(TextField::new("filter").on_change(|s, cx| cx.update_state(...)))
+        .children(state.filtered().map(|i| render_item(i, cx)))
+}
+
+// app.rs —— 把两者粘起来，注册到 shell 路由。
+pub struct XxxApp { state: Entity<XxxState> }
+impl XxxApp { ... }
+```
+
+**硬约束**：
+
+- **状态层不依赖渲染**：`XxxState` 不得 `use gpui::*::Render`。这样写测试只要 `State::new()`。
+- **视图层不持有状态字段**：`XxxView` 接收 `&State`，不存字段。视图是「当前状态的镜头」，状态换了镜头就重新渲染。
+- **容器层只做注入**：建 store、注入 view、绑路由，**不**承担状态逻辑。
+- **键盘绑定放容器层**：`cx.bind_keys([...])` 绑到 `App` 或具体 `Entity`，不放进 state 或 view。
+
+**反模式**（不要做）：
+
+- `Entity<T: Render>` 同时持有业务字段、订阅 KV、绑键位——一旦 T 变巨型就难拆
+- 在 `Render::render()` 里调 `cx.update(...)` 改 state——形成「渲染副作用」循环
+- 把 `Entity` 当 `Rc<RefCell<T>>` 用，靠全局可变引用同步——绕开 GPUI 的订阅机制
+
+**迁移策略**：**既有 Entity 不强制迁移**（避免大动作），但新增/重写页面时按三件套走。
+第一条落地范例参见 `crates/duck-app/src/app.rs` 的 `Desktop` 注册表 + 跳转队列——
+前者按 `WindowKind` 索引窗口句柄（注册表模式），后者按 `JumpTarget` enum 收口跨窗口跳转
+（同类覆盖、不同类并存），都是把散落字段收敛到「一处索引」的同一个抽象。
 
 ## 5. 提交前检查清单
 

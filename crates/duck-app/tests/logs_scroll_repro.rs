@@ -1,6 +1,6 @@
 //! 「设置 → 日志」竖向滚动失效的无头复现。
 //!
-//! 结构逐层对照真实代码：`SettingsWindowView::render`（`pages/settings.rs`）的
+//! 结构逐层对照真实代码：`SettingsWindowView::render`（`pages/settings/mod.rs`）的
 //! 窗口根与内容行、`render_content` 的标题块 + 日志页专用壳（`flex_1().min_h_0()`，
 //! **不套滚动容器**），以及壳里独立 entity 的 `LogView::render`（工具条 / 正文 /
 //! 状态栏，正文 `overflow_scrollbar` 双向滚动）。每层都是同一个布局约束的复制品，

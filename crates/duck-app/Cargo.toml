@@ -23,6 +23,9 @@ duck-plugin-js.workspace = true
 duck-plugin-registry.workspace = true
 duck-db.workspace = true
 duck-redis.workspace = true
+# 项目管理页内核（`pages/projects/`）：自管 SQLite、零 gpui、全同步。
+# 依赖全部已在图内（rusqlite 由 duck-db / duck-store 引入），不新增下载。
+duck-project.workspace = true
 duck-ai.workspace = true
 duck-term.workspace = true
 duck-ssh.workspace = true

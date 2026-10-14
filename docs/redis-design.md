@@ -71,7 +71,7 @@
 
 ```
 duck-app（bin）
-  └─ pages/redis.rs          RedisPage 实体（照 DatabasePage 模板，db.rs:359）
+  └─ pages/redis/             RedisPage 实体（照 DatabasePage 模板，db.rs:359）
        │  Entity / render / 左栏连接树 / 主区 key 树与值编辑器 / 右栏键详情
        ▼
 duck-redis（内核 crate，★新建，不依赖 gpui）
@@ -132,7 +132,7 @@ duck-platform（paths / secret / dialog）   duck-store（kv 持久化）
 
 - `duck-redis` 对外**只有同步 API**：`Connection::connect(cfg, secret)`、`scan(cursor, ..)`、
   `hscan(key, cursor, ..)` 等，全部阻塞。
-- 调用方（`duck-app/pages/redis.rs`）把调用丢进 `cx.background_executor().spawn(async move { work() })`
+- 调用方（`duck-app/pages/redis/`）把调用丢进 `cx.background_executor().spawn(async move { work() })`
   （本 fork 要求传 Future，见 memory 2026-10-12「duck-app 编译错误笔记」）。
 - 结果回投 UI 用 `cx.defer` 或 `WeakEntity::update`（**返回 `Result`，须 `let _ =`**）。
 - ⚠️ **`RunCommand` 监听器禁止在派发期间直接 `window.update`**（AGENTS.md / memory 约定），
@@ -317,7 +317,7 @@ pub enum RedisValue {
 | # | 文件 | 位置 | 改动 |
 | --- | --- | --- | --- |
 | 1 | `crates/duck-app/src/pages/mod.rs` | 路由常量区 | 新增 `pub const REDIS_ROUTE: RouteId = RouteId::new("redis");` + `pub use redis::RedisPage;` + `mod redis;` |
-| 2 | `crates/duck-app/src/pages/mod.rs` | — | 新建 `pages/redis.rs` |
+| 2 | `crates/duck-app/src/pages/mod.rs` | — | 新建 `pages/redis/`（10-14 由单文件拆成目录模块） |
 | 3 | `crates/duck-app/src/app.rs` | `routes` vec（634~694） | 在 `DATABASE_ROUTE` 条目之后插入 `ShellRoute::new(REDIS_ROUTE, "duck-route-redis", "Redis", Icon::new(DuckIcon::DatabaseZap), redis).with_label_fn(tr("Redis")).with_sidebar(..).with_right_sidebar(..)` |
 | 4 | `crates/duck-app/src/settings.rs` | `KNOWN_ROUTES`（62） | 数组类型 `[RouteId; 6]` → `[RouteId; 7]`，并在 `DATABASE_ROUTE` 后插入 `REDIS_ROUTE`（**数组长度是唯一编译期哨兵**） |
 | 5 | `crates/duck-app/src/actions.rs` | `ids` 模块（29） | 新增 `pub const ROUTE_REDIS: &str = "route.redis";` |

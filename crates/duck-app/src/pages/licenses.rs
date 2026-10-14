@@ -33,7 +33,7 @@ use gpui::{
 };
 use gpui_component::{Root, scroll::ScrollableElement as _, v_flex};
 
-use crate::app::Desktop;
+use crate::app::{Desktop, WindowKind};
 use crate::pages::status_support::format_bytes;
 use crate::settings::{self, AuxWindow};
 
@@ -161,7 +161,7 @@ fn open_or_focus(cx: &mut App) {
         cx.new(|cx| Root::new(chrome, window, cx))
     }) {
         Ok(handle) => {
-            *Desktop::licenses_window(cx) = Some(handle);
+            Desktop::set_window(cx, WindowKind::Aux(AuxWindow::Licenses), handle);
             // 记下「这个窗口开着」，供下次启动恢复（见「设置 → 行为」的开关）。
             Desktop::remember_aux_open(cx);
             cx.activate(true);
@@ -175,7 +175,7 @@ fn open_or_focus(cx: &mut App) {
 /// 形状照 `pages::logs::focus_open_logs`：`let ... else` + 独立 `if`，
 /// 而不是 `if let { if ... }`（后者会被 clippy 判为可折叠）。
 fn focus_open(cx: &mut App) -> bool {
-    let Some(handle) = *Desktop::licenses_window(cx) else {
+    let Some(handle) = Desktop::window_handle(cx, WindowKind::Aux(AuxWindow::Licenses)) else {
         return false;
     };
     if handle
@@ -185,7 +185,7 @@ fn focus_open(cx: &mut App) -> bool {
         cx.activate(true);
         true
     } else {
-        *Desktop::licenses_window(cx) = None;
+        Desktop::clear_window(cx, WindowKind::Aux(AuxWindow::Licenses));
         false
     }
 }

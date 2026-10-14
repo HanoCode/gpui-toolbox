@@ -526,6 +526,16 @@ impl ShellView {
         state.update(cx, |state, cx| state.set_collapsed(collapsed, cx));
     }
 
+    /// 直接设置活跃路由右栏的展开 / 收起（页面把内容推到右栏时用）。
+    ///
+    /// 与顶栏开关共用同一份状态。页面只在**用户显式点了「内容落在右栏」的入口**时
+    /// 调它：收着就展开，已经开着则不重复动作（`SidebarState::set_collapsed` 自身幂等）。
+    /// 极性取正的写法是为了调用点可读——双否定（`collapsed = !open`）是这类状态的
+    /// 经典出错点。
+    pub fn set_active_right_sidebar_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.set_active_right_sidebar_collapsed(!open, cx);
+    }
+
     /// 收起 / 展开当前路由的侧栏；该路由没有侧栏时什么都不做。
     pub fn toggle_active_sidebar(&mut self, cx: &mut Context<Self>) {
         if let Some(sidebar) = self.active_sidebar() {
@@ -552,6 +562,32 @@ impl ShellView {
             .and_then(|id| self.routes.iter().find(|route| route.id == id))
             .and_then(|route| route.right_sidebar.clone())
             .expect("every route has a right sidebar state")
+    }
+
+    /// 活跃路由右栏当前是否展开。
+    ///
+    /// 页面的「内容落在右栏」按钮先问这一句：收着就替用户展开，已展开则只换内容。
+    /// 与 [`Self::active_right_sidebar`] 不同，这里**不**假设一定存在活跃路由——
+    /// 它会在点击处理器里被调用，那时按「收起」回答一次远比 panic 有用。
+    #[must_use]
+    pub fn active_right_sidebar_open(&self, cx: &App) -> bool {
+        self.active_route
+            .and_then(|id| self.routes.iter().find(|route| route.id == id))
+            .and_then(|route| route.right_sidebar.as_ref())
+            .is_some_and(|state| !state.read(cx).is_collapsed())
+    }
+
+    /// 活跃路由的右侧栏状态实体（供**页面**订阅它的开合变化）。
+    ///
+    /// 页面实体是 `AnyView`：shell 重绘**不**连带重绘它（子视图有自己的渲染缓存），
+    /// 于是「工具条上某个按钮的高亮要跟着右栏开合走」只能由页面自己解决 ——
+    /// `cx.observe` 这个实体，在回调里 `cx.notify()`。与
+    /// [`Self::active_right_sidebar_open`] 一样不假设活跃路由存在。
+    #[must_use]
+    pub fn active_right_sidebar_state(&self) -> Option<Entity<SidebarState>> {
+        self.active_route
+            .and_then(|id| self.routes.iter().find(|route| route.id == id))
+            .and_then(|route| route.right_sidebar.clone())
     }
 
     /// 打开 / 关闭命令面板（由动作处理器调用）。
@@ -764,14 +800,27 @@ impl ShellView {
     /// 右侧栏开关：与左侧开关同构，图标用原方向（缺口朝右），挂在尾随插槽之后。
     fn render_right_sidebar_toggle(&self, cx: &App) -> impl IntoElement + use<> {
         let sidebar = self.active_right_sidebar();
-        let label = if sidebar.read(cx).is_collapsed() {
+        let collapsed = sidebar.read(cx).is_collapsed();
+        let label = if collapsed {
             SharedString::from(tr(cx, "展开右侧栏"))
         } else {
             SharedString::from(tr(cx, "收起右侧栏"))
         };
-        div()
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        let mut panel = div()
             .id("shell-right-sidebar-toggle-tooltip")
             .flex_none()
+            .rounded(theme.components().button_radius);
+        if !collapsed {
+            // 开关本身要**看得出**右栏此刻是开是收：只改 tooltip 文案不够 —— 指针不
+            // 悬停时用户看不到任何提示。展开态给一块选中底，底与图标用「选中导航项」
+            // 那一对（`nav_selected` + `nav_selected_icon`），两者对比度 ≥ 3:1
+            // 由无障碍守卫钉住，不引入新的对比度风险。
+            panel = panel.bg(extended.colors.nav_selected);
+        }
+        panel
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .tooltip({
                 let label = label.clone();
@@ -781,7 +830,13 @@ impl ShellView {
                 toolbar_action_button(
                     "shell-right-sidebar-toggle",
                     label,
-                    Icon::new(DuckIcon::PanelRight).size(active_theme(cx).extended().icon.md),
+                    Icon::new(DuckIcon::PanelRight)
+                        .size(extended.icon.md)
+                        .text_color(if collapsed {
+                            tokens.colors.muted_foreground
+                        } else {
+                            extended.colors.nav_selected_icon
+                        }),
                     false,
                     false,
                     cx,

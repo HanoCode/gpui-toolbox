@@ -245,7 +245,7 @@ fn run_export(include_logs: bool, window: &mut Window, cx: &mut App) {
                 "已导出到 {}（{}）",
                 &[
                     &report.path.display().to_string(),
-                    &human_size(report.bytes),
+                    &duck_theme::bytes(report.bytes),
                 ],
             ),
             window,
@@ -354,18 +354,5 @@ fn with_tar_gz(path: PathBuf) -> PathBuf {
         path
     } else {
         PathBuf::from(format!("{name}.tar.gz"))
-    }
-}
-
-/// 归档体积的可读化（二进制 1024 进制，与状态栏同一套换算）。
-fn human_size(bytes: u64) -> String {
-    use crate::units::{KB, MB};
-    let value = bytes as f64;
-    if value >= MB {
-        format!("{:.1} MB", value / MB)
-    } else if value >= KB {
-        format!("{:.1} KB", value / KB)
-    } else {
-        format!("{bytes} B")
     }
 }

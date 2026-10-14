@@ -1,0 +1,27 @@
+[package]
+name = "duck-project"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "项目管理内核：分组 / 项目 / 任务 / 标签 / 里程碑的关系存储与归档口径（不依赖 gpui）。"
+
+# 依赖纪律（AGENTS.md §1）：本 crate 是内核层，**不得引入 gpui**，也不引 tokio
+# —— 全同步 API，阻塞调用由上层（`duck-app` 页面）丢进 gpui 的 `background_executor`。
+#
+# **为什么自管一个 SQLite 文件而不是塞进 `duck-store` 的 kv**：任务 ↔ 标签是多对多、
+# 子任务是自引用、归档要按批次级联，这些都是关系模型；`duck-store` 的 kv 是「单键 JSON
+# + 400ms 去抖整值重写」，唯一的非 kv 表是 append-only 的 `audit`，没有关系表能力。
+# 范式与 `duck-ai::store`（自管 `ai.db`）/ `duck-mail`（自管 `mail/`）一致。
+#
+# 依赖全部已在工作区依赖图内（rusqlite 由 duck-store / duck-db 引入），
+# **零新增第三方下载**：
+# - `duck-platform`：只取 `paths`（数据目录）与 `ensure_dir`。平台层本身也不依赖 gpui。
+# - `rusqlite`：`bundled` 特性（根 `Cargo.toml` 已配），终端用户零系统依赖。
+# - `tracing`：迁移与写入失败的日志，与全仓一致。
+[dependencies]
+duck-platform.workspace = true
+rusqlite.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

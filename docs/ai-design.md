@@ -51,12 +51,12 @@
 | 资产 | 位置 | 复用方式 |
 | --- | --- | --- |
 | `AiProvider` trait + OpenAI 兼容实现（ureq，非流式） | `crates/duck-db/src/ai.rs:20` / `:38` | 上移并升级为流式（§4.9） |
-| 「阻塞调用 → `background_executor` → 回主线程 notify」范式 | `pages/redis.rs:726`（`spawn_redis`）、`pages/db.rs`（`spawn_db`） | 照抄为 `spawn_ai` |
+| 「阻塞调用 → `background_executor` → 回主线程 notify」范式 | `pages/redis/connect.rs`（`spawn_redis`）、`pages/db.rs`（`spawn_db`） | 照抄为 `spawn_ai` |
 | 「内核发事件 → `std::sync::mpsc` → 前台轮询任务消费」范式 | `pages/terminal_canvas.rs:262-285`（`start_terminal_poller`） | 流式事件回 UI 的主路径 |
-| 设置页分类表 | `pages/settings.rs:280`（`PAGES`） | 新增「AI」分类（§4.4） |
+| 设置页分类表 | `pages/settings/mod.rs:313`（`PAGES`） | 新增「AI」分类（§4.4） |
 | 单键 JSON 持久化范式 | `duck-store/src/lib.rs:61/70`（`kv_get` / `kv_put`） | 设置与轻量状态 |
 | 加密凭据 | `duck-platform::vault`（AES-256-GCM，`seal` / `open`） | API key：密文进厂商档案（**2026-10-12 起不再经 `duck-platform::secret` / 系统钥匙串**） |
-| 写闸门与审批范式 | `pages/redis.rs` 的 `PendingAction` + `confirm_or_run` | 工具审批的形态参考（§4.6） |
+| 写闸门与审批范式 | `pages/redis/` 的 `PendingAction`（`mod.rs`）+ `confirm_or_run`（`keys.rs`） | 工具审批的形态参考（§4.6） |
 
 ## 3. 总体架构与 crate 布局
 
@@ -65,7 +65,7 @@ duck-app（bin）
   ├─ pages/assistant.rs        AssistantPage 实体（照 DatabasePage / RedisPage 模板）
   │    │  左栏会话历史 / 主区消息流 + 输入区 / 右栏会话参数
   │    ▼
-  └─ pages/settings.rs         ★新增「AI」分类页（厂商、凭据、默认模型、工具开关、索引范围）
+  └─ pages/settings/pages_ai.rs  ★新增「AI」分类页（厂商、凭据、默认模型、工具开关、索引范围）
        ▼
 duck-ai（内核 crate，★新建，不依赖 gpui、不引 tokio）
   ├─ wire       消息 / 事件 / 工具调用 wire 类型（serde，可单测）
@@ -189,7 +189,7 @@ pub const TEMPLATES: &[ProviderTemplate] = &[ /* 见下表 */ ];
 
 **用户已明确：AI 厂商设置属于「设置」，不属于 AI 助手页。** 落点：
 
-- **设置页新增分类**：`pages/settings.rs:280` 的 `PAGES` 数组插入一项
+- **设置页新增分类**：`pages/settings/mod.rs:313` 的 `PAGES` 数组插入一项
   `{ key: "ai", title: "AI", description: "模型厂商、凭据与工具权限", icon: DuckIcon::Bot }`，
   并在 `render_content`（`:846`）新增渲染分支 `render_ai_settings`。
   ⚠️ `PAGES` 的顺序即导航顺序；`palette_pages()`（`:335`）与 `palette_page_key()`（`:346`）
@@ -282,7 +282,7 @@ pub struct ToolOutcome {
   绝不静默丢内容（模型会以为看全了）。
 - **注册**：`duck-ai` 只提供 `ToolRegistry`；**工具实现由上层的 `duck-app` 注册**，
   因此 `duck-ai` 无需依赖任何引擎 crate。注册发生在 `AssistantPage` 构造时。
-- **审批闸门**：与 `capability × 确认` 同构（`pages/redis.rs` 的 `PendingAction` + `confirm_or_run`）：
+- **审批闸门**：与 `capability × 确认` 同构（`pages/redis/` 的 `PendingAction` + `confirm_or_run`）：
 
 | 工具 | 风险 | 默认行为 |
 | --- | --- | --- |
@@ -327,7 +327,7 @@ pub struct ToolOutcome {
 
 ### 4.8 UI 形态（三栏，全部走上游组件）
 
-照 `DatabasePage`（`pages/db.rs`）/ `RedisPage`（`pages/redis.rs`）模板：
+照 `DatabasePage`（`pages/db.rs`）/ `RedisPage`（`pages/redis/`）模板：
 
 - **实体**：`pub struct AssistantPage { sidebar: Entity<SidebarState>, …, view: WeakEntity<Self>, _subscriptions: Vec<Subscription> }`，
   配 `sidebar_state()` / `render_sidebar()` / `render_right_sidebar()`，
@@ -386,8 +386,8 @@ pub struct ToolOutcome {
 | 4 | `crates/duck-app/src/pages/assistant.rs` | — | **新建**：`AssistantPage`（三栏 + 流式 + 输入区 + 工具卡片） |
 | 5 | `crates/duck-app/src/pages/mod.rs` | 模块与导出区 | 新增 `mod assistant;` + `pub use assistant::AssistantPage;`（**路由常量 `ASSISTANT_ROUTE` 已存在，不改**） |
 | 6 | `crates/duck-app/src/app.rs` | `:674` | `PlaceholderPage::new("AI 助手", DuckIcon::Bot)` → `AssistantPage::new(cx)`；`routes` 表（`:764-772`）补 `.with_sidebar(..)` 与 `.with_right_sidebar(..)` |
-| 7 | `crates/duck-app/src/pages/settings.rs` | `PAGES`（`:280`） | 插入 AI 分类一项（顺序在「通知」之前） |
-| 8 | `crates/duck-app/src/pages/settings.rs` | `render_content`（`:846`） | 新增 `key == "ai"` 渲染分支 → `render_ai_settings` |
+| 7 | `crates/duck-app/src/pages/settings/mod.rs` | `PAGES`（`:313`） | 插入 AI 分类一项（顺序在「通知」之前） |
+| 8 | `crates/duck-app/src/pages/settings/mod.rs` | `render_content`（`:905`） | 新增 `key == "ai"` 渲染分支 → `render_ai_settings` |
 | 9 | `crates/duck-theme/src/i18n.rs` | `EN` 表 | 补全部新增中文文案（按 UTF-8 字节序插入，二分查找） |
 | 10 | `crates/duck-db/src/ai.rs` | 全文 | 改为 `duck-ai` 的薄适配层（§4.9） |
 | 11 | `crates/duck-db/Cargo.toml` | `[dependencies]` | 新增 `duck-ai.workspace = true` |
@@ -499,7 +499,7 @@ pub struct ToolOutcome {
 | `crates/duck-ai/src/agent.rs`（扩） | `run_agent` 多轮循环 + `Approval` 审批回调 + `AgentEvent` 事件流 + `AgentOutcome`；`run_turn` 改为薄包装。测试里起**本机 stub SSE 服务**走真实往返（含分片拼装的 `tool_calls`） |
 | `crates/duck-app/src/ai_tools.rs`（新） | 三个只读工具：`read_file` / `list_dir` / `search_kb`；`Sandbox` 目录白名单；14 个单测 |
 | `crates/duck-app/src/pages/assistant.rs`（扩） | 工具卡片（工具名 + 风险标签 + 结果预览 + 结构化产物表）；分轮落库；状态栏四分支；输入框默认高度 2 → 3 行 |
-| `crates/duck-app/src/pages/settings.rs`（扩） | 「AI」页新增「助手工具」（总开关 + 工作目录）与「本地知识库」（来源清单 + 添加 / 移除 / 重建 / 停止 + 进度日志）两个分区 |
+| `crates/duck-app/src/pages/settings/pages_ai.rs`（扩） | 「AI」页新增「助手工具」（总开关 + 工作目录）与「本地知识库」（来源清单 + 添加 / 移除 / 重建 / 停止 + 进度日志）两个分区 |
 | i18n | 新增 39 条英译（+ M1 的 94 条），按 UTF-8 字节序并入 EN 表 |
 
 ### 10.2 关键实测结论（写下来免得下次重踩）

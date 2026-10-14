@@ -201,6 +201,19 @@ enum PositionedFragment {
     },
 }
 
+impl PositionedFragment {
+    /// The flow item this fragment was laid out from. `prepaint` resolves it
+    /// against the flow's `items` to recover the source text, image or
+    /// object, so it must be in range.
+    fn item_ix(&self) -> usize {
+        match self {
+            Self::Object { item_ix, .. }
+            | Self::Text { item_ix, .. }
+            | Self::Image { item_ix, .. } => *item_ix,
+        }
+    }
+}
+
 enum MeasureItem {
     Object {
         text: SharedString,
@@ -431,6 +444,22 @@ impl Element for InlineFlow {
         let Some(layout) = request_layout.current.borrow().clone() else {
             return Vec::new();
         };
+        // DUCK PATCH: the layout has to belong to `self.items` — every branch
+        // below resolves a fragment's `item_ix` against them. gpui keys element
+        // state by the id *path*, so two elements sharing an id share this
+        // flow's cached layout; a flow could then be handed the layout of a
+        // longer sibling and index past the end of its own items (a panic that
+        // aborts the process). The ids are unique now
+        // (`node.rs::leaf_element_id`); this is the backstop. Drawing nothing
+        // for the frame is the safe outcome: the next frame lays the flow out
+        // again against the items as they are then.
+        if layout
+            .fragments
+            .iter()
+            .any(|fragment| fragment.item_ix() >= self.items.len())
+        {
+            return Vec::new();
+        }
         let typography = request_layout.typography.clone();
         let text_style = &typography.text_style;
         let mut elements = Vec::with_capacity(layout.fragments.len());
@@ -928,7 +957,7 @@ fn layout_measured_flow(
                 } => {
                     let local_start = line_range.start.max(item_start) - item_start;
                     let local_end = line_range.end.min(item_end) - item_start;
-                    for (segment, scale) in text_size_ranges(text.len(), highlights) {
+                    for (segment, scale) in text_size_ranges(text.len(), highlights, font_size) {
                         let start = local_start.max(segment.start);
                         let end = local_end.min(segment.end);
                         if start >= end {
@@ -1344,7 +1373,7 @@ fn shaped_spans(
                 } => {
                     let local_start = hard_line.start.max(item_start) - item_start;
                     let local_end = hard_line.end.min(item_end) - item_start;
-                    for (segment, scale) in text_size_ranges(text.len(), highlights) {
+                    for (segment, scale) in text_size_ranges(text.len(), highlights, font_size) {
                         let start = local_start.max(segment.start);
                         let end = local_end.min(segment.end);
                         if start >= end {
@@ -1850,6 +1879,7 @@ mod tests {
             style: HighlightStyle::default(),
             font_family: Some(SharedString::from(MONO)),
             font_size_scale: None,
+            font_size: None,
         };
         let items = vec![
             MeasureItem::Text {

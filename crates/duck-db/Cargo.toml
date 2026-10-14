@@ -31,7 +31,12 @@ futures-util.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 webpki-roots.workspace = true
-sqlparser.workspace = true
+# `visitor`：sqldiag 遍历 AST 收集表引用与 CTE 名（见 sqldiag.rs）；只加
+# `sqlparser_derive` 一个 proc-macro（Apache-2.0，无 rust-version 声明、依赖
+# syn/quote 1.0，MSRV 1.85 下无虞），根 Cargo.toml 的审计注释同步更新。
+sqlparser = { workspace = true, features = ["visitor"] }
+# 主流式 SQL 格式化（缩进 / 换行 / 关键字大小写），见根 Cargo.toml 的审计注释。
+sqlformat.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

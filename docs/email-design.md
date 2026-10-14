@@ -41,7 +41,7 @@
 >
 > | 声称 | 实际 | 证据 |
 > | --- | --- | --- |
-> | 同步：IDLE 推送 / 断线重连 / 失败重试（M1） | **降 M2**。同步是**一次性全量 + 增量函数，不常驻**；`proto/imap.rs` 无 `idle()` | `sync.rs:5-11` 自述；`proto/imap.rs` 只有 `connect`/`list_folders`/`select`/`fetch_envelopes`/`fetch_raw`/`fetch_flags`/`search_all_uids`/`noop`/`logout` |
+> | 同步：IDLE 推送 / 断线重连 / 失败重试（M1） | ~~**降 M2**。同步是**一次性全量 + 增量函数，不常驻**；`proto/imap.rs` 无 `idle()`~~ **已落地（2026-10-14 复核到源码）**：`sync.rs::actor_session`（`:276`）是**常驻 IDLE 回路**——首轮增量同步后 `SELECT` 关注文件夹并进入 `idle_once`（`:332`）等待循环，服务端无 IDLE 能力时回落 `NOOP` 轮询（`:342`），收到变更或 max-idle 到点都触发一次增量；任何 IMAP 错误返回 `Err` 交**监督层重连**（配 `stop` / `wake`） | `sync.rs:273-358`；`proto/imap.rs::idle_once`（`:710`） |
 > | 阅读：附件下载（M1） | ~~**降 M2**。只有附件**清单**，落库时 `file_path: None` / `imap_section: None`，无下载函数~~ **已落地（2026-10-13）**：`MailCore::download_attachment(id, dest)` + 阅读器每行的「另存为…」（`duck_platform::save_file`）。⚠️ 走的是**整封取回 + MIME 解码**而不是按段 `FETCH`（理由与代价见 §4.13）；`imap_section` 仍留空 | `sync.rs::download_attachment`；`db/repo/messages.rs::attachment_target` |
 > | 阅读：引用折叠（M1） | **降 M2**。渲染分支只有 Plain / Html | `mail.rs:2439-2513` |
 > | 检索：`fold()` 去音标 + stalwart `nlp` 中文分词（M1） | **降 M3**。中文按整段切、召回很差；代码注释自己承认 | `db/repo/search.rs:10-15`；`fold` 只在虚表 tokenizer 里 `remove_diacritics 2`（`001_init.sql:401`） |
@@ -53,9 +53,11 @@
 >
 > **好消息**：M2 需要的库表**一张不缺且列够用**（`001_init.sql` + 007/008/010/012）——`pending_actions`（:190，5 态含 `cancelled`）、`snoozes`（:208）、`split_rules`（:225）、`route_cache`（:233）、`drafts_meta`（:238）、`draft_attachments`（:245）、`labels`（007:44 重写后含 `scope`/`owner_account_id`/`origin`/`is_auto`）、`message_labels`（007:154）、`sender_identities`（008:1 / 012:6）、`threads`（:43）、`attachments`（:136）、`app_settings`（:254）。**缺口 100% 在 repo 层与内核业务层**。
 >
-> ⚠️ **`proto/imap.rs` 整个写方向一条都没有**（无 `STORE` / `COPY` / `MOVE` / `EXPUNGE` / `APPEND` / `IDLE`）——这是 M2 的第一块必补。
+> ~~⚠️ **`proto/imap.rs` 整个写方向一条都没有**（无 `STORE` / `COPY` / `MOVE` / `EXPUNGE` / `APPEND` / `IDLE`）——这是 M2 的第一块必补。~~ **已全部补齐（2026-10-14 复核到源码）**：`add_flags`（`:462`，STORE）/ `move_messages`（`:505`，MOVE `uid_mv` + COPY `uid_copy`）/ `expunge_uids`（`:587`，EXPUNGE）/ `append_message`（`:555`，APPEND，见 §4.18）/ `idle_once`（`:710`，IDLE，由 `sync.rs:332` 的常驻回路驱动）。
 >
-> ✅ **发信已落地（2026-10-13 复核）**：「写信」这一行从「M2 计划」变成「**纯文本发信 + 附件可用**」——详见 §6 M2 的落地表。**富文本、签名、发件身份选择、写回「已发送」文件夹仍未落地**，逐条列在那里。「整理」一行的动作队列已落地（另修掉一处并发竞态，见 §4.11 末）。
+> ✅ **发信已落地（2026-10-13 复核）**：「写信」这一行从「M2 计划」变成「**纯文本发信 + 附件可用**」——详见 §6 M2 的落地表。**富文本、签名、发件身份选择仍未落地**，逐条列在那里。「整理」一行的动作队列已落地（另修掉一处并发竞态，见 §4.11 末）。
+>
+> ✅ **「写回已发送」随后落地（2026-10-14，§4.18）**：`proto/imap.rs` 补上**第一个 `APPEND`**，发信成功后由**后台任务**把本报文写进服务端 `\Sent`（按角色找，不按名字），就地跑一轮单夹同步 → `MessagesAdded` 让「已发送」那一屏自己刷新。撰写弹窗常驻的那行「不会自动写进服务器的『已发送』文件夹」随之改成「已自动写回」——原文在那一天已经成为假话，不能再留。
 >
 > ✅ **本地草稿随后落地（2026-10-13，§4.15）**：`drafts_meta` / `draft_attachments` 从「表在、repo 无」变成可用——撰写弹窗「存草稿」、草稿箱置顶本地草稿 + 点行回填（含附件）、行内删除、发信成功顺手删草稿。⚠️「草稿*自动*保存」（关弹窗 / 停输入时去抖落库）**仍未做**，只有显式按钮；把草稿推到服务器 `\Drafts`（`IMAP APPEND`）也没做。第 54 行那份「缺口 100% 在 repo 层」的清单里，「草稿」这一项可以划掉了。
 
@@ -408,7 +410,7 @@ MailEvent::SyncProgress / MailNew / MailUpdated / AccountState / NetworkState
 | 层 | 职责 | 线程/连接 |
 | --- | --- | --- |
 | **主 actor** | 命令调度、延迟敏感的轻活（标已读、移动） | 1 条 IMAP 连接 |
-| **回填 worker** | 历史正文预取、附件下载 | 独立连接，可并行、可取消 |
+| **正文下载** | 最新批预取 + 历史回填（游标 `folders.backfill_cursor`，见 §4.19） | 同步收尾 / IDLE 增量**自建**一条连接，顺序拉，两条路子共用 |
 | **IDLE** | 收信推送（支持 `IDLE` 的服务器） | 1 条专用连接 |
 | **SMTP worker** | 发信（durable，失败重试） | 独立 |
 
@@ -417,11 +419,12 @@ MailEvent::SyncProgress / MailNew / MailUpdated / AccountState / NetworkState
 2. `UIDVALIDITY` 变了 → 该文件夹整体作废重建；
 3. 新邮件：`UID FETCH (UIDNEXT 水位 - 已有) 的信封`；
 4. 旗标对账：对**窗口内**（最近 N 条 + 本地未同步项）做 flag 全量比对（rustmailer 的"UID 水位 + flags_hash diff"思路），而非全量拉取；
-5. 删除：`UID SEARCH` 对账本地 UID 集合。
+5. 删除：`UID SEARCH` 对账本地 UID 集合；
+6. ⚠️ **`UID FETCH n:*` 的越界回吐必须过滤**：RFC 3501 的 `seq-range` 取 `min..max`，最大 UID 小于 `n` 时服务端会把**最大 UID 那封原样回吐**（请求 `96:*`、最大 95 → 回 95）。协议层按 `uid >= uid_from` 挡掉，且「新邮件数」按**真正插入的行数**算——否则本地一追平，每轮同步都会凭空多出一封新邮件（§4.19）。
 
 **断线重连**：指数退避 + 网络状态事件（`NetworkState`）；离线时动作进 `pending_actions` 队列，恢复后按序补发。
 
-**首次全量**：分批（每批 N 条）拉信封，正文按需/后台预取，UI 不等全量完成即可用（先出列表，正文懒加载）。
+**首次全量**：分批（每批 N 条）拉信封；正文走**两条路子**——同步收尾补「最新 20 封」（打开就有），再按游标推「历史回填 50 封/批」直到全部落在本地（§4.19）。UI 不等全量完成即可用（先出列表，正文懒加载）。
 
 ### 4.7 凭据与 OAuth
 
@@ -560,7 +563,7 @@ duck-ai::{provider, sse, tool, kb, wire}   ← 本仓既有：协议 / 流式 / 
 
 - **左栏/右栏**用 shell 级 `with_sidebar` / `with_right_sidebar`（AGENTS 记录：右栏是 shell 级统一区域，别嵌进页面——`flex_1` 在 gpui-fast Block 容器里会塌高）。
 - **列表虚拟化**：只渲染可视行（参照 `tusk` 的网格虚拟化思路与 `duck-app` 现有列表）。
-- **三栏骨架**：可直接抄 `crates/duck-app/src/pages/redis.rs`（左键树 `flatten_tree` + 中内容 + 右详情）与 `db.rs` 的 `EditFormView` 范式。
+- **三栏骨架**：可直接抄 `crates/duck-app/src/pages/redis/`（左键树 `flatten_tree` + 中内容 + 右详情）与 `db.rs` 的 `EditFormView` 范式。
 
 **弹窗**（`crates/duck-app/src/pages/mail_dialogs.rs`）：
 
@@ -588,7 +591,7 @@ duck-ai::{provider, sse, tool, kb, wire}   ← 本仓既有：协议 / 流式 / 
 三处与效果图的**有意**差异（同已落进代码注释）：
 
 1. **前一版「禁用 + 说明」的控件全部删除，而不是接线**。前一版按 `redis.rs` 弹窗「M1.x 接入」的既有口径保留了 8 个阅读器动作 + 右栏 AI 面板（禁用 + 悬停写明等哪一期）。2026-10-12 的 **P3-6**（`docs/architecture-gap-analysis.md`）把这种「自我标注为待接入」判为不可保留——「界面不应再有演示数据 / 演示文字，每个图标的功能都需要实现完整」，处置判据是**后端存在 → 接线；后端不存在 → 删除**。于是：左栏添加 / 移除账户、列表条同步、阅读器已读切换与下载正文**接线**；标签分组、筛选、回复 / 转发 / 归档 / 稍后 / 删除 / 打标签 / 旗标 / AI 分析 / 更多、以及右栏 AI 面板**删除**（前提都在 M2）。M2 把发信、动作队列与 AI 接通后，这些入口按同一份判据接回来。
-2. **左栏宽度取 236，不是效果图的 216**：与 `db.rs` / `redis.rs` / `terminal.rs` 走同一条档位（184–340，默认 236），四页互相切换时侧栏不跳宽。效果图的 216 只是示意。
+2. **左栏宽度取 236，不是效果图的 216**：与 `db.rs` / `redis.rs` / `terminal/` 走同一条档位（184–340，默认 236），四页互相切换时侧栏不跳宽。效果图的 216 只是示意。
 3. **纵向尺寸一律走 `DensityTokens`，本页只留横向分配比例**。原先「邮件列表行高」是本页常量 64 并注明待定——现在收口为**新增的 `density.mail_row`（56 / 64 / 76）**：`task_row` 最宽只有 52，且语义是「双行任务」，压不住三行邮件。同理左栏行取 `density.nav_row`、分组标题取 `density.section_header`，否则调密度设置时邮箱页不动。
 
 配套改动：`duck-mail` 新 crate（账户 CRUD + 凭据加密 + SQLite + IMAP + MIME + 增量同步 + FTS5，91 个测试）；`duck-components/assets/icons/` 新增 10 个 Lucide 1.48.0 图标（`inbox` `star` `reply` `forward` `paperclip` `tag` `sparkles` `pencil` `at-sign` `flag`，stroke 1.75）；`duck-theme` 新增 `mail_row` 密度档。
@@ -739,7 +742,7 @@ duck-ai::{provider, sse, tool, kb, wire}   ← 本仓既有：协议 / 流式 / 
 
 **服务端没有 `\Drafts` 角色时，界面自己补一行「草稿」。** 本地草稿只挂在「草稿箱」那一屏下（`is_drafts_folder` 判的是**角色**不是名字），而那个入口本来取决于服务端有没有 `\Drafts` 角色的文件夹——多数服务商有，没有的话用户**根本走不到**自己的本地草稿（存了却没处看，等于没有）。所以 `reload_folders` 在文件夹清单**非空**（空 = 还没同步过，此时保持「点「同步」拉取文件夹」那条提示原样）且**没有** `Drafts` 角色时补一行合成行：`const LOCAL_DRAFTS_FOLDER_ID: i64 = -1`——取**负数**，`folders.id` 是 SQLite 的 `INTEGER PRIMARY KEY`（自增、恒正），负值不可能撞上；`name` 只是占位（`folder_row` 对非 `Other` 角色一律用 `role_label` 的本地化名渲染，那个串永远不显示）。这一行**只活在界面内存里**：不落库、不参与同步；点开它只会去查 `folder_id = -1`（恒空）再叠加本地草稿，走的是与真实草稿箱**完全相同**的代码路径。两处护栏：① 补在**算 `still_there` 之前**——不然「用户已经停在草稿箱」会被判成「这个文件夹没了」，一点同步就把人踢回收件箱；② 「移动到文件夹」下拉把它**过滤掉**（它不对应任何 IMAP 文件夹，选它只会让动作队列去 COPY 一个不存在的 uid）。另外草稿行的角标改用**本地草稿数**（`duck-mail` 的 `draft_count`，纯本地 `COUNT(*)`，走 `spawn_local` 不点亮同步按钮）而不是 `folder.unread`——本地草稿的 `folder_id` 是 NULL，压根不在那个 IMAP 文件夹里，照 `unread` 显示的话用户存了一堆草稿角标还是 0。⚠️ 这条对**服务端真有 `\Drafts`** 的那一行同样生效（规则统一为「『草稿』这一行的角标 = 本机草稿数」），代价是那个 IMAP 文件夹自身的未读数不再显示——本仓的草稿就是本机的，对「草稿」这个入口来说未读数没有意义；这是**刻意的取舍**，不是漏改。
 
-> 未做：**把草稿推到服务器的 `\Drafts` 文件夹**（要 `IMAP APPEND`，`drafts_meta.remote_uid` 先留空）、**关弹窗 / 停输入时自动存草稿**（没有去抖自动保存，只有显式「存草稿」按钮）、草稿多选批量删除、草稿 `mode` 的界面呈现（回信的主题本来就带「回复：」前缀，`mode` 目前落库但不显示，留给以后的线程视图）。
+> 未做：**把草稿推到服务器的 `\Drafts` 文件夹**（`IMAP APPEND` 本身已由 §4.18 补上，`drafts_meta.remote_uid` 先留空）、**关弹窗 / 停输入时自动存草稿**（没有去抖自动保存，只有显式「存草稿」按钮）、草稿多选批量删除、草稿 `mode` 的界面呈现（回信的主题本来就带「回复：」前缀，`mode` 目前落库但不显示，留给以后的线程视图）。
 
 ### 4.16 会话合并（`threading`，内核已落地 2026-10-13）
 
@@ -811,6 +814,68 @@ Google 走「不带」。
 - **刷新令牌持久化**——`secret` 里的 `email:{account_id}:refresh_token`（§4.7）；当前只到
   「换到 `TokenSet`」为止，落盘与定时刷新属下一批；
 - `feature = "gmail"`（Gmail REST）/ `feature = "jmap"` 仍未做。
+
+### 4.18 写回「已发送」（`APPEND`，2026-10-14 落地）
+
+**问题**：发信只走 SMTP——信到了收件人手里，**发件人自己这边什么都没有**。本地库没有行、服务端 `\Sent` 里也没有副本：SMTP 只负责投递，副本按惯例（RFC 3501 §6.3.11 的 `APPEND`）要**发信方自己塞**，QQ / 163 / Gmail / Outlook 都不替你做。用户看到的是「发完信在『已发送』里找不着自己」，换台设备打开更是完全没有。最早那版只能在撰写弹窗里常驻一行「不会自动写进服务器的『已发送』文件夹」，把这件事说明白——它是**文档式的坦白**，不是功能。
+
+**修法三层，全在内核（界面零新增接线）**：
+
+| 层 | 落点 | 要点 |
+| --- | --- | --- |
+| 协议 | `proto/imap.rs::append_message` | `APPEND "mailbox" (\Seen) {n}` + 原文字面量。**本模块唯一不需要先 `SELECT` 的写命令**（`APPEND` 作用于未选中的邮箱）；`\Seen` 免掉「已发送上挂一个假未读角标」；邮箱名经 `async-imap` 的 `validate_str`（恒加双引号并转义）→ 带空格的名字（`Sent Items`）照样能用；`INTERNALDATE` 交给服务端打（列表按报文 `Date` 头排序，那个由 `compose::build_message` 写） |
+| 业务 | `lib.rs::write_back_sent` | 按**角色**找 `\Sent`（名字是服务端自定的：`Sent` / `已发送` / `&XfJT0ZAB-`，只有角色稳）；`APPEND` 之后**就地跑一轮单夹增量同步**（`sync::sync_folder`，为此开 `pub(crate)`）→ 新信落库并推 `MessagesAdded`，「正看着已发送」的列表因此**自己刷新**，不必手动点同步 |
+| 编排 | `lib.rs::send_inner` 收尾 | **另起后台任务**（`MailPage → core.send → schedule_sent_write_back`，拿到 `Task` 立刻丢）：`send` 的结论只由 SMTP 决定，写回既不该拖住弹窗关闭，也不该把「已发出」翻成失败——失败只落一条 `warn` 日志 |
+
+**为什么本地副本必须走同步、不能手工插行**：手工往 `messages` 里插的行没有服务端 UID，下一轮删除对账（`reconcile_deletions`）会把「服务端上没有的 UID」判成已删除并清掉。先 `APPEND` 再同步，拿到的是**服务端给的 UID**，与其它邮件共用同一套水位 / 对账逻辑。
+
+**为什么是单夹同步而不是整账户同步**：只有这一个文件夹变了。整账户跑一遍在有几万个文件夹的企业账号上是分钟级的浪费。
+
+**已知边界**：① 账户**从没同步过**（文件夹表里没有 `\Sent`）→ 跳过并记 `warn`，绝不「猜一个名字去 `APPEND`」；② 写回是**尽力而为**，失败只记日志（信已经发出去了，没有补救动作可做）；③ 若某服务端**自己**会把经 SMTP 发出的信存一份进 `\Sent`，这里会多出一条重复——与主流客户端（Thunderbird 的「副本存入已发送」）行为一致，暂不加去重。
+
+**界面侧配套（10-14）**：写了副本就得管住「新邮件」通知——`MessagesAdded` 原来只有两道闸门（模块开关、账户已 `Idle`），于是「正看着收件箱、刚发完一封信」的用户会在一两秒后收到一条自己触发的「新邮件 · 已发送」。`notify_new_mail` 因此加了第三道：**按角色挡掉 `Sent` 与 `Drafts`**（这两个文件夹里的东西都是用户自己产生的，不是「别人发给你的新信」）。同一事件在「正看着已发送」时仍照常触发列表刷新，两件事互不干扰。
+
+**验证**：`duck-mail` 两条离线测试——`sent_folder_is_found_by_role_not_by_name`（按角色查找，故意用 Modified UTF-7 形态的名字落库）、`sent_write_back_stops_before_connecting_without_a_sent_folder`（没有 `\Sent` 时**不连网**就返回 `NotFound`，据此证明「跳过」而不是「硬发」）。真实 `APPEND` 需要服务器，与其余协议写路径一样无法在无网环境自动化（§4.6 同一说明）。
+
+### 4.19 新邮件误报与正文自动下载（2026-10-14）
+
+**两件事，同一个用户视角**：① 「一直在提示有新邮件，其实什么都没有」；② 「每次点开邮件都要等一次远程下载」——希望同步时就把正文落到本地库，别每次都去远程取。
+
+#### ① 误报：`UID FETCH n:*` 的越界回吐被当成了新邮件
+
+根因**两条叠加**，缺一条都不会表现出这个症状：
+
+| 层 | 落点 | 问题 |
+| --- | --- | --- |
+| 协议 | `proto/imap.rs::fetch_envelopes` | 请求的是 `UID FETCH {last_seen+1}:*`。RFC 3501 的 `seq-range` 取 `min..max`，**最大 UID 小于起点时服务端会把最大 UID 那封原样回吐**（请求 `96:*`、最大 UID 95 → 回 95）。原实现只跳过 `uid == 0` 的伪响应，没挡越界。于是**本地一追平，每轮同步都会"重新发现"最后一封** |
+| 语义 | `sync.rs::sync_folder` | `new_count += 1` 记的是「拉回几封**信封**」，而 `upsert_envelope` 是 `ON CONFLICT DO UPDATE`——老邮件照样写成功。于是「新邮件数」恒为 1，且水位不动（`max_uid` 仍等于 `last_seen`），自洽地每轮复现 |
+
+通知链路本身没有错：`duck-app/src/pages/mail.rs::notify_new_mail` 的三道闸门（模块开关 / 账户已 `Idle` / 按角色挡 `Sent`·`Drafts`）都按设计放行——它只是照着一份**假的计数**在报。
+
+**修法**：协议层加纯函数 `uid_in_requested_range(uid, uid_from) -> uid != 0 && uid >= uid_from`，`fetch_envelopes` 就地丢弃越界回吐（返回集恒满足 `uid >= uid_from`）；语义层新增 `repo::messages::upsert_envelope_tracking`，**返回 `(id, 是否新插入)`**，`sync_folder` 只对真插入的行计数。原 `upsert_envelope` 签名不动——它另有 10 余处调用点（草稿 / 队列 / 写回已发送 / 测试），语义不该被这次同步修复顺手改掉。
+
+**顺带修掉同一个 upsert 的另一半**：列表阶段只有头部、猜不出附件，`has_attachments` 一律传 `false`；原 `ON CONFLICT DO UPDATE` 会把它覆盖回去，于是**每轮同步都把正文解析阶段置位的「有附件」抹回 0**（回形针角标反复消失）。新变体的更新路径**不写这一列**，只有新插入的行才用传入值。
+
+#### ② 正文自动下载：两条路子，各管一段
+
+先澄清一个事实：正文**本来就是落库的**（`message_bodies` 表 + `body_state='cached'`；`fetch_body_inner` 有 `cached` 短路，重启后也不会重连）。真正的缺口是**覆盖率**：
+
+| 缺口 | 原状 | 现在 |
+| --- | --- | --- |
+| 规模 | 每轮同步只预取 20 封 | 最新批 20 封（`PREFETCH_BODY_LIMIT`），**每轮同步都跑** |
+| 深度 | 只覆盖最新 20 封，老邮件永远等点开才拉 | 历史回填 50 封/批（`BACKFILL_BODY_BATCH`），按 `folders.backfill_cursor` 从新往老推进，推到底置 `backfill_done` |
+| 时机 | 只在 `sync_account_inner`（全量 / 手动同步）收尾跑，**IDLE 增量轮完全不预取** → 新到的邮件正文不下载 | IDLE 增量轮末尾也跑（新邮件立刻落地） |
+| 连接 | 每封一次 `connect → SELECT → fetch → logout`（163 这类服务端单次登录 1~3s，一轮拖到几十秒） | 两条路子**共用一次 `connect`**，逐封 `UID FETCH` |
+
+`backfill_cursor` / `backfill_done` 两列 001 迁移就建好了，这是它们**第一个写者**。新增 013 迁移补一条部分索引 `messages(folder_id, id DESC) WHERE uid IS NOT NULL AND body_state='none'`——回填按纯 `id` 序走（游标语义就是 `id < cursor`，比拿 `date` 当游标稳：同一秒到达的两封不会互相越位），与 011 那条「最新 N 封」索引互补。
+
+**存储仍在 `mail.db` 的 `message_bodies` 表**，不另开库文件：正文与 `messages` 之间有 `ON DELETE CASCADE`，删账户 / 清空文件夹（UIDVALIDITY 作废）/ 删除对账三条路径都自动清干净；分库会丢掉这层保护，得在四处手工补级联，漏一处就留孤儿。
+
+**游标推进的关键口径**：`fetch_body_ids_on_session` 返回 `(成功封数, 处理到的下标)`，**「进了循环」就算处理过**——中间某封失败时游标**推过它**，而不是停在原地。否则一封服务端已损坏的信会永远堵住游标，把后面所有邮件的回填一起卡死。被跳过的单封不影响使用：用户点开它时 `fetch_body` 仍会实时去拉，那条路径不经过游标。
+
+**已知边界**：① 只做**收件箱**（用户真正会读的就是它；所有文件夹一起拉会让首轮流量翻数倍，而「已发送 / 垃圾箱」里的正文基本没人看）；② 回填需要 **actor 在跑**（打开过邮箱页、或手动同步过一次）——进程刚起、从没进过邮箱页时不下载；③ 单封失败即结束该批（连续失败通常说明网络或认证出了问题，硬撑完整批只会白等一批超时），下一轮同步从游标处继续。
+
+**验证**：`duck-mail` 五条新增离线测试——`envelope_outside_the_requested_uid_range_is_filtered_out`（把 `96:*` ≡ `96:95` 的越界语义钉死：95 必须被挡、96 必须留下）、`tracking_upsert_reports_only_real_inserts`（同一 uid 第二次 upsert 报 `false`）、`tracking_upsert_keeps_the_attachment_flag_from_the_body_pass`（重同步不抹掉附件标记，新插入时传入值生效）、`backfill_cursor_walks_newest_first_and_stops_at_the_cursor`（`id < cursor` 的取数方向与跳过已缓存）、`backfill_state_round_trips_without_touching_the_sync_watermark`（回填进度与 `last_seen_uid` 不串台）。真实的越界回吐取决于服务端实现，与其余协议路径一样无法在无网环境自动化（§4.6 同一说明）。
 
 ---
 
@@ -891,7 +956,7 @@ Google 走「不带」。
 > | 附件（收） | ✅ **已落地（2026-10-13）**：阅读器每行「另存为…」→ `MailCore::download_attachment` → 整封取回 + MIME 解码 + 落盘 + 记 `file_path`；同一位置重复保存不连网。§4.13 |
 > | 附件（发） | ✅ **已落地（2026-10-13）**：`Draft::attachments` + `OutgoingAttachment`（`from_path` 读盘 + 扩展名猜类型）；撰写弹窗「附件」区（原生多选 + 逐条移除 + 同名去重）；`multipart/mixed` **正文**交给 `mail-builder`（`default-features = false` → 零新增传递依赖），**头部仍手写**。§4.14 | `compose.rs::build_multipart_body`；`mail.rs::render_compose_attachments` / `pick_attachments` |
 > | 签名 / 发件身份选择 | ❌ **未落地**。`sender_identities` 表在、repo 无；发件身份只有「当前账户」一个 | — |
-> | 写回「已发送」文件夹 | ❌ **未落地**（要 `IMAP APPEND`，`proto/imap.rs` 没有） | 界面已常驻一行说明告知用户 |
+> | 写回「已发送」文件夹 | ✅ **已落地（2026-10-14，§4.18）**：`proto/imap.rs::append_message`（`APPEND "box" (\Seen) {n}`，**唯一不需要先 `SELECT` 的写命令**）+ `lib.rs::write_back_sent`（按**角色**找 `\Sent` → `APPEND` → 单夹增量同步 → `MessagesAdded`）；`send_inner` 成功后**另起后台任务**，写回失败不影响「已发出」的结论。附 2 条离线测试 | `proto/imap.rs`、`lib.rs`、`sync.rs::sync_folder`（开 `pub(crate)`） |
 > | `threading` | 🔶 **内核已落地（2026-10-13，G-MAIL-7，见 §4.16）**：`src/threading.rs` JWZ 合并 + `db/repo/threads.rs` 整账号重建 + `mime.rs` 提引用链 → `message_refs` + `sync.rs` 收尾重算；**零 schema 迁移**。未接界面 | `src/threading.rs`、`db/repo/threads.rs`、`mime.rs`、`sync.rs` |
 > | `route` / `scheduler` | ❌ **未落地**。`split_rules` / `snoozes` 表在、repo 无 | — |
 > | OAuth2 | 🔶 **内核协议层已落地（2026-10-13，G-MAIL-6，见 §4.17）**：PKCE(S256) + 授权 URL + 回调解析 + 令牌交换/刷新 + XOAUTH2 SASL；`ImapConfig`/`SmtpConfig` 按 `AuthKind::OAuth2` 走 XOAUTH2（**绝不回落到口令机制**）。**宿主侧未接**：loopback 回调服务器 / 打开浏览器 / 刷新令牌持久化 | `src/oauth.rs`、`proto/imap.rs`（`XOAuth2`）、`proto/smtp.rs` |

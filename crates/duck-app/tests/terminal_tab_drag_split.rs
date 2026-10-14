@@ -109,7 +109,7 @@ impl Render for Scene {
             .on_drag_move::<TabDrag>({
                 let probes = probes.clone();
                 move |event: &DragMoveEvent<TabDrag>, _window, cx| {
-                    // 与 `pages::terminal::with_split_drop_target` 同一条判据：
+                    // 与 `pages::terminal::split::with_split_drop_target` 同一条判据：
                     // 指针越过**容器**中线即点亮投放区。
                     let midline = event.bounds.left() + event.bounds.size.width / 2.;
                     let hovered = event.event.position.x >= midline;

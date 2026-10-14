@@ -14,7 +14,7 @@
 
 | 模块 | 缺口证据（改前） |
 | --- | --- |
-| 终端 | 字号只存在内存（`terminal.rs` 的 `terminal_font_size` + `nudge_font_size`，**不落盘**，重启即回默认）；回滚行数写死 `10_000`（`duck-term` 的 `SpawnOptions::default()`），界面只有只读展示 |
+| 终端 | 字号只存在内存（`terminal/` 的 `terminal_font_size` + `nudge_font_size`，**不落盘**，重启即回默认）；回滚行数写死 `10_000`（`duck-term` 的 `SpawnOptions::default()`），界面只有只读展示 |
 | 终端·会话 | 断线自动重连的上限 / 起始退避写死在 `terminal_canvas.rs` 的 `RECONNECT_MAX_ATTEMPTS` / `RECONNECT_BACKOFF_START` |
 | 数据库 | `QUERY_ROW_CAP = 10_000` / `PAGE_SIZE = 200` / `HISTORY_LIMIT = 50` 三个常量写死（`db.rs`）；新建连接的表单每次都要手填只读档 / 超时 / 环境标签 |
 | 邮箱 | `PREVIEW_LIMIT = 300` 写死（`mail.rs`）；新邮件是否出声、默认正文形态（HTML 还是纯文本）都无入口 |
@@ -69,7 +69,7 @@
 | `reconnect_max_attempts` | `u32` | `RECONNECT_MAX_ATTEMPTS` | 数字输入 |
 | `reconnect_backoff_secs` | `u32` | `RECONNECT_BACKOFF_START`（秒） | 数字输入 |
 
-**接线点**：`terminal.rs::initial_font_size`（夹在 `FONT_SIZE_RANGE` 10~20 内）、
+**接线点**：`terminal/helpers.rs::initial_font_size`（夹在 `FONT_SIZE_RANGE` 10~20 内）、
 `terminal_canvas.rs` 的三处 `spawn_local` / `respawn` 与 `ssh_options(..)`（新增 `scrollback` 参数）、
 `sync_cell_metrics` + `render_terminal_session`（字体族 / 行高 / 留白），
 以及状态栏的回滚读数。

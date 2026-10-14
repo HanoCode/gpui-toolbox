@@ -127,6 +127,25 @@ jobs:
       - name: 第三方许可汇总是最新的
         run: python3 sbin/licenses.py --check
 
+      # 依赖审计（cargo deny，§6.1 行动项 ④）：
+      # `licenses` / `bans` / `sources` / `advisories` 四件套。配置见仓库根 `deny.toml`。
+      # 当前以 **warn 级** 入网：第一步失败汇总到禁止合入前，先把假阳性逐项
+      # 收敛（多版本、advisory 历史告警等）。`multiple-versions = "deny"` 等收紧动作
+      # 已列在 `deny.toml` 顶部 TODO；待四件套全绿后再切硬门禁。
+      - name: 依赖审计（cargo deny，warn 级）
+        run: |
+          set -uo pipefail
+          cargo install --locked cargo-deny --root "${CARGO_HOME:-$HOME/.cargo}" \
+            > cargo-deny-install.log 2>&1 \
+            || { echo "::warning::cargo-deny 安装失败，跳过本次审计（见 cargo-deny-install.log）"; exit 0; }
+          {
+            echo "### cargo deny"
+            echo
+            echo '```'
+            cargo deny check 2>&1 || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   test:
     name: 测试（macOS，含无头 UI 测试）
     runs-on: macos-14

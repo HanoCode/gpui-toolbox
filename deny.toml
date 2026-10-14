@@ -1,0 +1,98 @@
+# cargo-deny 配置（§6.1 行动项 ④）
+#
+# 范围：四件套——advisories / bans / licenses / sources。
+# 跑通后可以收紧；目前保持宽口径以适配本仓的复杂来源：
+# - `[patch.crates-io]` 把 GPUI 核心换成 longbridge/gpui-fast（git 锁 rev）
+# - `alacritty_terminal` / `vte` 走 vendored（path）
+# 其余依赖仍走 crates.io。
+#
+# 跑法：
+#     cargo deny check
+# 首次跑会从 RUSTSEC advisory-db 拉数据库（一次约 6 MB），CI 已缓存到
+# `~/.cargo/advisory-db`。本地首次跑要联网。
+#
+# 收紧清单（暂列 TODO，等四件套全绿再做）：
+# - [ ] `multiple-versions = "deny"`：当前有几组重复版本（gpui 内核族、openssl 同源等），
+#       收紧前要先逐组合版。
+# - [ ] `[licenses].allow` 收到最小集：本仓 `THIRD_PARTY_LICENSES.md` 是真源，
+#       拉一份清单做差集即可。
+# - [ ] `[bans] deny` 列表加进「不许用的 crate」：本仓未限制，待和治理口径同步。
+
+[graph]
+# 不开 `--all-features`——会让 graph 暴增几倍，且拉一堆编译不过的可选项。
+all-features = false
+
+[advisories]
+# RUSTSEC 公共 advisory 数据库，CI 缓存到 `~/.cargo/advisory-db`。
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# yanked 包只告警不禁用：依赖 yanked 通常是上游维护节奏问题，不是安全门。
+yanked = "warn"
+# 已知上游传递问题（unmaintained 类，**不能本仓自修**）。等 gpui / rustls / usvg 等
+# 上游升版，或本仓自顶换 font 栈（ttf-parser → skrifa）。
+# - RUSTSEC-2024-0384：instant 由 tokio 等传递。
+# - RUSTSEC-2024-0436：paste 由 proc-macro2 传递。
+# - RUSTSEC-2025-0134：rustls-pemfile 由 rustls 等传递。
+# - RUSTSEC-2026-0192：ttf-parser 由 fontdb → cosmic-text → gpui 传递。
+# - RUSTSEC-2026-0206：rustybuzz 由 usvg → resvg / gpui-component 传递。
+#
+# 真正的 vulnerabilities（RUSTSEC-2026-0098 / 0099 / 0104 / 0009 等）**不**忽略——
+# 它们需要升级 webpki / rustls / 等。CI 步骤把这些列在 GITHUB_STEP_SUMMARY 上，
+# 等下次升版时一起消化。
+ignore = [
+    "RUSTSEC-2024-0384",  # instant — 传递依赖
+    "RUSTSEC-2024-0436",  # paste — 传递依赖
+    "RUSTSEC-2025-0134",  # rustls-pemfile — 传递依赖
+    "RUSTSEC-2026-0192",  # ttf-parser — gpui 字体栈
+    "RUSTSEC-2026-0206",  # rustybuzz — gpui 文本 shaping
+]
+
+[bans]
+# 多版本共存——本仓有几组（gpui 内核族、smol 体系），暂以 warn 收敛。
+# 见 Cargo.toml 里 `unicode-properties` 钉死 `=0.1.3` 等口径。
+multiple-versions = "warn"
+# 通配依赖一律禁——`foo = "*"` 这类会破坏 lock 收敛（AGENTS §3.5）。
+wildcards = "deny"
+highlight = "all"
+
+[licenses]
+version = 2
+# 白名单：与 `THIRD_PARTY_LICENSES.md` 收录的实际授权种类对齐。
+# 该清单由 `sbin/licenses.py` 生成，是**单一真源**；这里只是补一份「同形守卫」。
+# 首跑（2026-10-13）发现的缺项已补：BSL-1.0（clipboard-win / error-code / xxhash-rust）、
+# CDLA-Permissive-2.0（webpki-roots）—— 详见 § 收紧清单 TODO。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",       # Boost：clipboard-win / error-code / xxhash-rust
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",  # webpki-roots（rustls 信任链）
+    "0BSD",
+]
+# SPDX 解析置信度门槛：低于 0.8 的 hex 转过报 warn。
+confidence-threshold = 0.8
+# 例外清单——只放真正查不到或上游有 bug 的，逐条注释原因。
+# 首跑（2026-10-13）记录的两类已知问题：
+# - `webpki 0.22.4`：上游没写 license 字段。等待新版本补 manifest。
+# - `ashpd` 多版本：rfd 0.16 钉 0.11，gpui-base 拖来 0.13。等 rfd / gpui-base 升版统一。
+# 注：webpki 是 no-license-field 警告（`warning` 级），不需要 exceptions；advisory
+# ignore 走 `[advisories].ignore`，多版本问题已用 `multiple-versions = "warn"`。
+# 收紧时把这一节留空，再把 `multiple-versions` 切 `"deny"`。
+exceptions = []
+
+[sources]
+# crates.io 之外的 registry 一律禁——避免依赖外部索引被劫持。
+unknown-registry = "deny"
+# git 源——longbridge/gpui-fast 在 [patch.crates-io] 里以 git 形式接管 crates.io 的同名包。
+unknown-git = "allow"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    "https://github.com/longbridge/gpui-fast",   # 锁 rev，见 Cargo.toml [patch.crates-io]
+]

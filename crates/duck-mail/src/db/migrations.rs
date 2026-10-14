@@ -25,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/010_folder_hierarchy.sql"),
     include_str!("migrations/011_pending_body_page.sql"),
     include_str!("migrations/012_sender_identity_sources.sql"),
+    include_str!("migrations/013_body_backfill_index.sql"),
 ];
 
 /// 当前 schema 版本。

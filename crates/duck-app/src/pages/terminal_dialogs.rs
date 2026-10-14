@@ -340,7 +340,7 @@ struct DirectoryForm {
 ///
 /// `groups` 是 `(分组名, 分组显示名)`（内置三档在前、档案里已有的自定义分组在后）；
 /// `initial` 有值时按**编辑**呈现（表单回填、标题与确认按钮改词）；`socket_dir` 是
-/// 「测试连接」用的 `ControlPath` 目录（由调用方给，见 `terminal.rs::ssh_socket_dir`：
+/// 「测试连接」用的 `ControlPath` 目录（由调用方给，见 `terminal/conn.rs::ssh_socket_dir`：
 /// 与终端标签共用同一份，探活命中的才是同一条物理连接）；`on_submit` 在校验通过后被调用一次。
 ///
 /// 两种意图共用一个弹窗是刻意的：字段、校验、键盘行为完全一样，

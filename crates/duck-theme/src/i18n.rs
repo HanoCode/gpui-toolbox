@@ -236,6 +236,150 @@ pub fn tr_relative_time(cx: &App, secs: i64, under_minute: UnderMinute) -> Strin
     relative_time(active_theme(cx).lang(), secs, under_minute)
 }
 
+/// 统计数字：按千分位分组（`1234567` → `1,234,567`）。
+///
+/// **只用于展示**：输入框回填、写回配置、机器可读字段一律走 `to_string()`——
+/// 分组符混进可编辑文本会让用户改不了、解析失败（`max_tokens` 的输入框就是一例）。
+///
+/// 与 [`tn`] 的分工正是 [`tn`] 文档里留下的那条：`tn` 的「数量」按十进制原样输出
+/// （「1024 天前」比「1,024 天前」好读），分组留给**统计数字**——token 计数、文件数、
+/// 结果行数这类。所以本函数不参与 `tn`/`relative_time` 的取词路径，是独立入口。
+///
+/// **不收 `lang`**：简繁中文与英文的分组符都是 `,`（小数点是 `.`），本函数没有语言分支
+/// 可写；收一个被忽略的参数只会误导调用方。将来真要支持「分组符不同的语言」
+/// （法语用窄不换行空格、印地语按 2 位分组）再引入参数。
+///
+/// `value` 取 `i64`：与 [`tn`] / [`relative_time`] 的计数口径一致（调用方从 `u32` /
+/// `u64` / `usize` 转换时按展示量级用 `as i64`）。`i64::MIN` 走 `unsigned_abs`，
+/// 不会因取绝对值而溢出。
+#[must_use]
+pub fn number(value: i64) -> String {
+    let digits = value.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    if value < 0 {
+        out.push('-');
+    }
+    // 从右往左每 3 位一组：`head` 是**首组**的位数（`0` 表示首组恰好 3 位）。
+    // 之后在每个「下标余数 == head」的位置前面补分隔符，`index > 0` 保证首位之前不补
+    // （`1000` 不会写成 `,1000`）。写成余数比较而非 `% 3 == 0`：后者会让 clippy 建议
+    // `is_multiple_of`，而那个 API 要 Rust 1.87，本仓 MSRV 是 1.85。
+    let head = digits.len() % 3;
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && index % 3 == head {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// 人类可读的字节数：`512 B` / `4.0 KB` / `1.2 MB` / `3.0 GB` / `2.5 TB`。
+///
+/// **只有 B 不带小数**：`1.0 KB` 读起来比 `1024 B` 快，但 `0.0 B` 是纯噪音。
+/// 档位到 TB 封顶——本仓最大的量是磁盘容量与归档体积，PB 级不在展示范围内，
+/// 超出的量级以「大数字 + TB」呈现即可，不必再补一档。
+///
+/// 本函数是仓内**唯一**的字节格式化实现。`duck-app` 原先有 7 份同源拷贝
+/// （`status_support` / `data` / `ai_tools` / `mail_data` / `plugin_center` /
+/// `update` / `redis`），口径**四不像**（KB 有的取整有的留 1 位，redis 那份留 2 位，
+/// `data` 与 `update` 那两份根本没有 GB 档），已全部收拢到这里——如今只剩
+/// `status_support::format_bytes` 一处**同名委派**（6 个导入者不动），其余 6 份已删。
+/// 内核 crate 里的 `duck-db::drivers::human_bytes` **保留**：内核不许依赖 gpui，
+/// 用不上本层（其输出与本函数逐字一致，无正确性缺陷可修）。
+///
+/// **不收 `lang`**：与 [`number`] 同理——简繁中文与英文的单位符号都是
+/// `B` / `KB` / `MB` / `GB` / `TB`，没有语言分支可写（法语 `Mo` / `Ko`、
+/// 俄语 `МБ` 那类才需要参数，届时再引入）。
+///
+/// `value` 取 `u64`：字节数天然非负（体积 / 容量 / 剩余空间），负值无意义；
+/// 调用方若持有有符号量（`duck-mail` 的附件大小是 `i64`）须先收敛到非负。
+#[must_use]
+pub fn bytes(value: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if value < 1024 {
+        return format!("{value} B");
+    }
+    let mut scaled = value as f64;
+    let mut unit = 0usize;
+    while scaled >= 1024. && unit + 1 < UNITS.len() {
+        scaled /= 1024.;
+        unit += 1;
+    }
+    format!("{scaled:.1} {}", UNITS[unit])
+}
+
+/// 日期 + 时间：`YYYY-MM-DD HH:MM`（**UTC**）。
+///
+/// 时间戳 ≤ 0 给**空串**：内核解析不出 `Date` 头时会写 0，列表上应当留空，
+/// 而不是印出一个 1970 年（那会被当成真日期）。
+///
+/// **为什么是 UTC**：本仓的依赖准入结论是「不引 `chrono` / `time`」，没有时区库
+/// 就做不了本地时区换算。这是**已知的展示差异**（未决项记在
+/// `docs/email-design.md`），不是遗漏。
+///
+/// **不收 `lang`**：本仓三种语言的日期顺序都是 ISO（年-月-日）。美式
+/// `MM/DD/YYYY` 配 12 小时制（`2:23 PM`）是一处**可见的界面变更**，
+/// 得先有产品决定——不在格式化层的单方面权限内，故此处不留一个被忽略的参数。
+#[must_use]
+pub fn datetime_full(secs: i64) -> String {
+    let Some((year, month, day, hour, minute)) = civil_parts(secs) else {
+        return String::new();
+    };
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+/// 日期 + 时间（短）：`MM-DD HH:MM`（**UTC**）——列表行宽度紧，省掉年份。
+///
+/// 其余口径（UTC / `≤ 0` 给空串 / 不收 `lang`）与 [`datetime_full`] 完全一致。
+#[must_use]
+pub fn datetime_short(secs: i64) -> String {
+    let Some((_, month, day, hour, minute)) = civil_parts(secs) else {
+        return String::new();
+    };
+    format!("{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+/// 把 Unix 秒拆成 `(年, 月, 日, 时, 分)`；`secs <= 0` 返回 `None`（见 [`datetime_full`]）。
+fn civil_parts(secs: i64) -> Option<(i64, i64, i64, i64, i64)> {
+    if secs <= 0 {
+        return None;
+    }
+    let days = secs.div_euclid(86_400);
+    let within_day = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    Some((
+        year,
+        month,
+        day,
+        within_day / 3_600,
+        (within_day % 3_600) / 60,
+    ))
+}
+
+/// 由「自 1970-01-01 起的天数」还原公历年月日（Howard Hinnant 的 `civil_from_days`）。
+///
+/// 手写而不用库：见 [`datetime_full`] 的依赖结论。**本仓仍有若干份同源实现**
+/// （`duck-platform::logging`、`duck-db::drivers::mssql`、`duck-redis::decode`、
+/// `duck-mail::{compose, db::repo::search}`）——它们都是**内核 crate，不许依赖 gpui**，
+/// 因而用不上本层。`duck-app` 的两份（`mail_data` / `terminal_data`）已并入这里。
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = (shifted - era * 146_097) as u64;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i64 + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * mp + 2) / 5 + 1) as i64;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as i64;
+    (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
 /// 把**已译好**的模板里的 `{}` 按 `args` 顺序替换（[`tf`] / [`tn`] 共用的收尾步骤）。
 ///
 /// 参数多于占位符时多余的忽略，少于时保留未替换的 `{}`（与旧 [`tf`] 行为一致）。
@@ -395,6 +539,11 @@ static EN: &[(&str, &str)] = &[
         "MIT license, copyright HanoCode.",
     ),
     (
+        "N 快速新建 · ⌘K 命令面板 · 右键卡片有菜单",
+        "N quick add · ⌘K command palette · right-click a card for its menu",
+    ),
+    ("NULL", "NULL"),
+    (
         "OpenAI 兼容前缀，不带尾斜杠；请求发到该前缀下的 /chat/completions。",
         "OpenAI-compatible prefix without a trailing slash; requests go to /chat/completions under it.",
     ),
@@ -407,6 +556,22 @@ static EN: &[(&str, &str)] = &[
         "PHP serialize 解析在第 {} 字节处失败。",
         "Failed to parse PHP serialize data at byte {}.",
     ),
+    (
+        "Q1 重要且紧急 · 立即处理",
+        "Q1 Important and urgent · do it now",
+    ),
+    (
+        "Q2 重要不紧急 · 尽快安排或委派",
+        "Q2 Important, not urgent · schedule or delegate",
+    ),
+    (
+        "Q3 紧急不重要 · 计划安排",
+        "Q3 Urgent, not important · plan it",
+    ),
+    (
+        "Q4 都不紧急 · 有空再处理",
+        "Q4 Neither urgent nor important · do it later",
+    ),
     ("Redis 连接", "Redis connection"),
     (
         "SCAN 每次返回的键数上限；连接档案里单独设置的以档案为准。",
@@ -417,7 +582,21 @@ static EN: &[(&str, &str)] = &[
     ("SMTP 端口需是 1–65535。", "The SMTP port must be 1–65535."),
     ("SQL 执行", "SQL execution"),
     ("SQL 执行失败：{}", "SQL execution failed: {}"),
+    ("SQL 格式化与编辑器", "SQL formatting and editor"),
     ("SQL 结果", "SQL results"),
+    ("SQL 语义诊断", "SQL semantic diagnostics"),
+    (
+        "SQL 语义诊断：已关闭（点击开启）",
+        "SQL semantic diagnostics: off (click to turn on)",
+    ),
+    (
+        "SQL 语义诊断：已开启（点击关闭）",
+        "SQL semantic diagnostics: on (click to turn off)",
+    ),
+    (
+        "SQL 过长时在编辑器内折行，而不是横向滚动。",
+        "Wrap long SQL inside the editor instead of scrolling sideways.",
+    ),
     (
         "SQLite 是进程内数据库，没有服务端会话列表；下面是本连接挂载的数据库文件。",
         "SQLite is an in-process database with no server-side session list; below are the database files attached to this connection.",
@@ -506,11 +685,13 @@ static EN: &[(&str, &str)] = &[
     ("{} 天前", "{} days ago"),
     ("{} 字节", "{} bytes"),
     ("{} 封邮件", "{} messages"),
+    ("{} 小时", "{} h"),
     ("{} 小时前", "{} hours ago"),
     ("{} 条", "{} messages"),
     ("{} 条 · {} 条未读", "{} total · {} unread"),
     ("{} 条待提交", "{} pending"),
     ("{} 条待查看错误", "{} errors to review"),
+    ("{} 条语句", "{} statements"),
     ("{} 步", "{} step(s)"),
     ("{} 秒", "{}s"),
     ("{} 秒前", "{} seconds ago"),
@@ -520,8 +701,11 @@ static EN: &[(&str, &str)] = &[
         "{} 行 · {} 条语句 · {} ms",
         "{} rows · {} statements · {} ms",
     ),
+    ("{} 行/页", "{} rows/page"),
     ("{} 项", "{} items"),
     ("{} 项匹配", "{} matches"),
+    ("{}-结果", "{}-Result"),
+    ("{}-结果{}", "{}-Result {}"),
     ("{}/{} 个任务", "{}/{} tasks"),
     ("{}失败（{}）：{}", "{} failed ({}): {}"),
     ("{}失败：{}", "{} failed: {}"),
@@ -551,10 +735,18 @@ static EN: &[(&str, &str)] = &[
         "「{}」不能用作全局快捷键：媒体键与音量键要额外的系统授权，还会抢走系统控制。",
         "\"{}\" cannot be a global shortcut: media and volume keys need extra system permission and would take over the system controls.",
     ),
+    (
+        "「{}」及该项目下的任务将被永久删除，无法恢复。",
+        "“{}” and the tasks inside it will be permanently deleted. This cannot be undone.",
+    ),
     ("「{}」后端尚未接入", "\"{}\" backend is not wired up yet"),
     (
         "「{}」将被删除，确定继续吗？",
         "“{}” will be deleted. Continue?",
+    ),
+    (
+        "「{}」将被永久删除，无法恢复。",
+        "“{}” will be permanently deleted. This cannot be undone.",
     ),
     ("「{}」执行完成", "\"{}\" finished."),
     (
@@ -589,6 +781,10 @@ static EN: &[(&str, &str)] = &[
     (
         "上一条语句还在跑，先等它结束或点「停止」。",
         "The previous statement is still running — wait for it or press Stop.",
+    ),
+    (
+        "上一次执行失败了；修正 SQL 后重新执行。",
+        "The last execution failed; fix the SQL and run it again.",
     ),
     ("上一步", "Back"),
     ("上一级目录", "Parent folder"),
@@ -656,6 +852,7 @@ static EN: &[(&str, &str)] = &[
     ("不用 TLS", "No TLS"),
     ("不经代理", "No proxy"),
     ("丢弃", "Discard"),
+    ("丢弃全部暂存改动", "Discard all staged changes"),
     ("丢弃更改", "Discard changes"),
     (
         "两种正文都有的邮件默认显示哪一份；阅读器里仍可随时切换。",
@@ -665,6 +862,7 @@ static EN: &[(&str, &str)] = &[
     ("严格只读（ACL 限制）", "Strict read-only (ACL)"),
     ("个", ""),
     ("个键", "keys"),
+    ("中", "Medium"),
     ("中文", "Chinese"),
     ("为空", "is null"),
     ("主机", "Host"),
@@ -709,12 +907,15 @@ static EN: &[(&str, &str)] = &[
         "A UI shell sample only; no business logic is wired up.",
     ),
     ("仅显示前 400 项。", "Showing the first 400 entries."),
+    ("仅本次", "Just this time"),
     ("仅本账户可见。", "Visible only to this account."),
     (
         "仅用于 Redis 6.0+（ACL）；留空表示只用口令认证",
         "Redis 6.0+ (ACL) only; leave empty to authenticate with a password only",
     ),
     ("仅警告与错误", "Warnings and errors"),
+    ("今天", "Today"),
+    ("今天到期 {}", "{} due today"),
     (
         "从中间列表选一封邮件，正文会在这里显示。",
         "Pick a message from the middle list and its body will show here.",
@@ -766,6 +967,7 @@ static EN: &[(&str, &str)] = &[
     ("仪表板", "Dashboards"),
     ("仪表板名称", "Dashboard name"),
     ("仪表盘", "Dashboard"),
+    ("任务", "Tasks"),
     (
         "任务列表中的图标风格，与主题相互独立。",
         "Icon style used in task lists; independent of the theme.",
@@ -774,6 +976,13 @@ static EN: &[(&str, &str)] = &[
         "任务列表的行高从 44 收到 30。",
         "Task rows shrink from 44 to 30.",
     ),
+    ("任务操作", "Task actions"),
+    ("任务标题", "Task title"),
+    ("任务详情", "Task details"),
+    ("优先级", "Priority"),
+    ("优先级…", "Priority…"),
+    ("优先级已设为 {}", "Priority set to {}"),
+    ("优先级最高", "Priority first"),
     ("会话", "Session"),
     ("会话参数", "Conversation settings"),
     (
@@ -806,6 +1015,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("传输通道", "Transport"),
     ("传输队列", "Transfers"),
+    ("低", "Low"),
     ("作者", "Author"),
     (
         "你是 Duck Toolbox 的内置助手。回答用简洁的中文，代码与命令原样给出。信息不足时直接说不确定，不要编造。",
@@ -841,6 +1051,7 @@ static EN: &[(&str, &str)] = &[
     ("保存 AI 设置", "Save AI settings"),
     ("保存中…", "Saving…"),
     ("保存值", "Save value"),
+    ("保存到已保存查询", "Save to saved queries"),
     ("保存后复制", "Copy after saving"),
     (
         "保存后立刻出现在助手页的模型下拉里。",
@@ -867,15 +1078,17 @@ static EN: &[(&str, &str)] = &[
     ),
     ("保留临时文件", "Keep temporary files"),
     ("保留元数据", "Keep metadata"),
+    ("保留原样", "Keep as-is"),
     ("保留时长", "Keep for"),
     ("保留条数", "Entries kept"),
     ("信息", "Information"),
     (
-        "信由本机直接经 SMTP 发出；不会自动写进服务器的「已发送」文件夹。",
-        "Sent directly over SMTP from this machine; no copy is written to the server's Sent folder.",
+        "信由本机经 SMTP 发出，并自动写回服务器的「已发送」文件夹（需已同步出该文件夹）。",
+        "Sent over SMTP from this machine, with a copy written back to the server's Sent folder (once that folder has been synced).",
     ),
     ("修改", "Change"),
     ("修改 {} · {} 行", "Modified {} · {} rows"),
+    ("修改失败：{}", "Could not save: {}"),
     ("修改时间", "Modified"),
     ("修改服务端配置", "Change server configuration"),
     ("修改此行", "Edit this row"),
@@ -891,6 +1104,7 @@ static EN: &[(&str, &str)] = &[
     ("偏好", "Preferences"),
     ("停止", "Stop"),
     ("停止失败：{}", "Failed to stop: {}"),
+    ("停止执行（⌘.）", "Stop execution (⌘.)"),
     ("停止生成", "Stop generating"),
     (
         "停用后从工具箱列表隐藏，设置项保留。",
@@ -925,20 +1139,28 @@ static EN: &[(&str, &str)] = &[
     ),
     ("全选", "Select All"),
     ("全部", "All"),
+    ("全部任务", "All tasks"),
+    ("全部任务 {}", "All tasks {}"),
     ("全部关掉", "Off"),
     ("全部分类", "All categories"),
     ("全部工具", "All tools"),
     ("全部提示", "All notifications"),
+    ("全部显示", "Show all"),
     ("全部清除", "Clear everything"),
     ("全部状态", "All statuses"),
     ("全部类别", "All categories"),
     ("全部级别", "All levels"),
+    ("全部项目", "All projects"),
     ("公钥", "Key"),
     ("公钥 + 口令", "Key + passphrase"),
+    ("共", "Total"),
+    ("共 {}", "Total {}"),
+    ("共 {} 个问题", "{} problems in total"),
     (
         "共 {} 字节，可切到「文本」或「Hex」档查看原文。",
         "{} bytes in total; switch to the Text or Hex tab to see the raw content.",
     ),
+    ("共 {} 条", "{} total"),
     (
         "共 {} 条，显示最近 {} 条。",
         "{} entries in total; showing the latest {}.",
@@ -954,12 +1176,14 @@ static EN: &[(&str, &str)] = &[
     ("关系型", "Relational"),
     ("关联 id", "Trace id"),
     ("关键字", "Keyword"),
+    ("关键字大小写", "Keyword case"),
     ("关键词", "Keywords"),
     ("关闭", "Close"),
     ("关闭全部", "Close all"),
     ("关闭全部标签页", "Close All Tabs"),
     ("关闭其他", "Close others"),
     ("关闭其他标签页", "Close Other Tabs"),
+    ("关闭右侧", "Close to the right"),
     (
         "关闭后仅能解析公开分享，私有链接会失败。",
         "When off, only public shares resolve; private links fail.",
@@ -979,6 +1203,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("关闭标签", "Close tab"),
     ("关闭标签页", "Close tab"),
+    ("关闭结果", "Close result"),
     ("其他", "Other"),
     ("其他邮箱", "Other email"),
     ("其它", "Other"),
@@ -1013,6 +1238,18 @@ static EN: &[(&str, &str)] = &[
     (
         "再刷新几次就会出现趋势（当前只有一次采样）。",
         "Refresh a few more times to see a trend (one sample so far).",
+    ),
+    (
+        "再点一下左栏那一项即可取消筛选。",
+        "Click that item in the sidebar again to clear the filter.",
+    ),
+    (
+        "再点一下左栏那个标签即可取消筛选。",
+        "Click that tag in the sidebar again to clear the filter.",
+    ),
+    (
+        "再点一下那个筛选即可取消。",
+        "Click that filter again to clear it.",
     ),
     ("写 NULL", "Write NULL"),
     ("写入", "Writes"),
@@ -1069,6 +1306,10 @@ static EN: &[(&str, &str)] = &[
         "Lists every registered tool with its derived index",
     ),
     ("列出目录内容", "List directory contents"),
+    ("列名", "Column"),
+    ("列数", "Column count"),
+    ("列模式", "Column view"),
+    ("列统计", "Column stats"),
     ("列表", "List"),
     (
         "列表、确认与开机启动",
@@ -1097,6 +1338,8 @@ static EN: &[(&str, &str)] = &[
     ("删除 {} · {} 行", "Deleted {} · {} rows"),
     ("删除「{}」？", "Delete “{}”?"),
     ("删除仪表板", "Delete dashboard"),
+    ("删除任务", "Delete task"),
+    ("删除任务？", "Delete this task?"),
     ("删除会话", "Delete conversation"),
     ("删除传输档案", "Delete transport profile"),
     ("删除列表元素", "Delete list element"),
@@ -1109,6 +1352,7 @@ static EN: &[(&str, &str)] = &[
     ("删除工具前弹确认", "Confirm before deleting a tool"),
     ("删除已保存图表", "Delete saved chart"),
     ("删除已保存查询", "Delete Saved Query"),
+    ("删除当前行", "Delete current row"),
     ("删除有序集合成员", "Delete sorted set member"),
     ("删除此元素", "Delete this element"),
     ("删除此成员", "Delete this member"),
@@ -1139,6 +1383,7 @@ static EN: &[(&str, &str)] = &[
     ("刷新", "Refresh"),
     ("刷新两侧", "Refresh both"),
     ("刷新失败：{}", "Refresh failed: {}"),
+    ("刷新当前页", "Refresh page"),
     (
         "刷新收件箱（同步引擎待接入）",
         "Refresh inbox (sync engine not wired up yet)",
@@ -1172,6 +1417,7 @@ static EN: &[(&str, &str)] = &[
     ("加载更多失败：{}", "Failed to load more: {}"),
     ("动态 SOCKS", "Dynamic SOCKS"),
     ("助手工具", "Assistant tools"),
+    ("勾选全部行", "Select all rows"),
     ("勾选本页全部行", "Select all rows on this page"),
     (
         "勾选要放行的能力；取消勾选即拒绝，之后可在插件中心逐项调整。",
@@ -1182,6 +1428,8 @@ static EN: &[(&str, &str)] = &[
     ("区域", "Region"),
     ("升序", "ascending"),
     ("升级", "Upgrade"),
+    ("单元格", "Cell"),
+    ("单元格详情", "Cell details"),
     ("单文件上限", "Max file size"),
     (
         "单条查询最多返回多少行，超出即截断。",
@@ -1211,6 +1459,7 @@ static EN: &[(&str, &str)] = &[
     ("厂商已删除", "Provider deleted"),
     ("历史", "History"),
     ("压缩", "compress"),
+    ("压缩 SQL", "Compress SQL"),
     ("压缩包", "archive"),
     ("压缩包解包", "Archive extraction"),
     ("压缩归档", "Archives"),
@@ -1254,6 +1503,7 @@ static EN: &[(&str, &str)] = &[
         "取自账户档案，不在这里更改。",
         "Taken from the account profile; not editable here.",
     ),
+    ("受阻", "Blocked"),
     ("变宽", "Wider"),
     ("变窄", "Narrower"),
     ("口令", "Password"),
@@ -1287,6 +1537,8 @@ static EN: &[(&str, &str)] = &[
         "只允许打开 http、https 与 mailto 链接。",
         "Only http, https and mailto links can be opened.",
     ),
+    ("只分析选中的语句", "Explain only the selected statements"),
+    ("只执行选中的语句", "Run only the selected statements"),
     (
         "只按下了修饰键，还要再按一个普通键。",
         "Only modifiers were pressed; add a regular key as well.",
@@ -1393,6 +1645,9 @@ static EN: &[(&str, &str)] = &[
         "向上翻页时保留的历史行数；对新建会话生效。",
         "History kept when scrolling up; applies to new sessions.",
     ),
+    ("否", "No"),
+    ("含 {} 个任务", "{} tasks"),
+    ("含 {} 个子任务", "{} subtasks"),
     ("启动", "Startup"),
     ("启动后自动检查更新", "Check for updates on launch"),
     ("启动时恢复上次窗口", "Reopen last session's windows"),
@@ -1400,7 +1655,9 @@ static EN: &[(&str, &str)] = &[
     ("启用 SSH 隧道", "Enable SSH tunnel"),
     ("启用唤起快捷键", "Enable the summon shortcut"),
     ("启用插件", "Enabled"),
+    ("命中 {} 行", "{} matching rows"),
     ("命令", "Commands"),
+    ("命令名", "Command"),
     ("命令片段", "Command snippets"),
     ("命令面板", "Command palette"),
     (
@@ -1416,6 +1673,9 @@ static EN: &[(&str, &str)] = &[
     ("唤起时打开主窗口", "Open the main window when summoned"),
     ("唯一", "Unique"),
     ("嗅探引擎", "Sniffing engine"),
+    ("四象限…", "Quadrant…"),
+    ("四象限定位", "Quadrant position"),
+    ("四象限已设为 {}", "Quadrant set to {}"),
     ("回信", "Reply"),
     ("回到最新", "Jump to latest"),
     ("回复", "Reply"),
@@ -1426,6 +1686,8 @@ static EN: &[(&str, &str)] = &[
     ("回滚", "Rollback"),
     ("回滚 4096 行", "Scrollback 4096"),
     ("回滚 {} 行", "Scrollback {} lines"),
+    ("回滚事务", "Rollback transaction"),
+    ("回滚事务（ROLLBACK）", "Rollback transaction (ROLLBACK)"),
     ("回滚行数", "Scrollback lines"),
     ("回车打开选中连接", "Enter opens the selected connection"),
     ("回退到上一版本", "Roll back to the previous version"),
@@ -1435,6 +1697,7 @@ static EN: &[(&str, &str)] = &[
     ("图标集", "Icon set"),
     ("图片", "image"),
     ("图片格式转换", "Image conversion"),
+    ("图表", "Chart"),
     ("图表名称", "Chart name"),
     ("图表类型", "Chart type"),
     (
@@ -1443,6 +1706,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("图表面板", "Chart panel"),
     ("在 {}，{} 写道：", "On {}, {} wrote:"),
+    ("在「{}」新建任务", "New task in \"{}\""),
     (
         "在上一档的基础上，再删除已安装的插件与插件数据。",
         "Does the above, then removes installed plugins and their data.",
@@ -1457,6 +1721,11 @@ static EN: &[(&str, &str)] = &[
         "Works from other apps too; press it again while Duck is in front to put it away.",
     ),
     (
+        "在右上角的输入框里写个标题、按回车，就能建第一条任务。",
+        "Type a title in the box at the top right and press Enter to create your first task.",
+    ),
+    ("在右栏查看详情", "Show details in the right panel"),
+    (
         "在左栏选择一条连接，或新建一条。",
         "Select a connection in the sidebar, or create a new one.",
     ),
@@ -1469,6 +1738,11 @@ static EN: &[(&str, &str)] = &[
         "Create a folder inside the current remote directory.",
     ),
     ("在本地知识库里检索", "Search the local knowledge base"),
+    ("在结果中搜索…", "Search within results…"),
+    (
+        "在结果网格里点一格，或点行尾的 ⓘ。",
+        "Click a cell in the grid, or the ⓘ at the row end.",
+    ),
     ("在缓冲区中查找…", "Search the buffer…"),
     ("在编辑器中修改", "Edit in editor"),
     ("在编辑器中修改 DDL", "Edit DDL in editor"),
@@ -1482,6 +1756,7 @@ static EN: &[(&str, &str)] = &[
     ("备份、恢复与重置", "Backup, restore and reset"),
     ("备份中包含日志", "Include logs"),
     ("复制", "Copy"),
+    ("复制 SQL", "Copy SQL"),
     (
         "复制 ⌘C（拖选文字后）· 粘贴 ⌘V · 全选 ⌘A",
         "Copy ⌘C (after selecting) · Paste ⌘V · Select all ⌘A",
@@ -1495,17 +1770,21 @@ static EN: &[(&str, &str)] = &[
     ("复制为 TSV（含表头）", "Copy as TSV (with header)"),
     ("复制为十六进制转储", "Copy as hex dump"),
     ("复制为纯文本（对齐）", "Copy as plain text (aligned)"),
+    ("复制值", "Copy value"),
+    ("复制全部", "Copy all"),
     ("复制列名", "Copy column name"),
     ("复制单元格", "Copy cell"),
     ("复制名称", "Copy name"),
     ("复制外键定义", "Copy foreign-key definition"),
     ("复制对象名", "Copy object name"),
+    ("复制所选 {} 行", "Copy {} selected rows"),
     ("复制整行", "Copy row"),
     ("复制索引列", "Copy index columns"),
     ("复制索引名", "Copy index name"),
     ("复制触发器名", "Copy trigger name"),
     ("复制诊断信息", "Copy diagnostics"),
     ("复制诊断信息失败", "Failed to copy diagnostics"),
+    ("复制选中行", "Copy selected row"),
     (
         "复用已登录会话，自动识别分享链接",
         "Reuses signed-in sessions to detect share links",
@@ -1521,6 +1800,7 @@ static EN: &[(&str, &str)] = &[
         "多个条件之间、条件与关键词之间都是「同时满足」。",
         "Conditions — and conditions with keywords — must all match.",
     ),
+    ("大写", "Uppercase"),
     ("大小", "Size"),
     ("大小：{}", "Size: {}"),
     ("失败", "Failed"),
@@ -1535,6 +1815,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("媒体", "media"),
     ("媒体处理", "Media"),
+    ("子任务", "Subtasks"),
     (
         "子树键数不超过它就默认展开；留空或 0 表示不自动展开",
         "Subtrees with no more keys than this expand by default; leave blank or 0 to never auto-expand",
@@ -1553,6 +1834,7 @@ static EN: &[(&str, &str)] = &[
     ("字段名不能为空", "Field name must not be empty"),
     ("字段已写入", "Field written"),
     ("字段已删除", "Field deleted"),
+    ("字段筛选", "Filter columns"),
     ("字符串", "String"),
     ("字符串值", "String value"),
     ("存为新档案", "Save as new profile"),
@@ -1577,6 +1859,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("安装目录", "Install location"),
     ("完成", "Done"),
+    ("完成 {}", "Done {}"),
     (
         "完成后保留分片文件，便于排查合并问题。",
         "Keeps segment files after completion, which helps when debugging a merge.",
@@ -1593,6 +1876,7 @@ static EN: &[(&str, &str)] = &[
     ("实时监控", "Live monitor"),
     ("实时监控已停止", "Live monitoring stopped"),
     ("实时监控已开启", "Live monitoring started"),
+    ("实际工时", "Actual hours"),
     ("审计日志", "Audit log"),
     ("审计日志已清空", "Audit log cleared"),
     ("客户端", "Clients"),
@@ -1703,6 +1987,8 @@ static EN: &[(&str, &str)] = &[
         "将移除 {}（含本地缓存的邮件与凭据）。这个动作无法撤销。",
         "This will remove {} along with its cached messages and credentials. This cannot be undone.",
     ),
+    ("小写", "Lowercase"),
+    ("小写关键字", "Lowercase keywords"),
     ("尚未加载", "Not loaded yet"),
     (
         "尚未建立 SFTP 会话，无法浏览远端目录。",
@@ -1731,6 +2017,7 @@ static EN: &[(&str, &str)] = &[
         "展示用，留空回落模板名。",
         "Display only; blank falls back to the template name.",
     ),
+    ("工作", "Work"),
     ("工作区", "Workspace"),
     ("工作目录", "Workspace"),
     ("工作目录：{}", "Workspace: {}"),
@@ -1776,6 +2063,7 @@ static EN: &[(&str, &str)] = &[
         "已从历史放回编辑器。",
         "Restored from history into the editor.",
     ),
+    ("已保存", "Saved"),
     ("已保存 {} 处改动。", "Saved {} change(s)."),
     ("已保存仪表板。", "Dashboard saved."),
     ("已保存分隔标题。", "Section title saved."),
@@ -1813,6 +2101,7 @@ static EN: &[(&str, &str)] = &[
     ("已删除 {} 行。", "Deleted {} row(s)."),
     ("已删除 {}。", "Deleted {}."),
     ("已删除。", "Deleted."),
+    ("已删除任务。", "Task deleted."),
     ("已删除的图表", "Deleted chart"),
     ("已删除该仪表板。", "Dashboard deleted."),
     ("已删除该图表。", "Chart deleted."),
@@ -1820,6 +2109,10 @@ static EN: &[(&str, &str)] = &[
     ("已删除键 {}", "Deleted key {}"),
     ("已刷新。", "Refreshed."),
     ("已刷新仪表板「{}」。", "Dashboard “{}” refreshed."),
+    (
+        "已剪切，原格已暂存为 NULL。",
+        "Cut; the cell is staged as NULL.",
+    ),
     ("已加密保存在本机", "Saved encrypted on this machine"),
     ("已加旗标", "Flagged"),
     ("已加载 {} / {} 个键", "Loaded {} / {} keys"),
@@ -1833,12 +2126,15 @@ static EN: &[(&str, &str)] = &[
         "已加载 {} 行；结果被行上限截断",
         "{} rows loaded; truncated by the row limit",
     ),
+    ("已压缩。", "Minified."),
     (
         "已压缩较早上下文（省略 {} 条消息 / 裁剪 {} 条工具结果）",
         "Compacted earlier context ({} messages omitted, {} tool results pruned)",
     ),
+    ("已压缩（没有变化）。", "Nothing to minify."),
     ("已发送", "Sent"),
     ("已取消", "Cancelled"),
+    ("已取消 {} 行的注释。", "Uncommented {} lines."),
     ("已取消旗标", "Unflagged"),
     ("已取消更新。", "Update cancelled."),
     ("已同步", "Synced"),
@@ -1860,8 +2156,10 @@ static EN: &[(&str, &str)] = &[
     ("已复制名称。", "Name copied."),
     ("已复制外键定义。", "Foreign-key definition copied."),
     ("已复制对象名。", "Object name copied."),
+    ("已复制所选 {} 行。", "{} selected rows copied."),
     ("已复制触发器名。", "Trigger name copied."),
     ("已复制诊断信息", "Diagnostics copied"),
+    ("已复制该 SQL。", "Copied the SQL."),
     ("已复制该行。", "Row copied."),
     (
         "已存过密钥。留空表示不改动，填入则覆盖。",
@@ -1871,6 +2169,7 @@ static EN: &[(&str, &str)] = &[
     ("已安装工具", "Installed tools"),
     ("已安装插件", "Installed plugins"),
     ("已完成", "Completed"),
+    ("已定位到列「{}」。", "Jumped to column “{}”."),
     (
         "已导入 {} 条连接，跳过 {} 条。",
         "Imported {} connection(s), skipped {}.",
@@ -1903,6 +2202,21 @@ static EN: &[(&str, &str)] = &[
     ("已导出连接档案。", "Connection profiles exported."),
     ("已开始传输 {} 个条目。", "Started transferring {} items."),
     ("已开始传输 {}。", "Started transferring {}."),
+    ("已归档 {}", "Archived {}"),
+    (
+        "已归档任务，可在归档中心找回。",
+        "Task archived; find it in the archive.",
+    ),
+    (
+        "已归档项目，可在归档中心找回。",
+        "Project archived; find it in the archive.",
+    ),
+    (
+        "已归档项目，连带 {} 个任务。",
+        "Project archived, along with {} tasks.",
+    ),
+    ("已彻底删除。", "Permanently deleted."),
+    ("已恢复。", "Restored."),
     (
         "已打开；助手可以读取工作目录里的文件、列出目录、检索本地知识库。",
         "On: the assistant may read files in the workspace, list directories and search the local knowledge base.",
@@ -1940,17 +2254,31 @@ static EN: &[(&str, &str)] = &[
         "已提交：改 {} 行 · 新增 {} 行。",
         "Committed: {} row(s) updated · {} row(s) inserted.",
     ),
+    ("已搁置", "Deferred"),
     ("已撤销", "Undone"),
     (
         "已撤销一步（共 {} 条待提交）",
         "Undid one step ({} pending in total)",
     ),
+    (
+        "已撤销归档，任务已恢复。",
+        "Archive undone; the task is back.",
+    ),
+    (
+        "已撤销归档，项目已恢复。",
+        "Archive undone; the project is back.",
+    ),
     ("已改", "Edited"),
+    (
+        "已改为每页 {} 行，并回到第 1 页。",
+        "Now {} rows per page; back to page 1.",
+    ),
     ("已改为永不过期", "Changed to never expire"),
     ("已断开", "Disconnected"),
     ("已断开 {}", "Disconnected {}"),
     ("已断开连接", "Disconnected"),
     ("已断开（请重新连接）", "Down (reconnect)"),
+    ("已新建「{}」。", "Created “{}”."),
     ("已是最新版本 {}。", "Version {} is the latest."),
     (
         "已暂存 1 条新增行（共 {} 条待提交）",
@@ -1968,6 +2296,8 @@ static EN: &[(&str, &str)] = &[
         "已格式化；{} 段解析不了，保持原样。",
         "Formatted; {} statement(s) could not be parsed and were left untouched.",
     ),
+    ("已注释 {} 行。", "Commented {} lines."),
+    ("已添加到「{}」。", "Added to \"{}\"."),
     ("已添加标签「{}」", "Added label \"{}\""),
     (
         "已清空 {} 张表、删除 {} 项内容，并清空 AI 会话与知识库索引，重启后生效。",
@@ -1976,6 +2306,10 @@ static EN: &[(&str, &str)] = &[
     (
         "已清空 {} 张表、删除 {} 项内容，重启后生效。",
         "Cleared {} tables and removed {} items; restart to apply.",
+    ),
+    (
+        "已清空归档，共 {} 项。",
+        "Archive cleared; {} items removed.",
     ),
     (
         "已生成删表语句；确认无误后再执行。",
@@ -1989,13 +2323,19 @@ static EN: &[(&str, &str)] = &[
         "已生成改表骨架，改好后执行。",
         "ALTER TABLE skeleton generated. Adjust it, then run it.",
     ),
+    ("已移入「{}」", "Moved into \"{}\""),
     ("已移动", "Moved"),
+    ("已移动到「{}」。", "Moved to \"{}\"."),
     ("已移除标签「{}」", "Removed label \"{}\""),
     (
         "已索引 {} 个目录、{} 块",
         "Indexed {} directories, {} chunks",
     ),
     ("已装版本", "Installed version"),
+    (
+        "已设为默认每页 {} 行。",
+        "Default page size set to {} rows.",
+    ),
     ("已识别为「{}」", "Recognized as \"{}\""),
     (
         "已识别为「{}」，到工具箱确认处理",
@@ -2019,6 +2359,7 @@ static EN: &[(&str, &str)] = &[
     ("已连接 {}。", "Connected {}."),
     ("已连接 {}（{}）", "Connected to {} ({})"),
     ("已选 {} 行", "{} rows selected"),
+    ("已逾期。", "Overdue."),
     (
         "已重做一步（共 {} 条待提交）",
         "Redid one step ({} pending in total)",
@@ -2028,6 +2369,8 @@ static EN: &[(&str, &str)] = &[
         "已重新扫描插件目录，当前列出 {} 个工具。",
         "Rescanned the plugin directory; {} tools listed.",
     ),
+    ("已隐藏 {} 列", "{} column(s) hidden"),
+    ("已隐藏完成", "Completed hidden"),
     (
         "市场共 {} 个插件 · 上次更新：{}",
         "{} plugins in the marketplace · last updated: {}",
@@ -2067,8 +2410,10 @@ static EN: &[(&str, &str)] = &[
     ("开发工具", "Developer"),
     ("开发者", "Developer"),
     ("开发者模式", "Developer mode"),
+    ("开启事务（BEGIN）", "Begin transaction (BEGIN)"),
     ("开始", "Start"),
     ("开始新的对话", "Start a new conversation"),
+    ("开始日期", "Start date"),
     ("开始索引 {}（{} 个文件）", "Indexing {} ({} files)"),
     ("开机自动启动", "Launch at login"),
     (
@@ -2085,6 +2430,24 @@ static EN: &[(&str, &str)] = &[
         "The referenced saved chart was deleted; pick another in edit mode.",
     ),
     ("归档", "Archive"),
+    ("归档中心", "Archive"),
+    ("归档任务", "Archive task"),
+    ("归档区是空的", "The archive is empty"),
+    (
+        "归档区里没有匹配「{}」的条目",
+        "Nothing in the archive matches “{}”",
+    ),
+    (
+        "归档区里的 {} 项将被永久删除，无法恢复。",
+        "The {} items in the archive will be permanently deleted. This cannot be undone.",
+    ),
+    ("归档失败：{}", "Archive failed: {}"),
+    ("归档时间", "Archived at"),
+    (
+        "归档的任务和项目会出现在这里，随时可以恢复。",
+        "Archived tasks and projects show up here, ready to restore.",
+    ),
+    ("归档项目", "Archive project"),
     ("归档（M2 接入）", "Archive (coming in M2)"),
     ("当前位置是只读的。", "The current location is read-only."),
     (
@@ -2159,6 +2522,15 @@ static EN: &[(&str, &str)] = &[
         "影响 {} 行 · {} 条语句 · {} ms",
         "{} rows affected · {} statements · {} ms",
     ),
+    ("彻底删除", "Delete permanently"),
+    ("彻底删除任务？", "Permanently delete this task?"),
+    (
+        "彻底删除后无法恢复。",
+        "Permanent deletion cannot be undone.",
+    ),
+    ("彻底删除失败：{}", "Permanent delete failed: {}"),
+    ("彻底删除项目？", "Permanently delete this project?"),
+    ("待办", "To do"),
     ("待提交 {} 条", "{} pending"),
     ("快捷键", "Shortcut"),
     ("快速入口", "Quick actions"),
@@ -2166,6 +2538,7 @@ static EN: &[(&str, &str)] = &[
     ("怎么用", "How to use"),
     ("思考过程", "Reasoning"),
     ("恢复", "Restore"),
+    ("恢复失败：{}", "Restore failed: {}"),
     ("慢日志", "Slow log"),
     ("慢日志已清空", "Slow log cleared"),
     ("成功", "Success"),
@@ -2178,9 +2551,21 @@ static EN: &[(&str, &str)] = &[
     ("成员已写入", "Member written"),
     ("成员已删除", "Member deleted"),
     ("成员已加入", "Member added"),
+    ("截止", "Due"),
+    ("截止 {}", "Due {}"),
+    ("截止 {} {}", "Due {} {}"),
+    ("截止日最近", "Due soonest"),
+    ("截止日最远", "Due latest"),
+    ("截止日期", "Due date"),
+    ("所属项目", "Project"),
     ("所有数据库", "All databases"),
+    (
+        "手动事务 · 点击提交",
+        "Manual transaction · click to commit",
+    ),
     ("手动填写服务器与端口", "Enter servers and ports manually"),
     ("手动配置", "Manual"),
+    ("手动顺序", "Manual order"),
     ("打不开链接：{}", "Could not open the link: {}"),
     ("打开", "Open"),
     ("打开 SFTP 面板", "Open SFTP panel"),
@@ -2226,6 +2611,11 @@ static EN: &[(&str, &str)] = &[
         "执行 SQL 后在这里查看结果",
         "Run a query to see results here",
     ),
+    (
+        "执行 SQL 后这里会记录每次执行的读数与错误。",
+        "Each execution's row counts and errors are listed here.",
+    ),
+    ("执行全部语句（⌘↵）", "Execute all statements (⌘↵)"),
     ("执行前确认", "Confirm before running"),
     ("执行危险 SQL", "Run dangerous SQL"),
     ("执行原始命令", "Run raw command"),
@@ -2242,6 +2632,7 @@ static EN: &[(&str, &str)] = &[
         "An execution plan covers one statement at a time.",
     ),
     ("执行语句", "Run statement"),
+    ("执行过程", "Execution"),
     ("扫描失败：{}", "Scan failed: {}"),
     ("扫描键数量", "SCAN count"),
     ("扫描页大小", "SCAN page size"),
@@ -2291,10 +2682,12 @@ static EN: &[(&str, &str)] = &[
         "投递到操作系统通知中心。需要已打包成应用并授权；开发构建下通常不显示。",
         "Delivered to the OS notification center. Requires a packaged app with permission granted; usually not shown in a development build.",
     ),
+    ("折叠全部", "Collapse all"),
     ("折线图", "Line chart"),
     ("折起「{}」这一段", "Collapse “{}”"),
     ("拉取失败：{}", "Fetch failed: {}"),
     ("拉取模型", "Fetch models"),
+    ("拖一张卡片到这里", "Drag a card here"),
     ("拷贝", "Copy"),
     (
         "按 0.8 ~ 1.5 倍缩放全部尺寸 token，并同步重算密度档位。",
@@ -2332,14 +2725,22 @@ static EN: &[(&str, &str)] = &[
         "按下组合键…（Esc 取消）",
         "Press a combination… (Esc to cancel)",
     ),
+    ("按优先级", "By priority"),
     ("按名称、驱动或端口筛选", "Filter by name, driver, or port"),
+    ("按截止日", "By due date"),
+    ("按标题", "By title"),
     (
         "按模板与正则整理文件名",
         "Organizes file names with templates and regex",
     ),
+    ("按进度", "By progress"),
     (
         "换个关键词试试，或到插件市场安装更多工具。",
         "Try another keyword, or install more tools from the plugin marketplace.",
+    ),
+    (
+        "换个关键词，或清掉右上角的搜索框再看看。",
+        "Try another keyword, or clear the search box at the top right.",
     ),
     (
         "换个关键词，或清空搜索框回到文件夹列表；也可以用 from: / is:unread 这类条件。",
@@ -2362,6 +2763,9 @@ static EN: &[(&str, &str)] = &[
         "提交 {} · 改 {} 行 · 新增 {} 行",
         "Committed {} · {} rows updated · {} inserted",
     ),
+    ("提交 {} 条暂存改动", "Commit {} staged changes"),
+    ("提交事务", "Commit transaction"),
+    ("提交事务（COMMIT）", "Commit transaction (COMMIT)"),
     ("提交写入", "Commit writes"),
     (
         "提交失败（已整体回滚）：{}",
@@ -2403,12 +2807,14 @@ static EN: &[(&str, &str)] = &[
         "Plugins: browse the plugin center to install new tools; they show up in the toolbox.",
     ),
     ("搜索", "Search"),
+    ("搜索任务…", "Search tasks…"),
     ("搜索会话", "Search conversations"),
     ("搜索会话…", "Search conversations…"),
     ("搜索全部邮件", "Search all mail"),
     ("搜索到 {} 封邮件", "Found {} messages"),
     ("搜索失败：{}", "Search failed: {}"),
     ("搜索工具、命令…", "Search tools, commands…"),
+    ("搜索归档…", "Search archive…"),
     ("搜索插件…", "Search plugins…"),
     ("搜索结果", "Search results"),
     ("搜索设置...", "Search settings…"),
@@ -2419,8 +2825,10 @@ static EN: &[(&str, &str)] = &[
         "搜索邮件，如 from: 或 is:unread",
         "Search mail, e.g. from: or is:unread",
     ),
+    ("搜索：{}", "Search: {}"),
     ("摘要", "Summary"),
     ("撤消", "Undo"),
+    ("撤销", "Undo"),
     ("撤销失败：{}", "Undo failed: {}"),
     ("操作失败：{}", "Action failed: {}"),
     (
@@ -2442,6 +2850,7 @@ static EN: &[(&str, &str)] = &[
     ("收起侧栏", "Collapse sidebar"),
     ("收起右侧栏", "Collapse right sidebar"),
     ("收起设置", "Hide settings"),
+    ("收集箱", "Inbox"),
     (
         "改动先暂存，点结果区上方的「提交」才落库。",
         "Edits are staged first; click \"Commit\" above the result area to write them.",
@@ -2457,12 +2866,14 @@ static EN: &[(&str, &str)] = &[
     ),
     ("数值列", "Value columns"),
     ("数据", "Data"),
+    ("数据传输", "Data Transfer"),
     ("数据库", "Database"),
     ("数据库数量", "Database count"),
     ("数据库文件", "Database file"),
     ("数据库连接", "Database connections"),
     ("数据文件", "Data file"),
     ("数据浏览每页行数", "Rows per page"),
+    ("数据表", "Data"),
     (
         "整段历史超过这个字符数就开始压缩：先裁旧工具结果，再丢最早的消息。留空用默认值 96000；填 0 表示关闭压缩，长会话可能因此超出模型的上下文窗口。",
         "Compaction kicks in once the whole history exceeds this many characters: old tool results are trimmed first, then the earliest messages are dropped. Leave blank for the default of 96000; enter 0 to turn compaction off — long conversations may then exceed the model's context window.",
@@ -2510,13 +2921,16 @@ static EN: &[(&str, &str)] = &[
         "新增行至少要填一列（空白列会落到数据库默认值）。",
         "A new row needs at least one column filled in (blank columns fall back to the database default).",
     ),
+    ("新建", "New"),
     ("新建 Redis 连接", "New Redis connection"),
     ("新建 {} 连接", "New {} connection"),
     ("新建仪表板", "New dashboard"),
+    ("新建任务，回车确认", "New task — press Enter"),
     ("新建会话", "New conversation"),
     ("新建分组", "New group"),
     ("新建工具", "New tool"),
     ("新建文件夹", "New folder"),
+    ("新建查询", "New Query"),
     ("新建查询标签", "New query tab"),
     ("新建标签", "New label"),
     ("新建标签 ⌘T · 关闭标签 ⌘W", "New tab ⌘T · Close tab ⌘W"),
@@ -2538,6 +2952,7 @@ static EN: &[(&str, &str)] = &[
         "新建连接的默认查询超时（秒）；留空 = 跟随引擎。",
         "Default query timeout for new connections (seconds); blank follows the engine.",
     ),
+    ("新建项目", "New project"),
     ("新的键名", "New key name"),
     ("新的键名不能为空", "New key name must not be empty"),
     ("新邮件", "New mail"),
@@ -2546,6 +2961,7 @@ static EN: &[(&str, &str)] = &[
         "新键名与原名相同",
         "New key name is the same as the old one",
     ),
+    ("新项目", "Untitled project"),
     ("旗标", "Flag"),
     ("旗标（M2 接入）", "Flag (coming in M2)"),
     ("无标签", "No tag"),
@@ -2596,10 +3012,13 @@ static EN: &[(&str, &str)] = &[
     ("时间戳", "Timestamp"),
     ("明文（仅本地测试）", "Plain (local testing only)"),
     ("明细（{} 行）", "Detail ({} rows)"),
+    ("是", "Yes"),
     ("显示", "Display"),
     ("显示 {} / {} 行", "{} of {} lines shown"),
     ("显示全部", "Show All"),
     ("显示名", "Display name"),
+    ("显示已完成", "Show completed"),
+    ("显示查询结果", "Show query results"),
     (
         "显示标记为开发者的工具，仅在排查问题时使用。",
         "Shows tools marked as developer-only. Use it for troubleshooting only.",
@@ -2608,9 +3027,13 @@ static EN: &[(&str, &str)] = &[
     ("显示远程图片", "Show remote images"),
     ("显示通知铃铛", "Show notification bell"),
     ("显示顶栏附加入口", "Show extra top bar entries"),
+    ("智能列表", "Smart lists"),
+    ("智能列表 · {}", "Smart list · {}"),
+    ("暂停", "Pause"),
     ("暂存改动已丢弃。", "Pending changes discarded."),
     ("暂存更改", "Pending changes"),
     ("暂无打开的会话", "No open session"),
+    ("暂无执行消息", "No execution messages yet"),
     ("暗色", "Dark"),
     ("暗色主题", "Dark theme"),
     (
@@ -2645,6 +3068,7 @@ static EN: &[(&str, &str)] = &[
         "更早的语句可能已生效。",
         "Earlier statements may already have taken effect.",
     ),
+    ("最后一页", "Last page"),
     ("最大工具轮次", "Max tool rounds"),
     (
         "最大工具轮次要不小于 1 的整数",
@@ -2657,6 +3081,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("最小化", "Minimize"),
     ("最新发布", "Latest release"),
+    ("最近", "Recent"),
     (
         "最近 100 条投递记录，只在本次运行内保留。",
         "The last 100 deliveries, kept only for this run.",
@@ -2665,6 +3090,7 @@ static EN: &[(&str, &str)] = &[
     ("最近 {} 次采样 · 覆盖 {}", "Last {} samples · spanning {}"),
     ("最近一次：{}", "Latest: {}"),
     ("最近使用", "Recently used"),
+    ("最近创建", "Recently created"),
     ("最近查询", "Recent Queries"),
     (
         "有 {} 个附件读不出来，已从草稿里略去。",
@@ -2722,6 +3148,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("未填写", "Not set"),
     ("未安装", "Not installed"),
+    ("未归入项目", "Unassigned"),
     ("未找到客户端 {}", "Client {} not found"),
     (
         "未找到系统 ssh / scp 命令，无法打开 SFTP 面板。",
@@ -2735,10 +3162,12 @@ static EN: &[(&str, &str)] = &[
         "未找到系统命令 {}，请先安装 OpenSSH 客户端。",
         "System command {} not found. Install an OpenSSH client first.",
     ),
+    ("未排期", "Unscheduled"),
     ("未添加账户", "No account"),
     ("未生效：{}", "Not working: {}"),
     ("未知", "Unknown"),
     ("未知（未统计）", "Unknown (not analyzed)"),
+    ("未设置", "Not set"),
     ("未请求任何能力", "No capabilities requested"),
     (
         "未读邮件：{}，来自 {}，{}",
@@ -2752,6 +3181,7 @@ static EN: &[(&str, &str)] = &[
     ("未选择", "Not set"),
     ("未选模型", "No model chosen"),
     ("未配置", "Not configured"),
+    ("本周", "This week"),
     ("本周执行", "Runs this week"),
     ("本地", "Local"),
     ("本地 shell", "Local shell"),
@@ -2801,6 +3231,10 @@ static EN: &[(&str, &str)] = &[
     ("本机端口", "Local port"),
     ("本次启动后开始记录", "Recording starts with this launch"),
     (
+        "本次按每页 {} 行展示。",
+        "Showing {} rows per page for this session.",
+    ),
+    (
         "本次更新新增 {} 项权限，请确认。",
         "This update adds {} new permission(s). Please confirm.",
     ),
@@ -2817,6 +3251,7 @@ static EN: &[(&str, &str)] = &[
         "TLS is not enabled in this build: any mode other than disabled fails loudly on connect and never silently falls back to plaintext.",
     ),
     ("本程序许可", "Application license"),
+    ("本视图 {} 条", "{} tasks in this view"),
     ("本轮用量", "This turn's usage"),
     ("条", "entries"),
     ("松开并入分屏", "Release to merge into split"),
@@ -2834,8 +3269,10 @@ static EN: &[(&str, &str)] = &[
     ("查询占用", "Query usage"),
     ("查询历史", "Query history"),
     ("查询历史上限", "History limit"),
+    ("查询历史与已保存查询", "Query history and saved queries"),
     ("查询历史已清空。", "Query history cleared."),
     ("查询名称", "Query name"),
+    ("查询结果", "Query results"),
     (
         "查询超时已恢复连接默认",
         "Query timeout restored to the connection default",
@@ -2849,6 +3286,7 @@ static EN: &[(&str, &str)] = &[
         "The query was aborted after the {} second timeout.",
     ),
     ("查询超时（秒）", "Query timeout (s)"),
+    ("查询返回了 0 行。", "The query returned 0 rows."),
     ("查询选项", "Query options"),
     ("柱状图", "Bar chart"),
     ("标为已读", "Mark as read"),
@@ -2860,14 +3298,38 @@ static EN: &[(&str, &str)] = &[
     ),
     ("标签", "Tags"),
     ("标签 {}", "Label {}"),
+    ("标签 · {}", "Tag · {}"),
     ("标签名", "Label name"),
     ("标签名不能为空", "Label name cannot be empty"),
     ("标签已创建", "Label created"),
     ("标红的字段为必填项。", "Fields marked in red are required."),
+    ("标记为阻塞", "Mark as blocked"),
+    ("标记完成", "Mark done"),
     ("标题", "Title"),
     ("树形", "Tree"),
     ("校验证书", "Verify certificate"),
     ("格式化", "Format"),
+    ("格式化 SQL", "Format SQL"),
+    (
+        "格式化 SQL 时把关键字统一成的大小写。",
+        "The case applied to keywords when formatting SQL.",
+    ),
+    (
+        "格式化 SQL 时的缩进方式与宽度。",
+        "Indent style and width used when formatting SQL.",
+    ),
+    (
+        "格式化时关键字使用大写。",
+        "Formatting will use uppercase keywords.",
+    ),
+    (
+        "格式化时关键字使用小写",
+        "Lowercase keywords when formatting",
+    ),
+    (
+        "格式化时关键字使用小写。",
+        "Formatting will use lowercase keywords.",
+    ),
     (
         "档案与已保存的口令都会被移除，本机不会留下副本。",
         "The profile and any saved password will be removed; nothing is kept on this machine.",
@@ -2965,16 +3427,22 @@ static EN: &[(&str, &str)] = &[
         "每次请求都作为 system 消息发出；留空则不加。",
         "Sent as a system message on every request; blank adds none.",
     ),
+    ("每页 {} 行", "{} rows per page"),
+    ("每页行数", "Rows per page"),
+    ("每页行数至少是 1。", "Rows per page must be at least 1."),
     ("永久", "No expiry"),
     ("永久保留", "Keep forever"),
     (
         "没填的列会落到数据库默认值。",
         "Columns left blank fall back to the database default.",
     ),
+    ("没有「{}」的任务", "No \"{}\" tasks"),
     ("没有列信息。", "No column information."),
+    ("没有匹配「{}」的任务", "No tasks match \"{}\""),
     ("没有匹配的会话", "No matching conversations"),
     ("没有匹配的对象。", "No matching objects."),
     ("没有匹配的工具。", "No matching tools."),
+    ("没有匹配的指标。", "No matching metrics."),
     ("没有匹配的插件", "No matching plugins"),
     ("没有匹配的数据库类型。", "No matching database types."),
     ("没有匹配的行", "No matching lines"),
@@ -2982,11 +3450,20 @@ static EN: &[(&str, &str)] = &[
     ("没有匹配的邮件", "No matching mail"),
     ("没有匹配的配置项。", "No matching configuration entries."),
     ("没有匹配的项", "Nothing matches"),
+    ("没有匹配的项目。", "No matching projects."),
+    ("没有可展示的结果", "No result to show"),
+    ("没有可撤销的归档。", "Nothing to undo."),
     ("没有可撤销的暂存改动", "Nothing left to undo"),
     ("没有可用的文件夹", "No folders available"),
+    (
+        "没有可画的数值列；切回「数据表」看原始结果。",
+        "No numeric column to plot; switch back to Data to see the raw result.",
+    ),
     ("没有可重做的暂存改动", "Nothing left to redo"),
     ("没有可重试的提问", "There is no question to retry"),
+    ("没有命中「{}」的行。", "No rows match “{}”."),
     ("没有客户端连接。", "No client connections."),
+    ("没有待提交的改动", "Nothing to commit"),
     ("没有待提交的改动。", "Nothing to commit."),
     ("没有慢日志记录。", "No slow log entries."),
     (
@@ -3002,12 +3479,15 @@ static EN: &[(&str, &str)] = &[
     ("没有日志文件", "No log files"),
     ("没有权限读取该目录。", "No permission to read this folder."),
     ("没有符合条件的记录", "No matching records"),
+    ("没有结果集", "No result set"),
     ("没有采到值。", "No values sampled."),
     ("没有键", "No keys"),
     ("没有需要清理的日志。", "No log files needed cleaning."),
     ("法律信息", "Legal"),
     ("注册表", "registry"),
     ("注册表检查", "Registry inspector"),
+    ("注释", "Comment"),
+    ("注释 / 取消注释", "Toggle comments"),
     ("流", "Stream"),
     ("流式接收中", "Streaming"),
     ("流水", "Activity"),
@@ -3022,9 +3502,11 @@ static EN: &[(&str, &str)] = &[
     ("浏览数据", "Browse data"),
     ("浏览表 {}", "Browse table {}"),
     ("浏览表数据", "Browse table"),
+    ("消息", "Messages"),
     ("消息输入框", "Message input"),
     ("深色", "Dark"),
     ("添加", "Add"),
+    ("添加任务", "Add task"),
     ("添加厂商", "Add provider"),
     ("添加失败：{}", "Could not add: {}"),
     ("添加新服务器", "Add New Server"),
@@ -3065,6 +3547,9 @@ static EN: &[(&str, &str)] = &[
         "Clear the audit log ({} entries)",
     ),
     ("清空审计日志？", "Clear the audit log?"),
+    ("清空归档", "Clear archive"),
+    ("清空归档失败：{}", "Failed to clear the archive: {}"),
+    ("清空归档？", "Clear the archive?"),
     ("清空慢日志", "Clear slow log"),
     ("清空慢日志失败：{}", "Failed to clear slow log: {}"),
     (
@@ -3075,6 +3560,7 @@ static EN: &[(&str, &str)] = &[
     ("清空条件", "Clear conditions"),
     ("清空选择", "Clear selection"),
     ("清除", "Clear"),
+    ("清除结果搜索", "Clear result search"),
     ("清除覆盖", "Clear override"),
     ("温度", "Temperature"),
     (
@@ -3109,6 +3595,7 @@ static EN: &[(&str, &str)] = &[
     ("版本与当前生效主题", "Version and active theme"),
     ("版本发布记录", "Release notes"),
     ("状态", "Status"),
+    ("状态…", "Status…"),
     ("独立进程", "Standalone process"),
     ("环境", "Environment"),
     ("环境标签", "Environment tag"),
@@ -3282,6 +3769,7 @@ static EN: &[(&str, &str)] = &[
         "Resolved from the jump host; leave empty to reach the jump host itself",
     ),
     ("看图表", "View chart"),
+    ("看板", "Board"),
     ("看表格", "View table"),
     ("知识库检索", "Search the knowledge base"),
     ("知道了", "Got it"),
@@ -3301,6 +3789,8 @@ static EN: &[(&str, &str)] = &[
         "Seconds must be greater than 0; use Remove expiry for a key that never expires",
     ),
     ("秒数，如 3600", "Seconds, e.g. 3600"),
+    ("移入项目…", "Move to project…"),
+    ("移动到", "Move to"),
     ("移动到文件夹", "Move to folder"),
     ("移除", "Remove"),
     ("移除当前账户", "Remove current account"),
@@ -3311,6 +3801,9 @@ static EN: &[(&str, &str)] = &[
     ("移除附件", "Remove attachment"),
     ("移除面板", "Remove panel"),
     ("稍后提醒（M2 接入）", "Snooze (coming in M2)"),
+    ("空值", "Nulls"),
+    ("空格 × 2", "Spaces \u{00d7} 2"),
+    ("空格 × 4", "Spaces \u{00d7} 4"),
     ("空闲 {} 秒", "idle {}s"),
     ("窗口", "Window"),
     (
@@ -3332,8 +3825,10 @@ static EN: &[(&str, &str)] = &[
     ),
     ("端口转发", "Port forwarding"),
     ("端点", "Endpoint"),
+    ("第 {} / {} 页", "Page {} / {}"),
     ("第 {} 步，共 {} 步", "Step {} of {}"),
     ("第 {} 行", "Row {}"),
+    ("第 {} 行第 {} 列", "Line {}, column {}"),
     ("第 {} 页 · 本页 {} 行", "Page {} · {} rows on this page"),
     (
         "第 {} 页 · 本页 {} 行 · 已过滤",
@@ -3352,6 +3847,7 @@ static EN: &[(&str, &str)] = &[
         "第一次重连前等待的秒数，之后每次翻倍。",
         "Seconds to wait before the first retry; doubles each time.",
     ),
+    ("第一页", "First page"),
     ("第三方组件", "Third-party components"),
     ("第三方组件许可汇总", "Third-party license summary"),
     (
@@ -3360,6 +3856,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("筛选", "Filter"),
     ("筛选「{}」", "Filter “{}”"),
+    ("筛选任务与项目…", "Filter tasks and projects…"),
     ("筛选对象…", "Filter objects…"),
     (
         "筛选（筛选器待接入）",
@@ -3388,6 +3885,7 @@ static EN: &[(&str, &str)] = &[
     ("索引完成", "Indexing finished"),
     ("索引线程意外结束", "The indexing thread ended unexpectedly"),
     ("紧凑", "Compact"),
+    ("紧急", "Urgent"),
     ("累计崩溃", "Crashes"),
     ("累计执行", "Total runs"),
     ("累计用量", "Session totals"),
@@ -3400,6 +3898,8 @@ static EN: &[(&str, &str)] = &[
     ("经 AWS SSM", "Via AWS SSM"),
     ("经 SSH 隧道", "Via SSH tunnel"),
     ("经代理", "Via proxy"),
+    ("结果 {}", "Result {}"),
+    ("结果 · {} 行", "Result · {} rows"),
     (
         "结果已达行数上限，仅展示前一部分；可加 LIMIT 或导出 CSV。",
         "Row cap reached, showing the first part only; add LIMIT or export CSV.",
@@ -3426,6 +3926,10 @@ static EN: &[(&str, &str)] = &[
         "编辑器下拉里保留多少条历史 SQL。",
         "How many past SQL statements the editor dropdown keeps.",
     ),
+    (
+        "编辑器下方提示解析报错与目录里不存在的表。",
+        "Shows parse errors and unknown tables below the editor.",
+    ),
     ("编辑器里还没有 SQL。", "The editor has no SQL yet."),
     ("编辑字符串值", "Edit string value"),
     ("编辑当前账户", "Edit current account"),
@@ -3440,9 +3944,11 @@ static EN: &[(&str, &str)] = &[
         "缩放尺寸、间距、图标与文字档位。",
         "Scales sizes, spacing, icons and text tiers.",
     ),
+    ("缩进", "Indent"),
     ("网盘", "netdisk"),
     ("网盘直链解析", "Cloud drive direct links"),
     ("网络", "Network"),
+    ("耗时", "Elapsed"),
     ("能力", "Capability"),
     ("能力声明", "Capabilities"),
     ("能力授权", "Capability grants"),
@@ -3453,9 +3959,15 @@ static EN: &[(&str, &str)] = &[
     ("自动刷新", "Auto refresh"),
     ("自动备份位置", "Automatic backup folder"),
     ("自动展开阈值", "Auto-expand threshold"),
+    ("自动换行", "Word wrap"),
     (
         "自动探测编码，处理多分卷",
         "Detects encoding and handles multi-part archives",
+    ),
+    ("自动提交", "Auto-commit"),
+    (
+        "自动提交 · 点击开启事务",
+        "Autocommit · click to start a transaction",
     ),
     ("自动检测", "Auto detect"),
     (
@@ -3467,15 +3979,19 @@ static EN: &[(&str, &str)] = &[
         "自动重连最多尝试几次；用尽后只保留手动重连。",
         "How many auto-reconnect attempts to make; manual reconnect remains after that.",
     ),
+    ("自定义…", "Customize…"),
     ("自定义分组…", "Custom group…"),
     ("自定义强调色", "Custom accent"),
+    ("自定义行数", "Custom row count"),
     ("自定义限速", "Custom limit"),
     ("自定义（用下面的配置）", "Custom (use the entries below)"),
+    ("至少要保留一列可见。", "Keep at least one column visible."),
     (
         "至少要按一个修饰键：⌥ / ⌃ / ⌘（Windows 上是 Alt / Ctrl / Win）。",
         "At least one modifier is required: ⌥ / ⌃ / ⌘ (Alt / Ctrl / Win on Windows).",
     ),
     ("英文", "English"),
+    ("范围：{}", "Scope: {}"),
     ("草稿", "Drafts"),
     ("草稿已保存", "Draft saved"),
     ("草稿已删除", "Draft deleted"),
@@ -3492,6 +4008,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("行", "rows"),
     ("行为", "Behavior"),
+    ("行号", "Row"),
     ("行已删除", "Row deleted"),
     ("行已删除。", "Row deleted."),
     ("行改动已保存", "Row changes saved"),
@@ -3500,6 +4017,7 @@ static EN: &[(&str, &str)] = &[
         "行数统计仍是整表口径",
         "Row counts still cover the whole table",
     ),
+    ("行模式", "Row view"),
     ("行首 / 行尾 ⌘← / ⌘→", "Line start/end ⌘← / ⌘→"),
     ("行高", "Line height"),
     (
@@ -3561,6 +4079,8 @@ static EN: &[(&str, &str)] = &[
         "Let the remote host use the keys in your local ssh-agent (handy when hopping through a bastion to reach other machines). While enabled, the remote can reach whatever hosts you can, as you. Off by default.",
     ),
     ("记住口令", "Remember password"),
+    ("设为", "Set to"),
+    ("设为默认", "Set as default"),
     ("设置", "Settings"),
     ("设置失败：{}", "Failed to set: {}"),
     ("设置窗口", "Settings window"),
@@ -3641,6 +4161,8 @@ static EN: &[(&str, &str)] = &[
         "该键本来就没有过期时间",
         "This key has no expiry to begin with",
     ),
+    ("详情", "Details"),
+    ("语句", "Statement"),
     ("语言", "Language"),
     (
         "语言与明暗都能随时在「设置 → 外观」里改。",
@@ -3696,6 +4218,10 @@ static EN: &[(&str, &str)] = &[
     ),
     ("请填写键名", "Enter a key name"),
     ("请求", "request"),
+    (
+        "请输入一个行数（正整数）。",
+        "Enter a row count (positive integer).",
+    ),
     ("请输入要打开的目录路径。", "Enter a folder path to open."),
     ("请选择私钥文件。", "Choose a private key file."),
     (
@@ -3754,6 +4280,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("起始序号", "Start index"),
     ("起始退避", "Initial backoff"),
+    ("超出 WIP", "Over WIP"),
     (
         "超出上限的旧记录会被自动删除，调小会立刻生效；要长期留证就把上限调大。",
         "Older entries past the limit are deleted automatically, and lowering the limit takes effect immediately; raise it to keep a longer record.",
@@ -3794,6 +4321,7 @@ static EN: &[(&str, &str)] = &[
     ("跳板机", "Bastion"),
     ("跳板机主机", "Bastion host"),
     ("跳板机用户", "Bastion user"),
+    ("跳转列", "Jump to column"),
     ("跳过", "Skip"),
     ("转发 ssh-agent", "Forward ssh-agent"),
     (
@@ -3866,6 +4394,7 @@ static EN: &[(&str, &str)] = &[
         "过滤键名，如 user:* （留空表示全部）",
         "Filter key names, e.g. user:* (empty means all)",
     ),
+    ("过滤项目…", "Filter projects…"),
     ("运行", "Run"),
     (
         "运行一次应用就会在日志目录里留下 .log。",
@@ -3894,6 +4423,7 @@ static EN: &[(&str, &str)] = &[
         "No data yet; click “Refresh” at the top right.",
     ),
     ("还没有标签", "No labels yet"),
+    ("还没有标签。", "No tags yet."),
     (
         "还没有标签，点下面的「新建标签」。",
         "No labels yet, click \"New label\" below.",
@@ -3904,6 +4434,7 @@ static EN: &[(&str, &str)] = &[
         "还没有读取实例信息，点右上角「刷新」重试。",
         "Instance info has not been loaded; click Refresh at the top right to retry.",
     ),
+    ("还没有选中的单元格", "No cell selected yet"),
     ("还没有邮件", "No messages yet"),
     ("还没有邮箱账户", "No mail account yet"),
     ("还没有配置任何厂商", "No provider configured"),
@@ -3922,6 +4453,10 @@ static EN: &[(&str, &str)] = &[
         "This column has no plottable values.",
     ),
     (
+        "这一格已经不在当前结果里",
+        "This cell is no longer in the current result",
+    ),
+    (
         "这一步是可选的，之后可以在左边的插件中心随时回来。",
         "This step is optional; you can come back to the plugin center anytime.",
     ),
@@ -3938,6 +4473,15 @@ static EN: &[(&str, &str)] = &[
         "这些文件都已经在附件里了",
         "Those files are already attached.",
     ),
+    (
+        "这份结果没有可转置的行",
+        "This result has no row to transpose",
+    ),
+    (
+        "这份结果没有可预览的行",
+        "This result has no row to preview",
+    ),
+    ("这份结果还没有图表", "No chart for this result yet"),
     ("这份结果里没有数值列", "This result has no numeric column."),
     (
         "这份结果里没有数值列，画不出图。",
@@ -3958,6 +4502,10 @@ static EN: &[(&str, &str)] = &[
     (
         "这条回答前面没有可重发的提问",
         "There is no question to resend before this answer",
+    ),
+    (
+        "这条记录已经不在归档区里了。",
+        "This record is no longer in the archive.",
     ),
     (
         "这条语句没有执行计划。",
@@ -3987,8 +4535,12 @@ static EN: &[(&str, &str)] = &[
         "这段 SQL 包含删库 / 全表清改类语句，确定继续吗？",
         "This SQL contains drop-database or full-table wipe statements. Continue?",
     ),
+    ("这里还没有任务", "No tasks yet"),
+    ("进度", "Progress"),
+    ("进程列表", "Process list"),
     ("进程执行", "Process execution"),
     ("进行中", "Running"),
+    ("进行中 {}", "{} in progress"),
     (
         "远程图片已显示，发件人可能由此得知你已读过这封信。",
         "Remote images are shown; the sender may learn that you read this message.",
@@ -4038,6 +4590,7 @@ static EN: &[(&str, &str)] = &[
         "远端连接尚未建立，无法操作。",
         "The remote connection is not established; cannot perform this action.",
     ),
+    ("连带任务", "Tasks archived with it"),
     ("连接", "Connections"),
     ("连接 / 响应超时", "Connect / response timeout"),
     (
@@ -4120,6 +4673,12 @@ static EN: &[(&str, &str)] = &[
         "选中一封邮件后，这里给出摘要与要点。",
         "Select a message to see a summary and key points here.",
     ),
+    (
+        "选中一张卡片查看详情。",
+        "Select a card to see its details.",
+    ),
+    ("选中一条查看详情。", "Select a row to view its details."),
+    ("选中执行", "Run Selection"),
     ("选中行", "Selected row"),
     ("选择", "Select"),
     ("选择一个键查看详情。", "Select a key to see its details."),
@@ -4150,6 +4709,8 @@ static EN: &[(&str, &str)] = &[
     ("通道正常。", "Transport is healthy."),
     ("通道状态", "Transport status"),
     ("逻辑库（0-{}）", "Database (0-{})"),
+    ("逾期", "Overdue"),
+    ("逾期 {}", "{} overdue"),
     ("邮件已发出", "Message sent"),
     ("邮件正文", "Message body"),
     ("邮件：{}，来自 {}，{}", "Message: {}, from {}, {}"),
@@ -4183,6 +4744,8 @@ static EN: &[(&str, &str)] = &[
     ("重命名失败：{}", "Rename failed: {}"),
     ("重命名键", "Rename key"),
     ("重建索引", "Rebuild index"),
+    ("重新打开", "Reopen"),
+    ("重新执行这条语句", "Run this statement again"),
     ("重新扫描", "Rescan"),
     ("重新查看引导", "Replay the wizard"),
     ("重新生成", "Regenerate"),
@@ -4195,6 +4758,10 @@ static EN: &[(&str, &str)] = &[
     ("重置设置", "Reset settings"),
     ("重置设置与插件", "Reset settings and plugins"),
     ("重试", "Retry"),
+    (
+        "重跑查询或重新点一格。",
+        "Re-run the query or pick another cell.",
+    ),
     ("重载", "Reload"),
     ("重连", "Reconnect"),
     ("重连上限", "Max retries"),
@@ -4236,12 +4803,14 @@ static EN: &[(&str, &str)] = &[
     ("键浏览", "Key browsing"),
     ("键管理", "Key management"),
     ("键详情", "Key details"),
+    ("长语句自动换行", "Wrap long statements"),
     (
         "问点什么…（Enter 发送，Shift+Enter 换行）",
         "Ask something… (Enter to send, Shift+Enter for a newline)",
     ),
     ("问答", "Ask"),
     ("阅读", "Reading"),
+    ("阻塞", "Blocked"),
     ("附件", "Attachments"),
     (
         "附件随信一起编码发出；总体积超过服务器声明的上限时，会在点「发送」时被拒。",
@@ -4250,6 +4819,7 @@ static EN: &[(&str, &str)] = &[
     ("降序", "descending"),
     ("隐藏 Duck Toolbox", "Hide Duck Toolbox"),
     ("隐藏其他", "Hide Others"),
+    ("隐藏查询结果", "Hide query results"),
     ("隐藏远程图片", "Hide remote images"),
     ("集合", "Set"),
     ("需确认", "Needs approval"),
@@ -4270,6 +4840,7 @@ static EN: &[(&str, &str)] = &[
     ),
     ("面板", "Panel"),
     ("面积图", "Area chart"),
+    ("页码", "Page"),
     (
         "顶栏的插件中心按钮与语言切换；关闭后二者一并隐藏。",
         "The plugin marketplace button and the language switch in the top bar. Turning this off hides both.",
@@ -4278,7 +4849,9 @@ static EN: &[(&str, &str)] = &[
         "顶栏的通知中心入口；关闭后通知仍记入历史，只是顶栏不再显示铃铛。",
         "The notification center entry in the top bar. When off, notifications are still recorded in history; only the bell is hidden.",
     ),
+    ("项目", "Project"),
     ("项目管理", "Projects"),
+    ("预估工时", "Estimated hours"),
     ("预发布", "Staging"),
     ("预置模型", "Preset models"),
     ("饼图", "Pie chart"),
@@ -4287,6 +4860,8 @@ static EN: &[(&str, &str)] = &[
         "A pie chart only takes positive values; this column is all zeros or negatives.",
     ),
     ("首页", "Home"),
+    ("驱动管理", "Driver Manager"),
+    ("高", "High"),
     ("高级", "Advanced"),
     ("默认 8", "default 8"),
     ("默认 96000", "Default 96000"),
@@ -4325,6 +4900,28 @@ static EN_PLURAL: &[(&str, &str, &str)] = &[
         "{} errors to review",
     ),
     ("{} 秒前", "{} second ago", "{} seconds ago"),
+    ("含 {} 个任务", "{} task", "{} tasks"),
+    ("含 {} 个子任务", "{} subtask", "{} subtasks"),
+    (
+        "已归档项目，连带 {} 个任务。",
+        "Project archived, along with {} task.",
+        "Project archived, along with {} tasks.",
+    ),
+    (
+        "已清空归档，共 {} 项。",
+        "Archive cleared; {} item removed.",
+        "Archive cleared; {} items removed.",
+    ),
+    (
+        "归档区里的 {} 项将被永久删除，无法恢复。",
+        "The {} item in the archive will be permanently deleted. This cannot be undone.",
+        "The {} items in the archive will be permanently deleted. This cannot be undone.",
+    ),
+    (
+        "本视图 {} 条",
+        "{} task in this view",
+        "{} tasks in this view",
+    ),
 ];
 
 #[cfg(test)]
@@ -4445,6 +5042,73 @@ mod tests {
         assert_eq!(relative_time(Lang::En, 86_400 * 3, just_now), "3 days ago");
     }
 
+    /// 统计数字的千分位分组：边界、负数、`i64` 两端。
+    #[test]
+    fn number_groups_thousands() {
+        // 不足四位不分组，且首位之前绝不补分隔符（`1000` 不是 `,1000`）。
+        assert_eq!(number(0), "0");
+        assert_eq!(number(7), "7");
+        assert_eq!(number(999), "999");
+        assert_eq!(number(1_000), "1,000");
+        // 逐档进位：5 位一处、7 位两处、10 位三处。
+        assert_eq!(number(12_345), "12,345");
+        assert_eq!(number(1_234_567), "1,234,567");
+        assert_eq!(number(1_000_000_000), "1,000,000,000");
+        // 负号在分组之前，不参与位数计算。
+        assert_eq!(number(-1), "-1");
+        assert_eq!(number(-999), "-999");
+        assert_eq!(number(-1_000), "-1,000");
+        assert_eq!(number(-1_234_567), "-1,234,567");
+        // i64 两端：`MIN` 取绝对值会溢出，`unsigned_abs` 必须扛住。
+        assert_eq!(number(i64::MIN), "-9,223,372,036,854,775,808");
+        assert_eq!(number(i64::MAX), "9,223,372,036,854,775,807");
+    }
+
+    /// 字节数的可读化：档位边界、「只有 B 无小数」、TB 封顶。
+    #[test]
+    fn bytes_use_binary_units_without_decimals_only_for_bytes() {
+        // 不足 1 KB 原样印整数：`0.0 B` 是纯噪音。
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(999), "999 B");
+        assert_eq!(bytes(1024), "1.0 KB");
+        // 收拢前的分歧点：`status_support` 那份会输出 `2 KB`，这里统一保留 1 位小数。
+        assert_eq!(bytes(1536), "1.5 KB");
+        assert_eq!(bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(bytes(1024 * 1024 * 1024 * 3 / 2), "1.5 GB");
+        assert_eq!(bytes(1024_u64.pow(4) * 2), "2.0 TB");
+        // TB 封顶：再大也只把数字放大，不引入 PB 档。
+        assert_eq!(bytes(1024_u64.pow(5)), "1024.0 TB");
+        assert_eq!(bytes(u64::MAX), "16777216.0 TB");
+    }
+
+    /// 日期时间：UTC + ISO 顺序；非法时间戳（`<= 0`）给空串。
+    #[test]
+    fn datetime_is_utc_and_iso_ordered() {
+        // 2026-10-12 02:00:00 UTC（= 北京时间 10:00）。按 UTC 显示是本仓的既定口径。
+        assert_eq!(datetime_full(1_791_770_400), "2026-10-12 02:00");
+        assert_eq!(datetime_short(1_791_770_400), "10-12 02:00");
+        // 解析不出 `Date` 头时内核写 0 —— 留空，而不是印出 1970 年。
+        assert_eq!(datetime_full(0), "");
+        assert_eq!(datetime_short(0), "");
+        assert_eq!(datetime_full(-5), "");
+        assert_eq!(datetime_short(-5), "");
+    }
+
+    /// 日历还原：已知日期、闰日、1970 之前、跨日进位。
+    #[test]
+    fn civil_calendar_matches_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(19_723), (2024, 1, 1));
+        assert_eq!(civil_from_days(20_089), (2025, 1, 1));
+        // 闰日：2024-02-29 是 1970-01-01 之后的第 19782 天。
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+        // 1970 之前：负数天数也要落在 1969-12-31，而不是差一天。
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        // 跨日进位：2026-10-11 23:59 UTC 再加 60 秒就是 10-12 00:00。
+        let base = 1_791_770_400 - 60 - 3_600 * 2;
+        assert_eq!(datetime_short(base + 60), "10-12 00:00");
+    }
+
     /// 语言标签解析（`LANG` / `LC_*` / macOS `AppleLocale` 同一条规则）。
     #[test]
     fn language_tags() {
@@ -4526,6 +5190,14 @@ mod tests {
                 }
                 collect(&path, files);
             } else if path.extension().is_some_and(|ext| ext == "rs") {
+                // 单测模块文件（`xxx/tests.rs`）与上面的 `tests/` 目录同一类东西，
+                // 但逐行扫描**拦不住它**：下游靠「见到 `#[cfg(test)]` 就停」收手，
+                // 而 `mod tests;` 的那个属性写在**父文件**里，落到 `tests.rs` 里就没
+                // 了 —— 于是整份断言与夹具（测试名、失败消息、`prod-01 副本` 这种
+                // 夹具串）都会被当成界面文案要求登记。
+                if path.file_stem().is_some_and(|stem| stem == "tests") {
+                    continue;
+                }
                 files.push(path);
             }
         }

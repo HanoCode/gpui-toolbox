@@ -21,8 +21,6 @@ use futures_channel::mpsc::{UnboundedReceiver, unbounded};
 use futures_util::StreamExt as _;
 use gpui::{AnyWindowHandle, App, Global, SharedString, Task};
 
-use crate::units::{KB, MB};
-
 /// 更新源地址的 kv 键。
 ///
 /// 存的是**用户的覆盖值**；空串表示「用内置默认源」（见 [`DEFAULT_SOURCE`]）。
@@ -421,8 +419,8 @@ pub fn describe(phase: &Phase, cx: &App) -> Option<SharedString> {
             trf(cx, "发现新版本 {}。", &[&version])
         }
         Phase::Downloading { downloaded, total } => {
-            let done = read_progress(*downloaded);
-            let all = read_progress(*total);
+            let done = duck_theme::bytes(*downloaded);
+            let all = duck_theme::bytes(*total);
             trf(cx, "正在下载更新… {} / {}", &[&done, &all])
         }
         Phase::Verifying => trf(cx, "正在校验更新…", &[]),
@@ -609,21 +607,9 @@ fn notify_target(cx: &App) -> Option<AnyWindowHandle> {
         .find(|handle| Some(*handle) != wizard)
 }
 
-/// 字节数的可读写法（进度行用）。
-fn read_progress(bytes: u64) -> String {
-    let value = bytes as f64;
-    if value >= MB {
-        format!("{:.1} MB", value / MB)
-    } else if value >= KB {
-        format!("{:.0} KB", value / KB)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Phase, read_progress};
+    use super::Phase;
     use duck_update::UpdateError;
 
     #[test]
@@ -641,13 +627,5 @@ mod tests {
         assert!(!Phase::Idle.is_running());
         assert!(!Phase::Installed.is_running());
         assert!(!Phase::Failed(UpdateError::Cancelled).is_running());
-    }
-
-    #[test]
-    fn byte_counts_read_the_way_a_progress_line_wants() {
-        assert_eq!(read_progress(0), "0 B");
-        assert_eq!(read_progress(512), "512 B");
-        assert_eq!(read_progress(4096), "4 KB");
-        assert_eq!(read_progress(5 * 1024 * 1024), "5.0 MB");
     }
 }

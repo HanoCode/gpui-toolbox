@@ -24,7 +24,6 @@ mod theme_picker;
 mod tools;
 mod top_bar;
 mod tray;
-mod units;
 mod update;
 
 use futures_channel::mpsc::unbounded;

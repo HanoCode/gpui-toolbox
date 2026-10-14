@@ -6,7 +6,7 @@
 //! **不引 tokio**（`redis` 关掉了 aio / tokio-comp / smol-comp 三个特性）。
 //!
 //! ```text
-//! duck-app/pages/redis.rs（UI，gpui）
+//! duck-app/pages/redis/（UI，gpui）
 //!   │  background_executor().spawn(async move { 阻塞调用 })
 //!   ▼
 //! duck-redis（本 crate：config / capability / writegate / conn / scan / value /

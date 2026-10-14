@@ -847,8 +847,49 @@ pub fn toolbar_dropdown_button(
         .items_center()
         .rounded(theme.components().button_radius)
         .text_color(tokens.colors.muted_foreground)
-        .accessibility_label(tooltip_label)
+        .accessibility_label(tooltip_label.clone())
+        // 纯图标必须有悬停提示（与无障碍名同一份文案）。gpui-component 的 Button
+        // 自带 tooltip 字段（内部渲染，不走 gpui 的 div 挂载，无「二次挂载」panic
+        // 之说）；必须在 `dropdown_menu_with_anchor` 之前给 —— 之后返回的是
+        // `DropdownMenuPopover` 包装层，已经没有按钮的 builder 了。
+        .tooltip(tooltip_label.clone())
         .child(icon)
+        .dropdown_menu_with_anchor(anchor, build)
+        .into_any_element()
+}
+
+/// 文字版下拉触发按钮：图标 + **文字** + caret，外观与 [`toolbar_dropdown_button`]
+/// 同一档（幽灵底 + `density.toolbar_button` 高度）。
+///
+/// 为什么不直接给 [`toolbar_dropdown_button`] 渲染 label：它的既有调用点（语言切换、
+/// 邮件工具条等）全部按「纯图标」排版，补文字会同时改一排不相干的界面。设计稿里
+/// globalbar 的「更多」与结果脚注的「导出 ∨」都是文字按钮，用这个。
+pub fn toolbar_text_dropdown_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    anchor: Anchor,
+    build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let label = label.into();
+    let height = theme.density().toolbar_button;
+    Button::new(id.into())
+        .ghost()
+        .flex_none()
+        .h(height)
+        .px(tokens.spacing.xs + tokens.spacing.xxs)
+        .flex()
+        .items_center()
+        .gap(tokens.spacing.xxs)
+        .rounded(theme.components().button_radius)
+        .text_color(tokens.colors.muted_foreground)
+        .text_size(tokens.typography.sm.size)
+        .accessibility_label(label.clone())
+        .child(icon)
+        .child(label)
         .dropdown_menu_with_anchor(anchor, build)
         .into_any_element()
 }

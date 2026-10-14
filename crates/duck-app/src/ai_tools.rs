@@ -404,7 +404,7 @@ impl Tool for ListDirTool {
                     if item.is_dir {
                         "—".to_owned()
                     } else {
-                        human_size(item.size)
+                        duck_theme::bytes(item.size)
                     },
                 ]
             })
@@ -840,22 +840,6 @@ fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// 人类可读的字节数。
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut value = bytes as f64;
-    let mut unit = 0usize;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1041,13 +1025,6 @@ mod tests {
         assert_eq!(call_summary(&call(r#"{"query":"连接失败"}"#)), "连接失败");
         // 半截 JSON 不该 panic，退回原样截断。
         assert_eq!(call_summary(&call(r#"{"path":"#)), "null");
-    }
-
-    #[test]
-    fn human_size_reads_naturally() {
-        assert_eq!(human_size(512), "512 B");
-        assert_eq!(human_size(2048), "2.0 KB");
-        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
     }
 
     // ── run_sql_readonly（会话目录 + 工具）───────────────────────────

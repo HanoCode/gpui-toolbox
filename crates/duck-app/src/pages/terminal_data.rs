@@ -753,42 +753,23 @@ pub(crate) fn crumbs(path: &str) -> Vec<(String, String)> {
 
 /// `MM-DD HH:MM`（UTC）。
 ///
-/// 只用于展示：本工程尚未引时区库，日期按 UTC 计算；接真实实现时改由
-/// 系统本地时区格式化。**不引 `chrono`/`time`** 是本仓的依赖准入结论。
+/// 实现已下沉到 `duck-theme` 的格式化层（[`duck_theme::datetime_short`]）——本仓原先
+/// 在 `mail_data` 与本文件各有一份同源的日期换算，`civil_from_days` 更被抄了 7 份。
+/// 「**不引 `chrono`/`time`**」是本仓的依赖准入结论，所以仍是 UTC；时区换算是记在
+/// `docs/email-design.md` 里的未决项。
+///
+/// 量不出时间（早于 `UNIX_EPOCH`，或恰好落在纪元零点）时给 `—`：远端列表的
+/// 「修改时间」一栏留白会被误读成「还没加载出来」。
 fn format_modified(time: SystemTime) -> String {
     let Ok(elapsed) = time.duration_since(UNIX_EPOCH) else {
         return "—".to_owned();
     };
-    let seconds = elapsed.as_secs() as i64;
-    let days = seconds.div_euclid(86_400);
-    let within_day = seconds.rem_euclid(86_400);
-    let (_, month, day) = civil_from_days(days);
-    format!(
-        "{month:02}-{day:02} {:02}:{:02}",
-        within_day / 3_600,
-        (within_day % 3_600) / 60
-    )
-}
-
-/// 由「1970-01-01 起的天数」还原公历年月日（Howard Hinnant 的 `civil_from_days`）。
-///
-/// 手写而不用库：只有一处调用点，且算法是纯整数运算、可单测（见本文件测试）。
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let shifted = days + 719_468;
-    let era = if shifted >= 0 {
-        shifted
+    let short = duck_theme::datetime_short(elapsed.as_secs() as i64);
+    if short.is_empty() {
+        "—".to_owned()
     } else {
-        shifted - 146_096
-    } / 146_097;
-    let day_of_era = (shifted - era * 146_097) as u64;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era as i64 + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let mp = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * mp + 2) / 5 + 1) as i64;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as i64;
-    (if month <= 2 { year + 1 } else { year }, month, day)
+        short
+    }
 }
 
 /// 传输队列的一行。
@@ -1008,7 +989,12 @@ mod tests {
         // 纪元零点 + 1 天 1 小时 1 分 → 1970-01-02 01:01。
         let time = UNIX_EPOCH + std::time::Duration::from_secs(86_400 + 3_661);
         assert_eq!(format_modified(time), "01-02 01:01");
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        // 纪元零点本身（以及更早的时间）归到「量不出」档 —— 留白会被当成「还没加载」。
+        assert_eq!(format_modified(UNIX_EPOCH), "—");
+        assert_eq!(
+            format_modified(UNIX_EPOCH - std::time::Duration::from_secs(1)),
+            "—"
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-<!-- duck-licenses: components=959 texts=460 expressions=42 -->
+<!-- duck-licenses: components=961 texts=462 expressions=42 -->
 # 第三方开源许可
 
 本文件由 `sbin/licenses.py` 依据 `Cargo.lock` 与本机 cargo 缓存生成，**请勿手工编辑**。
@@ -6,18 +6,18 @@
 - 重新生成：`python3 sbin/licenses.py`
 - 校验是否最新：`python3 sbin/licenses.py --check`
 
-- 统计：**959** 个第三方组件，**42** 种许可声明，**460** 份许可全文（按内容去重）。
+- 统计：**961** 个第三方组件，**42** 种许可声明，**462** 份许可全文（按内容去重）。
 - 口径：`Cargo.lock` 中所有带 `source` 的依赖（crates.io 与 git 两路）；本仓库自身的 crate 不在列，其版权见仓库根 `LICENSE`（MIT）。
 
 ## 许可分布
 
 | 许可 | 组件数 |
 | --- | --- |
-| MIT OR Apache-2.0 | 428 |
+| MIT OR Apache-2.0 | 429 |
 | MIT | 223 |
 | Apache-2.0 OR MIT | 77 |
-| MIT/Apache-2.0 | 48 |
-| Apache-2.0 | 40 |
+| MIT/Apache-2.0 | 47 |
+| Apache-2.0 | 42 |
 | Zlib OR Apache-2.0 OR MIT | 19 |
 | Unicode-3.0 | 18 |
 | BSD-3-Clause | 10 |
@@ -66,376 +66,376 @@
 | accesskit_macos | 0.26.3 | MIT OR Apache-2.0 | crates.io | — |
 | accesskit_unix | 0.22.1 | MIT OR Apache-2.0 | crates.io | — |
 | accesskit_windows | 0.34.0 | MIT OR Apache-2.0 | crates.io | — |
-| addr2line | 0.25.1 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [23](#text-23) |
-| adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | crates.io | [4](#text-4) [230](#text-230) [223](#text-223) |
-| aes | 0.8.4 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [270](#text-270) |
-| ahash | 0.8.12 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [271](#text-271) |
-| aho-corasick | 1.1.5 | Unlicense OR MIT | crates.io | [451](#text-451) [452](#text-452) [453](#text-453) |
-| aligned | 0.4.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [272](#text-272) |
-| aligned-vec | 0.6.4 | MIT | crates.io | [91](#text-91) |
-| allocator-api2 | 0.2.21 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| android_system_properties | 0.1.6 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [273](#text-273) |
-| annotate-snippets | 0.12.16 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [274](#text-274) |
-| anstyle | 1.0.14 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [274](#text-274) |
-| anyhow | 1.0.104 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| arbitrary | 1.5.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [275](#text-275) |
-| arboard | 3.6.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [393](#text-393) |
-| arc-swap | 1.9.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [276](#text-276) |
-| arcstr | 1.2.0 | Apache-2.0 OR MIT OR Zlib | crates.io | [53](#text-53) [54](#text-54) [55](#text-55) |
-| arg_enum_proc_macro | 0.3.4 | MIT | crates.io | [92](#text-92) |
-| arraydeque | 0.5.1 | MIT/Apache-2.0 | crates.io | [421](#text-421) |
-| arrayref | 0.3.9 | BSD-2-Clause | crates.io | [62](#text-62) |
-| arrayvec | 0.7.8 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [277](#text-277) |
-| as-raw-xcb-connection | 1.0.1 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [278](#text-278) |
-| as-slice | 0.2.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [279](#text-279) |
-| ash | 0.38.0+1.3.281 | MIT OR Apache-2.0 | crates.io | [235](#text-235) [280](#text-280) |
-| ashpd | 0.11.1 | MIT | crates.io | [93](#text-93) |
-| ashpd | 0.13.13 | MIT | crates.io | [93](#text-93) |
-| async-broadcast | 0.7.2 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [281](#text-281) |
-| async-channel | 1.9.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-channel | 2.5.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-compression | 0.4.50 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [282](#text-282) |
-| async-executor | 1.14.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-fs | 2.2.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-imap | 0.11.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [283](#text-283) |
-| async-io | 2.6.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-lock | 3.4.2 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-net | 2.0.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-process | 2.5.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-recursion | 1.2.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| async-signal | 0.2.14 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-task | 4.7.1 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| async-trait | 0.1.92 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| asynchronous-codec | 0.6.2 | MIT | crates.io | [94](#text-94) |
-| atomic | 0.5.3 | Apache-2.0/MIT | crates.io | [222](#text-222) [284](#text-284) |
-| atomic-waker | 1.1.2 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) [49](#text-49) |
-| atspi | 0.29.0 | Apache-2.0 OR MIT | crates.io | [22](#text-22) [48](#text-48) |
-| atspi-common | 0.13.0 | Apache-2.0 OR MIT | crates.io | [22](#text-22) [48](#text-48) |
-| atspi-proxies | 0.13.0 | Apache-2.0 OR MIT | crates.io | [22](#text-22) [48](#text-48) |
-| autocfg | 1.5.1 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [24](#text-24) |
-| av-scenechange | 0.14.1 | MIT | crates.io | [95](#text-95) |
-| av1-grain | 0.2.5 | BSD-2-Clause | crates.io | [63](#text-63) |
-| avif-serialize | 0.8.9 | BSD-3-Clause | crates.io | [71](#text-71) |
-| backtrace | 0.3.76 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| base62 | 2.2.6 | MIT | crates.io | [96](#text-96) |
-| base64 | 0.21.7 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [286](#text-286) |
-| base64 | 0.22.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [286](#text-286) |
-| base64 | 0.23.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [287](#text-287) |
-| bit-set | 0.8.0 | Apache-2.0 OR MIT | crates.io | [21](#text-21) [25](#text-25) |
-| bit-set | 0.9.1 | Apache-2.0 OR MIT | crates.io | [21](#text-21) [26](#text-26) |
-| bit-vec | 0.8.0 | Apache-2.0 OR MIT | crates.io | [21](#text-21) [25](#text-25) |
-| bit-vec | 0.9.1 | Apache-2.0 OR MIT | crates.io | [21](#text-21) [25](#text-25) |
-| bit_field | 0.10.3 | Apache-2.0/MIT | crates.io | [234](#text-234) [59](#text-59) |
-| bitflags | 1.3.2 | MIT/Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| bitflags | 2.13.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| bitstream-io | 4.10.0 | MIT/Apache-2.0 | crates.io | [222](#text-222) [427](#text-427) |
-| bitvec | 1.1.1 | MIT | crates.io | [202](#text-202) |
+| addr2line | 0.25.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [25](#text-25) |
+| adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | crates.io | [5](#text-5) [232](#text-232) [225](#text-225) |
+| aes | 0.8.4 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [272](#text-272) |
+| ahash | 0.8.12 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [273](#text-273) |
+| aho-corasick | 1.1.5 | Unlicense OR MIT | crates.io | [453](#text-453) [454](#text-454) [455](#text-455) |
+| alacritty_terminal | 0.26.0 | Apache-2.0 | - | [8](#text-8) |
+| aligned | 0.4.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [274](#text-274) |
+| aligned-vec | 0.6.4 | MIT | crates.io | [93](#text-93) |
+| allocator-api2 | 0.2.21 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| android_system_properties | 0.1.6 | MIT OR Apache-2.0 | crates.io | [235](#text-235) [275](#text-275) |
+| annotate-snippets | 0.12.16 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [276](#text-276) |
+| anstyle | 1.0.14 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [276](#text-276) |
+| anyhow | 1.0.104 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| arbitrary | 1.5.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [277](#text-277) |
+| arboard | 3.6.1 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [396](#text-396) |
+| arc-swap | 1.9.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [278](#text-278) |
+| arcstr | 1.2.0 | Apache-2.0 OR MIT OR Zlib | crates.io | [55](#text-55) [56](#text-56) [57](#text-57) |
+| arg_enum_proc_macro | 0.3.4 | MIT | crates.io | [94](#text-94) |
+| arraydeque | 0.5.1 | MIT/Apache-2.0 | crates.io | [424](#text-424) |
+| arrayref | 0.3.9 | BSD-2-Clause | crates.io | [64](#text-64) |
+| arrayvec | 0.7.8 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [279](#text-279) |
+| as-raw-xcb-connection | 1.0.1 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [280](#text-280) |
+| as-slice | 0.2.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [281](#text-281) |
+| ash | 0.38.0+1.3.281 | MIT OR Apache-2.0 | crates.io | [237](#text-237) [282](#text-282) |
+| ashpd | 0.11.1 | MIT | crates.io | [95](#text-95) |
+| ashpd | 0.13.13 | MIT | crates.io | [95](#text-95) |
+| async-broadcast | 0.7.2 | MIT OR Apache-2.0 | crates.io | [238](#text-238) [283](#text-283) |
+| async-channel | 1.9.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-channel | 2.5.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-compression | 0.4.50 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [284](#text-284) |
+| async-executor | 1.14.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-fs | 2.2.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-imap | 0.11.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [285](#text-285) |
+| async-io | 2.6.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-lock | 3.4.2 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-net | 2.0.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-process | 2.5.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-recursion | 1.2.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| async-signal | 0.2.14 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-task | 4.7.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| async-trait | 0.1.92 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| asynchronous-codec | 0.6.2 | MIT | crates.io | [96](#text-96) |
+| atomic | 0.5.3 | Apache-2.0/MIT | crates.io | [224](#text-224) [286](#text-286) |
+| atomic-waker | 1.1.2 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) [51](#text-51) |
+| atspi | 0.29.0 | Apache-2.0 OR MIT | crates.io | [24](#text-24) [50](#text-50) |
+| atspi-common | 0.13.0 | Apache-2.0 OR MIT | crates.io | [24](#text-24) [50](#text-50) |
+| atspi-proxies | 0.13.0 | Apache-2.0 OR MIT | crates.io | [24](#text-24) [50](#text-50) |
+| autocfg | 1.5.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [26](#text-26) |
+| av-scenechange | 0.14.1 | MIT | crates.io | [97](#text-97) |
+| av1-grain | 0.2.5 | BSD-2-Clause | crates.io | [65](#text-65) |
+| avif-serialize | 0.8.9 | BSD-3-Clause | crates.io | [73](#text-73) |
+| backtrace | 0.3.76 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| base62 | 2.2.6 | MIT | crates.io | [98](#text-98) |
+| base64 | 0.21.7 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [288](#text-288) |
+| base64 | 0.22.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [288](#text-288) |
+| base64 | 0.23.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [289](#text-289) |
+| bit-set | 0.8.0 | Apache-2.0 OR MIT | crates.io | [23](#text-23) [27](#text-27) |
+| bit-set | 0.9.1 | Apache-2.0 OR MIT | crates.io | [23](#text-23) [28](#text-28) |
+| bit-vec | 0.8.0 | Apache-2.0 OR MIT | crates.io | [23](#text-23) [27](#text-27) |
+| bit-vec | 0.9.1 | Apache-2.0 OR MIT | crates.io | [23](#text-23) [27](#text-27) |
+| bit_field | 0.10.3 | Apache-2.0/MIT | crates.io | [236](#text-236) [61](#text-61) |
+| bitflags | 1.3.2 | MIT/Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| bitflags | 2.13.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| bitstream-io | 4.10.0 | MIT/Apache-2.0 | crates.io | [224](#text-224) [430](#text-430) |
+| bitvec | 1.1.1 | MIT | crates.io | [204](#text-204) |
 | block | 0.1.6 | MIT | crates.io | — |
-| block-buffer | 0.10.4 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [289](#text-289) |
-| block-buffer | 0.12.1 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [290](#text-290) |
-| block-padding | 0.3.3 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [289](#text-289) |
+| block-buffer | 0.10.4 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [291](#text-291) |
+| block-buffer | 0.12.1 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [292](#text-292) |
+| block-padding | 0.3.3 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [291](#text-291) |
 | block2 | 0.5.1 | MIT | crates.io | — |
 | block2 | 0.6.2 | MIT | crates.io | — |
-| blocking | 1.7.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| bson | 2.15.0 | MIT | crates.io | [97](#text-97) |
-| bstr | 1.13.1 | MIT OR Apache-2.0 | crates.io | [219](#text-219) [222](#text-222) [291](#text-291) |
-| btoi | 0.5.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [292](#text-292) |
-| bufstream | 0.1.4 | MIT/Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| built | 0.8.1 | MIT | crates.io | [98](#text-98) |
-| bumpalo | 3.20.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [293](#text-293) |
-| bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT | crates.io | [458](#text-458) [459](#text-459) [460](#text-460) |
-| bytemuck_derive | 1.12.1 | Zlib OR Apache-2.0 OR MIT | crates.io | [458](#text-458) [459](#text-459) [460](#text-460) |
-| byteorder | 1.5.0 | Unlicense OR MIT | crates.io | [451](#text-451) [452](#text-452) [453](#text-453) |
-| byteorder-lite | 0.1.0 | Unlicense OR MIT | crates.io | [452](#text-452) [453](#text-453) |
-| bytes | 1.12.1 | MIT | crates.io | [99](#text-99) |
-| calloop | 0.14.5 | MIT | crates.io | [203](#text-203) |
-| calloop-wayland-source | 0.4.1 | MIT | crates.io | [204](#text-204) |
-| cbc | 0.1.2 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [294](#text-294) |
-| cbindgen | 0.28.0 | MPL-2.0 | crates.io | [448](#text-448) |
-| cc | 1.2.67 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| cfg-if | 1.0.5 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| cfg_aliases | 0.2.2 | MIT | crates.io | [100](#text-100) [214](#text-214) |
-| cgl | 0.3.2 | MIT / Apache-2.0 | crates.io | [216](#text-216) [222](#text-222) [295](#text-295) |
-| chacha20 | 0.10.2 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [296](#text-296) |
-| chrono | 0.4.45 | MIT OR Apache-2.0 | crates.io | [401](#text-401) |
-| cipher | 0.4.4 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [297](#text-297) |
+| blocking | 1.7.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| bson | 2.15.0 | MIT | crates.io | [99](#text-99) |
+| bstr | 1.13.1 | MIT OR Apache-2.0 | crates.io | [221](#text-221) [224](#text-224) [293](#text-293) |
+| btoi | 0.5.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [294](#text-294) |
+| bufstream | 0.1.4 | MIT/Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| built | 0.8.0 | MIT | crates.io | [100](#text-100) |
+| bumpalo | 3.20.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [295](#text-295) |
+| bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT | crates.io | [460](#text-460) [461](#text-461) [462](#text-462) |
+| bytemuck_derive | 1.12.1 | Zlib OR Apache-2.0 OR MIT | crates.io | [460](#text-460) [461](#text-461) [462](#text-462) |
+| byteorder | 1.5.0 | Unlicense OR MIT | crates.io | [453](#text-453) [454](#text-454) [455](#text-455) |
+| byteorder-lite | 0.1.0 | Unlicense OR MIT | crates.io | [454](#text-454) [455](#text-455) |
+| bytes | 1.12.1 | MIT | crates.io | [101](#text-101) |
+| calloop | 0.14.5 | MIT | crates.io | [205](#text-205) |
+| calloop-wayland-source | 0.4.1 | MIT | crates.io | [206](#text-206) |
+| cbc | 0.1.2 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [296](#text-296) |
+| cbindgen | 0.28.0 | MPL-2.0 | crates.io | [450](#text-450) |
+| cc | 1.2.67 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| cfg-if | 1.0.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| cfg_aliases | 0.2.2 | MIT | crates.io | [102](#text-102) [216](#text-216) |
+| cgl | 0.3.2 | MIT / Apache-2.0 | crates.io | [218](#text-218) [224](#text-224) [297](#text-297) |
+| chacha20 | 0.10.2 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [298](#text-298) |
+| chrono | 0.4.45 | MIT OR Apache-2.0 | crates.io | [404](#text-404) |
+| cipher | 0.4.4 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [299](#text-299) |
 | clipboard-win | 5.4.1 | BSL-1.0 | crates.io | — |
-| cmov | 0.5.4 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [27](#text-27) |
-| cocoa | 0.25.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| cocoa | 0.26.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| cocoa-foundation | 0.1.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| cocoa-foundation | 0.2.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| codespan-reporting | 0.13.1 | Apache-2.0 | crates.io | [225](#text-225) |
-| collections | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| color_quant | 1.1.0 | MIT | crates.io | [101](#text-101) |
-| combine | 4.6.8 | MIT | crates.io | [102](#text-102) |
-| compression-codecs | 0.4.45 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [282](#text-282) |
-| compression-core | 0.4.33 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [282](#text-282) |
-| concurrent-queue | 2.5.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| connection-string | 0.2.0 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [281](#text-281) |
-| console_error_panic_hook | 0.1.7 | Apache-2.0/MIT | crates.io | [57](#text-57) [60](#text-60) |
-| const-oid | 0.10.2 | Apache-2.0 OR MIT | crates.io | [231](#text-231) [28](#text-28) |
-| const-random | 0.1.18 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [298](#text-298) |
-| const-random-macro | 0.1.16 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [298](#text-298) |
-| convert_case | 0.10.0 | MIT | crates.io | [103](#text-103) |
-| convert_case | 0.11.0 | MIT | crates.io | [103](#text-103) |
-| core-foundation | 0.10.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-foundation | 0.9.4 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-graphics | 0.23.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-graphics | 0.24.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-graphics-helmer-fork | 0.24.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-graphics-types | 0.1.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-graphics-types | 0.2.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-graphics2 | 0.5.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [299](#text-299) |
-| core-text | 21.0.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| core-video | 0.5.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [299](#text-299) |
-| core_detect | 1.0.0 | MIT/Apache-2.0 | crates.io | [222](#text-222) [428](#text-428) |
-| core_maths | 0.1.1 | MIT | crates.io | [104](#text-104) |
-| cosmic-text | 0.19.0 | MIT OR Apache-2.0 | crates.io | [237](#text-237) [300](#text-300) |
-| cpufeatures | 0.2.17 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [301](#text-301) |
-| cpufeatures | 0.3.1 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [28](#text-28) |
-| crc32fast | 1.5.2 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [302](#text-302) |
-| crossbeam-channel | 0.5.17 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [303](#text-303) [395](#text-395) |
-| crossbeam-deque | 0.8.8 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [303](#text-303) |
-| crossbeam-epoch | 0.9.21 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [303](#text-303) |
-| crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [303](#text-303) |
-| crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [303](#text-303) |
-| crunchy | 0.2.4 | MIT | crates.io | [105](#text-105) |
-| crypto-common | 0.1.7 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [304](#text-304) |
-| crypto-common | 0.2.2 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [305](#text-305) |
-| ctor | 1.0.13 | Apache-2.0 OR MIT | crates.io | [20](#text-20) [29](#text-29) |
-| ctutils | 0.4.3 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [30](#text-30) |
-| cursor-icon | 1.2.0 | MIT OR Apache-2.0 OR Zlib | crates.io | [405](#text-405) [407](#text-407) [412](#text-412) |
-| darling | 0.21.3 | MIT | crates.io | [106](#text-106) |
-| darling | 0.23.0 | MIT | crates.io | [106](#text-106) |
-| darling_core | 0.21.3 | MIT | crates.io | [106](#text-106) |
-| darling_core | 0.23.0 | MIT | crates.io | [106](#text-106) |
-| darling_macro | 0.21.3 | MIT | crates.io | [106](#text-106) |
-| darling_macro | 0.23.0 | MIT | crates.io | [106](#text-106) |
-| data-url | 0.3.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [306](#text-306) |
-| deranged | 0.5.8 | MIT OR Apache-2.0 | crates.io | [267](#text-267) [307](#text-307) |
-| derive-syn-parse | 0.2.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| derive-where | 1.7.0 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [308](#text-308) |
-| derive_more | 2.1.1 | MIT | crates.io | [107](#text-107) |
-| derive_more-impl | 2.1.1 | MIT | crates.io | [107](#text-107) |
-| derive_refineable | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| derive_utils | 0.16.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [223](#text-223) |
-| digest | 0.10.7 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [309](#text-309) |
-| digest | 0.11.3 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [310](#text-310) |
-| dirs | 6.0.0 | MIT OR Apache-2.0 | crates.io | [238](#text-238) [311](#text-311) |
-| dirs-sys | 0.5.0 | MIT OR Apache-2.0 | crates.io | [238](#text-238) [311](#text-311) |
+| cmov | 0.5.4 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [29](#text-29) |
+| cocoa | 0.25.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| cocoa | 0.26.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| cocoa-foundation | 0.1.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| cocoa-foundation | 0.2.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| codespan-reporting | 0.13.1 | Apache-2.0 | crates.io | [227](#text-227) |
+| collections | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| color_quant | 1.1.0 | MIT | crates.io | [103](#text-103) |
+| combine | 4.6.8 | MIT | crates.io | [104](#text-104) |
+| compression-codecs | 0.4.45 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [284](#text-284) |
+| compression-core | 0.4.33 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [284](#text-284) |
+| concurrent-queue | 2.5.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| connection-string | 0.2.0 | MIT OR Apache-2.0 | crates.io | [238](#text-238) [283](#text-283) |
+| console_error_panic_hook | 0.1.7 | Apache-2.0/MIT | crates.io | [59](#text-59) [62](#text-62) |
+| const-oid | 0.10.2 | Apache-2.0 OR MIT | crates.io | [233](#text-233) [30](#text-30) |
+| const-random | 0.1.18 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [300](#text-300) |
+| const-random-macro | 0.1.16 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [300](#text-300) |
+| convert_case | 0.10.0 | MIT | crates.io | [105](#text-105) |
+| convert_case | 0.11.0 | MIT | crates.io | [105](#text-105) |
+| core-foundation | 0.10.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-foundation | 0.9.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-graphics | 0.23.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-graphics | 0.24.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-graphics-helmer-fork | 0.24.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-graphics-types | 0.1.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-graphics-types | 0.2.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-graphics2 | 0.5.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [301](#text-301) |
+| core-text | 21.0.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| core-video | 0.5.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [301](#text-301) |
+| core_maths | 0.1.1 | MIT | crates.io | [106](#text-106) |
+| cosmic-text | 0.19.0 | MIT OR Apache-2.0 | crates.io | [239](#text-239) [302](#text-302) |
+| cpufeatures | 0.2.17 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [303](#text-303) |
+| cpufeatures | 0.3.1 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [30](#text-30) |
+| crc32fast | 1.5.2 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [304](#text-304) |
+| crossbeam-channel | 0.5.17 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [305](#text-305) [398](#text-398) |
+| crossbeam-deque | 0.8.8 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [305](#text-305) |
+| crossbeam-epoch | 0.9.21 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [305](#text-305) |
+| crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [305](#text-305) |
+| crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [305](#text-305) |
+| crunchy | 0.2.4 | MIT | crates.io | [107](#text-107) |
+| crypto-common | 0.1.7 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [306](#text-306) |
+| crypto-common | 0.2.2 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [307](#text-307) |
+| ctor | 1.0.13 | Apache-2.0 OR MIT | crates.io | [22](#text-22) [31](#text-31) |
+| ctutils | 0.4.2 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [32](#text-32) |
+| cursor-icon | 1.2.0 | MIT OR Apache-2.0 OR Zlib | crates.io | [408](#text-408) [410](#text-410) [415](#text-415) |
+| darling | 0.21.3 | MIT | crates.io | [108](#text-108) |
+| darling | 0.23.0 | MIT | crates.io | [108](#text-108) |
+| darling_core | 0.21.3 | MIT | crates.io | [108](#text-108) |
+| darling_core | 0.23.0 | MIT | crates.io | [108](#text-108) |
+| darling_macro | 0.21.3 | MIT | crates.io | [108](#text-108) |
+| darling_macro | 0.23.0 | MIT | crates.io | [108](#text-108) |
+| data-url | 0.3.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [308](#text-308) |
+| deranged | 0.5.8 | MIT OR Apache-2.0 | crates.io | [269](#text-269) [309](#text-309) |
+| derive-syn-parse | 0.2.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| derive-where | 1.7.0 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [310](#text-310) |
+| derive_more | 2.1.1 | MIT | crates.io | [109](#text-109) |
+| derive_more-impl | 2.1.1 | MIT | crates.io | [109](#text-109) |
+| derive_refineable | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| derive_utils | 0.16.0 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [225](#text-225) |
+| digest | 0.10.7 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [311](#text-311) |
+| digest | 0.11.3 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [312](#text-312) |
+| dirs | 6.0.0 | MIT OR Apache-2.0 | crates.io | [240](#text-240) [313](#text-313) |
+| dirs-sys | 0.5.0 | MIT OR Apache-2.0 | crates.io | [240](#text-240) [313](#text-313) |
 | dispatch | 0.2.0 | MIT | crates.io | — |
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT | crates.io | — |
-| displaydoc | 0.2.7 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| dlib | 0.5.3 | MIT | crates.io | [205](#text-205) |
-| document-features | 0.2.12 | MIT OR Apache-2.0 | crates.io | [239](#text-239) [312](#text-312) |
-| downcast-rs | 1.2.1 | MIT/Apache-2.0 | crates.io | [21](#text-21) [429](#text-429) |
-| dpi | 0.1.2 | Apache-2.0 AND MIT | crates.io | [20](#text-20) [13](#text-13) |
-| dunce | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 | crates.io | [84](#text-84) |
+| displaydoc | 0.2.7 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| dlib | 0.5.3 | MIT | crates.io | [207](#text-207) |
+| document-features | 0.2.12 | MIT OR Apache-2.0 | crates.io | [241](#text-241) [314](#text-314) |
+| downcast-rs | 1.2.1 | MIT/Apache-2.0 | crates.io | [23](#text-23) [431](#text-431) |
+| dpi | 0.1.2 | Apache-2.0 AND MIT | crates.io | [22](#text-22) [15](#text-15) |
+| dunce | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 | crates.io | [86](#text-86) |
 | dwrote | 0.11.5 | MPL-2.0 | crates.io | — |
-| dyn-clone | 1.0.20 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| either | 1.19.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [313](#text-313) |
-| embed-resource | 3.0.12 | MIT | crates.io | [108](#text-108) |
-| encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause | crates.io | [225](#text-225) [31](#text-31) [1](#text-1) |
-| encoding_rs_io | 0.1.8 | MIT OR Apache-2.0 | crates.io | [220](#text-220) [222](#text-222) [452](#text-452) |
-| endi | 1.1.1 | MIT | crates.io | [223](#text-223) |
-| enum-iterator | 2.3.0 | 0BSD | crates.io | [3](#text-3) |
-| enum-iterator-derive | 1.5.0 | 0BSD | crates.io | [3](#text-3) |
-| enumflags2 | 0.7.12 | MIT OR Apache-2.0 | crates.io | [240](#text-240) [314](#text-314) |
-| enumflags2_derive | 0.7.12 | MIT OR Apache-2.0 | crates.io | [241](#text-241) [315](#text-315) |
-| enumn | 0.1.14 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| equator | 0.4.2 | MIT | crates.io | [109](#text-109) |
-| equator-macro | 0.4.2 | MIT | crates.io | [109](#text-109) |
-| equivalent | 1.0.2 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [32](#text-32) |
-| errno | 0.3.14 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [316](#text-316) |
-| error-code | 3.4.0 | BSL-1.0 | crates.io | [82](#text-82) |
-| etagere | 0.2.15 | MIT/Apache-2.0 | crates.io | [423](#text-423) [430](#text-430) |
-| euclid | 0.22.14 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| event-listener | 2.5.3 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| event-listener | 5.4.2 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| exr | 1.74.2 | BSD-3-Clause | crates.io | [79](#text-79) |
-| fallible-iterator | 0.2.0 | MIT/Apache-2.0 | crates.io | [234](#text-234) [431](#text-431) |
-| fallible-iterator | 0.3.0 | MIT/Apache-2.0 | crates.io | [234](#text-234) [431](#text-431) |
-| fallible-streaming-iterator | 0.1.9 | MIT/Apache-2.0 | crates.io | [234](#text-234) [432](#text-432) |
-| fastrand | 2.5.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| fax | 0.2.7 | MIT | crates.io | [110](#text-110) |
-| fdeflate | 0.3.7 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [317](#text-317) |
-| filedescriptor | 0.8.3 | MIT | crates.io | [196](#text-196) |
-| filetime | 0.2.29 | MIT/Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| find-msvc-tools | 0.1.14 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| fixedbitset | 0.5.7 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [318](#text-318) |
-| flate2 | 1.1.10 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [319](#text-319) |
-| float-cmp | 0.9.0 | MIT | crates.io | [111](#text-111) |
-| float-ord | 0.3.2 | MIT / Apache-2.0 | crates.io | [234](#text-234) [217](#text-217) |
-| float_next_after | 1.0.0 | MIT | crates.io | [112](#text-112) |
-| fluent-uri | 0.1.4 | MIT | crates.io | [113](#text-113) |
-| flume | 0.12.0 | Apache-2.0/MIT | crates.io | [58](#text-58) [223](#text-223) |
-| fnv | 1.0.7 | Apache-2.0 / MIT | crates.io | [222](#text-222) [9](#text-9) |
-| foldhash | 0.1.5 | Zlib | crates.io | [455](#text-455) |
-| foldhash | 0.2.0 | Zlib | crates.io | [455](#text-455) |
-| font-types | 0.11.3 | MIT OR Apache-2.0 | crates.io | [242](#text-242) [320](#text-320) |
-| font-types | 0.12.6 | MIT OR Apache-2.0 | crates.io | [243](#text-243) [321](#text-321) |
-| fontconfig-parser | 0.5.8 | MIT | crates.io | [114](#text-114) |
-| fontdb | 0.23.0 | MIT | crates.io | [422](#text-422) |
-| foreign-types | 0.5.0 | MIT/Apache-2.0 | crates.io | [234](#text-234) [433](#text-433) |
-| foreign-types-macros | 0.2.4 | MIT/Apache-2.0 | crates.io | [234](#text-234) [433](#text-433) |
-| foreign-types-shared | 0.3.1 | MIT/Apache-2.0 | crates.io | [234](#text-234) [433](#text-433) |
-| form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [322](#text-322) |
-| freetype-sys | 0.20.1 | MIT | crates.io | [115](#text-115) |
-| fsevent-sys | 4.1.0 | MIT | crates.io | [116](#text-116) |
-| funty | 2.0.0 | MIT | crates.io | [206](#text-206) |
-| futf | 0.1.5 | MIT / Apache-2.0 | crates.io | [222](#text-222) [218](#text-218) |
-| futures | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| futures-channel | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| futures-concurrency | 7.7.1 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [281](#text-281) |
-| futures-core | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| futures-executor | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| futures-io | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| futures-lite | 2.6.1 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) [49](#text-49) |
-| futures-macro | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| futures-sink | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| futures-task | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| futures-util | 0.3.34 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [323](#text-323) |
-| generic-array | 0.14.7 | MIT | crates.io | [117](#text-117) |
-| gethostname | 1.1.0 | Apache-2.0 | crates.io | [222](#text-222) |
-| getrandom | 0.2.17 | MIT OR Apache-2.0 | crates.io | [245](#text-245) [324](#text-324) |
-| getrandom | 0.3.4 | MIT OR Apache-2.0 | crates.io | [245](#text-245) [325](#text-325) |
-| getrandom | 0.4.3 | MIT OR Apache-2.0 | crates.io | [245](#text-245) [326](#text-326) |
-| gif | 0.13.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [327](#text-327) |
-| gif | 0.14.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [327](#text-327) |
-| gimli | 0.32.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
+| dyn-clone | 1.0.20 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| either | 1.19.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [315](#text-315) |
+| embed-resource | 3.0.12 | MIT | crates.io | [110](#text-110) |
+| encoding_rs | 0.8.35 | (Apache-2.0 OR MIT) AND BSD-3-Clause | crates.io | [227](#text-227) [1](#text-1) [2](#text-2) |
+| encoding_rs_io | 0.1.8 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [224](#text-224) [454](#text-454) |
+| endi | 1.1.1 | MIT | crates.io | [225](#text-225) |
+| enum-iterator | 2.3.0 | 0BSD | crates.io | [4](#text-4) |
+| enum-iterator-derive | 1.5.0 | 0BSD | crates.io | [4](#text-4) |
+| enumflags2 | 0.7.12 | MIT OR Apache-2.0 | crates.io | [242](#text-242) [316](#text-316) |
+| enumflags2_derive | 0.7.12 | MIT OR Apache-2.0 | crates.io | [243](#text-243) [317](#text-317) |
+| enumn | 0.1.14 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| equator | 0.4.2 | MIT | crates.io | [111](#text-111) |
+| equator-macro | 0.4.2 | MIT | crates.io | [111](#text-111) |
+| equivalent | 1.0.2 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [33](#text-33) |
+| errno | 0.3.14 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [318](#text-318) |
+| error-code | 3.4.0 | BSL-1.0 | crates.io | [84](#text-84) |
+| etagere | 0.2.15 | MIT/Apache-2.0 | crates.io | [426](#text-426) [432](#text-432) |
+| euclid | 0.22.14 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| event-listener | 2.5.3 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| event-listener | 5.4.2 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| exr | 1.74.2 | BSD-3-Clause | crates.io | [81](#text-81) |
+| fallible-iterator | 0.2.0 | MIT/Apache-2.0 | crates.io | [236](#text-236) [433](#text-433) |
+| fallible-iterator | 0.3.0 | MIT/Apache-2.0 | crates.io | [236](#text-236) [433](#text-433) |
+| fallible-streaming-iterator | 0.1.9 | MIT/Apache-2.0 | crates.io | [236](#text-236) [434](#text-434) |
+| fastrand | 2.5.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| fax | 0.2.7 | MIT | crates.io | [112](#text-112) |
+| fdeflate | 0.3.7 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [319](#text-319) |
+| filedescriptor | 0.8.3 | MIT | crates.io | [198](#text-198) |
+| filetime | 0.2.29 | MIT/Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| find-msvc-tools | 0.1.14 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| fixedbitset | 0.5.7 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [320](#text-320) |
+| flate2 | 1.1.10 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [321](#text-321) |
+| float-cmp | 0.9.0 | MIT | crates.io | [113](#text-113) |
+| float-ord | 0.3.2 | MIT / Apache-2.0 | crates.io | [236](#text-236) [219](#text-219) |
+| float_next_after | 1.0.0 | MIT | crates.io | [114](#text-114) |
+| fluent-uri | 0.1.4 | MIT | crates.io | [115](#text-115) |
+| flume | 0.12.0 | Apache-2.0/MIT | crates.io | [60](#text-60) [225](#text-225) |
+| fnv | 1.0.7 | Apache-2.0 / MIT | crates.io | [224](#text-224) [11](#text-11) |
+| foldhash | 0.1.5 | Zlib | crates.io | [457](#text-457) |
+| foldhash | 0.2.0 | Zlib | crates.io | [457](#text-457) |
+| font-types | 0.11.3 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [322](#text-322) |
+| font-types | 0.12.6 | MIT OR Apache-2.0 | crates.io | [245](#text-245) [323](#text-323) |
+| fontconfig-parser | 0.5.8 | MIT | crates.io | [116](#text-116) |
+| fontdb | 0.23.0 | MIT | crates.io | [425](#text-425) |
+| foreign-types | 0.5.0 | MIT/Apache-2.0 | crates.io | [236](#text-236) [435](#text-435) |
+| foreign-types-macros | 0.2.4 | MIT/Apache-2.0 | crates.io | [236](#text-236) [435](#text-435) |
+| foreign-types-shared | 0.3.1 | MIT/Apache-2.0 | crates.io | [236](#text-236) [435](#text-435) |
+| form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [324](#text-324) |
+| freetype-sys | 0.20.1 | MIT | crates.io | [117](#text-117) |
+| fsevent-sys | 4.1.0 | MIT | crates.io | [118](#text-118) |
+| funty | 2.0.0 | MIT | crates.io | [208](#text-208) |
+| futf | 0.1.5 | MIT / Apache-2.0 | crates.io | [224](#text-224) [220](#text-220) |
+| futures | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| futures-channel | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| futures-concurrency | 7.7.1 | MIT OR Apache-2.0 | crates.io | [238](#text-238) [283](#text-283) |
+| futures-core | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| futures-executor | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| futures-io | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| futures-lite | 2.6.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) [51](#text-51) |
+| futures-macro | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| futures-sink | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| futures-task | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| futures-util | 0.3.34 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [325](#text-325) |
+| generic-array | 0.14.7 | MIT | crates.io | [119](#text-119) |
+| gethostname | 1.1.0 | Apache-2.0 | crates.io | [224](#text-224) |
+| getrandom | 0.2.17 | MIT OR Apache-2.0 | crates.io | [247](#text-247) [326](#text-326) |
+| getrandom | 0.3.4 | MIT OR Apache-2.0 | crates.io | [247](#text-247) [327](#text-327) |
+| getrandom | 0.4.3 | MIT OR Apache-2.0 | crates.io | [247](#text-247) [328](#text-328) |
+| gif | 0.13.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [329](#text-329) |
+| gif | 0.14.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [329](#text-329) |
+| gimli | 0.32.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
 | gl_generator | 0.14.0 | Apache-2.0 | crates.io | — |
-| glob | 0.3.4 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| global-hotkey | 0.8.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [33](#text-33) [51](#text-51) |
-| globset | 0.4.20 | Unlicense OR MIT | crates.io | [451](#text-451) [452](#text-452) [453](#text-453) |
-| globwalk | 0.8.1 | MIT | crates.io | [118](#text-118) |
-| glow | 0.17.0 | MIT OR Apache-2.0 OR Zlib | crates.io | [222](#text-222) [223](#text-223) [413](#text-413) |
-| glutin_wgl_sys | 0.6.1 | Apache-2.0 | crates.io | [6](#text-6) |
-| gpu-allocator | 0.28.0 | MIT OR Apache-2.0 | crates.io | [246](#text-246) [329](#text-329) |
+| glob | 0.3.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| global-hotkey | 0.8.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [34](#text-34) [53](#text-53) |
+| globset | 0.4.18 | Unlicense OR MIT | crates.io | [453](#text-453) [454](#text-454) [455](#text-455) |
+| globwalk | 0.8.1 | MIT | crates.io | [120](#text-120) |
+| glow | 0.17.0 | MIT OR Apache-2.0 OR Zlib | crates.io | [224](#text-224) [225](#text-225) [416](#text-416) |
+| glutin_wgl_sys | 0.6.1 | Apache-2.0 | crates.io | [7](#text-7) |
+| gpu-allocator | 0.28.0 | MIT OR Apache-2.0 | crates.io | [248](#text-248) [331](#text-331) |
 | gpu-descriptor | 0.3.2 | MIT OR Apache-2.0 | crates.io | — |
 | gpu-descriptor-types | 0.2.0 | MIT OR Apache-2.0 | crates.io | — |
-| gpui | 0.2.2 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui-base | 0.7.1 | Apache-2.0 | crates.io | [7](#text-7) |
-| gpui-component | 0.7.1 | Apache-2.0 | crates.io | [7](#text-7) |
-| gpui-component-macros | 0.7.1 | Apache-2.0 | crates.io | [7](#text-7) |
-| gpui-kit-assets | 0.7.1 | Apache-2.0 | crates.io | [8](#text-8) |
-| gpui-pre | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) [5](#text-5) |
-| gpui-pre-macros | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) [5](#text-5) |
-| gpui-pre-platform | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) [5](#text-5) |
-| gpui-pre-reqwest | 0.12.15 | MIT OR Apache-2.0 | crates.io | [247](#text-247) [330](#text-330) |
-| gpui-pre-sum-tree | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) [5](#text-5) |
-| gpui_apple | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_linux | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_macos | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_macros | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_platform | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_shared_string | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_util | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_web | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_wgpu | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| gpui_windows | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| granit-parser | 1.3.0 | MIT OR Apache-2.0 | crates.io | [226](#text-226) |
-| h2 | 0.4.20 | MIT | crates.io | [119](#text-119) |
-| half | 2.7.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [227](#text-227) |
+| gpui | 0.2.2 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui-base | 0.7.1 | Apache-2.0 | - | [9](#text-9) |
+| gpui-component | 0.7.1 | Apache-2.0 | crates.io | [9](#text-9) |
+| gpui-component-macros | 0.7.1 | Apache-2.0 | crates.io | [9](#text-9) |
+| gpui-kit-assets | 0.7.1 | Apache-2.0 | crates.io | [10](#text-10) |
+| gpui-pre | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) [6](#text-6) |
+| gpui-pre-macros | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) [6](#text-6) |
+| gpui-pre-platform | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) [6](#text-6) |
+| gpui-pre-reqwest | 0.12.15 | MIT OR Apache-2.0 | crates.io | [249](#text-249) [332](#text-332) |
+| gpui-pre-sum-tree | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) [6](#text-6) |
+| gpui_apple | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_linux | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_macos | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_macros | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_platform | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_shared_string | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_util | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_web | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_wgpu | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| gpui_windows | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| granit-parser | 1.3.0 | MIT OR Apache-2.0 | crates.io | [228](#text-228) |
+| h2 | 0.4.20 | MIT | crates.io | [121](#text-121) |
+| half | 2.7.1 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [229](#text-229) |
 | harfrust | 0.5.2 | MIT | crates.io | — |
-| hash32 | 0.3.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [279](#text-279) |
-| hashbrown | 0.14.5 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [298](#text-298) |
-| hashbrown | 0.15.5 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [298](#text-298) |
-| hashbrown | 0.16.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [298](#text-298) |
-| hashbrown | 0.17.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [298](#text-298) |
+| hash32 | 0.3.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [281](#text-281) |
+| hashbrown | 0.14.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [300](#text-300) |
+| hashbrown | 0.15.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [300](#text-300) |
+| hashbrown | 0.16.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [300](#text-300) |
+| hashbrown | 0.17.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [300](#text-300) |
 | hashify | 0.2.9 | Apache-2.0 OR MIT | crates.io | — |
-| hashlink | 0.9.1 | MIT OR Apache-2.0 | crates.io | [21](#text-21) [331](#text-331) |
-| heapless | 0.9.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [272](#text-272) |
-| heck | 0.4.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| heck | 0.5.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| hermit-abi | 0.5.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| hex | 0.4.3 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [332](#text-332) |
+| hashlink | 0.9.1 | MIT OR Apache-2.0 | crates.io | [23](#text-23) [333](#text-333) |
+| heapless | 0.9.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [274](#text-274) |
+| heck | 0.4.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| heck | 0.5.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| hermit-abi | 0.5.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| hex | 0.4.3 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [334](#text-334) |
 | hexf-parse | 0.2.1 | CC0-1.0 | crates.io | — |
-| hkdf | 0.12.4 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [333](#text-333) |
-| hmac | 0.12.1 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [309](#text-309) |
-| hmac | 0.13.0 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [309](#text-309) |
-| home | 0.5.11 | MIT OR Apache-2.0 | crates.io | [230](#text-230) [223](#text-223) |
-| html5ever | 0.27.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [334](#text-334) |
-| http | 1.5.0 | MIT OR Apache-2.0 | crates.io | [248](#text-248) [335](#text-335) |
-| http-body | 1.1.0 | MIT | crates.io | [120](#text-120) |
-| http-body-util | 0.1.5 | MIT | crates.io | [120](#text-120) |
-| http_client | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| httparse | 1.10.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [336](#text-336) |
-| hybrid-array | 0.4.15 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [27](#text-27) |
-| hyper | 1.12.0 | MIT | crates.io | [121](#text-121) |
-| hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT | crates.io | [222](#text-222) [18](#text-18) [19](#text-19) |
-| hyper-util | 0.1.21 | MIT | crates.io | [122](#text-122) |
-| iana-time-zone | 0.1.65 | MIT OR Apache-2.0 | crates.io | [249](#text-249) [337](#text-337) |
-| iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 | crates.io | [249](#text-249) [337](#text-337) |
-| icu_collections | 2.3.0 | Unicode-3.0 | crates.io | [450](#text-450) |
-| icu_locale_core | 2.3.0 | Unicode-3.0 | crates.io | [450](#text-450) |
-| icu_normalizer | 2.3.0 | Unicode-3.0 | crates.io | [450](#text-450) |
-| icu_normalizer_data | 2.3.0 | Unicode-3.0 | crates.io | [450](#text-450) |
-| icu_properties | 2.3.0 | Unicode-3.0 | crates.io | [450](#text-450) |
-| icu_properties_data | 2.3.0 | Unicode-3.0 | crates.io | [450](#text-450) |
-| icu_provider | 2.3.1 | Unicode-3.0 | crates.io | [450](#text-450) |
-| ident_case | 1.0.1 | MIT/Apache-2.0 | crates.io | [227](#text-227) |
-| idna | 1.1.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [306](#text-306) |
-| idna_adapter | 1.2.2 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [34](#text-34) |
-| ignore | 0.4.33 | Unlicense OR MIT | crates.io | [451](#text-451) [452](#text-452) [453](#text-453) |
-| image | 0.25.10 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [317](#text-317) |
-| image-webp | 0.2.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [317](#text-317) |
-| imagesize | 0.13.0 | MIT | crates.io | [123](#text-123) |
-| imagesize | 0.14.0 | MIT | crates.io | [123](#text-123) |
+| hkdf | 0.12.4 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [335](#text-335) |
+| hmac | 0.12.1 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [311](#text-311) |
+| hmac | 0.13.0 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [311](#text-311) |
+| home | 0.5.11 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [225](#text-225) |
+| html5ever | 0.27.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [336](#text-336) |
+| http | 1.5.0 | MIT OR Apache-2.0 | crates.io | [250](#text-250) [337](#text-337) |
+| http-body | 1.1.0 | MIT | crates.io | [122](#text-122) |
+| http-body-util | 0.1.5 | MIT | crates.io | [122](#text-122) |
+| http_client | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| httparse | 1.10.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [338](#text-338) |
+| hybrid-array | 0.4.15 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [29](#text-29) |
+| hyper | 1.12.0 | MIT | crates.io | [123](#text-123) |
+| hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT | crates.io | [224](#text-224) [20](#text-20) [21](#text-21) |
+| hyper-util | 0.1.21 | MIT | crates.io | [124](#text-124) |
+| iana-time-zone | 0.1.65 | MIT OR Apache-2.0 | crates.io | [251](#text-251) [339](#text-339) |
+| iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 | crates.io | [251](#text-251) [339](#text-339) |
+| icu_collections | 2.1.1 | Unicode-3.0 | crates.io | [452](#text-452) |
+| icu_locale_core | 2.1.1 | Unicode-3.0 | crates.io | [452](#text-452) |
+| icu_normalizer | 2.1.1 | Unicode-3.0 | crates.io | [452](#text-452) |
+| icu_normalizer_data | 2.1.1 | Unicode-3.0 | crates.io | [452](#text-452) |
+| icu_properties | 2.1.2 | Unicode-3.0 | crates.io | [452](#text-452) |
+| icu_properties_data | 2.1.2 | Unicode-3.0 | crates.io | [452](#text-452) |
+| icu_provider | 2.1.1 | Unicode-3.0 | crates.io | [452](#text-452) |
+| ident_case | 1.0.1 | MIT/Apache-2.0 | crates.io | [229](#text-229) |
+| idna | 1.1.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [308](#text-308) |
+| idna_adapter | 1.2.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [35](#text-35) |
+| ignore | 0.4.33 | Unlicense OR MIT | crates.io | [453](#text-453) [454](#text-454) [455](#text-455) |
+| image | 0.25.10 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [319](#text-319) |
+| image-webp | 0.2.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [319](#text-319) |
+| imagesize | 0.13.0 | MIT | crates.io | [125](#text-125) |
+| imagesize | 0.14.0 | MIT | crates.io | [125](#text-125) |
 | imap-proto | 0.16.7 | MIT OR Apache-2.0 | crates.io | — |
-| imgref | 1.12.3 | CC0-1.0 OR Apache-2.0 | crates.io | [225](#text-225) [84](#text-84) |
-| indexmap | 2.14.2 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [35](#text-35) |
-| inotify | 0.11.5 | ISC | crates.io | [86](#text-86) |
-| inotify-sys | 0.1.8 | ISC | crates.io | [86](#text-86) |
-| inout | 0.1.4 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [338](#text-338) |
-| instant | 0.1.13 | BSD-3-Clause | crates.io | [72](#text-72) |
-| interpolate_name | 0.2.4 | MIT | crates.io | [92](#text-92) |
-| inventory | 0.3.25 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| io-enum | 1.3.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [223](#text-223) |
-| io-surface | 0.16.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| ipnet | 2.12.2 | MIT OR Apache-2.0 | crates.io | [250](#text-250) [339](#text-339) |
-| is-docker | 0.2.0 | MIT | crates.io | [124](#text-124) |
-| is-wsl | 0.4.0 | MIT | crates.io | [124](#text-124) |
-| itertools | 0.11.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [313](#text-313) |
-| itertools | 0.13.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [313](#text-313) |
-| itertools | 0.14.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [313](#text-313) |
-| itoa | 1.0.18 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| jni-sys | 0.3.1 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [340](#text-340) |
-| jni-sys | 0.4.1 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [340](#text-340) |
+| imgref | 1.12.3 | CC0-1.0 OR Apache-2.0 | crates.io | [227](#text-227) [86](#text-86) |
+| indexmap | 2.14.2 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [36](#text-36) |
+| inotify | 0.11.5 | ISC | crates.io | [88](#text-88) |
+| inotify-sys | 0.1.8 | ISC | crates.io | [88](#text-88) |
+| inout | 0.1.4 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [340](#text-340) |
+| instant | 0.1.13 | BSD-3-Clause | crates.io | [74](#text-74) |
+| interpolate_name | 0.2.4 | MIT | crates.io | [94](#text-94) |
+| inventory | 0.3.25 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| io-enum | 1.3.0 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [225](#text-225) |
+| io-surface | 0.16.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| ipnet | 2.12.2 | MIT OR Apache-2.0 | crates.io | [252](#text-252) [341](#text-341) |
+| is-docker | 0.2.0 | MIT | crates.io | [126](#text-126) |
+| is-wsl | 0.4.0 | MIT | crates.io | [126](#text-126) |
+| itertools | 0.11.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [315](#text-315) |
+| itertools | 0.13.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [315](#text-315) |
+| itertools | 0.14.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [315](#text-315) |
+| itoa | 1.0.18 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| jni-sys | 0.3.1 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [342](#text-342) |
+| jni-sys | 0.4.1 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [342](#text-342) |
 | jni-sys-macros | 0.4.1 | MIT OR Apache-2.0 | crates.io | — |
-| jobserver | 0.1.35 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| js-sys | 0.3.106 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| keyboard-types | 0.7.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [341](#text-341) |
-| khronos-egl | 6.0.0 | MIT/Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
+| jobserver | 0.1.35 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| js-sys | 0.3.106 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| keyboard-types | 0.7.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [343](#text-343) |
+| khronos-egl | 6.0.0 | MIT/Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
 | khronos_api | 3.1.0 | Apache-2.0 | crates.io | — |
-| kqueue | 1.2.1 | MIT | crates.io | [125](#text-125) |
-| kqueue-sys | 1.1.2 | MIT | crates.io | [125](#text-125) |
-| kurbo | 0.11.3 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [36](#text-36) |
-| kurbo | 0.13.1 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [36](#text-36) |
-| lazy_static | 1.5.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
+| kqueue | 1.2.1 | MIT | crates.io | [127](#text-127) |
+| kqueue-sys | 1.1.2 | MIT | crates.io | [127](#text-127) |
+| kurbo | 0.11.3 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [37](#text-37) |
+| kurbo | 0.13.1 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [37](#text-37) |
+| lazy_static | 1.5.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
 | leak | 0.1.2 | Apache-2.0 OR MIT | crates.io | — |
 | leaky-cow | 0.1.1 | MIT / Apache-2.0 | crates.io | — |
-| lebe | 0.5.3 | BSD-3-Clause | crates.io | [78](#text-78) |
-| libc | 0.2.190 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [342](#text-342) |
-| libfuzzer-sys | 0.4.13 | (MIT OR Apache-2.0) AND NCSA | crates.io | [222](#text-222) [343](#text-343) |
-| libloading | 0.8.9 | ISC | crates.io | [87](#text-87) |
-| libm | 0.2.16 | MIT | crates.io | [207](#text-207) |
-| libredox | 0.1.25 | MIT | crates.io | [126](#text-126) |
-| libsqlite3-sys | 0.30.1 | MIT | crates.io | [127](#text-127) |
-| linebender_resource_handle | 0.1.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [227](#text-227) |
-| link-section | 0.19.3 | Apache-2.0 OR MIT | crates.io | [20](#text-20) [29](#text-29) |
-| linktime-proc-macro | 0.2.3 | Apache-2.0 OR MIT | crates.io | [20](#text-20) [29](#text-29) |
-| linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [222](#text-222) [56](#text-56) [223](#text-223) |
-| litemap | 0.8.3 | Unicode-3.0 | crates.io | [450](#text-450) |
-| litrs | 1.0.0 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [344](#text-344) |
-| lock_api | 0.4.14 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [284](#text-284) |
-| log | 0.4.34 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| loop9 | 0.1.5 | MIT | crates.io | [128](#text-128) |
-| lru | 0.18.5 | MIT | crates.io | [129](#text-129) |
-| lru-slab | 0.1.3 | MIT OR Apache-2.0 OR Zlib | crates.io | [225](#text-225) [408](#text-408) [414](#text-414) |
-| lsp-types | 0.97.0 | MIT | crates.io | [130](#text-130) |
+| lebe | 0.5.3 | BSD-3-Clause | crates.io | [80](#text-80) |
+| libc | 0.2.190 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [344](#text-344) |
+| libfuzzer-sys | 0.4.13 | (MIT OR Apache-2.0) AND NCSA | crates.io | [224](#text-224) [345](#text-345) |
+| libloading | 0.8.9 | ISC | crates.io | [89](#text-89) |
+| libm | 0.2.16 | MIT | crates.io | [209](#text-209) |
+| libredox | 0.1.25 | MIT | crates.io | [128](#text-128) |
+| libsqlite3-sys | 0.30.1 | MIT | crates.io | [129](#text-129) |
+| linebender_resource_handle | 0.1.1 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [229](#text-229) |
+| link-section | 0.19.3 | Apache-2.0 OR MIT | crates.io | [22](#text-22) [31](#text-31) |
+| linktime-proc-macro | 0.2.3 | Apache-2.0 OR MIT | crates.io | [22](#text-22) [31](#text-31) |
+| linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [224](#text-224) [58](#text-58) [225](#text-225) |
+| litemap | 0.8.3 | Unicode-3.0 | crates.io | [452](#text-452) |
+| litrs | 1.0.0 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [346](#text-346) |
+| lock_api | 0.4.14 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [286](#text-286) |
+| log | 0.4.34 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| loop9 | 0.1.5 | MIT | crates.io | [130](#text-130) |
+| lru | 0.18.5 | MIT | crates.io | [131](#text-131) |
+| lru-slab | 0.1.3 | MIT OR Apache-2.0 OR Zlib | crates.io | [227](#text-227) [411](#text-411) [417](#text-417) |
+| lsp-types | 0.97.0 | MIT | crates.io | [132](#text-132) |
 | lyon | 1.0.19 | MIT OR Apache-2.0 | crates.io | — |
 | lyon_algorithms | 1.0.21 | MIT OR Apache-2.0 | crates.io | — |
 | lyon_geom | 1.0.19 | MIT OR Apache-2.0 | crates.io | — |
@@ -443,71 +443,70 @@
 | lyon_tessellation | 1.0.22 | MIT OR Apache-2.0 | crates.io | — |
 | mac | 0.1.1 | MIT/Apache-2.0 | crates.io | — |
 | mac-notification-sys | 0.6.15 | MIT/Apache-2.0 | crates.io | — |
-| mach2 | 0.6.0 | BSD-2-Clause OR MIT OR Apache-2.0 | crates.io | [232](#text-232) [69](#text-69) [70](#text-70) |
-| macro_magic | 0.5.1 | MIT | crates.io | [131](#text-131) |
-| macro_magic_core | 0.5.1 | MIT | crates.io | [131](#text-131) |
-| macro_magic_core_macros | 0.5.1 | MIT | crates.io | [131](#text-131) |
-| macro_magic_macros | 0.5.1 | MIT | crates.io | [131](#text-131) |
+| mach2 | 0.6.0 | BSD-2-Clause OR MIT OR Apache-2.0 | crates.io | [234](#text-234) [71](#text-71) [72](#text-72) |
+| macro_magic | 0.5.1 | MIT | crates.io | [133](#text-133) |
+| macro_magic_core | 0.5.1 | MIT | crates.io | [133](#text-133) |
+| macro_magic_core_macros | 0.5.1 | MIT | crates.io | [133](#text-133) |
+| macro_magic_macros | 0.5.1 | MIT | crates.io | [133](#text-133) |
 | mail-builder | 0.4.4 | Apache-2.0 OR MIT | crates.io | — |
 | mail-parser | 0.11.9 | Apache-2.0 OR MIT | crates.io | — |
 | malloc_buf | 0.0.6 | MIT | crates.io | — |
-| manyhow | 0.11.4 | MIT OR Apache-2.0 | crates.io | [251](#text-251) [345](#text-345) |
-| manyhow-macros | 0.11.4 | MIT OR Apache-2.0 | crates.io | [228](#text-228) |
-| markdown | 1.0.0 | MIT | crates.io | [215](#text-215) |
-| markup5ever | 0.12.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [334](#text-334) |
-| markup5ever_rcdom | 0.3.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [334](#text-334) |
-| maybe-rayon | 0.1.1 | MIT | crates.io | [132](#text-132) |
-| md-5 | 0.10.6 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [346](#text-346) |
-| md-5 | 0.11.0 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [347](#text-347) |
-| memchr | 2.8.3 | Unlicense OR MIT | crates.io | [451](#text-451) [452](#text-452) [453](#text-453) |
-| memmap2 | 0.9.11 | MIT OR Apache-2.0 | crates.io | [252](#text-252) [348](#text-348) |
-| memoffset | 0.9.1 | MIT | crates.io | [118](#text-118) |
-| metal | 0.33.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [343](#text-343) |
-| mime | 0.3.17 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [349](#text-349) |
-| mime_guess | 2.0.5 | MIT | crates.io | [133](#text-133) |
-| minimal-lexical | 0.2.1 | MIT/Apache-2.0 | crates.io | [21](#text-21) [223](#text-223) [447](#text-447) |
-| minisign-verify | 0.3.0 | MIT | crates.io | [134](#text-134) |
-| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | crates.io | [418](#text-418) [224](#text-224) [419](#text-419) [420](#text-420) |
-| miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | crates.io | [418](#text-418) [224](#text-224) [419](#text-419) [420](#text-420) |
-| mio | 1.2.4 | MIT | crates.io | [135](#text-135) |
-| miow | 0.6.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
+| manyhow | 0.11.4 | MIT OR Apache-2.0 | crates.io | [253](#text-253) [347](#text-347) |
+| manyhow-macros | 0.11.4 | MIT OR Apache-2.0 | crates.io | [230](#text-230) |
+| markdown | 1.0.0 | MIT | crates.io | [217](#text-217) |
+| markup5ever | 0.12.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [336](#text-336) |
+| markup5ever_rcdom | 0.3.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [336](#text-336) |
+| maybe-rayon | 0.1.1 | MIT | crates.io | [134](#text-134) |
+| md-5 | 0.10.6 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [348](#text-348) |
+| md-5 | 0.11.0 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [349](#text-349) |
+| memchr | 2.8.3 | Unlicense OR MIT | crates.io | [453](#text-453) [454](#text-454) [455](#text-455) |
+| memmap2 | 0.9.11 | MIT OR Apache-2.0 | crates.io | [254](#text-254) [350](#text-350) |
+| memoffset | 0.9.1 | MIT | crates.io | [120](#text-120) |
+| metal | 0.33.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [345](#text-345) |
+| mime | 0.3.17 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [351](#text-351) |
+| mime_guess | 2.0.5 | MIT | crates.io | [135](#text-135) |
+| minimal-lexical | 0.2.1 | MIT/Apache-2.0 | crates.io | [23](#text-23) [225](#text-225) [449](#text-449) |
+| minisign-verify | 0.3.0 | MIT | crates.io | [136](#text-136) |
+| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | crates.io | [421](#text-421) [226](#text-226) [422](#text-422) [423](#text-423) |
+| miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | crates.io | [421](#text-421) [226](#text-226) [422](#text-422) [423](#text-423) |
+| mio | 1.2.4 | MIT | crates.io | [137](#text-137) |
+| miow | 0.6.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
 | mongocrypt | 0.3.2 | Apache-2.0 | crates.io | — |
 | mongocrypt-sys | 0.1.6+1.18.2 | Apache-2.0 | crates.io | — |
 | mongodb | 3.6.0 | Apache-2.0 | crates.io | — |
 | mongodb-internal-macros | 3.6.0 | Apache-2.0 | crates.io | — |
-| moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | crates.io | [80](#text-80) [81](#text-81) |
-| muda | 0.19.3 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [33](#text-33) [52](#text-52) |
-| multiversion_no_op | 1.0.0 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [31](#text-31) |
-| mysql | 28.0.3 | MIT/Apache-2.0 | crates.io | [222](#text-222) [434](#text-434) |
+| moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | crates.io | [82](#text-82) [83](#text-83) |
+| muda | 0.19.3 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [34](#text-34) [54](#text-54) |
+| mysql | 28.0.3 | MIT/Apache-2.0 | crates.io | [224](#text-224) [436](#text-436) |
 | mysql-common-derive | 0.32.2 | MIT OR Apache-2.0 | crates.io | — |
-| mysql_common | 0.37.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [350](#text-350) |
-| naga | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| named_pipe | 0.4.1 | MIT OR Apache-2.0 | crates.io | [253](#text-253) [351](#text-351) |
+| mysql_common | 0.37.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [352](#text-352) |
+| naga | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| named_pipe | 0.4.1 | MIT OR Apache-2.0 | crates.io | [255](#text-255) [353](#text-353) |
 | ndk-sys | 0.6.0+11769913 | MIT OR Apache-2.0 | crates.io | — |
-| new_debug_unreachable | 1.0.6 | MIT | crates.io | [193](#text-193) |
-| no_std_io2 | 0.9.4 | Apache-2.0 OR MIT | crates.io | [234](#text-234) [37](#text-37) |
-| nohash-hasher | 0.2.0 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [38](#text-38) |
-| nom | 7.1.3 | MIT | crates.io | [136](#text-136) |
-| nom | 8.0.0 | MIT | crates.io | [136](#text-136) |
-| noop_proc_macro | 0.3.0 | MIT | crates.io | [137](#text-137) |
-| normpath | 1.5.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [352](#text-352) [396](#text-396) |
-| notify | 8.2.0 | CC0-1.0 | crates.io | [83](#text-83) |
-| notify-rust | 4.18.2 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [353](#text-353) |
-| notify-types | 2.1.0 | MIT OR Apache-2.0 | crates.io | [254](#text-254) [354](#text-354) |
-| ntapi | 0.4.3 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [39](#text-39) |
-| nu-ansi-term | 0.50.3 | MIT | crates.io | [138](#text-138) |
-| num | 0.4.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num-bigint | 0.4.8 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num-bigint-dig | 0.9.1 | MIT/Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num-complex | 0.4.6 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num-conv | 0.1.0 | MIT OR Apache-2.0 | crates.io | [268](#text-268) [355](#text-355) |
-| num-derive | 0.4.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num-integer | 0.1.47 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num-iter | 0.1.46 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num-rational | 0.4.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num-traits | 0.2.19 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| num_cpus | 1.17.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [336](#text-336) |
-| objc | 0.2.7 | MIT | crates.io | [208](#text-208) |
+| new_debug_unreachable | 1.0.6 | MIT | crates.io | [195](#text-195) |
+| no_std_io2 | 0.9.4 | Apache-2.0 OR MIT | crates.io | [236](#text-236) [38](#text-38) |
+| nohash-hasher | 0.2.0 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [39](#text-39) |
+| nom | 7.1.3 | MIT | crates.io | [138](#text-138) |
+| nom | 8.0.0 | MIT | crates.io | [138](#text-138) |
+| noop_proc_macro | 0.3.0 | MIT | crates.io | [139](#text-139) |
+| normpath | 1.5.2 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [354](#text-354) [399](#text-399) |
+| notify | 8.2.0 | CC0-1.0 | crates.io | [85](#text-85) |
+| notify-rust | 4.18.2 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [355](#text-355) |
+| notify-types | 2.1.0 | MIT OR Apache-2.0 | crates.io | [256](#text-256) [356](#text-356) |
+| ntapi | 0.4.3 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [40](#text-40) |
+| nu-ansi-term | 0.50.3 | MIT | crates.io | [140](#text-140) |
+| num | 0.4.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num-bigint | 0.4.8 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num-bigint-dig | 0.9.1 | MIT/Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num-complex | 0.4.6 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num-conv | 0.1.0 | MIT OR Apache-2.0 | crates.io | [270](#text-270) [357](#text-357) |
+| num-derive | 0.4.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num-integer | 0.1.47 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num-iter | 0.1.46 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num-rational | 0.4.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num-traits | 0.2.19 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| num_cpus | 1.17.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [338](#text-338) |
+| objc | 0.2.7 | MIT | crates.io | [210](#text-210) |
 | objc-foundation | 0.1.1 | MIT | crates.io | — |
 | objc-sys | 0.3.5 | MIT | crates.io | — |
 | objc2 | 0.5.3 | MIT | crates.io | — |
@@ -537,488 +536,491 @@
 | objc2-user-notifications | 0.3.2 | Zlib OR Apache-2.0 OR MIT | crates.io | — |
 | objc_exception | 0.1.2 | MIT | crates.io | — |
 | objc_id | 0.1.1 | MIT | crates.io | — |
-| object | 0.37.3 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [40](#text-40) |
-| once_cell | 1.21.4 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| oo7 | 0.6.0 | MIT | crates.io | [139](#text-139) |
-| open | 5.4.4 | MIT | crates.io | [197](#text-197) |
-| openssl-probe | 0.1.6 | MIT/Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| openssl-probe | 0.2.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| option-ext | 0.2.0 | MPL-2.0 | crates.io | [449](#text-449) |
-| ordered-float | 5.5.0 | MIT | crates.io | [193](#text-193) |
-| ordered-stream | 0.2.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| parking | 2.2.1 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) [50](#text-50) |
-| parking_lot | 0.12.5 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [284](#text-284) |
-| parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [284](#text-284) |
-| paste | 1.0.15 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| pastey | 0.1.1 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
+| object | 0.37.3 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [41](#text-41) |
+| once_cell | 1.21.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| oo7 | 0.6.0 | MIT | crates.io | [141](#text-141) |
+| open | 5.4.4 | MIT | crates.io | [199](#text-199) |
+| openssl-probe | 0.1.6 | MIT/Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| openssl-probe | 0.2.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| option-ext | 0.2.0 | MPL-2.0 | crates.io | [451](#text-451) |
+| ordered-float | 5.5.0 | MIT | crates.io | [195](#text-195) |
+| ordered-stream | 0.2.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| parking | 2.2.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) [52](#text-52) |
+| parking_lot | 0.12.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [286](#text-286) |
+| parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [286](#text-286) |
+| paste | 1.0.15 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| pastey | 0.1.1 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
 | pathfinder_geometry | 0.5.1 | MIT/Apache-2.0 | crates.io | — |
 | pathfinder_simd | 0.5.6 | MIT OR Apache-2.0 | crates.io | — |
-| pbkdf2 | 0.12.2 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [356](#text-356) |
-| pem | 4.0.0 | MIT | crates.io | [198](#text-198) |
-| percent-encoding | 2.3.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [306](#text-306) |
-| phf | 0.11.3 | MIT | crates.io | [140](#text-140) |
-| phf | 0.13.1 | MIT | crates.io | [140](#text-140) |
-| phf_codegen | 0.11.3 | MIT | crates.io | [140](#text-140) |
-| phf_generator | 0.11.3 | MIT | crates.io | [140](#text-140) |
-| phf_generator | 0.13.1 | MIT | crates.io | [140](#text-140) |
-| phf_macros | 0.13.1 | MIT | crates.io | [140](#text-140) |
-| phf_shared | 0.11.3 | MIT | crates.io | [140](#text-140) |
-| phf_shared | 0.13.1 | MIT | crates.io | [140](#text-140) |
-| pico-args | 0.5.0 | MIT | crates.io | [141](#text-141) |
-| pin-project | 1.1.13 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [223](#text-223) |
-| pin-project-internal | 1.1.13 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [223](#text-223) |
-| pin-project-lite | 0.2.17 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [223](#text-223) |
-| pin-utils | 0.1.1 | MIT OR Apache-2.0 | crates.io | [255](#text-255) [357](#text-357) |
-| pinyin | 0.11.0 | MIT | crates.io | [142](#text-142) |
-| piper | 0.2.5 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| pkg-config | 0.3.34 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| png | 0.17.16 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [358](#text-358) |
-| png | 0.18.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [358](#text-358) |
-| polling | 3.11.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| pollster | 0.2.5 | Apache-2.0/MIT | crates.io | [222](#text-222) [61](#text-61) |
-| pollster | 0.4.0 | Apache-2.0/MIT | crates.io | [222](#text-222) [61](#text-61) |
-| polycool | 0.4.0 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [36](#text-36) |
-| portable-atomic | 1.15.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [223](#text-223) |
-| portable-atomic-util | 0.2.8 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [223](#text-223) |
-| postage | 0.5.0 | MIT | crates.io | [143](#text-143) |
-| postgres | 0.19.14 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [359](#text-359) |
-| postgres-protocol | 0.6.12 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [359](#text-359) |
-| postgres-types | 0.2.14 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [359](#text-359) |
-| postgres_rustls | 0.1.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [360](#text-360) |
-| potential_utf | 0.1.6 | Unicode-3.0 | crates.io | [450](#text-450) |
-| powerfmt | 0.2.1 | MIT OR Apache-2.0 | crates.io | [269](#text-269) [361](#text-361) |
-| ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 | crates.io | [256](#text-256) [362](#text-362) |
-| precomputed-hash | 0.1.1 | MIT | crates.io | [144](#text-144) |
-| presser | 0.3.1 | MIT OR Apache-2.0 | crates.io | [21](#text-21) [363](#text-363) |
-| pretty-hex | 0.3.0 | MIT | crates.io | [145](#text-145) |
-| proc-macro-crate | 3.5.0 | MIT OR Apache-2.0 | crates.io | [230](#text-230) [223](#text-223) |
-| proc-macro-utils | 0.10.0 | MIT OR Apache-2.0 | crates.io | [251](#text-251) [345](#text-345) |
-| proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
+| pbkdf2 | 0.12.2 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [358](#text-358) |
+| pem | 4.0.0 | MIT | crates.io | [200](#text-200) |
+| percent-encoding | 2.3.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [308](#text-308) |
+| phf | 0.11.3 | MIT | crates.io | [142](#text-142) |
+| phf | 0.13.1 | MIT | crates.io | [142](#text-142) |
+| phf_codegen | 0.11.3 | MIT | crates.io | [142](#text-142) |
+| phf_generator | 0.11.3 | MIT | crates.io | [142](#text-142) |
+| phf_generator | 0.13.1 | MIT | crates.io | [142](#text-142) |
+| phf_macros | 0.13.1 | MIT | crates.io | [142](#text-142) |
+| phf_shared | 0.11.3 | MIT | crates.io | [142](#text-142) |
+| phf_shared | 0.13.1 | MIT | crates.io | [142](#text-142) |
+| pico-args | 0.5.0 | MIT | crates.io | [143](#text-143) |
+| pin-project | 1.1.13 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [225](#text-225) |
+| pin-project-internal | 1.1.13 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [225](#text-225) |
+| pin-project-lite | 0.2.17 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [225](#text-225) |
+| pin-utils | 0.1.1 | MIT OR Apache-2.0 | crates.io | [257](#text-257) [359](#text-359) |
+| pinyin | 0.11.0 | MIT | crates.io | [144](#text-144) |
+| piper | 0.2.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| pkg-config | 0.3.34 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| png | 0.17.16 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [360](#text-360) |
+| png | 0.18.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [360](#text-360) |
+| polling | 3.11.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| pollster | 0.2.5 | Apache-2.0/MIT | crates.io | [224](#text-224) [63](#text-63) |
+| pollster | 0.4.0 | Apache-2.0/MIT | crates.io | [224](#text-224) [63](#text-63) |
+| polycool | 0.4.0 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [37](#text-37) |
+| portable-atomic | 1.15.0 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [225](#text-225) |
+| portable-atomic-util | 0.2.8 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [225](#text-225) |
+| postage | 0.5.0 | MIT | crates.io | [145](#text-145) |
+| postgres | 0.19.14 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [361](#text-361) |
+| postgres-protocol | 0.6.12 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [361](#text-361) |
+| postgres-types | 0.2.14 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [361](#text-361) |
+| postgres_rustls | 0.1.1 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [362](#text-362) |
+| potential_utf | 0.1.6 | Unicode-3.0 | crates.io | [452](#text-452) |
+| powerfmt | 0.2.1 | MIT OR Apache-2.0 | crates.io | [271](#text-271) [363](#text-363) |
+| ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 | crates.io | [258](#text-258) [364](#text-364) |
+| precomputed-hash | 0.1.1 | MIT | crates.io | [146](#text-146) |
+| presser | 0.3.1 | MIT OR Apache-2.0 | crates.io | [23](#text-23) [365](#text-365) |
+| pretty-hex | 0.3.0 | MIT | crates.io | [147](#text-147) |
+| proc-macro-crate | 3.5.0 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [225](#text-225) |
+| proc-macro-utils | 0.10.0 | MIT OR Apache-2.0 | crates.io | [253](#text-253) [347](#text-347) |
+| proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
 | profiling | 1.0.18 | MIT OR Apache-2.0 | crates.io | — |
 | profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 | crates.io | — |
-| proptest | 1.10.0 | MIT OR Apache-2.0 | https://github.com/proptest-rs/proptest | [222](#text-222) [364](#text-364) |
-| proptest-macro | 0.5.0 | MIT OR Apache-2.0 | https://github.com/proptest-rs/proptest | [222](#text-222) [364](#text-364) |
-| pulp | 0.22.3 | MIT | crates.io | [146](#text-146) |
+| proptest | 1.10.0 | MIT OR Apache-2.0 | https://github.com/proptest-rs/proptest | [224](#text-224) [366](#text-366) |
+| proptest-macro | 0.5.0 | MIT OR Apache-2.0 | https://github.com/proptest-rs/proptest | [224](#text-224) [366](#text-366) |
+| pulp | 0.22.3 | MIT | crates.io | [148](#text-148) |
 | pulp-wasm-simd-flag | 0.1.1 | MIT | crates.io | — |
-| pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 | crates.io | [80](#text-80) [81](#text-81) |
-| qoi | 0.4.1 | MIT/Apache-2.0 | crates.io | [21](#text-21) [435](#text-435) |
-| quick-error | 1.2.3 | MIT/Apache-2.0 | crates.io | [234](#text-234) [436](#text-436) |
-| quick-error | 2.0.1 | MIT/Apache-2.0 | crates.io | [234](#text-234) [436](#text-436) |
-| quick-xml | 0.41.0 | MIT | crates.io | [195](#text-195) |
-| quinn | 0.11.12 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [365](#text-365) |
-| quinn-proto | 0.11.19 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [365](#text-365) |
-| quinn-udp | 0.5.16 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [365](#text-365) |
-| quote | 1.0.47 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
+| pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 | crates.io | [82](#text-82) [83](#text-83) |
+| qoi | 0.4.1 | MIT/Apache-2.0 | crates.io | [23](#text-23) [437](#text-437) |
+| quick-error | 1.2.3 | MIT/Apache-2.0 | crates.io | [236](#text-236) [438](#text-438) |
+| quick-error | 2.0.1 | MIT/Apache-2.0 | crates.io | [236](#text-236) [438](#text-438) |
+| quick-xml | 0.41.0 | MIT | crates.io | [197](#text-197) |
+| quinn | 0.11.12 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [367](#text-367) |
+| quinn-proto | 0.11.19 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [367](#text-367) |
+| quinn-udp | 0.5.16 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [367](#text-367) |
+| quote | 1.0.47 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
 | r-efi | 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | crates.io | — |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | crates.io | — |
-| radium | 0.7.0 | MIT | crates.io | [209](#text-209) |
-| rand | 0.10.3 | MIT OR Apache-2.0 | crates.io | [257](#text-257) [366](#text-366) |
-| rand | 0.8.8 | MIT OR Apache-2.0 | crates.io | [257](#text-257) [366](#text-366) |
-| rand | 0.9.5 | MIT OR Apache-2.0 | crates.io | [257](#text-257) [366](#text-366) |
-| rand_chacha | 0.3.1 | MIT OR Apache-2.0 | crates.io | [245](#text-245) [366](#text-366) |
-| rand_chacha | 0.9.0 | MIT OR Apache-2.0 | crates.io | [257](#text-257) [366](#text-366) |
-| rand_core | 0.10.1 | MIT OR Apache-2.0 | crates.io | [258](#text-258) [367](#text-367) |
-| rand_core | 0.6.4 | MIT OR Apache-2.0 | crates.io | [258](#text-258) [366](#text-366) |
-| rand_core | 0.9.5 | MIT OR Apache-2.0 | crates.io | [258](#text-258) [366](#text-366) |
-| rand_pcg | 0.10.2 | MIT OR Apache-2.0 | crates.io | [258](#text-258) [368](#text-368) |
-| rand_xorshift | 0.4.0 | MIT OR Apache-2.0 | crates.io | [257](#text-257) [366](#text-366) |
-| range-alloc | 0.1.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [398](#text-398) |
-| rangemap | 1.8.0 | MIT/Apache-2.0 | crates.io | [424](#text-424) [437](#text-437) |
-| rav1e | 0.8.1 | BSD-2-Clause | crates.io | [64](#text-64) |
-| ravif | 0.13.0 | BSD-3-Clause | crates.io | [73](#text-73) |
-| raw-cpuid | 11.6.0 | MIT | crates.io | [199](#text-199) |
-| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | crates.io | [224](#text-224) [411](#text-411) [417](#text-417) |
-| raw-window-metal | 1.1.0 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [369](#text-369) |
-| rayon | 1.12.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [343](#text-343) |
-| rayon-core | 1.13.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [343](#text-343) |
-| read-fonts | 0.37.0 | MIT OR Apache-2.0 | crates.io | [242](#text-242) [320](#text-320) |
-| read-fonts | 0.41.0 | MIT OR Apache-2.0 | crates.io | [243](#text-243) [321](#text-321) |
-| reborrow | 0.5.5 | MIT | crates.io | [91](#text-91) |
-| redis | 1.2.2 | BSD-3-Clause | crates.io | [74](#text-74) |
-| redox_syscall | 0.5.18 | MIT | crates.io | [147](#text-147) |
-| redox_users | 0.5.3 | MIT | crates.io | [148](#text-148) |
-| ref-cast | 1.0.27 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| ref-cast-impl | 1.0.27 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| refineable | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| regex | 1.13.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| regex-automata | 0.4.18 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| regex-syntax | 0.8.11 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| relative-path | 2.0.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [288](#text-288) |
-| renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [370](#text-370) |
-| resvg | 0.45.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [41](#text-41) |
-| resvg | 0.46.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [41](#text-41) |
-| rfd | 0.16.0 | MIT | crates.io | [149](#text-149) |
-| rgb | 0.8.53 | MIT | crates.io | [150](#text-150) |
-| ring | 0.17.14 | Apache-2.0 AND ISC | crates.io | [10](#text-10) [11](#text-11) [12](#text-12) |
-| ropey | 2.0.0-beta.1 | MIT OR Apache-2.0 | crates.io | [259](#text-259) [371](#text-371) |
-| roxmltree | 0.20.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [372](#text-372) |
-| roxmltree | 0.21.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [372](#text-372) |
-| rquickjs | 0.11.0 | MIT | crates.io | [151](#text-151) |
+| radium | 0.7.0 | MIT | crates.io | [211](#text-211) |
+| rand | 0.10.3 | MIT OR Apache-2.0 | crates.io | [259](#text-259) [368](#text-368) |
+| rand | 0.8.8 | MIT OR Apache-2.0 | crates.io | [259](#text-259) [368](#text-368) |
+| rand | 0.9.5 | MIT OR Apache-2.0 | crates.io | [259](#text-259) [368](#text-368) |
+| rand_chacha | 0.3.1 | MIT OR Apache-2.0 | crates.io | [247](#text-247) [368](#text-368) |
+| rand_chacha | 0.9.0 | MIT OR Apache-2.0 | crates.io | [259](#text-259) [368](#text-368) |
+| rand_core | 0.10.1 | MIT OR Apache-2.0 | crates.io | [260](#text-260) [369](#text-369) |
+| rand_core | 0.6.4 | MIT OR Apache-2.0 | crates.io | [260](#text-260) [368](#text-368) |
+| rand_core | 0.9.5 | MIT OR Apache-2.0 | crates.io | [260](#text-260) [368](#text-368) |
+| rand_pcg | 0.10.2 | MIT OR Apache-2.0 | crates.io | [260](#text-260) [370](#text-370) |
+| rand_xorshift | 0.4.0 | MIT OR Apache-2.0 | crates.io | [259](#text-259) [368](#text-368) |
+| range-alloc | 0.1.5 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [401](#text-401) |
+| rangemap | 1.8.0 | MIT/Apache-2.0 | crates.io | [427](#text-427) [439](#text-439) |
+| rav1e | 0.8.1 | BSD-2-Clause | crates.io | [66](#text-66) |
+| ravif | 0.13.0 | BSD-3-Clause | crates.io | [75](#text-75) |
+| raw-cpuid | 11.6.0 | MIT | crates.io | [201](#text-201) |
+| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | crates.io | [226](#text-226) [414](#text-414) [420](#text-420) |
+| raw-window-metal | 1.1.0 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [371](#text-371) |
+| rayon | 1.12.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [345](#text-345) |
+| rayon-core | 1.13.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [345](#text-345) |
+| read-fonts | 0.37.0 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [322](#text-322) |
+| read-fonts | 0.41.0 | MIT OR Apache-2.0 | crates.io | [245](#text-245) [323](#text-323) |
+| reborrow | 0.5.5 | MIT | crates.io | [93](#text-93) |
+| redis | 1.2.2 | BSD-3-Clause | crates.io | [76](#text-76) |
+| redox_syscall | 0.5.18 | MIT | crates.io | [149](#text-149) |
+| redox_users | 0.5.3 | MIT | crates.io | [150](#text-150) |
+| ref-cast | 1.0.27 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| ref-cast-impl | 1.0.27 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| refineable | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| regex | 1.13.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| regex-automata | 0.4.18 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| regex-syntax | 0.8.11 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| relative-path | 2.0.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [290](#text-290) |
+| renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [372](#text-372) |
+| resvg | 0.45.1 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [42](#text-42) |
+| resvg | 0.46.0 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [42](#text-42) |
+| rfd | 0.16.0 | MIT | crates.io | [151](#text-151) |
+| rgb | 0.8.53 | MIT | crates.io | [152](#text-152) |
+| ring | 0.17.14 | Apache-2.0 AND ISC | crates.io | [12](#text-12) [13](#text-13) [14](#text-14) |
+| ropey | 2.0.0-beta.1 | MIT OR Apache-2.0 | crates.io | [261](#text-261) [373](#text-373) |
+| roxmltree | 0.20.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [374](#text-374) |
+| roxmltree | 0.21.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [374](#text-374) |
+| rquickjs | 0.11.0 | MIT | crates.io | [153](#text-153) |
 | rquickjs-core | 0.11.0 | MIT | crates.io | — |
 | rquickjs-macro | 0.11.0 | MIT | crates.io | — |
 | rquickjs-sys | 0.11.0 | MIT | crates.io | — |
-| rusqlite | 0.32.1 | MIT | crates.io | [127](#text-127) |
-| rust-embed | 8.13.0 | MIT | crates.io | [152](#text-152) |
-| rust-embed-impl | 8.13.0 | MIT | crates.io | [152](#text-152) |
-| rust-embed-utils | 8.13.0 | MIT | crates.io | [152](#text-152) |
-| rust-i18n | 4.2.4 | MIT | crates.io | [153](#text-153) |
+| rusqlite | 0.32.1 | MIT | crates.io | [129](#text-129) |
+| rust-embed | 8.13.0 | MIT | crates.io | [154](#text-154) |
+| rust-embed-impl | 8.13.0 | MIT | crates.io | [154](#text-154) |
+| rust-embed-utils | 8.13.0 | MIT | crates.io | [154](#text-154) |
+| rust-i18n | 4.2.4 | MIT | crates.io | [155](#text-155) |
 | rust-i18n-macro | 4.2.4 | MIT | crates.io | — |
 | rust-i18n-support | 4.2.4 | MIT | crates.io | — |
-| rustc-demangle | 0.1.28 | MIT/Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| rustc-hash | 1.1.0 | Apache-2.0/MIT | crates.io | [222](#text-222) [223](#text-223) |
-| rustc-hash | 2.1.3 | Apache-2.0 OR MIT | crates.io | [232](#text-232) [223](#text-223) |
-| rustc_version | 0.4.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [284](#text-284) |
-| rustc_version_runtime | 0.3.0 | MIT | crates.io | [154](#text-154) |
-| rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [222](#text-222) [56](#text-56) [223](#text-223) |
-| rustix-openpty | 0.2.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [222](#text-222) [56](#text-56) [223](#text-223) |
-| rustls | 0.21.12 | Apache-2.0 OR ISC OR MIT | crates.io | [222](#text-222) [18](#text-18) [19](#text-19) |
-| rustls | 0.23.45 | Apache-2.0 OR ISC OR MIT | crates.io | [222](#text-222) [18](#text-18) [19](#text-19) |
-| rustls-native-certs | 0.6.3 | Apache-2.0 OR ISC OR MIT | crates.io | [15](#text-15) [222](#text-222) [18](#text-18) [19](#text-19) |
-| rustls-native-certs | 0.8.4 | Apache-2.0 OR ISC OR MIT | crates.io | [15](#text-15) [222](#text-222) [18](#text-18) [19](#text-19) |
-| rustls-pemfile | 1.0.4 | Apache-2.0 OR ISC OR MIT | crates.io | [16](#text-16) [222](#text-222) [18](#text-18) [19](#text-19) |
-| rustls-pemfile | 2.2.0 | Apache-2.0 OR ISC OR MIT | crates.io | [16](#text-16) [222](#text-222) [18](#text-18) [19](#text-19) |
-| rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 | crates.io | [260](#text-260) [373](#text-373) |
-| rustls-webpki | 0.101.7 | ISC | crates.io | [88](#text-88) |
-| rustls-webpki | 0.103.15 | ISC | crates.io | [88](#text-88) |
-| rustversion | 1.0.23 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| rusty-fork | 0.3.1 | MIT/Apache-2.0 | crates.io | [222](#text-222) [364](#text-364) |
-| rustybuzz | 0.20.1 | MIT | crates.io | [155](#text-155) |
-| ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 | crates.io | [232](#text-232) [82](#text-82) |
-| same-file | 1.0.6 | Unlicense/MIT | crates.io | [451](#text-451) [454](#text-454) [453](#text-453) |
-| saturating | 0.1.0 | MIT | crates.io | [156](#text-156) |
-| schannel | 0.1.29 | MIT | crates.io | [200](#text-200) |
-| scheduler | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| schemars | 1.2.2 | MIT | crates.io | [157](#text-157) |
-| schemars_derive | 1.2.2 | MIT | crates.io | [157](#text-157) |
-| scoped-tls | 1.0.1 | MIT/Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| scopeguard | 1.2.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [374](#text-374) |
+| rustc-demangle | 0.1.28 | MIT/Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| rustc-hash | 1.1.0 | Apache-2.0/MIT | crates.io | [224](#text-224) [225](#text-225) |
+| rustc-hash | 2.1.3 | Apache-2.0 OR MIT | crates.io | [234](#text-234) [225](#text-225) |
+| rustc_version | 0.4.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [286](#text-286) |
+| rustc_version_runtime | 0.3.0 | MIT | crates.io | [156](#text-156) |
+| rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [224](#text-224) [58](#text-58) [225](#text-225) |
+| rustix-openpty | 0.2.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [224](#text-224) [58](#text-58) [225](#text-225) |
+| rustls | 0.21.12 | Apache-2.0 OR ISC OR MIT | crates.io | [224](#text-224) [20](#text-20) [21](#text-21) |
+| rustls | 0.23.45 | Apache-2.0 OR ISC OR MIT | crates.io | [224](#text-224) [20](#text-20) [21](#text-21) |
+| rustls-native-certs | 0.6.3 | Apache-2.0 OR ISC OR MIT | crates.io | [17](#text-17) [224](#text-224) [20](#text-20) [21](#text-21) |
+| rustls-native-certs | 0.8.5 | Apache-2.0 OR ISC OR MIT | crates.io | [17](#text-17) [224](#text-224) [20](#text-20) [21](#text-21) |
+| rustls-pemfile | 1.0.4 | Apache-2.0 OR ISC OR MIT | crates.io | [18](#text-18) [224](#text-224) [20](#text-20) [21](#text-21) |
+| rustls-pemfile | 2.2.0 | Apache-2.0 OR ISC OR MIT | crates.io | [18](#text-18) [224](#text-224) [20](#text-20) [21](#text-21) |
+| rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 | crates.io | [262](#text-262) [375](#text-375) |
+| rustls-webpki | 0.101.7 | ISC | crates.io | [90](#text-90) |
+| rustls-webpki | 0.103.15 | ISC | crates.io | [90](#text-90) |
+| rustversion | 1.0.23 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| rusty-fork | 0.3.1 | MIT/Apache-2.0 | crates.io | [224](#text-224) [366](#text-366) |
+| rustybuzz | 0.20.1 | MIT | crates.io | [157](#text-157) |
+| ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 | crates.io | [234](#text-234) [84](#text-84) |
+| same-file | 1.0.6 | Unlicense/MIT | crates.io | [453](#text-453) [456](#text-456) [455](#text-455) |
+| saturating | 0.1.0 | MIT | crates.io | [158](#text-158) |
+| schannel | 0.1.29 | MIT | crates.io | [202](#text-202) |
+| scheduler | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| schemars | 1.2.3 | MIT | crates.io | [159](#text-159) |
+| schemars_derive | 1.2.3 | MIT | crates.io | [159](#text-159) |
+| scoped-tls | 1.0.1 | MIT/Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| scopeguard | 1.2.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [376](#text-376) |
 | screencapturekit | 0.2.8 | MIT OR Apache-2.0 | crates.io | — |
 | screencapturekit-sys | 0.2.8 | MIT OR Apache-2.0 | crates.io | — |
-| sct | 0.7.1 | Apache-2.0 OR ISC OR MIT | crates.io | [17](#text-17) [222](#text-222) [18](#text-18) [19](#text-19) |
+| sct | 0.7.1 | Apache-2.0 OR ISC OR MIT | crates.io | [19](#text-19) [224](#text-224) [20](#text-20) [21](#text-21) |
 | seahash | 4.1.0 | MIT | crates.io | — |
-| security-framework | 2.11.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [375](#text-375) |
-| security-framework | 3.7.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [375](#text-375) |
-| security-framework-sys | 2.17.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [375](#text-375) |
-| self_cell | 1.3.0 | Apache-2.0 OR GPL-2.0-only | crates.io | [225](#text-225) [14](#text-14) |
-| semver | 1.0.28 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde | 1.0.229 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde-saphyr | 1.3.0 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde_bytes | 0.11.19 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde_core | 1.0.229 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde_derive | 1.0.229 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde_derive_internals | 0.30.0 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde_json | 1.0.151 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde_repr | 0.1.21 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| serde_spanned | 0.6.9 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [274](#text-274) |
-| serde_spanned | 1.1.2 | MIT OR Apache-2.0 | crates.io | [261](#text-261) [274](#text-274) |
-| serde_urlencoded | 0.7.1 | MIT/Apache-2.0 | crates.io | [232](#text-232) [438](#text-438) |
-| serde_with | 3.17.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [313](#text-313) |
-| serde_with_macros | 3.17.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [313](#text-313) |
-| sha1 | 0.10.7 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [346](#text-346) |
-| sha1_smol | 1.0.1 | BSD-3-Clause | crates.io | [75](#text-75) |
-| sha2 | 0.10.9 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [346](#text-346) |
-| sha2 | 0.11.0 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [347](#text-347) |
-| sharded-slab | 0.1.7 | MIT | crates.io | [158](#text-158) |
-| shellexpand | 3.1.2 | MIT/Apache-2.0 | crates.io | [222](#text-222) [439](#text-439) |
-| shlex | 2.0.1 | MIT OR Apache-2.0 | crates.io | [262](#text-262) [376](#text-376) |
-| signal-hook | 0.4.5 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [377](#text-377) |
-| signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [377](#text-377) |
-| simd-adler32 | 0.3.10 | MIT | crates.io | [201](#text-201) |
+| security-framework | 2.11.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [377](#text-377) |
+| security-framework | 3.7.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [377](#text-377) |
+| security-framework-sys | 2.17.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [377](#text-377) |
+| self_cell | 1.3.0 | Apache-2.0 OR GPL-2.0-only | crates.io | [227](#text-227) [16](#text-16) |
+| semver | 1.0.28 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde | 1.0.229 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde-saphyr | 1.3.0 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde_bytes | 0.11.19 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde_core | 1.0.229 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde_derive | 1.0.229 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde_derive_internals | 0.30.0 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde_repr | 0.1.21 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| serde_spanned | 0.6.9 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [276](#text-276) |
+| serde_spanned | 1.1.2 | MIT OR Apache-2.0 | crates.io | [263](#text-263) [276](#text-276) |
+| serde_urlencoded | 0.7.1 | MIT/Apache-2.0 | crates.io | [234](#text-234) [440](#text-440) |
+| serde_with | 3.17.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [315](#text-315) |
+| serde_with_macros | 3.17.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [315](#text-315) |
+| sha1 | 0.10.7 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [348](#text-348) |
+| sha1_smol | 1.0.1 | BSD-3-Clause | crates.io | [77](#text-77) |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [348](#text-348) |
+| sha2 | 0.11.0 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [349](#text-349) |
+| sharded-slab | 0.1.7 | MIT | crates.io | [160](#text-160) |
+| shellexpand | 3.1.2 | MIT/Apache-2.0 | crates.io | [224](#text-224) [441](#text-441) |
+| shlex | 2.0.1 | MIT OR Apache-2.0 | crates.io | [264](#text-264) [378](#text-378) |
+| signal-hook | 0.4.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [379](#text-379) |
+| signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [379](#text-379) |
+| simd-adler32 | 0.3.10 | MIT | crates.io | [203](#text-203) |
 | simd_helpers | 0.1.0 | MIT | crates.io | — |
-| simdutf8 | 0.1.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [227](#text-227) |
-| simplecss | 0.2.2 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [42](#text-42) |
-| siphasher | 1.0.4 | MIT OR Apache-2.0 | crates.io | [221](#text-221) [225](#text-225) [369](#text-369) |
-| skrifa | 0.40.0 | MIT OR Apache-2.0 | crates.io | [242](#text-242) [320](#text-320) |
-| skrifa | 0.44.0 | MIT OR Apache-2.0 | crates.io | [243](#text-243) [321](#text-321) |
-| slab | 0.4.12 | MIT | crates.io | [159](#text-159) |
-| slotmap | 1.1.1 | Zlib | crates.io | [456](#text-456) |
-| smallvec | 1.16.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [378](#text-378) |
-| smol | 2.0.2 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| smol_str | 0.3.6 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| socket2 | 0.6.5 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| spin | 0.10.1 | MIT | crates.io | [160](#text-160) |
-| spin | 0.9.9 | MIT | crates.io | [160](#text-160) |
+| simplecss | 0.2.2 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [43](#text-43) |
+| siphasher | 1.0.4 | MIT OR Apache-2.0 | crates.io | [223](#text-223) [227](#text-227) [371](#text-371) |
+| skrifa | 0.40.0 | MIT OR Apache-2.0 | crates.io | [244](#text-244) [322](#text-322) |
+| skrifa | 0.44.0 | MIT OR Apache-2.0 | crates.io | [245](#text-245) [323](#text-323) |
+| slab | 0.4.12 | MIT | crates.io | [161](#text-161) |
+| slotmap | 1.1.1 | Zlib | crates.io | [458](#text-458) |
+| smallvec | 1.16.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [380](#text-380) |
+| smol | 2.0.2 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| smol_str | 0.3.6 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| socket2 | 0.6.5 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| spin | 0.10.1 | MIT | crates.io | [162](#text-162) |
+| spin | 0.9.9 | MIT | crates.io | [162](#text-162) |
 | spirv | 0.4.0+sdk-1.4.341.0 | Apache-2.0 | crates.io | — |
-| sqlparser | 0.52.0 | Apache-2.0 | crates.io | [222](#text-222) |
-| stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [379](#text-379) |
-| static_assertions | 1.1.0 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [380](#text-380) |
+| sqlformat | 0.5.0 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| sqlparser | 0.52.0 | Apache-2.0 | crates.io | [224](#text-224) |
+| sqlparser_derive | 0.2.2 | Apache-2.0 | crates.io | — |
+| stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [381](#text-381) |
+| static_assertions | 1.1.0 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [382](#text-382) |
 | stop-token | 0.7.0 | MIT OR Apache-2.0 | crates.io | — |
-| str_indices | 0.4.4 | MIT OR Apache-2.0 | crates.io | [259](#text-259) [227](#text-227) |
-| streaming-iterator | 0.1.9 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [381](#text-381) |
-| strict-num | 0.1.1 | MIT | crates.io | [161](#text-161) |
-| string_cache | 0.8.9 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| string_cache_codegen | 0.5.4 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [295](#text-295) |
-| stringprep | 0.1.5 | MIT/Apache-2.0 | crates.io | [234](#text-234) [440](#text-440) |
-| strsim | 0.11.1 | MIT | crates.io | [162](#text-162) |
-| strum | 0.28.0 | MIT | crates.io | [163](#text-163) |
-| strum_macros | 0.28.0 | MIT | crates.io | [163](#text-163) |
-| subtle | 2.6.1 | BSD-3-Clause | crates.io | [76](#text-76) |
-| sum_tree | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
+| str_indices | 0.4.4 | MIT OR Apache-2.0 | crates.io | [261](#text-261) [229](#text-229) |
+| streaming-iterator | 0.1.9 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [383](#text-383) |
+| strict-num | 0.1.1 | MIT | crates.io | [163](#text-163) |
+| string_cache | 0.8.9 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| string_cache_codegen | 0.5.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [297](#text-297) |
+| stringprep | 0.1.5 | MIT/Apache-2.0 | crates.io | [236](#text-236) [442](#text-442) |
+| strsim | 0.11.1 | MIT | crates.io | [164](#text-164) |
+| strum | 0.28.0 | MIT | crates.io | [165](#text-165) |
+| strum_macros | 0.28.0 | MIT | crates.io | [165](#text-165) |
+| subtle | 2.6.1 | BSD-3-Clause | crates.io | [78](#text-78) |
+| sum_tree | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
 | svg_fmt | 0.4.5 | MIT/Apache-2.0 | crates.io | — |
-| svgtypes | 0.15.3 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [43](#text-43) |
-| svgtypes | 0.16.1 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [43](#text-43) |
-| swash | 0.2.10 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [44](#text-44) |
-| syn | 2.0.119 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| syn | 3.0.7 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| sync_wrapper | 1.0.2 | Apache-2.0 | crates.io | [224](#text-224) |
-| synstructure | 0.14.0 | MIT | crates.io | [164](#text-164) |
-| sys-locale | 0.3.2 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [382](#text-382) |
-| sysinfo | 0.31.4 | MIT | crates.io | [165](#text-165) |
-| system-configuration | 0.6.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [383](#text-383) |
-| system-configuration-sys | 0.6.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [383](#text-383) |
+| svgtypes | 0.15.3 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [44](#text-44) |
+| svgtypes | 0.16.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [44](#text-44) |
+| swash | 0.2.10 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [45](#text-45) |
+| syn | 2.0.119 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| syn | 3.0.9 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| sync_wrapper | 1.0.2 | Apache-2.0 | crates.io | [226](#text-226) |
+| synstructure | 0.14.0 | MIT | crates.io | [166](#text-166) |
+| sys-locale | 0.3.2 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [384](#text-384) |
+| sysinfo | 0.31.4 | MIT | crates.io | [167](#text-167) |
+| system-configuration | 0.6.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [385](#text-385) |
+| system-configuration-sys | 0.6.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [385](#text-385) |
 | taffy | 0.14.0 | MIT | crates.io | — |
-| take_mut | 0.2.2 | MIT | crates.io | [166](#text-166) |
-| tao-core-video-sys | 0.2.0 | MIT | crates.io | [167](#text-167) |
-| tap | 1.0.1 | MIT | crates.io | [210](#text-210) |
-| tar | 0.4.46 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [384](#text-384) |
-| tauri-winrt-notification | 0.8.1 | MIT OR Apache-2.0 | crates.io | [399](#text-399) [224](#text-224) [402](#text-402) |
-| tempfile | 3.27.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [385](#text-385) |
-| tendril | 0.4.3 | MIT/Apache-2.0 | crates.io | [222](#text-222) [218](#text-218) |
-| termcolor | 1.4.1 | Unlicense OR MIT | crates.io | [451](#text-451) [452](#text-452) [453](#text-453) |
-| thiserror | 1.0.69 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| thiserror | 2.0.21 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| thiserror-impl | 1.0.69 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| thiserror-impl | 2.0.21 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| thread_local | 1.1.10 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [284](#text-284) |
-| tiberius | 0.12.3 | MIT/Apache-2.0 | crates.io | [426](#text-426) [446](#text-446) |
-| tiff | 0.11.3 | MIT | crates.io | [168](#text-168) |
-| time | 0.3.44 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [386](#text-386) |
-| time-core | 0.1.6 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [386](#text-386) |
-| time-macros | 0.2.24 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [386](#text-386) |
-| tiny-keccak | 2.0.2 | CC0-1.0 | crates.io | [84](#text-84) |
-| tiny-skia | 0.11.4 | BSD-3-Clause | crates.io | [77](#text-77) |
-| tiny-skia-path | 0.11.4 | BSD-3-Clause | crates.io | [77](#text-77) |
-| tinystr | 0.8.4 | Unicode-3.0 | crates.io | [450](#text-450) |
-| tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT | crates.io | [225](#text-225) [29](#text-29) [460](#text-460) |
-| tokio | 1.53.2 | MIT | crates.io | [169](#text-169) |
-| tokio-macros | 2.7.2 | MIT | crates.io | [170](#text-170) |
-| tokio-postgres | 0.7.18 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [359](#text-359) |
-| tokio-rustls | 0.24.1 | MIT/Apache-2.0 | crates.io | [425](#text-425) [441](#text-441) |
-| tokio-rustls | 0.26.6 | MIT OR Apache-2.0 | crates.io | [425](#text-425) [441](#text-441) |
-| tokio-socks | 0.5.3 | MIT | crates.io | [171](#text-171) |
-| tokio-util | 0.7.20 | MIT | crates.io | [169](#text-169) |
-| toml | 0.8.23 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [274](#text-274) |
-| toml | 1.1.8+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [261](#text-261) [274](#text-274) |
-| toml_datetime | 0.6.11 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [274](#text-274) |
-| toml_datetime | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [261](#text-261) [274](#text-274) |
-| toml_edit | 0.22.27 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [274](#text-274) |
-| toml_edit | 0.25.17+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [261](#text-261) [274](#text-274) |
-| toml_parser | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [261](#text-261) [274](#text-274) |
-| toml_write | 0.1.2 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [274](#text-274) |
-| toml_writer | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [261](#text-261) [274](#text-274) |
-| tower | 0.5.3 | MIT | crates.io | [172](#text-172) |
-| tower-layer | 0.3.3 | MIT | crates.io | [172](#text-172) |
-| tower-service | 0.3.3 | MIT | crates.io | [172](#text-172) |
-| tracing | 0.1.44 | MIT | crates.io | [173](#text-173) |
-| tracing-attributes | 0.1.31 | MIT | crates.io | [173](#text-173) |
-| tracing-core | 0.1.36 | MIT | crates.io | [173](#text-173) |
-| tracing-log | 0.2.0 | MIT | crates.io | [173](#text-173) |
-| tracing-subscriber | 0.3.23 | MIT | crates.io | [173](#text-173) |
-| tray-icon | 0.24.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [33](#text-33) [400](#text-400) |
-| tree-sitter | 0.26.13 | MIT | crates.io | [174](#text-174) |
+| take_mut | 0.2.2 | MIT | crates.io | [168](#text-168) |
+| tao-core-video-sys | 0.2.0 | MIT | crates.io | [169](#text-169) |
+| tap | 1.0.1 | MIT | crates.io | [212](#text-212) |
+| tar | 0.4.46 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [386](#text-386) |
+| tauri-winrt-notification | 0.8.1 | MIT OR Apache-2.0 | crates.io | [402](#text-402) [226](#text-226) [405](#text-405) |
+| tempfile | 3.27.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [387](#text-387) |
+| tendril | 0.4.3 | MIT/Apache-2.0 | crates.io | [224](#text-224) [220](#text-220) |
+| termcolor | 1.4.1 | Unlicense OR MIT | crates.io | [453](#text-453) [454](#text-454) [455](#text-455) |
+| thiserror | 1.0.69 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| thiserror | 2.0.21 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| thiserror-impl | 1.0.69 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| thiserror-impl | 2.0.21 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| thread_local | 1.1.10 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [286](#text-286) |
+| tiberius | 0.12.3 | MIT/Apache-2.0 | crates.io | [429](#text-429) [448](#text-448) |
+| tiff | 0.11.3 | MIT | crates.io | [170](#text-170) |
+| time | 0.3.45 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [388](#text-388) |
+| time-core | 0.1.7 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [388](#text-388) |
+| time-macros | 0.2.25 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [388](#text-388) |
+| tiny-keccak | 2.0.2 | CC0-1.0 | crates.io | [86](#text-86) |
+| tiny-skia | 0.11.4 | BSD-3-Clause | crates.io | [79](#text-79) |
+| tiny-skia-path | 0.11.4 | BSD-3-Clause | crates.io | [79](#text-79) |
+| tinystr | 0.8.4 | Unicode-3.0 | crates.io | [452](#text-452) |
+| tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT | crates.io | [227](#text-227) [31](#text-31) [462](#text-462) |
+| tokio | 1.53.2 | MIT | crates.io | [171](#text-171) |
+| tokio-macros | 2.7.2 | MIT | crates.io | [172](#text-172) |
+| tokio-postgres | 0.7.18 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [361](#text-361) |
+| tokio-rustls | 0.24.1 | MIT/Apache-2.0 | crates.io | [428](#text-428) [443](#text-443) |
+| tokio-rustls | 0.26.6 | MIT OR Apache-2.0 | crates.io | [428](#text-428) [443](#text-443) |
+| tokio-socks | 0.5.3 | MIT | crates.io | [173](#text-173) |
+| tokio-util | 0.7.20 | MIT | crates.io | [171](#text-171) |
+| toml | 0.8.23 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [276](#text-276) |
+| toml | 1.1.8+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [263](#text-263) [276](#text-276) |
+| toml_datetime | 0.6.11 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [276](#text-276) |
+| toml_datetime | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [263](#text-263) [276](#text-276) |
+| toml_edit | 0.22.27 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [276](#text-276) |
+| toml_edit | 0.25.17+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [263](#text-263) [276](#text-276) |
+| toml_parser | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [263](#text-263) [276](#text-276) |
+| toml_write | 0.1.2 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [276](#text-276) |
+| toml_writer | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | crates.io | [263](#text-263) [276](#text-276) |
+| tower | 0.5.3 | MIT | crates.io | [174](#text-174) |
+| tower-layer | 0.3.3 | MIT | crates.io | [174](#text-174) |
+| tower-service | 0.3.3 | MIT | crates.io | [174](#text-174) |
+| tracing | 0.1.44 | MIT | crates.io | [175](#text-175) |
+| tracing-attributes | 0.1.31 | MIT | crates.io | [175](#text-175) |
+| tracing-core | 0.1.36 | MIT | crates.io | [175](#text-175) |
+| tracing-log | 0.2.0 | MIT | crates.io | [175](#text-175) |
+| tracing-subscriber | 0.3.23 | MIT | crates.io | [175](#text-175) |
+| tray-icon | 0.24.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [34](#text-34) [403](#text-403) |
+| tree-sitter | 0.26.13 | MIT | crates.io | [176](#text-176) |
 | tree-sitter-json | 0.24.8 | MIT | crates.io | — |
-| tree-sitter-language | 0.1.7 | MIT | crates.io | [174](#text-174) |
+| tree-sitter-language | 0.1.7 | MIT | crates.io | [176](#text-176) |
 | tree-sitter-sequel | 0.3.11 | MIT | crates.io | — |
-| triomphe | 0.1.16 | MIT OR Apache-2.0 | crates.io | [263](#text-263) [275](#text-275) |
-| try-lock | 0.2.5 | MIT | crates.io | [175](#text-175) |
-| ttf-parser | 0.25.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [43](#text-43) |
-| twox-hash | 2.1.5 | MIT | crates.io | [211](#text-211) |
-| typed-builder | 0.22.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| typed-builder-macro | 0.22.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [223](#text-223) |
-| typenum | 1.20.1 | MIT OR Apache-2.0 | crates.io | [229](#text-229) [264](#text-264) [387](#text-387) |
-| uds_windows | 1.2.1 | MIT | crates.io | [176](#text-176) |
-| unarray | 0.1.4 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [388](#text-388) |
-| unicase | 2.10.0 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [121](#text-121) |
-| unicode-bidi | 0.3.18 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| unicode-bidi-mirroring | 0.4.0 | MIT/Apache-2.0 | crates.io | [222](#text-222) [422](#text-422) |
-| unicode-ccc | 0.4.0 | MIT/Apache-2.0 | crates.io | [222](#text-222) [422](#text-422) |
-| unicode-id | 0.3.7 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| unicode-ident | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | crates.io | [232](#text-232) [223](#text-223) [2](#text-2) |
-| unicode-linebreak | 0.1.5 | Apache-2.0 | crates.io | [225](#text-225) |
-| unicode-normalization | 0.1.25 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| unicode-properties | 0.1.3 | MIT/Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| unicode-script | 0.5.8 | MIT OR Apache-2.0 | crates.io | [265](#text-265) [275](#text-275) |
-| unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| unicode-vo | 0.1.0 | MIT/Apache-2.0 | crates.io | [222](#text-222) [42](#text-42) |
-| unicode-width | 0.2.2 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| unicode-xid | 0.2.6 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [328](#text-328) |
-| untrusted | 0.9.0 | ISC | crates.io | [89](#text-89) |
-| ureq | 3.4.2 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [389](#text-389) |
-| ureq-proto | 0.6.4 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [394](#text-394) |
-| url | 2.5.8 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [306](#text-306) |
-| urlencoding | 2.1.3 | MIT | crates.io | [177](#text-177) |
-| usvg | 0.45.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [41](#text-41) |
-| usvg | 0.46.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [41](#text-41) |
-| utf-8 | 0.7.6 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| utf8-zero | 0.8.1 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| utf8_iter | 1.0.4 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [31](#text-31) |
-| uuid | 1.28.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [45](#text-45) |
-| v_frame | 0.3.9 | BSD-2-Clause | crates.io | [65](#text-65) |
+| triomphe | 0.1.16 | MIT OR Apache-2.0 | crates.io | [265](#text-265) [277](#text-277) |
+| try-lock | 0.2.5 | MIT | crates.io | [177](#text-177) |
+| ttf-parser | 0.25.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [44](#text-44) |
+| twox-hash | 2.1.5 | MIT | crates.io | [213](#text-213) |
+| typed-builder | 0.22.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| typed-builder-macro | 0.22.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [225](#text-225) |
+| typenum | 1.20.1 | MIT OR Apache-2.0 | crates.io | [231](#text-231) [266](#text-266) [389](#text-389) |
+| uds_windows | 1.2.1 | MIT | crates.io | [178](#text-178) |
+| unarray | 0.1.4 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [390](#text-390) |
+| unicase | 2.10.0 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [123](#text-123) |
+| unicode-bidi | 0.3.18 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| unicode-bidi-mirroring | 0.4.0 | MIT/Apache-2.0 | crates.io | [224](#text-224) [425](#text-425) |
+| unicode-ccc | 0.4.0 | MIT/Apache-2.0 | crates.io | [224](#text-224) [425](#text-425) |
+| unicode-id | 0.3.7 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 | crates.io | [234](#text-234) [225](#text-225) [3](#text-3) |
+| unicode-linebreak | 0.1.5 | Apache-2.0 | crates.io | [227](#text-227) |
+| unicode-normalization | 0.1.25 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| unicode-properties | 0.1.3 | MIT/Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| unicode-script | 0.5.8 | MIT OR Apache-2.0 | crates.io | [267](#text-267) [277](#text-277) |
+| unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| unicode-vo | 0.1.0 | MIT/Apache-2.0 | crates.io | [224](#text-224) [43](#text-43) |
+| unicode-width | 0.2.2 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| unicode-xid | 0.2.6 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [330](#text-330) |
+| unicode_categories | 0.1.1 | MIT OR Apache-2.0 | crates.io | [236](#text-236) [391](#text-391) |
+| untrusted | 0.9.0 | ISC | crates.io | [91](#text-91) |
+| ureq | 3.4.2 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [392](#text-392) |
+| ureq-proto | 0.6.4 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [397](#text-397) |
+| url | 2.5.8 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [308](#text-308) |
+| urlencoding | 2.1.3 | MIT | crates.io | [179](#text-179) |
+| usvg | 0.45.1 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [42](#text-42) |
+| usvg | 0.46.0 | Apache-2.0 OR MIT | crates.io | [226](#text-226) [42](#text-42) |
+| utf-8 | 0.7.6 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| utf8-zero | 0.8.1 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| utf8_iter | 1.0.4 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [1](#text-1) |
+| uuid | 1.26.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [46](#text-46) |
+| v_frame | 0.3.9 | BSD-2-Clause | crates.io | [67](#text-67) |
 | valuable | 0.1.1 | MIT | crates.io | — |
-| vcpkg | 0.2.15 | MIT/Apache-2.0 | crates.io | [222](#text-222) [442](#text-442) |
-| version_check | 0.9.5 | MIT/Apache-2.0 | crates.io | [222](#text-222) [443](#text-443) |
-| vswhom | 0.1.0 | MIT | crates.io | [178](#text-178) |
-| vswhom-sys | 0.1.3 | MIT | crates.io | [178](#text-178) |
-| wait-timeout | 0.2.1 | MIT/Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| waker-fn | 1.2.0 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [223](#text-223) |
-| walkdir | 2.5.0 | Unlicense/MIT | crates.io | [451](#text-451) [452](#text-452) [453](#text-453) |
-| want | 0.3.2 | MIT | crates.io | [179](#text-179) |
-| wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [222](#text-222) [56](#text-56) [223](#text-223) |
-| wasi | 0.14.7+wasi-0.2.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [222](#text-222) [56](#text-56) [223](#text-223) |
-| wasip2 | 1.0.4+wasi-0.2.12 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [222](#text-222) [56](#text-56) [223](#text-223) |
+| vcpkg | 0.2.15 | MIT/Apache-2.0 | crates.io | [224](#text-224) [444](#text-444) |
+| version_check | 0.9.5 | MIT/Apache-2.0 | crates.io | [224](#text-224) [445](#text-445) |
+| vswhom | 0.1.0 | MIT | crates.io | [180](#text-180) |
+| vswhom-sys | 0.1.3 | MIT | crates.io | [180](#text-180) |
+| vte | 0.15.0 | Apache-2.0 OR MIT | - | [234](#text-234) [47](#text-47) |
+| wait-timeout | 0.2.1 | MIT/Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| waker-fn | 1.2.0 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [225](#text-225) |
+| walkdir | 2.5.0 | Unlicense/MIT | crates.io | [453](#text-453) [454](#text-454) [455](#text-455) |
+| want | 0.3.2 | MIT | crates.io | [181](#text-181) |
+| wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [224](#text-224) [58](#text-58) [225](#text-225) |
+| wasi | 0.14.7+wasi-0.2.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [224](#text-224) [58](#text-58) [225](#text-225) |
+| wasip2 | 1.0.1+wasi-0.2.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | — |
 | wasite | 1.0.2 | Apache-2.0 OR BSL-1.0 OR MIT | crates.io | — |
-| wasm-bindgen | 0.2.129 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| wasm-bindgen-futures | 0.4.79 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| wasm-bindgen-macro | 0.2.129 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| wasm-bindgen-macro-support | 0.2.129 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| wasm-bindgen-shared | 0.2.129 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| wasm-streams | 0.4.2 | MIT OR Apache-2.0 | crates.io | [232](#text-232) [223](#text-223) |
-| wasm_thread | 0.3.3 | Apache-2.0 OR MIT | https://github.com/zed-industries/wasm_thread | [222](#text-222) [223](#text-223) |
-| wayland-backend | 0.3.17 | MIT | crates.io | [212](#text-212) |
-| wayland-client | 0.31.15 | MIT | crates.io | [212](#text-212) |
-| wayland-cursor | 0.31.14 | MIT | crates.io | [212](#text-212) |
-| wayland-protocols | 0.32.13 | MIT | crates.io | [212](#text-212) |
-| wayland-protocols-plasma | 0.3.12 | MIT | crates.io | [212](#text-212) |
-| wayland-protocols-wlr | 0.3.12 | MIT | crates.io | [212](#text-212) |
-| wayland-scanner | 0.31.11 | MIT | crates.io | [212](#text-212) |
-| wayland-sys | 0.31.11 | MIT | crates.io | [212](#text-212) |
-| web-sys | 0.3.106 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [285](#text-285) |
-| web-time | 1.1.0 | MIT OR Apache-2.0 | crates.io | [266](#text-266) [390](#text-390) |
-| webpki | 0.22.4 | (见 LICENSE) | crates.io | [88](#text-88) |
-| webpki-roots | 1.0.9 | CDLA-Permissive-2.0 | crates.io | [85](#text-85) |
-| weezl | 0.1.12 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [391](#text-391) |
-| wgpu | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| wgpu-core | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| wgpu-core-deps-apple | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| wgpu-core-deps-emscripten | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| wgpu-core-deps-wasm | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| wgpu-core-deps-windows-linux-android | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| wgpu-hal | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| wgpu-naga-bridge | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| wgpu-types | 29.0.4 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [397](#text-397) |
-| which | 8.0.6 | MIT | crates.io | [213](#text-213) |
-| whoami | 2.1.3 | Apache-2.0 OR BSL-1.0 OR MIT | crates.io | [232](#text-232) [82](#text-82) [227](#text-227) |
-| winapi | 0.3.9 | MIT/Apache-2.0 | crates.io | [234](#text-234) [444](#text-444) |
+| wasm-bindgen | 0.2.129 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| wasm-bindgen-futures | 0.4.79 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| wasm-bindgen-macro | 0.2.129 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| wasm-bindgen-macro-support | 0.2.129 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| wasm-bindgen-shared | 0.2.129 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| wasm-streams | 0.4.2 | MIT OR Apache-2.0 | crates.io | [234](#text-234) [225](#text-225) |
+| wasm_thread | 0.3.3 | Apache-2.0 OR MIT | https://github.com/zed-industries/wasm_thread | [224](#text-224) [225](#text-225) |
+| wayland-backend | 0.3.17 | MIT | crates.io | [214](#text-214) |
+| wayland-client | 0.31.15 | MIT | crates.io | [214](#text-214) |
+| wayland-cursor | 0.31.14 | MIT | crates.io | [214](#text-214) |
+| wayland-protocols | 0.32.13 | MIT | crates.io | [214](#text-214) |
+| wayland-protocols-plasma | 0.3.12 | MIT | crates.io | [214](#text-214) |
+| wayland-protocols-wlr | 0.3.12 | MIT | crates.io | [214](#text-214) |
+| wayland-scanner | 0.31.11 | MIT | crates.io | [214](#text-214) |
+| wayland-sys | 0.31.11 | MIT | crates.io | [214](#text-214) |
+| web-sys | 0.3.106 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [287](#text-287) |
+| web-time | 1.1.0 | MIT OR Apache-2.0 | crates.io | [268](#text-268) [393](#text-393) |
+| webpki | 0.22.4 | (见 LICENSE) | crates.io | [90](#text-90) |
+| webpki-roots | 1.0.9 | CDLA-Permissive-2.0 | crates.io | [87](#text-87) |
+| weezl | 0.1.12 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [394](#text-394) |
+| wgpu | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| wgpu-core | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| wgpu-core-deps-apple | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| wgpu-core-deps-emscripten | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| wgpu-core-deps-wasm | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| wgpu-core-deps-windows-linux-android | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| wgpu-hal | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| wgpu-naga-bridge | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| wgpu-types | 29.0.4 | MIT OR Apache-2.0 | crates.io | [226](#text-226) [400](#text-400) |
+| which | 8.0.6 | MIT | crates.io | [215](#text-215) |
+| whoami | 2.1.3 | Apache-2.0 OR BSL-1.0 OR MIT | crates.io | [234](#text-234) [84](#text-84) [229](#text-229) |
+| winapi | 0.3.9 | MIT/Apache-2.0 | crates.io | [236](#text-236) [446](#text-446) |
 | winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 | crates.io | — |
-| winapi-util | 0.1.11 | Unlicense OR MIT | crates.io | [451](#text-451) [454](#text-454) [453](#text-453) |
+| winapi-util | 0.1.11 | Unlicense OR MIT | crates.io | [453](#text-453) [456](#text-456) [455](#text-455) |
 | winapi-x86_64-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 | crates.io | — |
-| windows | 0.57.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows | 0.58.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows | 0.61.3 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows | 0.62.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-capture | 1.5.0 | MIT | crates.io | [90](#text-90) |
-| windows-collections | 0.2.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-collections | 0.3.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-core | 0.57.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-core | 0.58.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-core | 0.61.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-core | 0.62.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-future | 0.2.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-future | 0.3.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-implement | 0.57.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-implement | 0.58.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-implement | 0.60.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-interface | 0.57.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-interface | 0.58.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-interface | 0.59.3 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-link | 0.1.3 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-link | 0.2.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-numerics | 0.2.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-numerics | 0.3.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-registry | 0.4.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-registry | 0.6.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-result | 0.1.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-result | 0.2.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-result | 0.3.4 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-result | 0.4.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-strings | 0.1.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-strings | 0.3.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-strings | 0.4.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-strings | 0.5.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-sys | 0.52.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-sys | 0.59.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-sys | 0.60.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-sys | 0.61.2 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-targets | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-targets | 0.53.5 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-threading | 0.1.0 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-threading | 0.2.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows-version | 0.1.7 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_aarch64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_aarch64_gnullvm | 0.53.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_aarch64_msvc | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_aarch64_msvc | 0.53.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_i686_gnu | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_i686_gnu | 0.53.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_i686_gnullvm | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_i686_gnullvm | 0.53.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_i686_msvc | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_i686_msvc | 0.53.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_x86_64_gnu | 0.53.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_x86_64_gnullvm | 0.53.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| windows_x86_64_msvc | 0.53.1 | MIT OR Apache-2.0 | crates.io | [403](#text-403) [404](#text-404) |
-| winnow | 0.7.15 | MIT | crates.io | [194](#text-194) |
-| winnow | 1.0.4 | MIT | crates.io | [194](#text-194) |
-| winreg | 0.56.0 | MIT | crates.io | [180](#text-180) |
-| winresource | 0.1.31 | MIT | crates.io | [181](#text-181) |
-| wio | 0.2.2 | MIT/Apache-2.0 | crates.io | [234](#text-234) [445](#text-445) |
-| wit-bindgen | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [222](#text-222) [56](#text-56) [223](#text-223) |
-| writeable | 0.6.4 | Unicode-3.0 | crates.io | [450](#text-450) |
-| wyz | 0.5.1 | MIT | crates.io | [202](#text-202) |
-| x11 | 2.21.0 | MIT | crates.io | [223](#text-223) |
-| x11rb | 0.13.2 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [392](#text-392) |
-| x11rb-protocol | 0.13.2 | MIT OR Apache-2.0 | crates.io | [225](#text-225) [392](#text-392) |
-| xattr | 1.6.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [385](#text-385) |
-| xcb | 1.7.1 | MIT | crates.io | [182](#text-182) |
-| xcursor | 0.3.11 | MIT | crates.io | [183](#text-183) |
-| xim-ctext | 0.3.0 | MIT | https://github.com/zed-industries/xim-rs | [184](#text-184) |
-| xim-parser | 0.2.1 | MIT | https://github.com/zed-industries/xim-rs | [184](#text-184) |
-| xkbcommon | 0.8.0 | MIT | crates.io | [185](#text-185) |
-| xkeysym | 0.2.1 | MIT OR Apache-2.0 OR Zlib | crates.io | [406](#text-406) [409](#text-409) [415](#text-415) |
-| xml-rs | 0.8.29 | MIT | crates.io | [186](#text-186) |
-| xml5ever | 0.18.1 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [334](#text-334) |
-| xmlwriter | 0.1.0 | MIT | crates.io | [187](#text-187) |
-| xxhash-rust | 0.8.19 | BSL-1.0 | crates.io | [82](#text-82) |
-| y4m | 0.8.0 | MIT | crates.io | [188](#text-188) |
-| yazi | 0.2.1 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [46](#text-46) |
-| yeslogic-fontconfig-sys | 6.0.1 | MIT | crates.io | [189](#text-189) |
-| yoke | 0.8.3 | Unicode-3.0 | crates.io | [450](#text-450) |
-| yoke-derive | 0.8.4 | Unicode-3.0 | crates.io | [450](#text-450) |
-| zbus | 5.19.0 | MIT | crates.io | [190](#text-190) |
-| zbus-lockstep | 0.5.2 | MIT | crates.io | [223](#text-223) |
-| zbus-lockstep-macros | 0.5.2 | MIT | crates.io | [223](#text-223) |
-| zbus_macros | 5.19.0 | MIT | crates.io | [190](#text-190) |
-| zbus_names | 4.3.4 | MIT | crates.io | [190](#text-190) |
-| zbus_xml | 5.2.1 | MIT | crates.io | [190](#text-190) |
-| zcheapstr | 1.1.0 | MIT | crates.io | [191](#text-191) |
-| zed-font-kit | 0.14.1-zed | MIT OR Apache-2.0 | https://github.com/zed-industries/font-kit | [222](#text-222) [223](#text-223) |
-| zed-scap | 0.0.8-zed | MIT | https://github.com/zed-industries/scap | [192](#text-192) |
-| zed-xim | 0.4.0-zed | MIT | https://github.com/zed-industries/xim-rs | [184](#text-184) |
-| zeno | 0.3.3 | Apache-2.0 OR MIT | crates.io | [222](#text-222) [44](#text-44) |
-| zerocopy | 0.8.62 | BSD-2-Clause OR Apache-2.0 OR MIT | crates.io | [66](#text-66) [67](#text-67) [68](#text-68) |
-| zerocopy-derive | 0.8.62 | BSD-2-Clause OR Apache-2.0 OR MIT | crates.io | [66](#text-66) [67](#text-67) [68](#text-68) |
-| zerofrom | 0.1.8 | Unicode-3.0 | crates.io | [450](#text-450) |
-| zerofrom-derive | 0.1.8 | Unicode-3.0 | crates.io | [450](#text-450) |
-| zeroize | 1.9.1 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [47](#text-47) |
-| zeroize_derive | 1.5.0 | Apache-2.0 OR MIT | crates.io | [225](#text-225) [296](#text-296) |
-| zerotrie | 0.2.5 | Unicode-3.0 | crates.io | [450](#text-450) |
-| zerovec | 0.11.8 | Unicode-3.0 | crates.io | [450](#text-450) |
-| zerovec-derive | 0.11.6 | Unicode-3.0 | crates.io | [450](#text-450) |
-| zlib-rs | 0.6.8 | Zlib | crates.io | [457](#text-457) |
-| zmij | 1.0.23 | MIT | crates.io | [223](#text-223) |
-| ztracing | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
-| ztracing_macro | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [5](#text-5) |
+| windows | 0.57.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows | 0.58.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows | 0.61.3 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows | 0.62.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-capture | 1.5.0 | MIT | crates.io | [92](#text-92) |
+| windows-collections | 0.2.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-collections | 0.3.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-core | 0.57.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-core | 0.58.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-core | 0.61.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-core | 0.62.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-future | 0.2.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-future | 0.3.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-implement | 0.57.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-implement | 0.58.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-implement | 0.60.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-interface | 0.57.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-interface | 0.58.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-interface | 0.59.3 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-link | 0.1.3 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-link | 0.2.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-numerics | 0.2.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-numerics | 0.3.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-registry | 0.4.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-registry | 0.6.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-result | 0.1.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-result | 0.2.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-result | 0.3.4 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-result | 0.4.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-strings | 0.1.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-strings | 0.3.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-strings | 0.4.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-strings | 0.5.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-sys | 0.52.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-sys | 0.59.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-sys | 0.60.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-sys | 0.61.2 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-targets | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-targets | 0.53.5 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-threading | 0.1.0 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-threading | 0.2.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows-version | 0.1.7 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_aarch64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_aarch64_gnullvm | 0.53.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_aarch64_msvc | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_aarch64_msvc | 0.53.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_i686_gnu | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_i686_gnu | 0.53.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_i686_gnullvm | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_i686_gnullvm | 0.53.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_i686_msvc | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_i686_msvc | 0.53.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_x86_64_gnu | 0.53.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_x86_64_gnullvm | 0.53.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| windows_x86_64_msvc | 0.53.1 | MIT OR Apache-2.0 | crates.io | [406](#text-406) [407](#text-407) |
+| winnow | 0.7.15 | MIT | crates.io | [196](#text-196) |
+| winnow | 1.0.4 | MIT | crates.io | [196](#text-196) |
+| winreg | 0.56.0 | MIT | crates.io | [182](#text-182) |
+| winresource | 0.1.31 | MIT | crates.io | [183](#text-183) |
+| wio | 0.2.2 | MIT/Apache-2.0 | crates.io | [236](#text-236) [447](#text-447) |
+| wit-bindgen | 0.46.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | crates.io | [224](#text-224) [58](#text-58) [225](#text-225) |
+| writeable | 0.6.4 | Unicode-3.0 | crates.io | [452](#text-452) |
+| wyz | 0.5.1 | MIT | crates.io | [204](#text-204) |
+| x11 | 2.21.0 | MIT | crates.io | [225](#text-225) |
+| x11rb | 0.13.2 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [395](#text-395) |
+| x11rb-protocol | 0.13.2 | MIT OR Apache-2.0 | crates.io | [227](#text-227) [395](#text-395) |
+| xattr | 1.6.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [387](#text-387) |
+| xcb | 1.7.1 | MIT | crates.io | [184](#text-184) |
+| xcursor | 0.3.11 | MIT | crates.io | [185](#text-185) |
+| xim-ctext | 0.3.0 | MIT | https://github.com/zed-industries/xim-rs | [186](#text-186) |
+| xim-parser | 0.2.1 | MIT | https://github.com/zed-industries/xim-rs | [186](#text-186) |
+| xkbcommon | 0.8.0 | MIT | crates.io | [187](#text-187) |
+| xkeysym | 0.2.1 | MIT OR Apache-2.0 OR Zlib | crates.io | [409](#text-409) [412](#text-412) [418](#text-418) |
+| xml-rs | 0.8.29 | MIT | crates.io | [188](#text-188) |
+| xml5ever | 0.18.1 | MIT OR Apache-2.0 | crates.io | [224](#text-224) [336](#text-336) |
+| xmlwriter | 0.1.0 | MIT | crates.io | [189](#text-189) |
+| xxhash-rust | 0.8.19 | BSL-1.0 | crates.io | [84](#text-84) |
+| y4m | 0.8.0 | MIT | crates.io | [190](#text-190) |
+| yazi | 0.2.1 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [48](#text-48) |
+| yeslogic-fontconfig-sys | 6.0.1 | MIT | crates.io | [191](#text-191) |
+| yoke | 0.8.3 | Unicode-3.0 | crates.io | [452](#text-452) |
+| yoke-derive | 0.8.4 | Unicode-3.0 | crates.io | [452](#text-452) |
+| zbus | 5.19.0 | MIT | crates.io | [192](#text-192) |
+| zbus-lockstep | 0.5.2 | MIT | crates.io | [225](#text-225) |
+| zbus-lockstep-macros | 0.5.2 | MIT | crates.io | [225](#text-225) |
+| zbus_macros | 5.19.0 | MIT | crates.io | [192](#text-192) |
+| zbus_names | 4.3.4 | MIT | crates.io | [192](#text-192) |
+| zbus_xml | 5.2.1 | MIT | crates.io | [192](#text-192) |
+| zcheapstr | 1.1.0 | MIT | crates.io | [193](#text-193) |
+| zed-font-kit | 0.14.1-zed | MIT OR Apache-2.0 | https://github.com/zed-industries/font-kit | [224](#text-224) [225](#text-225) |
+| zed-scap | 0.0.8-zed | MIT | https://github.com/zed-industries/scap | [194](#text-194) |
+| zed-xim | 0.4.0-zed | MIT | https://github.com/zed-industries/xim-rs | [186](#text-186) |
+| zeno | 0.3.3 | Apache-2.0 OR MIT | crates.io | [224](#text-224) [45](#text-45) |
+| zerocopy | 0.8.62 | BSD-2-Clause OR Apache-2.0 OR MIT | crates.io | [68](#text-68) [69](#text-69) [70](#text-70) |
+| zerocopy-derive | 0.8.62 | BSD-2-Clause OR Apache-2.0 OR MIT | crates.io | [68](#text-68) [69](#text-69) [70](#text-70) |
+| zerofrom | 0.1.8 | Unicode-3.0 | crates.io | [452](#text-452) |
+| zerofrom-derive | 0.1.8 | Unicode-3.0 | crates.io | [452](#text-452) |
+| zeroize | 1.9.1 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [49](#text-49) |
+| zeroize_derive | 1.5.0 | Apache-2.0 OR MIT | crates.io | [227](#text-227) [298](#text-298) |
+| zerotrie | 0.2.5 | Unicode-3.0 | crates.io | [452](#text-452) |
+| zerovec | 0.11.8 | Unicode-3.0 | crates.io | [452](#text-452) |
+| zerovec-derive | 0.11.6 | Unicode-3.0 | crates.io | [452](#text-452) |
+| zlib-rs | 0.6.8 | Zlib | crates.io | [459](#text-459) |
+| zmij | 1.0.23 | MIT | crates.io | [225](#text-225) |
+| ztracing | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
+| ztracing_macro | 0.1.0 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
 | zune-core | 0.4.12 | MIT OR Apache-2.0 OR Zlib | crates.io | — |
-| zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | crates.io | [225](#text-225) [410](#text-410) [416](#text-416) |
+| zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | crates.io | [227](#text-227) [413](#text-413) [419](#text-419) |
 | zune-inflate | 0.2.54 | MIT OR Apache-2.0 OR Zlib | crates.io | — |
 | zune-jpeg | 0.4.21 | MIT OR Apache-2.0 OR Zlib | crates.io | — |
-| zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | crates.io | [225](#text-225) [410](#text-410) [416](#text-416) |
-| zvariant | 5.15.0 | MIT | crates.io | [190](#text-190) |
-| zvariant_derive | 5.15.0 | MIT | crates.io | [190](#text-190) |
-| zvariant_utils | 4.2.0 | MIT | crates.io | [223](#text-223) |
+| zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | crates.io | [227](#text-227) [413](#text-413) [419](#text-419) |
+| zvariant | 5.15.0 | MIT | crates.io | [192](#text-192) |
+| zvariant_derive | 5.15.0 | MIT | crates.io | [192](#text-192) |
+| zvariant_utils | 4.2.0 | MIT | crates.io | [225](#text-225) |
 
 ## 许可全文
 
@@ -1027,6 +1029,42 @@
 <a id="text-1"></a>
 
 ### 文本 1 · (Apache-2.0 OR MIT) AND BSD-3-Clause
+
+来源文件：`LICENSE-MIT`
+
+适用组件：encoding_rs、utf8_iter
+
+```text
+Copyright Mozilla Foundation
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+<a id="text-2"></a>
+
+### 文本 2 · (Apache-2.0 OR MIT) AND BSD-3-Clause
 
 来源文件：`LICENSE-WHATWG`
 
@@ -1061,9 +1099,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-2"></a>
+<a id="text-3"></a>
 
-### 文本 2 · (MIT OR Apache-2.0) AND Unicode-3.0
+### 文本 3 · (MIT OR Apache-2.0) AND Unicode-3.0
 
 来源文件：`LICENSE-UNICODE`
 
@@ -1111,9 +1149,9 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-<a id="text-3"></a>
+<a id="text-4"></a>
 
-### 文本 3 · 0BSD
+### 文本 4 · 0BSD
 
 来源文件：`LICENSE`
 
@@ -1136,9 +1174,9 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
-<a id="text-4"></a>
+<a id="text-5"></a>
 
-### 文本 4 · 0BSD OR MIT OR Apache-2.0
+### 文本 5 · 0BSD OR MIT OR Apache-2.0
 
 来源文件：`LICENSE-0BSD`
 
@@ -1159,9 +1197,9 @@ AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-<a id="text-5"></a>
+<a id="text-6"></a>
 
-### 文本 5 · Apache-2.0
+### 文本 6 · Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -1376,9 +1414,9 @@ Apache License
    END OF TERMS AND CONDITIONS
 ```
 
-<a id="text-6"></a>
+<a id="text-7"></a>
 
-### 文本 6 · Apache-2.0
+### 文本 7 · Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -1588,9 +1626,221 @@ Apache License
    limitations under the License.
 ```
 
-<a id="text-7"></a>
+<a id="text-8"></a>
 
-### 文本 7 · Apache-2.0
+### 文本 8 · Apache-2.0
+
+来源文件：`LICENSE-APACHE`
+
+适用组件：alacritty_terminal
+
+```text
+                              Apache License
+                        Version 2.0, January 2004
+                     http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+   "License" shall mean the terms and conditions for use, reproduction,
+   and distribution as defined by Sections 1 through 9 of this document.
+
+   "Licensor" shall mean the copyright owner or entity authorized by
+   the copyright owner that is granting the License.
+
+   "Legal Entity" shall mean the union of the acting entity and all
+   other entities that control, are controlled by, or are under common
+   control with that entity. For the purposes of this definition,
+   "control" means (i) the power, direct or indirect, to cause the
+   direction or management of such entity, whether by contract or
+   otherwise, or (ii) ownership of fifty percent (50%) or more of the
+   outstanding shares, or (iii) beneficial ownership of such entity.
+
+   "You" (or "Your") shall mean an individual or Legal Entity
+   exercising permissions granted by this License.
+
+   "Source" form shall mean the preferred form for making modifications,
+   including but not limited to software source code, documentation
+   source, and configuration files.
+
+   "Object" form shall mean any form resulting from mechanical
+   transformation or translation of a Source form, including but
+   not limited to compiled object code, generated documentation,
+   and conversions to other media types.
+
+   "Work" shall mean the work of authorship, whether in Source or
+   Object form, made available under the License, as indicated by a
+   copyright notice that is included in or attached to the work
+   (an example is provided in the Appendix below).
+
+   "Derivative Works" shall mean any work, whether in Source or Object
+   form, that is based on (or derived from) the Work and for which the
+   editorial revisions, annotations, elaborations, or other modifications
+   represent, as a whole, an original work of authorship. For the purposes
+   of this License, Derivative Works shall not include works that remain
+   separable from, or merely link (or bind by name) to the interfaces of,
+   the Work and Derivative Works thereof.
+
+   "Contribution" shall mean any work of authorship, including
+   the original version of the Work and any modifications or additions
+   to that Work or Derivative Works thereof, that is intentionally
+   submitted to Licensor for inclusion in the Work by the copyright owner
+   or by an individual or Legal Entity authorized to submit on behalf of
+   the copyright owner. For the purposes of this definition, "submitted"
+   means any form of electronic, verbal, or written communication sent
+   to the Licensor or its representatives, including but not limited to
+   communication on electronic mailing lists, source code control systems,
+   and issue tracking systems that are managed by, or on behalf of, the
+   Licensor for the purpose of discussing and improving the Work, but
+   excluding communication that is conspicuously marked or otherwise
+   designated in writing by the copyright owner as "Not a Contribution."
+
+   "Contributor" shall mean Licensor and any individual or Legal Entity
+   on behalf of whom a Contribution has been received by Licensor and
+   subsequently incorporated within the Work.
+
+2. Grant of Copyright License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   copyright license to reproduce, prepare Derivative Works of,
+   publicly display, publicly perform, sublicense, and distribute the
+   Work and such Derivative Works in Source or Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   (except as stated in this section) patent license to make, have made,
+   use, offer to sell, sell, import, and otherwise transfer the Work,
+   where such license applies only to those patent claims licensable
+   by such Contributor that are necessarily infringed by their
+   Contribution(s) alone or by combination of their Contribution(s)
+   with the Work to which such Contribution(s) was submitted. If You
+   institute patent litigation against any entity (including a
+   cross-claim or counterclaim in a lawsuit) alleging that the Work
+   or a Contribution incorporated within the Work constitutes direct
+   or contributory patent infringement, then any patent licenses
+   granted to You under this License for that Work shall terminate
+   as of the date such litigation is filed.
+
+4. Redistribution. You may reproduce and distribute copies of the
+   Work or Derivative Works thereof in any medium, with or without
+   modifications, and in Source or Object form, provided that You
+   meet the following conditions:
+
+   (a) You must give any other recipients of the Work or
+       Derivative Works a copy of this License; and
+
+   (b) You must cause any modified files to carry prominent notices
+       stating that You changed the files; and
+
+   (c) You must retain, in the Source form of any Derivative Works
+       that You distribute, all copyright, patent, trademark, and
+       attribution notices from the Source form of the Work,
+       excluding those notices that do not pertain to any part of
+       the Derivative Works; and
+
+   (d) If the Work includes a "NOTICE" text file as part of its
+       distribution, then any Derivative Works that You distribute must
+       include a readable copy of the attribution notices contained
+       within such NOTICE file, excluding those notices that do not
+       pertain to any part of the Derivative Works, in at least one
+       of the following places: within a NOTICE text file distributed
+       as part of the Derivative Works; within the Source form or
+       documentation, if provided along with the Derivative Works; or,
+       within a display generated by the Derivative Works, if and
+       wherever such third-party notices normally appear. The contents
+       of the NOTICE file are for informational purposes only and
+       do not modify the License. You may add Your own attribution
+       notices within Derivative Works that You distribute, alongside
+       or as an addendum to the NOTICE text from the Work, provided
+       that such additional attribution notices cannot be construed
+       as modifying the License.
+
+   You may add Your own copyright statement to Your modifications and
+   may provide additional or different license terms and conditions
+   for use, reproduction, or distribution of Your modifications, or
+   for any such Derivative Works as a whole, provided Your use,
+   reproduction, and distribution of the Work otherwise complies with
+   the conditions stated in this License.
+
+5. Submission of Contributions. Unless You explicitly state otherwise,
+   any Contribution intentionally submitted for inclusion in the Work
+   by You to the Licensor shall be under the terms and conditions of
+   this License, without any additional terms or conditions.
+   Notwithstanding the above, nothing herein shall supersede or modify
+   the terms of any separate license agreement you may have executed
+   with Licensor regarding such Contributions.
+
+6. Trademarks. This License does not grant permission to use the trade
+   names, trademarks, service marks, or product names of the Licensor,
+   except as required for reasonable and customary use in describing the
+   origin of the Work and reproducing the content of the NOTICE file.
+
+7. Disclaimer of Warranty. Unless required by applicable law or
+   agreed to in writing, Licensor provides the Work (and each
+   Contributor provides its Contributions) on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+   implied, including, without limitation, any warranties or conditions
+   of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+   PARTICULAR PURPOSE. You are solely responsible for determining the
+   appropriateness of using or redistributing the Work and assume any
+   risks associated with Your exercise of permissions under this License.
+
+8. Limitation of Liability. In no event and under no legal theory,
+   whether in tort (including negligence), contract, or otherwise,
+   unless required by applicable law (such as deliberate and grossly
+   negligent acts) or agreed to in writing, shall any Contributor be
+   liable to You for damages, including any direct, indirect, special,
+   incidental, or consequential damages of any character arising as a
+   result of this License or out of the use or inability to use the
+   Work (including but not limited to damages for loss of goodwill,
+   work stoppage, computer failure or malfunction, or any and all
+   other commercial damages or losses), even if such Contributor
+   has been advised of the possibility of such damages.
+
+9. Accepting Warranty or Additional Liability. While redistributing
+   the Work or Derivative Works thereof, You may choose to offer,
+   and charge a fee for, acceptance of support, warranty, indemnity,
+   or other liability obligations and/or rights consistent with this
+   License. However, in accepting such obligations, You may act only
+   on Your own behalf and on Your sole responsibility, not on behalf
+   of any other Contributor, and only if You agree to indemnify,
+   defend, and hold each Contributor harmless for any liability
+   incurred by, or claims asserted against, such Contributor by reason
+   of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+   To apply the Apache License to your work, attach the following
+   boilerplate notice, with the fields enclosed by brackets "[]"
+   replaced with your own identifying information. (Don't include
+   the brackets!)  The text should be enclosed in the appropriate
+   comment syntax for the file format. We also recommend that a
+   file or class name and description of purpose be included on the
+   same "printed page" as the copyright notice for easier
+   identification within third-party archives.
+
+Copyright 2020 The Alacritty Project
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+<a id="text-9"></a>
+
+### 文本 9 · Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -1790,9 +2040,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-<a id="text-8"></a>
+<a id="text-10"></a>
 
-### 文本 8 · Apache-2.0
+### 文本 10 · Apache-2.0
 
 来源文件：`LICENSE-LUCIDE`
 
@@ -1844,9 +2094,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-9"></a>
+<a id="text-11"></a>
 
-### 文本 9 · Apache-2.0 / MIT
+### 文本 11 · Apache-2.0 / MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -1880,9 +2130,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-10"></a>
+<a id="text-12"></a>
 
-### 文本 10 · Apache-2.0 AND ISC
+### 文本 12 · Apache-2.0 AND ISC
 
 来源文件：`LICENSE`
 
@@ -1900,9 +2150,9 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-<a id="text-11"></a>
+<a id="text-13"></a>
 
-### 文本 11 · Apache-2.0 AND ISC
+### 文本 13 · Apache-2.0 AND ISC
 
 来源文件：`LICENSE-BoringSSL`
 
@@ -2182,9 +2432,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-12"></a>
+<a id="text-14"></a>
 
-### 文本 12 · Apache-2.0 AND ISC
+### 文本 14 · Apache-2.0 AND ISC
 
 来源文件：`LICENSE-other-bits`
 
@@ -2206,9 +2456,9 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-<a id="text-13"></a>
+<a id="text-15"></a>
 
-### 文本 13 · Apache-2.0 AND MIT
+### 文本 15 · Apache-2.0 AND MIT
 
 来源文件：`LICENSE-LIBM-MIT`
 
@@ -2268,9 +2518,9 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 ```
 
-<a id="text-14"></a>
+<a id="text-16"></a>
 
-### 文本 14 · Apache-2.0 OR GPL-2.0-only
+### 文本 16 · Apache-2.0 OR GPL-2.0-only
 
 来源文件：`LICENSE-GPLv2`
 
@@ -2618,9 +2868,9 @@ library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
 ```
 
-<a id="text-15"></a>
+<a id="text-17"></a>
 
-### 文本 15 · Apache-2.0 OR ISC OR MIT
+### 文本 17 · Apache-2.0 OR ISC OR MIT
 
 来源文件：`LICENSE`
 
@@ -2638,9 +2888,9 @@ respectively.  You may use this software under the terms of any
 of these licenses, at your option.
 ```
 
-<a id="text-16"></a>
+<a id="text-18"></a>
 
-### 文本 16 · Apache-2.0 OR ISC OR MIT
+### 文本 18 · Apache-2.0 OR ISC OR MIT
 
 来源文件：`LICENSE`
 
@@ -2658,9 +2908,9 @@ respectively.  You may use this software under the terms of any
 of these licenses, at your option.
 ```
 
-<a id="text-17"></a>
+<a id="text-19"></a>
 
-### 文本 17 · Apache-2.0 OR ISC OR MIT
+### 文本 19 · Apache-2.0 OR ISC OR MIT
 
 来源文件：`LICENSE`
 
@@ -2678,9 +2928,9 @@ respectively.  You may use this software under the terms of any
 of these licenses, at your option.
 ```
 
-<a id="text-18"></a>
+<a id="text-20"></a>
 
-### 文本 18 · Apache-2.0 OR ISC OR MIT
+### 文本 20 · Apache-2.0 OR ISC OR MIT
 
 来源文件：`LICENSE-ISC`
 
@@ -2704,9 +2954,9 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-<a id="text-19"></a>
+<a id="text-21"></a>
 
-### 文本 19 · Apache-2.0 OR ISC OR MIT
+### 文本 21 · Apache-2.0 OR ISC OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -2740,9 +2990,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-20"></a>
+<a id="text-22"></a>
 
-### 文本 20 · Apache-2.0 OR MIT
+### 文本 22 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE`
 
@@ -2952,9 +3202,9 @@ Apache License
    limitations under the License.
 ```
 
-<a id="text-21"></a>
+<a id="text-23"></a>
 
-### 文本 21 · Apache-2.0 OR MIT
+### 文本 23 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-APACHE`
 
@@ -3164,9 +3414,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-22"></a>
+<a id="text-24"></a>
 
-### 文本 22 · Apache-2.0 OR MIT
+### 文本 24 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-APACHE2.txt`
 
@@ -3376,9 +3626,9 @@ Apache License
    limitations under the License.
 ```
 
-<a id="text-23"></a>
+<a id="text-25"></a>
 
-### 文本 23 · Apache-2.0 OR MIT
+### 文本 25 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3412,9 +3662,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-24"></a>
+<a id="text-26"></a>
 
-### 文本 24 · Apache-2.0 OR MIT
+### 文本 26 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3448,9 +3698,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-25"></a>
+<a id="text-27"></a>
 
-### 文本 25 · Apache-2.0 OR MIT
+### 文本 27 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3484,9 +3734,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-26"></a>
+<a id="text-28"></a>
 
-### 文本 26 · Apache-2.0 OR MIT
+### 文本 28 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3520,9 +3770,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-27"></a>
+<a id="text-29"></a>
 
-### 文本 27 · Apache-2.0 OR MIT
+### 文本 29 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3556,9 +3806,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-28"></a>
+<a id="text-30"></a>
 
-### 文本 28 · Apache-2.0 OR MIT
+### 文本 30 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3592,9 +3842,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-29"></a>
+<a id="text-31"></a>
 
-### 文本 29 · Apache-2.0 OR MIT
+### 文本 31 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3608,9 +3858,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-30"></a>
+<a id="text-32"></a>
 
-### 文本 30 · Apache-2.0 OR MIT
+### 文本 32 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3644,45 +3894,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-31"></a>
+<a id="text-33"></a>
 
-### 文本 31 · Apache-2.0 OR MIT
-
-来源文件：`LICENSE-MIT`
-
-适用组件：encoding_rs、multiversion_no_op、utf8_iter
-
-```text
-Copyright Mozilla Foundation
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
-<a id="text-32"></a>
-
-### 文本 32 · Apache-2.0 OR MIT
+### 文本 33 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3716,9 +3930,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-33"></a>
+<a id="text-34"></a>
 
-### 文本 33 · Apache-2.0 OR MIT
+### 文本 34 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3748,9 +3962,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-34"></a>
+<a id="text-35"></a>
 
-### 文本 34 · Apache-2.0 OR MIT
+### 文本 35 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3784,9 +3998,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-35"></a>
+<a id="text-36"></a>
 
-### 文本 35 · Apache-2.0 OR MIT
+### 文本 36 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3820,9 +4034,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-36"></a>
+<a id="text-37"></a>
 
-### 文本 36 · Apache-2.0 OR MIT
+### 文本 37 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3856,9 +4070,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-37"></a>
+<a id="text-38"></a>
 
-### 文本 37 · Apache-2.0 OR MIT
+### 文本 38 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3886,9 +4100,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-38"></a>
+<a id="text-39"></a>
 
-### 文本 38 · Apache-2.0 OR MIT
+### 文本 39 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3915,9 +4129,9 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-39"></a>
+<a id="text-40"></a>
 
-### 文本 39 · Apache-2.0 OR MIT
+### 文本 40 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3943,9 +4157,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-40"></a>
+<a id="text-41"></a>
 
-### 文本 40 · Apache-2.0 OR MIT
+### 文本 41 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -3979,9 +4193,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-41"></a>
+<a id="text-42"></a>
 
-### 文本 41 · Apache-2.0 OR MIT
+### 文本 42 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -4015,9 +4229,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-42"></a>
+<a id="text-43"></a>
 
-### 文本 42 · Apache-2.0 OR MIT
+### 文本 43 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -4047,9 +4261,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-43"></a>
+<a id="text-44"></a>
 
-### 文本 43 · Apache-2.0 OR MIT
+### 文本 44 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -4077,9 +4291,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-44"></a>
+<a id="text-45"></a>
 
-### 文本 44 · Apache-2.0 OR MIT
+### 文本 45 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -4113,9 +4327,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-45"></a>
+<a id="text-46"></a>
 
-### 文本 45 · Apache-2.0 OR MIT
+### 文本 46 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -4150,9 +4364,45 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-46"></a>
+<a id="text-47"></a>
 
-### 文本 46 · Apache-2.0 OR MIT
+### 文本 47 · Apache-2.0 OR MIT
+
+来源文件：`LICENSE-MIT`
+
+适用组件：vte
+
+```text
+Copyright (c) 2016 Joe Wilm
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+<a id="text-48"></a>
+
+### 文本 48 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -4180,9 +4430,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-47"></a>
+<a id="text-49"></a>
 
-### 文本 47 · Apache-2.0 OR MIT
+### 文本 49 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -4216,9 +4466,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-48"></a>
+<a id="text-50"></a>
 
-### 文本 48 · Apache-2.0 OR MIT
+### 文本 50 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT.txt`
 
@@ -4246,9 +4496,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-49"></a>
+<a id="text-51"></a>
 
-### 文本 49 · Apache-2.0 OR MIT
+### 文本 51 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-THIRD-PARTY`
 
@@ -4302,9 +4552,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-50"></a>
+<a id="text-52"></a>
 
-### 文本 50 · Apache-2.0 OR MIT
+### 文本 52 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE-THIRD-PARTY`
 
@@ -4322,9 +4572,9 @@ option. All files in the project carrying such notice may not be
 copied, modified, or distributed except according to those terms.
 ```
 
-<a id="text-51"></a>
+<a id="text-53"></a>
 
-### 文本 51 · Apache-2.0 OR MIT
+### 文本 53 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE.spdx`
 
@@ -4352,9 +4602,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/global-hotkey.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-<a id="text-52"></a>
+<a id="text-54"></a>
 
-### 文本 52 · Apache-2.0 OR MIT
+### 文本 54 · Apache-2.0 OR MIT
 
 来源文件：`LICENSE.spdx`
 
@@ -4382,9 +4632,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/muda.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-<a id="text-53"></a>
+<a id="text-55"></a>
 
-### 文本 53 · Apache-2.0 OR MIT OR Zlib
+### 文本 55 · Apache-2.0 OR MIT OR Zlib
 
 来源文件：`LICENSE-APACHE`
 
@@ -4594,9 +4844,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-54"></a>
+<a id="text-56"></a>
 
-### 文本 54 · Apache-2.0 OR MIT OR Zlib
+### 文本 56 · Apache-2.0 OR MIT OR Zlib
 
 来源文件：`LICENSE-MIT`
 
@@ -4630,9 +4880,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-55"></a>
+<a id="text-57"></a>
 
-### 文本 55 · Apache-2.0 OR MIT OR Zlib
+### 文本 57 · Apache-2.0 OR MIT OR Zlib
 
 来源文件：`LICENSE-ZLIB`
 
@@ -4660,13 +4910,13 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-56"></a>
+<a id="text-58"></a>
 
-### 文本 56 · Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+### 文本 58 · Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 
 来源文件：`LICENSE-Apache-2.0_WITH_LLVM-exception`
 
-适用组件：linux-raw-sys、rustix、rustix-openpty、wasi 等 6 个
+适用组件：linux-raw-sys、rustix、rustix-openpty、wasi 等 5 个
 
 ```text
                                  Apache License
@@ -4889,9 +5139,9 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ```
 
-<a id="text-57"></a>
+<a id="text-59"></a>
 
-### 文本 57 · Apache-2.0/MIT
+### 文本 59 · Apache-2.0/MIT
 
 来源文件：`LICENSE-APACHE`
 
@@ -5101,9 +5351,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-58"></a>
+<a id="text-60"></a>
 
-### 文本 58 · Apache-2.0/MIT
+### 文本 60 · Apache-2.0/MIT
 
 来源文件：`LICENSE-APACHE`
 
@@ -5313,9 +5563,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-59"></a>
+<a id="text-61"></a>
 
-### 文本 59 · Apache-2.0/MIT
+### 文本 61 · Apache-2.0/MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -5345,9 +5595,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-60"></a>
+<a id="text-62"></a>
 
-### 文本 60 · Apache-2.0/MIT
+### 文本 62 · Apache-2.0/MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -5381,9 +5631,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-61"></a>
+<a id="text-63"></a>
 
-### 文本 61 · Apache-2.0/MIT
+### 文本 63 · Apache-2.0/MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -5417,9 +5667,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-62"></a>
+<a id="text-64"></a>
 
-### 文本 62 · BSD-2-Clause
+### 文本 64 · BSD-2-Clause
 
 来源文件：`LICENSE`
 
@@ -5454,9 +5704,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-63"></a>
+<a id="text-65"></a>
 
-### 文本 63 · BSD-2-Clause
+### 文本 65 · BSD-2-Clause
 
 来源文件：`LICENSE`
 
@@ -5490,9 +5740,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-64"></a>
+<a id="text-66"></a>
 
-### 文本 64 · BSD-2-Clause
+### 文本 66 · BSD-2-Clause
 
 来源文件：`LICENSE`
 
@@ -5526,9 +5776,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-65"></a>
+<a id="text-67"></a>
 
-### 文本 65 · BSD-2-Clause
+### 文本 67 · BSD-2-Clause
 
 来源文件：`LICENSE`
 
@@ -5562,9 +5812,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-66"></a>
+<a id="text-68"></a>
 
-### 文本 66 · BSD-2-Clause OR Apache-2.0 OR MIT
+### 文本 68 · BSD-2-Clause OR Apache-2.0 OR MIT
 
 来源文件：`LICENSE-APACHE`
 
@@ -5774,9 +6024,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    limitations under the License.
 ```
 
-<a id="text-67"></a>
+<a id="text-69"></a>
 
-### 文本 67 · BSD-2-Clause OR Apache-2.0 OR MIT
+### 文本 69 · BSD-2-Clause OR Apache-2.0 OR MIT
 
 来源文件：`LICENSE-BSD`
 
@@ -5809,9 +6059,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-68"></a>
+<a id="text-70"></a>
 
-### 文本 68 · BSD-2-Clause OR Apache-2.0 OR MIT
+### 文本 70 · BSD-2-Clause OR Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -5845,9 +6095,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-69"></a>
+<a id="text-71"></a>
 
-### 文本 69 · BSD-2-Clause OR MIT OR Apache-2.0
+### 文本 71 · BSD-2-Clause OR MIT OR Apache-2.0
 
 来源文件：`LICENSE-BSD`
 
@@ -5879,9 +6129,9 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-70"></a>
+<a id="text-72"></a>
 
-### 文本 70 · BSD-2-Clause OR MIT OR Apache-2.0
+### 文本 72 · BSD-2-Clause OR MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -5915,9 +6165,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-71"></a>
+<a id="text-73"></a>
 
-### 文本 71 · BSD-3-Clause
+### 文本 73 · BSD-3-Clause
 
 来源文件：`LICENSE`
 
@@ -5955,9 +6205,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-72"></a>
+<a id="text-74"></a>
 
-### 文本 72 · BSD-3-Clause
+### 文本 74 · BSD-3-Clause
 
 来源文件：`LICENSE`
 
@@ -5993,9 +6243,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-73"></a>
+<a id="text-75"></a>
 
-### 文本 73 · BSD-3-Clause
+### 文本 75 · BSD-3-Clause
 
 来源文件：`LICENSE`
 
@@ -6033,9 +6283,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-74"></a>
+<a id="text-76"></a>
 
-### 文本 74 · BSD-3-Clause
+### 文本 76 · BSD-3-Clause
 
 来源文件：`LICENSE`
 
@@ -6077,9 +6327,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-75"></a>
+<a id="text-77"></a>
 
-### 文本 75 · BSD-3-Clause
+### 文本 77 · BSD-3-Clause
 
 来源文件：`LICENSE`
 
@@ -6148,9 +6398,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-76"></a>
+<a id="text-78"></a>
 
-### 文本 76 · BSD-3-Clause
+### 文本 78 · BSD-3-Clause
 
 来源文件：`LICENSE`
 
@@ -6188,9 +6438,9 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-77"></a>
+<a id="text-79"></a>
 
-### 文本 77 · BSD-3-Clause
+### 文本 79 · BSD-3-Clause
 
 来源文件：`LICENSE`
 
@@ -6229,9 +6479,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-78"></a>
+<a id="text-80"></a>
 
-### 文本 78 · BSD-3-Clause
+### 文本 80 · BSD-3-Clause
 
 来源文件：`LICENSE-BSD-3-Clause`
 
@@ -6266,9 +6516,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-79"></a>
+<a id="text-81"></a>
 
-### 文本 79 · BSD-3-Clause
+### 文本 81 · BSD-3-Clause
 
 来源文件：`LICENSE.md`
 
@@ -6310,9 +6560,9 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-80"></a>
+<a id="text-82"></a>
 
-### 文本 80 · BSD-3-Clause OR Apache-2.0
+### 文本 82 · BSD-3-Clause OR Apache-2.0
 
 来源文件：`LICENSE-APACHE.md`
 
@@ -6522,9 +6772,9 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
    limitations under the License.
 ```
 
-<a id="text-81"></a>
+<a id="text-83"></a>
 
-### 文本 81 · BSD-3-Clause OR Apache-2.0
+### 文本 83 · BSD-3-Clause OR Apache-2.0
 
 来源文件：`LICENSE.md`
 
@@ -6559,9 +6809,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-82"></a>
+<a id="text-84"></a>
 
-### 文本 82 · BSL-1.0
+### 文本 84 · BSL-1.0
 
 来源文件：`LICENSE`
 
@@ -6593,9 +6843,9 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-83"></a>
+<a id="text-85"></a>
 
-### 文本 83 · CC0-1.0
+### 文本 85 · CC0-1.0
 
 来源文件：`LICENSE-CC0`
 
@@ -6645,9 +6895,9 @@ For these and/or other purposes and motivations, and without any expectation of 
      d. Affirmer understands and acknowledges that Creative Commons is not a party to this document and has no duty or obligation with respect to this CC0 or use of the Work.
 ```
 
-<a id="text-84"></a>
+<a id="text-86"></a>
 
-### 文本 84 · CC0-1.0 OR MIT-0 OR Apache-2.0
+### 文本 86 · CC0-1.0 OR MIT-0 OR Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -6777,9 +7027,9 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-<a id="text-85"></a>
+<a id="text-87"></a>
 
-### 文本 85 · CDLA-Permissive-2.0
+### 文本 87 · CDLA-Permissive-2.0
 
 来源文件：`LICENSE`
 
@@ -6849,9 +7099,9 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-<a id="text-86"></a>
+<a id="text-88"></a>
 
-### 文本 86 · ISC
+### 文本 88 · ISC
 
 来源文件：`LICENSE`
 
@@ -6873,9 +7123,9 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-<a id="text-87"></a>
+<a id="text-89"></a>
 
-### 文本 87 · ISC
+### 文本 89 · ISC
 
 来源文件：`LICENSE`
 
@@ -6896,9 +7146,9 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 ```
 
-<a id="text-88"></a>
+<a id="text-90"></a>
 
-### 文本 88 · ISC
+### 文本 90 · ISC
 
 来源文件：`LICENSE`
 
@@ -6926,9 +7176,9 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ```
 
-<a id="text-89"></a>
+<a id="text-91"></a>
 
-### 文本 89 · ISC
+### 文本 91 · ISC
 
 来源文件：`LICENSE.txt`
 
@@ -6950,9 +7200,9 @@ third-party/chromium/LICENSE.
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-<a id="text-90"></a>
+<a id="text-92"></a>
 
-### 文本 90 · MIT
+### 文本 92 · MIT
 
 来源文件：`LICENCE`
 
@@ -6982,9 +7232,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-91"></a>
+<a id="text-93"></a>
 
-### 文本 91 · MIT
+### 文本 93 · MIT
 
 来源文件：`LICENSE`
 
@@ -7014,9 +7264,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-92"></a>
+<a id="text-94"></a>
 
-### 文本 92 · MIT
+### 文本 94 · MIT
 
 来源文件：`LICENSE`
 
@@ -7046,9 +7296,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-93"></a>
+<a id="text-95"></a>
 
-### 文本 93 · MIT
+### 文本 95 · MIT
 
 来源文件：`LICENSE`
 
@@ -7078,9 +7328,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-94"></a>
+<a id="text-96"></a>
 
-### 文本 94 · MIT
+### 文本 96 · MIT
 
 来源文件：`LICENSE`
 
@@ -7111,9 +7361,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-95"></a>
+<a id="text-97"></a>
 
-### 文本 95 · MIT
+### 文本 97 · MIT
 
 来源文件：`LICENSE`
 
@@ -7143,9 +7393,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-96"></a>
+<a id="text-98"></a>
 
-### 文本 96 · MIT
+### 文本 98 · MIT
 
 来源文件：`LICENSE`
 
@@ -7173,9 +7423,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-97"></a>
+<a id="text-99"></a>
 
-### 文本 97 · MIT
+### 文本 99 · MIT
 
 来源文件：`LICENSE`
 
@@ -7204,9 +7454,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-98"></a>
+<a id="text-100"></a>
 
-### 文本 98 · MIT
+### 文本 100 · MIT
 
 来源文件：`LICENSE`
 
@@ -7236,9 +7486,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-99"></a>
+<a id="text-101"></a>
 
-### 文本 99 · MIT
+### 文本 101 · MIT
 
 来源文件：`LICENSE`
 
@@ -7272,9 +7522,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-100"></a>
+<a id="text-102"></a>
 
-### 文本 100 · MIT
+### 文本 102 · MIT
 
 来源文件：`LICENSE`
 
@@ -7292,9 +7542,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-101"></a>
+<a id="text-103"></a>
 
-### 文本 101 · MIT
+### 文本 103 · MIT
 
 来源文件：`LICENSE`
 
@@ -7324,9 +7574,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-102"></a>
+<a id="text-104"></a>
 
-### 文本 102 · MIT
+### 文本 104 · MIT
 
 来源文件：`LICENSE`
 
@@ -7356,9 +7606,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-103"></a>
+<a id="text-105"></a>
 
-### 文本 103 · MIT
+### 文本 105 · MIT
 
 来源文件：`LICENSE`
 
@@ -7388,9 +7638,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-104"></a>
+<a id="text-106"></a>
 
-### 文本 104 · MIT
+### 文本 106 · MIT
 
 来源文件：`LICENSE`
 
@@ -7420,9 +7670,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-105"></a>
+<a id="text-107"></a>
 
-### 文本 105 · MIT
+### 文本 107 · MIT
 
 来源文件：`LICENSE`
 
@@ -7452,9 +7702,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-106"></a>
+<a id="text-108"></a>
 
-### 文本 106 · MIT
+### 文本 108 · MIT
 
 来源文件：`LICENSE`
 
@@ -7484,9 +7734,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-107"></a>
+<a id="text-109"></a>
 
-### 文本 107 · MIT
+### 文本 109 · MIT
 
 来源文件：`LICENSE`
 
@@ -7516,9 +7766,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-108"></a>
+<a id="text-110"></a>
 
-### 文本 108 · MIT
+### 文本 110 · MIT
 
 来源文件：`LICENSE`
 
@@ -7548,9 +7798,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-109"></a>
+<a id="text-111"></a>
 
-### 文本 109 · MIT
+### 文本 111 · MIT
 
 来源文件：`LICENSE`
 
@@ -7580,9 +7830,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-110"></a>
+<a id="text-112"></a>
 
-### 文本 110 · MIT
+### 文本 112 · MIT
 
 来源文件：`LICENSE`
 
@@ -7598,9 +7848,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-111"></a>
+<a id="text-113"></a>
 
-### 文本 111 · MIT
+### 文本 113 · MIT
 
 来源文件：`LICENSE`
 
@@ -7628,9 +7878,9 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
 ```
 
-<a id="text-112"></a>
+<a id="text-114"></a>
 
-### 文本 112 · MIT
+### 文本 114 · MIT
 
 来源文件：`LICENSE`
 
@@ -7662,9 +7912,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-113"></a>
+<a id="text-115"></a>
 
-### 文本 113 · MIT
+### 文本 115 · MIT
 
 来源文件：`LICENSE`
 
@@ -7694,9 +7944,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-114"></a>
+<a id="text-116"></a>
 
-### 文本 114 · MIT
+### 文本 116 · MIT
 
 来源文件：`LICENSE`
 
@@ -7726,9 +7976,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-115"></a>
+<a id="text-117"></a>
 
-### 文本 115 · MIT
+### 文本 117 · MIT
 
 来源文件：`LICENSE`
 
@@ -7758,9 +8008,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-116"></a>
+<a id="text-118"></a>
 
-### 文本 116 · MIT
+### 文本 118 · MIT
 
 来源文件：`LICENSE`
 
@@ -7790,9 +8040,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-117"></a>
+<a id="text-119"></a>
 
-### 文本 117 · MIT
+### 文本 119 · MIT
 
 来源文件：`LICENSE`
 
@@ -7822,9 +8072,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-118"></a>
+<a id="text-120"></a>
 
-### 文本 118 · MIT
+### 文本 120 · MIT
 
 来源文件：`LICENSE`
 
@@ -7852,9 +8102,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-119"></a>
+<a id="text-121"></a>
 
-### 文本 119 · MIT
+### 文本 121 · MIT
 
 来源文件：`LICENSE`
 
@@ -7888,9 +8138,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-120"></a>
+<a id="text-122"></a>
 
-### 文本 120 · MIT
+### 文本 122 · MIT
 
 来源文件：`LICENSE`
 
@@ -7924,9 +8174,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-121"></a>
+<a id="text-123"></a>
 
-### 文本 121 · MIT
+### 文本 123 · MIT
 
 来源文件：`LICENSE`
 
@@ -7954,9 +8204,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-122"></a>
+<a id="text-124"></a>
 
-### 文本 122 · MIT
+### 文本 124 · MIT
 
 来源文件：`LICENSE`
 
@@ -7984,9 +8234,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-123"></a>
+<a id="text-125"></a>
 
-### 文本 123 · MIT
+### 文本 125 · MIT
 
 来源文件：`LICENSE`
 
@@ -8016,9 +8266,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-124"></a>
+<a id="text-126"></a>
 
-### 文本 124 · MIT
+### 文本 126 · MIT
 
 来源文件：`LICENSE`
 
@@ -8048,9 +8298,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-125"></a>
+<a id="text-127"></a>
 
-### 文本 125 · MIT
+### 文本 127 · MIT
 
 来源文件：`LICENSE`
 
@@ -8078,9 +8328,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-126"></a>
+<a id="text-128"></a>
 
-### 文本 126 · MIT
+### 文本 128 · MIT
 
 来源文件：`LICENSE`
 
@@ -8110,9 +8360,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-127"></a>
+<a id="text-129"></a>
 
-### 文本 127 · MIT
+### 文本 129 · MIT
 
 来源文件：`LICENSE`
 
@@ -8140,9 +8390,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-128"></a>
+<a id="text-130"></a>
 
-### 文本 128 · MIT
+### 文本 130 · MIT
 
 来源文件：`LICENSE`
 
@@ -8158,9 +8408,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-129"></a>
+<a id="text-131"></a>
 
-### 文本 129 · MIT
+### 文本 131 · MIT
 
 来源文件：`LICENSE`
 
@@ -8190,9 +8440,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-130"></a>
+<a id="text-132"></a>
 
-### 文本 130 · MIT
+### 文本 132 · MIT
 
 来源文件：`LICENSE`
 
@@ -8222,9 +8472,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-131"></a>
+<a id="text-133"></a>
 
-### 文本 131 · MIT
+### 文本 133 · MIT
 
 来源文件：`LICENSE`
 
@@ -8249,9 +8499,9 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-132"></a>
+<a id="text-134"></a>
 
-### 文本 132 · MIT
+### 文本 134 · MIT
 
 来源文件：`LICENSE`
 
@@ -8281,9 +8531,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-133"></a>
+<a id="text-135"></a>
 
-### 文本 133 · MIT
+### 文本 135 · MIT
 
 来源文件：`LICENSE`
 
@@ -8313,9 +8563,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-134"></a>
+<a id="text-136"></a>
 
-### 文本 134 · MIT
+### 文本 136 · MIT
 
 来源文件：`LICENSE`
 
@@ -8383,9 +8633,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-135"></a>
+<a id="text-137"></a>
 
-### 文本 135 · MIT
+### 文本 137 · MIT
 
 来源文件：`LICENSE`
 
@@ -8413,9 +8663,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-136"></a>
+<a id="text-138"></a>
 
-### 文本 136 · MIT
+### 文本 138 · MIT
 
 来源文件：`LICENSE`
 
@@ -8444,9 +8694,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-137"></a>
+<a id="text-139"></a>
 
-### 文本 137 · MIT
+### 文本 139 · MIT
 
 来源文件：`LICENSE`
 
@@ -8476,9 +8726,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-138"></a>
+<a id="text-140"></a>
 
-### 文本 138 · MIT
+### 文本 140 · MIT
 
 来源文件：`LICENSE`
 
@@ -8509,9 +8759,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-139"></a>
+<a id="text-141"></a>
 
-### 文本 139 · MIT
+### 文本 141 · MIT
 
 来源文件：`LICENSE`
 
@@ -8541,9 +8791,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-140"></a>
+<a id="text-142"></a>
 
-### 文本 140 · MIT
+### 文本 142 · MIT
 
 来源文件：`LICENSE`
 
@@ -8572,9 +8822,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-141"></a>
+<a id="text-143"></a>
 
-### 文本 141 · MIT
+### 文本 143 · MIT
 
 来源文件：`LICENSE`
 
@@ -8602,9 +8852,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-142"></a>
+<a id="text-144"></a>
 
-### 文本 142 · MIT
+### 文本 144 · MIT
 
 来源文件：`LICENSE`
 
@@ -8634,9 +8884,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-143"></a>
+<a id="text-145"></a>
 
-### 文本 143 · MIT
+### 文本 145 · MIT
 
 来源文件：`LICENSE`
 
@@ -8666,9 +8916,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-144"></a>
+<a id="text-146"></a>
 
-### 文本 144 · MIT
+### 文本 146 · MIT
 
 来源文件：`LICENSE`
 
@@ -8698,9 +8948,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-145"></a>
+<a id="text-147"></a>
 
-### 文本 145 · MIT
+### 文本 147 · MIT
 
 来源文件：`LICENSE`
 
@@ -8730,9 +8980,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-146"></a>
+<a id="text-148"></a>
 
-### 文本 146 · MIT
+### 文本 148 · MIT
 
 来源文件：`LICENSE`
 
@@ -8762,9 +9012,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-147"></a>
+<a id="text-149"></a>
 
-### 文本 147 · MIT
+### 文本 149 · MIT
 
 来源文件：`LICENSE`
 
@@ -8795,9 +9045,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-148"></a>
+<a id="text-150"></a>
 
-### 文本 148 · MIT
+### 文本 150 · MIT
 
 来源文件：`LICENSE`
 
@@ -8827,9 +9077,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-149"></a>
+<a id="text-151"></a>
 
-### 文本 149 · MIT
+### 文本 151 · MIT
 
 来源文件：`LICENSE`
 
@@ -8859,9 +9109,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-150"></a>
+<a id="text-152"></a>
 
-### 文本 150 · MIT
+### 文本 152 · MIT
 
 来源文件：`LICENSE`
 
@@ -8891,9 +9141,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-151"></a>
+<a id="text-153"></a>
 
-### 文本 151 · MIT
+### 文本 153 · MIT
 
 来源文件：`LICENSE`
 
@@ -8923,9 +9173,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-152"></a>
+<a id="text-154"></a>
 
-### 文本 152 · MIT
+### 文本 154 · MIT
 
 来源文件：`LICENSE`
 
@@ -8955,9 +9205,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-153"></a>
+<a id="text-155"></a>
 
-### 文本 153 · MIT
+### 文本 155 · MIT
 
 来源文件：`LICENSE`
 
@@ -8987,9 +9237,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-154"></a>
+<a id="text-156"></a>
 
-### 文本 154 · MIT
+### 文本 156 · MIT
 
 来源文件：`LICENSE`
 
@@ -9019,9 +9269,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-155"></a>
+<a id="text-157"></a>
 
-### 文本 155 · MIT
+### 文本 157 · MIT
 
 来源文件：`LICENSE`
 
@@ -9052,9 +9302,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-156"></a>
+<a id="text-158"></a>
 
-### 文本 156 · MIT
+### 文本 158 · MIT
 
 来源文件：`LICENSE`
 
@@ -9084,9 +9334,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-157"></a>
+<a id="text-159"></a>
 
-### 文本 157 · MIT
+### 文本 159 · MIT
 
 来源文件：`LICENSE`
 
@@ -9116,9 +9366,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-158"></a>
+<a id="text-160"></a>
 
-### 文本 158 · MIT
+### 文本 160 · MIT
 
 来源文件：`LICENSE`
 
@@ -9146,9 +9396,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-159"></a>
+<a id="text-161"></a>
 
-### 文本 159 · MIT
+### 文本 161 · MIT
 
 来源文件：`LICENSE`
 
@@ -9182,9 +9432,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-160"></a>
+<a id="text-162"></a>
 
-### 文本 160 · MIT
+### 文本 162 · MIT
 
 来源文件：`LICENSE`
 
@@ -9214,9 +9464,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-161"></a>
+<a id="text-163"></a>
 
-### 文本 161 · MIT
+### 文本 163 · MIT
 
 来源文件：`LICENSE`
 
@@ -9244,9 +9494,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-162"></a>
+<a id="text-164"></a>
 
-### 文本 162 · MIT
+### 文本 164 · MIT
 
 来源文件：`LICENSE`
 
@@ -9278,9 +9528,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-163"></a>
+<a id="text-165"></a>
 
-### 文本 163 · MIT
+### 文本 165 · MIT
 
 来源文件：`LICENSE`
 
@@ -9310,9 +9560,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-164"></a>
+<a id="text-166"></a>
 
-### 文本 164 · MIT
+### 文本 166 · MIT
 
 来源文件：`LICENSE`
 
@@ -9328,9 +9578,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-165"></a>
+<a id="text-167"></a>
 
-### 文本 165 · MIT
+### 文本 167 · MIT
 
 来源文件：`LICENSE`
 
@@ -9360,9 +9610,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-166"></a>
+<a id="text-168"></a>
 
-### 文本 166 · MIT
+### 文本 168 · MIT
 
 来源文件：`LICENSE`
 
@@ -9392,9 +9642,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-167"></a>
+<a id="text-169"></a>
 
-### 文本 167 · MIT
+### 文本 169 · MIT
 
 来源文件：`LICENSE`
 
@@ -9424,9 +9674,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-168"></a>
+<a id="text-170"></a>
 
-### 文本 168 · MIT
+### 文本 170 · MIT
 
 来源文件：`LICENSE`
 
@@ -9456,9 +9706,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-169"></a>
+<a id="text-171"></a>
 
-### 文本 169 · MIT
+### 文本 171 · MIT
 
 来源文件：`LICENSE`
 
@@ -9488,9 +9738,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-170"></a>
+<a id="text-172"></a>
 
-### 文本 170 · MIT
+### 文本 172 · MIT
 
 来源文件：`LICENSE`
 
@@ -9521,9 +9771,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-171"></a>
+<a id="text-173"></a>
 
-### 文本 171 · MIT
+### 文本 173 · MIT
 
 来源文件：`LICENSE`
 
@@ -9553,9 +9803,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-172"></a>
+<a id="text-174"></a>
 
-### 文本 172 · MIT
+### 文本 174 · MIT
 
 来源文件：`LICENSE`
 
@@ -9589,9 +9839,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-173"></a>
+<a id="text-175"></a>
 
-### 文本 173 · MIT
+### 文本 175 · MIT
 
 来源文件：`LICENSE`
 
@@ -9625,9 +9875,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-174"></a>
+<a id="text-176"></a>
 
-### 文本 174 · MIT
+### 文本 176 · MIT
 
 来源文件：`LICENSE`
 
@@ -9657,9 +9907,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-175"></a>
+<a id="text-177"></a>
 
-### 文本 175 · MIT
+### 文本 177 · MIT
 
 来源文件：`LICENSE`
 
@@ -9688,9 +9938,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-176"></a>
+<a id="text-178"></a>
 
-### 文本 176 · MIT
+### 文本 178 · MIT
 
 来源文件：`LICENSE`
 
@@ -9720,9 +9970,9 @@ THE SOFTWARE.
     SOFTWARE
 ```
 
-<a id="text-177"></a>
+<a id="text-179"></a>
 
-### 文本 177 · MIT
+### 文本 179 · MIT
 
 来源文件：`LICENSE`
 
@@ -9751,9 +10001,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-178"></a>
+<a id="text-180"></a>
 
-### 文本 178 · MIT
+### 文本 180 · MIT
 
 来源文件：`LICENSE`
 
@@ -9783,9 +10033,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-179"></a>
+<a id="text-181"></a>
 
-### 文本 179 · MIT
+### 文本 181 · MIT
 
 来源文件：`LICENSE`
 
@@ -9813,9 +10063,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-180"></a>
+<a id="text-182"></a>
 
-### 文本 180 · MIT
+### 文本 182 · MIT
 
 来源文件：`LICENSE`
 
@@ -9843,9 +10093,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-181"></a>
+<a id="text-183"></a>
 
-### 文本 181 · MIT
+### 文本 183 · MIT
 
 来源文件：`LICENSE`
 
@@ -9879,9 +10129,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-182"></a>
+<a id="text-184"></a>
 
-### 文本 182 · MIT
+### 文本 184 · MIT
 
 来源文件：`LICENSE`
 
@@ -9916,9 +10166,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-183"></a>
+<a id="text-185"></a>
 
-### 文本 183 · MIT
+### 文本 185 · MIT
 
 来源文件：`LICENSE`
 
@@ -9948,9 +10198,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-184"></a>
+<a id="text-186"></a>
 
-### 文本 184 · MIT
+### 文本 186 · MIT
 
 来源文件：`LICENSE`
 
@@ -9980,9 +10230,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-185"></a>
+<a id="text-187"></a>
 
-### 文本 185 · MIT
+### 文本 187 · MIT
 
 来源文件：`LICENSE`
 
@@ -10016,9 +10266,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-186"></a>
+<a id="text-188"></a>
 
-### 文本 186 · MIT
+### 文本 188 · MIT
 
 来源文件：`LICENSE`
 
@@ -10048,9 +10298,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-187"></a>
+<a id="text-189"></a>
 
-### 文本 187 · MIT
+### 文本 189 · MIT
 
 来源文件：`LICENSE`
 
@@ -10080,9 +10330,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-188"></a>
+<a id="text-190"></a>
 
-### 文本 188 · MIT
+### 文本 190 · MIT
 
 来源文件：`LICENSE`
 
@@ -10113,9 +10363,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-189"></a>
+<a id="text-191"></a>
 
-### 文本 189 · MIT
+### 文本 191 · MIT
 
 来源文件：`LICENSE`
 
@@ -10148,9 +10398,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-190"></a>
+<a id="text-192"></a>
 
-### 文本 190 · MIT
+### 文本 192 · MIT
 
 来源文件：`LICENSE`
 
@@ -10184,9 +10434,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-191"></a>
+<a id="text-193"></a>
 
-### 文本 191 · MIT
+### 文本 193 · MIT
 
 来源文件：`LICENSE`
 
@@ -10220,9 +10470,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-192"></a>
+<a id="text-194"></a>
 
-### 文本 192 · MIT
+### 文本 194 · MIT
 
 来源文件：`LICENSE`
 
@@ -10253,9 +10503,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-193"></a>
+<a id="text-195"></a>
 
-### 文本 193 · MIT
+### 文本 195 · MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -10289,9 +10539,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-194"></a>
+<a id="text-196"></a>
 
-### 文本 194 · MIT
+### 文本 196 · MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -10318,9 +10568,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-195"></a>
+<a id="text-197"></a>
 
-### 文本 195 · MIT
+### 文本 197 · MIT
 
 来源文件：`LICENSE-MIT.md`
 
@@ -10352,9 +10602,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-196"></a>
+<a id="text-198"></a>
 
-### 文本 196 · MIT
+### 文本 198 · MIT
 
 来源文件：`LICENSE.md`
 
@@ -10384,9 +10634,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-197"></a>
+<a id="text-199"></a>
 
-### 文本 197 · MIT
+### 文本 199 · MIT
 
 来源文件：`LICENSE.md`
 
@@ -10420,9 +10670,9 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-198"></a>
+<a id="text-200"></a>
 
-### 文本 198 · MIT
+### 文本 200 · MIT
 
 来源文件：`LICENSE.md`
 
@@ -10452,9 +10702,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-199"></a>
+<a id="text-201"></a>
 
-### 文本 199 · MIT
+### 文本 201 · MIT
 
 来源文件：`LICENSE.md`
 
@@ -10484,9 +10734,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-200"></a>
+<a id="text-202"></a>
 
-### 文本 200 · MIT
+### 文本 202 · MIT
 
 来源文件：`LICENSE.md`
 
@@ -10502,9 +10752,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-201"></a>
+<a id="text-203"></a>
 
-### 文本 201 · MIT
+### 文本 203 · MIT
 
 来源文件：`LICENSE.md`
 
@@ -10534,9 +10784,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-202"></a>
+<a id="text-204"></a>
 
-### 文本 202 · MIT
+### 文本 204 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -10566,9 +10816,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-203"></a>
+<a id="text-205"></a>
 
-### 文本 203 · MIT
+### 文本 205 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -10596,9 +10846,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-204"></a>
+<a id="text-206"></a>
 
-### 文本 204 · MIT
+### 文本 206 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -10626,9 +10876,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-205"></a>
+<a id="text-207"></a>
 
-### 文本 205 · MIT
+### 文本 207 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -10656,9 +10906,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-206"></a>
+<a id="text-208"></a>
 
-### 文本 206 · MIT
+### 文本 208 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -10688,9 +10938,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-207"></a>
+<a id="text-209"></a>
 
-### 文本 207 · MIT
+### 文本 209 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -10957,9 +11207,9 @@ have been licensed under extremely permissive terms.
 Copyright notices are retained in src/* files where relevant.
 ```
 
-<a id="text-208"></a>
+<a id="text-210"></a>
 
-### 文本 208 · MIT
+### 文本 210 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -10989,9 +11239,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-209"></a>
+<a id="text-211"></a>
 
-### 文本 209 · MIT
+### 文本 211 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -11021,9 +11271,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-210"></a>
+<a id="text-212"></a>
 
-### 文本 210 · MIT
+### 文本 212 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -11053,9 +11303,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-211"></a>
+<a id="text-213"></a>
 
-### 文本 211 · MIT
+### 文本 213 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -11085,9 +11335,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-212"></a>
+<a id="text-214"></a>
 
-### 文本 212 · MIT
+### 文本 214 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -11115,9 +11365,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-213"></a>
+<a id="text-215"></a>
 
-### 文本 213 · MIT
+### 文本 215 · MIT
 
 来源文件：`LICENSE.txt`
 
@@ -11145,9 +11395,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-214"></a>
+<a id="text-216"></a>
 
-### 文本 214 · MIT
+### 文本 216 · MIT
 
 来源文件：`NOTICES.md`
 
@@ -11182,9 +11432,9 @@ The `cfg_aliases!` macro uses a lot of the code from [`tectonic_cfg_support::tar
 ---
 ```
 
-<a id="text-215"></a>
+<a id="text-217"></a>
 
-### 文本 215 · MIT
+### 文本 217 · MIT
 
 来源文件：`license`
 
@@ -11215,9 +11465,9 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-216"></a>
+<a id="text-218"></a>
 
-### 文本 216 · MIT / Apache-2.0
+### 文本 218 · MIT / Apache-2.0
 
 来源文件：`COPYING`
 
@@ -11231,9 +11481,9 @@ option. All files in the project carrying such notice may not be
 copied, modified, or distributed except according to those terms.
 ```
 
-<a id="text-217"></a>
+<a id="text-219"></a>
 
-### 文本 217 · MIT / Apache-2.0
+### 文本 219 · MIT / Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -11261,9 +11511,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-218"></a>
+<a id="text-220"></a>
 
-### 文本 218 · MIT / Apache-2.0
+### 文本 220 · MIT / Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -11297,9 +11547,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-219"></a>
+<a id="text-221"></a>
 
-### 文本 219 · MIT OR Apache-2.0
+### 文本 221 · MIT OR Apache-2.0
 
 来源文件：`COPYING`
 
@@ -11316,9 +11566,9 @@ This project is licensed under either of
 at your option.
 ```
 
-<a id="text-220"></a>
+<a id="text-222"></a>
 
-### 文本 220 · MIT OR Apache-2.0
+### 文本 222 · MIT OR Apache-2.0
 
 来源文件：`COPYING`
 
@@ -11335,9 +11585,9 @@ This project is licensed under either of
 at your option.
 ```
 
-<a id="text-221"></a>
+<a id="text-223"></a>
 
-### 文本 221 · MIT OR Apache-2.0
+### 文本 223 · MIT OR Apache-2.0
 
 来源文件：`COPYING`
 
@@ -11353,13 +11603,13 @@ http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 option.
 ```
 
-<a id="text-222"></a>
+<a id="text-224"></a>
 
-### 文本 222 · MIT OR Apache-2.0
+### 文本 224 · MIT OR Apache-2.0
 
 来源文件：`LICENSE`
 
-适用组件：addr2line、ahash、aligned、arbitrary 等 220 个
+适用组件：addr2line、ahash、aligned、arbitrary 等 218 个
 
 ```text
                               Apache License
@@ -11565,9 +11815,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-223"></a>
+<a id="text-225"></a>
 
-### 文本 223 · MIT OR Apache-2.0
+### 文本 225 · MIT OR Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -11599,13 +11849,13 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-224"></a>
+<a id="text-226"></a>
 
-### 文本 224 · MIT OR Apache-2.0
+### 文本 226 · MIT OR Apache-2.0
 
 来源文件：`LICENSE`
 
-适用组件：arboard、derive_utils、fdeflate、half 等 36 个
+适用组件：arboard、derive_utils、fdeflate、half 等 35 个
 
 ```text
                                  Apache License
@@ -11786,13 +12036,13 @@ DEALINGS IN THE SOFTWARE.
    END OF TERMS AND CONDITIONS
 ```
 
-<a id="text-225"></a>
+<a id="text-227"></a>
 
-### 文本 225 · MIT OR Apache-2.0
+### 文本 227 · MIT OR Apache-2.0
 
 来源文件：`LICENSE`
 
-适用组件：as-raw-xcb-connection、cmov、codespan-reporting、ctutils 等 33 个
+适用组件：as-raw-xcb-connection、cmov、codespan-reporting、ctutils 等 32 个
 
 ```text
                                  Apache License
@@ -11998,9 +12248,9 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-<a id="text-226"></a>
+<a id="text-228"></a>
 
-### 文本 226 · MIT OR Apache-2.0
+### 文本 228 · MIT OR Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -12024,13 +12274,13 @@ Modifications after commit `825edf857426d034954523fed19599635cbb5043` are Copyri
 Redistributions of this Work must include all inherited and new license notices, including the notices for Chen Yuheng, Ethiraric, and Bourumir Wyngs.
 ```
 
-<a id="text-227"></a>
+<a id="text-229"></a>
 
-### 文本 227 · MIT OR Apache-2.0
+### 文本 229 · MIT OR Apache-2.0
 
 来源文件：`LICENSE`
 
-适用组件：half、ident_case、linebender_resource_handle、simdutf8 等 6 个
+适用组件：half、ident_case、linebender_resource_handle、str_indices 等 5 个
 
 ```text
 MIT License
@@ -12054,9 +12304,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-228"></a>
+<a id="text-230"></a>
 
-### 文本 228 · MIT OR Apache-2.0
+### 文本 230 · MIT OR Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -12086,9 +12336,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-229"></a>
+<a id="text-231"></a>
 
-### 文本 229 · MIT OR Apache-2.0
+### 文本 231 · MIT OR Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -12098,9 +12348,9 @@ SOFTWARE.
 MIT OR Apache-2.0
 ```
 
-<a id="text-230"></a>
+<a id="text-232"></a>
 
-### 文本 230 · MIT OR Apache-2.0
+### 文本 232 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -12310,9 +12560,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-231"></a>
+<a id="text-233"></a>
 
-### 文本 231 · MIT OR Apache-2.0
+### 文本 233 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -12522,13 +12772,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-232"></a>
+<a id="text-234"></a>
 
-### 文本 232 · MIT OR Apache-2.0
+### 文本 234 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
-适用组件：allocator-api2、anyhow、async-trait、dyn-clone 等 37 个
+适用组件：allocator-api2、anyhow、async-trait、dyn-clone 等 39 个
 
 ```text
                               Apache License
@@ -12709,9 +12959,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-<a id="text-233"></a>
+<a id="text-235"></a>
 
-### 文本 233 · MIT OR Apache-2.0
+### 文本 235 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -12733,13 +12983,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-234"></a>
+<a id="text-236"></a>
 
-### 文本 234 · MIT OR Apache-2.0
+### 文本 236 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
-适用组件：annotate-snippets、anstyle、bit_field、crc32fast 等 24 个
+适用组件：annotate-snippets、anstyle、bit_field、crc32fast 等 25 个
 
 ```text
                                  Apache License
@@ -12945,9 +13195,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-235"></a>
+<a id="text-237"></a>
 
-### 文本 235 · MIT OR Apache-2.0
+### 文本 237 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -13023,9 +13273,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-236"></a>
+<a id="text-238"></a>
 
-### 文本 236 · MIT OR Apache-2.0
+### 文本 238 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -13224,9 +13474,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-237"></a>
+<a id="text-239"></a>
 
-### 文本 237 · MIT OR Apache-2.0
+### 文本 239 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -13436,9 +13686,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-238"></a>
+<a id="text-240"></a>
 
-### 文本 238 · MIT OR Apache-2.0
+### 文本 240 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -13621,9 +13871,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
    of your accepting any such warranty or additional liability.
 ```
 
-<a id="text-239"></a>
+<a id="text-241"></a>
 
-### 文本 239 · MIT OR Apache-2.0
+### 文本 241 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -13705,9 +13955,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-240"></a>
+<a id="text-242"></a>
 
-### 文本 240 · MIT OR Apache-2.0
+### 文本 242 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -13784,9 +14034,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-241"></a>
+<a id="text-243"></a>
 
-### 文本 241 · MIT OR Apache-2.0
+### 文本 243 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -13863,9 +14113,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-242"></a>
+<a id="text-244"></a>
 
-### 文本 242 · MIT OR Apache-2.0
+### 文本 244 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -13941,9 +14191,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-243"></a>
+<a id="text-245"></a>
 
-### 文本 243 · MIT OR Apache-2.0
+### 文本 245 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -14019,9 +14269,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-244"></a>
+<a id="text-246"></a>
 
-### 文本 244 · MIT OR Apache-2.0
+### 文本 246 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -14232,9 +14482,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-245"></a>
+<a id="text-247"></a>
 
-### 文本 245 · MIT OR Apache-2.0
+### 文本 247 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -14444,9 +14694,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-246"></a>
+<a id="text-248"></a>
 
-### 文本 246 · MIT OR Apache-2.0
+### 文本 248 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -14656,9 +14906,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-247"></a>
+<a id="text-249"></a>
 
-### 文本 247 · MIT OR Apache-2.0
+### 文本 249 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -14868,9 +15118,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-248"></a>
+<a id="text-250"></a>
 
-### 文本 248 · MIT OR Apache-2.0
+### 文本 250 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -15080,9 +15330,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-249"></a>
+<a id="text-251"></a>
 
-### 文本 249 · MIT OR Apache-2.0
+### 文本 251 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -15292,9 +15542,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-250"></a>
+<a id="text-252"></a>
 
-### 文本 250 · MIT OR Apache-2.0
+### 文本 252 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -15504,9 +15754,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-251"></a>
+<a id="text-253"></a>
 
-### 文本 251 · MIT OR Apache-2.0
+### 文本 253 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -15716,9 +15966,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-252"></a>
+<a id="text-254"></a>
 
-### 文本 252 · MIT OR Apache-2.0
+### 文本 254 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -15928,9 +16178,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-253"></a>
+<a id="text-255"></a>
 
-### 文本 253 · MIT OR Apache-2.0
+### 文本 255 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -16140,9 +16390,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-254"></a>
+<a id="text-256"></a>
 
-### 文本 254 · MIT OR Apache-2.0
+### 文本 256 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -16352,9 +16602,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-255"></a>
+<a id="text-257"></a>
 
-### 文本 255 · MIT OR Apache-2.0
+### 文本 257 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -16564,9 +16814,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-256"></a>
+<a id="text-258"></a>
 
-### 文本 256 · MIT OR Apache-2.0
+### 文本 258 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -16776,9 +17026,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-257"></a>
+<a id="text-259"></a>
 
-### 文本 257 · MIT OR Apache-2.0
+### 文本 259 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -16963,9 +17213,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-<a id="text-258"></a>
+<a id="text-260"></a>
 
-### 文本 258 · MIT OR Apache-2.0
+### 文本 260 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -17161,9 +17411,9 @@ APPENDIX: How to apply the Apache License to your work.
    identification within third-party archives.
 ```
 
-<a id="text-259"></a>
+<a id="text-261"></a>
 
-### 文本 259 · MIT OR Apache-2.0
+### 文本 261 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -17373,9 +17623,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-260"></a>
+<a id="text-262"></a>
 
-### 文本 260 · MIT OR Apache-2.0
+### 文本 262 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -17585,9 +17835,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-261"></a>
+<a id="text-263"></a>
 
-### 文本 261 · MIT OR Apache-2.0
+### 文本 263 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -17797,9 +18047,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-262"></a>
+<a id="text-264"></a>
 
-### 文本 262 · MIT OR Apache-2.0
+### 文本 264 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -17821,9 +18071,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-263"></a>
+<a id="text-265"></a>
 
-### 文本 263 · MIT OR Apache-2.0
+### 文本 265 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -18033,9 +18283,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-264"></a>
+<a id="text-266"></a>
 
-### 文本 264 · MIT OR Apache-2.0
+### 文本 266 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -18245,9 +18495,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-265"></a>
+<a id="text-267"></a>
 
-### 文本 265 · MIT OR Apache-2.0
+### 文本 267 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -18457,9 +18707,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-266"></a>
+<a id="text-268"></a>
 
-### 文本 266 · MIT OR Apache-2.0
+### 文本 268 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -18669,9 +18919,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-267"></a>
+<a id="text-269"></a>
 
-### 文本 267 · MIT OR Apache-2.0
+### 文本 269 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-Apache`
 
@@ -18881,9 +19131,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-268"></a>
+<a id="text-270"></a>
 
-### 文本 268 · MIT OR Apache-2.0
+### 文本 270 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-Apache`
 
@@ -19093,9 +19343,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-269"></a>
+<a id="text-271"></a>
 
-### 文本 269 · MIT OR Apache-2.0
+### 文本 271 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-Apache`
 
@@ -19305,9 +19555,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-270"></a>
+<a id="text-272"></a>
 
-### 文本 270 · MIT OR Apache-2.0
+### 文本 272 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19341,9 +19591,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-271"></a>
+<a id="text-273"></a>
 
-### 文本 271 · MIT OR Apache-2.0
+### 文本 273 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19377,9 +19627,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-272"></a>
+<a id="text-274"></a>
 
-### 文本 272 · MIT OR Apache-2.0
+### 文本 274 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19413,9 +19663,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-273"></a>
+<a id="text-275"></a>
 
-### 文本 273 · MIT OR Apache-2.0
+### 文本 275 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19444,9 +19694,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-274"></a>
+<a id="text-276"></a>
 
-### 文本 274 · MIT OR Apache-2.0
+### 文本 276 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19474,9 +19724,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-275"></a>
+<a id="text-277"></a>
 
-### 文本 275 · MIT OR Apache-2.0
+### 文本 277 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19512,9 +19762,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-276"></a>
+<a id="text-278"></a>
 
-### 文本 276 · MIT OR Apache-2.0
+### 文本 278 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19548,9 +19798,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-277"></a>
+<a id="text-279"></a>
 
-### 文本 277 · MIT OR Apache-2.0
+### 文本 279 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19584,9 +19834,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-278"></a>
+<a id="text-280"></a>
 
-### 文本 278 · MIT OR Apache-2.0
+### 文本 280 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19620,9 +19870,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-279"></a>
+<a id="text-281"></a>
 
-### 文本 279 · MIT OR Apache-2.0
+### 文本 281 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19656,9 +19906,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-280"></a>
+<a id="text-282"></a>
 
-### 文本 280 · MIT OR Apache-2.0
+### 文本 282 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19692,9 +19942,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-281"></a>
+<a id="text-283"></a>
 
-### 文本 281 · MIT OR Apache-2.0
+### 文本 283 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19724,9 +19974,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-282"></a>
+<a id="text-284"></a>
 
-### 文本 282 · MIT OR Apache-2.0
+### 文本 284 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19756,9 +20006,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-283"></a>
+<a id="text-285"></a>
 
-### 文本 283 · MIT OR Apache-2.0
+### 文本 285 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19792,9 +20042,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-284"></a>
+<a id="text-286"></a>
 
-### 文本 284 · MIT OR Apache-2.0
+### 文本 286 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19828,9 +20078,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-285"></a>
+<a id="text-287"></a>
 
-### 文本 285 · MIT OR Apache-2.0
+### 文本 287 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19864,9 +20114,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-286"></a>
+<a id="text-288"></a>
 
-### 文本 286 · MIT OR Apache-2.0
+### 文本 288 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19896,9 +20146,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-287"></a>
+<a id="text-289"></a>
 
-### 文本 287 · MIT OR Apache-2.0
+### 文本 289 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19928,9 +20178,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-288"></a>
+<a id="text-290"></a>
 
-### 文本 288 · MIT OR Apache-2.0
+### 文本 290 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -19964,9 +20214,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-289"></a>
+<a id="text-291"></a>
 
-### 文本 289 · MIT OR Apache-2.0
+### 文本 291 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20000,9 +20250,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-290"></a>
+<a id="text-292"></a>
 
-### 文本 290 · MIT OR Apache-2.0
+### 文本 292 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20036,9 +20286,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-291"></a>
+<a id="text-293"></a>
 
-### 文本 291 · MIT OR Apache-2.0
+### 文本 293 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20068,9 +20318,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-292"></a>
+<a id="text-294"></a>
 
-### 文本 292 · MIT OR Apache-2.0
+### 文本 294 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20104,9 +20354,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-293"></a>
+<a id="text-295"></a>
 
-### 文本 293 · MIT OR Apache-2.0
+### 文本 295 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20140,9 +20390,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-294"></a>
+<a id="text-296"></a>
 
-### 文本 294 · MIT OR Apache-2.0
+### 文本 296 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20177,9 +20427,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-295"></a>
+<a id="text-297"></a>
 
-### 文本 295 · MIT OR Apache-2.0
+### 文本 297 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20213,9 +20463,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-296"></a>
+<a id="text-298"></a>
 
-### 文本 296 · MIT OR Apache-2.0
+### 文本 298 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20249,9 +20499,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-297"></a>
+<a id="text-299"></a>
 
-### 文本 297 · MIT OR Apache-2.0
+### 文本 299 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20285,9 +20535,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-298"></a>
+<a id="text-300"></a>
 
-### 文本 298 · MIT OR Apache-2.0
+### 文本 300 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20321,9 +20571,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-299"></a>
+<a id="text-301"></a>
 
-### 文本 299 · MIT OR Apache-2.0
+### 文本 301 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20357,9 +20607,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-300"></a>
+<a id="text-302"></a>
 
-### 文本 300 · MIT OR Apache-2.0
+### 文本 302 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20389,9 +20639,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-301"></a>
+<a id="text-303"></a>
 
-### 文本 301 · MIT OR Apache-2.0
+### 文本 303 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20425,9 +20675,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-302"></a>
+<a id="text-304"></a>
 
-### 文本 302 · MIT OR Apache-2.0
+### 文本 304 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20457,9 +20707,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-303"></a>
+<a id="text-305"></a>
 
-### 文本 303 · MIT OR Apache-2.0
+### 文本 305 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20495,9 +20745,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-304"></a>
+<a id="text-306"></a>
 
-### 文本 304 · MIT OR Apache-2.0
+### 文本 306 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20531,9 +20781,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-305"></a>
+<a id="text-307"></a>
 
-### 文本 305 · MIT OR Apache-2.0
+### 文本 307 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20567,9 +20817,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-306"></a>
+<a id="text-308"></a>
 
-### 文本 306 · MIT OR Apache-2.0
+### 文本 308 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20603,9 +20853,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-307"></a>
+<a id="text-309"></a>
 
-### 文本 307 · MIT OR Apache-2.0
+### 文本 309 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20633,9 +20883,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-308"></a>
+<a id="text-310"></a>
 
-### 文本 308 · MIT OR Apache-2.0
+### 文本 310 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20665,9 +20915,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-309"></a>
+<a id="text-311"></a>
 
-### 文本 309 · MIT OR Apache-2.0
+### 文本 311 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20701,9 +20951,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-310"></a>
+<a id="text-312"></a>
 
-### 文本 310 · MIT OR Apache-2.0
+### 文本 312 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20738,9 +20988,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-311"></a>
+<a id="text-313"></a>
 
-### 文本 311 · MIT OR Apache-2.0
+### 文本 313 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20768,9 +21018,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-312"></a>
+<a id="text-314"></a>
 
-### 文本 312 · MIT OR Apache-2.0
+### 文本 314 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20798,9 +21048,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-313"></a>
+<a id="text-315"></a>
 
-### 文本 313 · MIT OR Apache-2.0
+### 文本 315 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20834,9 +21084,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-314"></a>
+<a id="text-316"></a>
 
-### 文本 314 · MIT OR Apache-2.0
+### 文本 316 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20870,9 +21120,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-315"></a>
+<a id="text-317"></a>
 
-### 文本 315 · MIT OR Apache-2.0
+### 文本 317 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20906,9 +21156,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-316"></a>
+<a id="text-318"></a>
 
-### 文本 316 · MIT OR Apache-2.0
+### 文本 318 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20942,9 +21192,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-317"></a>
+<a id="text-319"></a>
 
-### 文本 317 · MIT OR Apache-2.0
+### 文本 319 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -20978,9 +21228,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-318"></a>
+<a id="text-320"></a>
 
-### 文本 318 · MIT OR Apache-2.0
+### 文本 320 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21014,9 +21264,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-319"></a>
+<a id="text-321"></a>
 
-### 文本 319 · MIT OR Apache-2.0
+### 文本 321 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21050,9 +21300,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-320"></a>
+<a id="text-322"></a>
 
-### 文本 320 · MIT OR Apache-2.0
+### 文本 322 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21086,9 +21336,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-321"></a>
+<a id="text-323"></a>
 
-### 文本 321 · MIT OR Apache-2.0
+### 文本 323 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21122,9 +21372,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-322"></a>
+<a id="text-324"></a>
 
-### 文本 322 · MIT OR Apache-2.0
+### 文本 324 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21158,9 +21408,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-323"></a>
+<a id="text-325"></a>
 
-### 文本 323 · MIT OR Apache-2.0
+### 文本 325 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21169,80 +21419,6 @@ DEALINGS IN THE SOFTWARE.
 ```text
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
-<a id="text-324"></a>
-
-### 文本 324 · MIT OR Apache-2.0
-
-来源文件：`LICENSE-MIT`
-
-适用组件：getrandom
-
-```text
-Copyright (c) 2018-2024 The rust-random Project Developers
-Copyright (c) 2014 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
-<a id="text-325"></a>
-
-### 文本 325 · MIT OR Apache-2.0
-
-来源文件：`LICENSE-MIT`
-
-适用组件：getrandom
-
-```text
-Copyright (c) 2018-2025 The rust-random Project Developers
-Copyright (c) 2014 The Rust Project Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -21278,7 +21454,7 @@ DEALINGS IN THE SOFTWARE.
 适用组件：getrandom
 
 ```text
-Copyright (c) 2018-2026 The rust-random Project Developers
+Copyright (c) 2018-2024 The rust-random Project Developers
 Copyright (c) 2014 The Rust Project Developers
 
 Permission is hereby granted, free of charge, to any
@@ -21312,6 +21488,80 @@ DEALINGS IN THE SOFTWARE.
 
 来源文件：`LICENSE-MIT`
 
+适用组件：getrandom
+
+```text
+Copyright (c) 2018-2025 The rust-random Project Developers
+Copyright (c) 2014 The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+<a id="text-328"></a>
+
+### 文本 328 · MIT OR Apache-2.0
+
+来源文件：`LICENSE-MIT`
+
+适用组件：getrandom
+
+```text
+Copyright (c) 2018-2026 The rust-random Project Developers
+Copyright (c) 2014 The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+<a id="text-329"></a>
+
+### 文本 329 · MIT OR Apache-2.0
+
+来源文件：`LICENSE-MIT`
+
 适用组件：gif
 
 ```text
@@ -21338,9 +21588,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-328"></a>
+<a id="text-330"></a>
 
-### 文本 328 · MIT OR Apache-2.0
+### 文本 330 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21374,9 +21624,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-329"></a>
+<a id="text-331"></a>
 
-### 文本 329 · MIT OR Apache-2.0
+### 文本 331 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21392,9 +21642,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-330"></a>
+<a id="text-332"></a>
 
-### 文本 330 · MIT OR Apache-2.0
+### 文本 332 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21422,9 +21672,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-331"></a>
+<a id="text-333"></a>
 
-### 文本 331 · MIT OR Apache-2.0
+### 文本 333 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21459,9 +21709,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-332"></a>
+<a id="text-334"></a>
 
-### 文本 332 · MIT OR Apache-2.0
+### 文本 334 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21490,9 +21740,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-333"></a>
+<a id="text-335"></a>
 
-### 文本 333 · MIT OR Apache-2.0
+### 文本 335 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21527,9 +21777,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-334"></a>
+<a id="text-336"></a>
 
-### 文本 334 · MIT OR Apache-2.0
+### 文本 336 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21563,9 +21813,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-335"></a>
+<a id="text-337"></a>
 
-### 文本 335 · MIT OR Apache-2.0
+### 文本 337 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21599,9 +21849,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-336"></a>
+<a id="text-338"></a>
 
-### 文本 336 · MIT OR Apache-2.0
+### 文本 338 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21629,9 +21879,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-337"></a>
+<a id="text-339"></a>
 
-### 文本 337 · MIT OR Apache-2.0
+### 文本 339 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21665,9 +21915,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-338"></a>
+<a id="text-340"></a>
 
-### 文本 338 · MIT OR Apache-2.0
+### 文本 340 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21702,9 +21952,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-339"></a>
+<a id="text-341"></a>
 
-### 文本 339 · MIT OR Apache-2.0
+### 文本 341 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21720,9 +21970,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-340"></a>
+<a id="text-342"></a>
 
-### 文本 340 · MIT OR Apache-2.0
+### 文本 342 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21750,9 +22000,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-341"></a>
+<a id="text-343"></a>
 
-### 文本 341 · MIT OR Apache-2.0
+### 文本 343 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21780,9 +22030,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-342"></a>
+<a id="text-344"></a>
 
-### 文本 342 · MIT OR Apache-2.0
+### 文本 344 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21816,9 +22066,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-343"></a>
+<a id="text-345"></a>
 
-### 文本 343 · MIT OR Apache-2.0
+### 文本 345 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21852,9 +22102,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-344"></a>
+<a id="text-346"></a>
 
-### 文本 344 · MIT OR Apache-2.0
+### 文本 346 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21888,9 +22138,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-345"></a>
+<a id="text-347"></a>
 
-### 文本 345 · MIT OR Apache-2.0
+### 文本 347 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21920,9 +22170,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-346"></a>
+<a id="text-348"></a>
 
-### 文本 346 · MIT OR Apache-2.0
+### 文本 348 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21958,9 +22208,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-347"></a>
+<a id="text-349"></a>
 
-### 文本 347 · MIT OR Apache-2.0
+### 文本 349 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -21997,9 +22247,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-348"></a>
+<a id="text-350"></a>
 
-### 文本 348 · MIT OR Apache-2.0
+### 文本 350 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22034,9 +22284,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-349"></a>
+<a id="text-351"></a>
 
-### 文本 349 · MIT OR Apache-2.0
+### 文本 351 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22064,9 +22314,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-350"></a>
+<a id="text-352"></a>
 
-### 文本 350 · MIT OR Apache-2.0
+### 文本 352 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22100,9 +22350,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-351"></a>
+<a id="text-353"></a>
 
-### 文本 351 · MIT OR Apache-2.0
+### 文本 353 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22132,9 +22382,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-352"></a>
+<a id="text-354"></a>
 
-### 文本 352 · MIT OR Apache-2.0
+### 文本 354 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22164,9 +22414,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-353"></a>
+<a id="text-355"></a>
 
-### 文本 353 · MIT OR Apache-2.0
+### 文本 355 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22196,9 +22446,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-354"></a>
+<a id="text-356"></a>
 
-### 文本 354 · MIT OR Apache-2.0
+### 文本 356 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22232,9 +22482,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-355"></a>
+<a id="text-357"></a>
 
-### 文本 355 · MIT OR Apache-2.0
+### 文本 357 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22262,9 +22512,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-356"></a>
+<a id="text-358"></a>
 
-### 文本 356 · MIT OR Apache-2.0
+### 文本 358 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22299,9 +22549,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-357"></a>
+<a id="text-359"></a>
 
-### 文本 357 · MIT OR Apache-2.0
+### 文本 359 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22335,9 +22585,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-358"></a>
+<a id="text-360"></a>
 
-### 文本 358 · MIT OR Apache-2.0
+### 文本 360 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22371,9 +22621,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-359"></a>
+<a id="text-361"></a>
 
-### 文本 359 · MIT OR Apache-2.0
+### 文本 361 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22403,9 +22653,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-360"></a>
+<a id="text-362"></a>
 
-### 文本 360 · MIT OR Apache-2.0
+### 文本 362 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22434,9 +22684,9 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-361"></a>
+<a id="text-363"></a>
 
-### 文本 361 · MIT OR Apache-2.0
+### 文本 363 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22464,9 +22714,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-362"></a>
+<a id="text-364"></a>
 
-### 文本 362 · MIT OR Apache-2.0
+### 文本 364 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22500,9 +22750,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-363"></a>
+<a id="text-365"></a>
 
-### 文本 363 · MIT OR Apache-2.0
+### 文本 365 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22536,9 +22786,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-364"></a>
+<a id="text-366"></a>
 
-### 文本 364 · MIT OR Apache-2.0
+### 文本 366 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22572,9 +22822,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-365"></a>
+<a id="text-367"></a>
 
-### 文本 365 · MIT OR Apache-2.0
+### 文本 367 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22590,9 +22840,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-366"></a>
+<a id="text-368"></a>
 
-### 文本 366 · MIT OR Apache-2.0
+### 文本 368 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22627,9 +22877,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-367"></a>
+<a id="text-369"></a>
 
-### 文本 367 · MIT OR Apache-2.0
+### 文本 369 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22663,9 +22913,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-368"></a>
+<a id="text-370"></a>
 
-### 文本 368 · MIT OR Apache-2.0
+### 文本 370 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22700,9 +22950,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-369"></a>
+<a id="text-371"></a>
 
-### 文本 369 · MIT OR Apache-2.0
+### 文本 371 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22728,9 +22978,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-370"></a>
+<a id="text-372"></a>
 
-### 文本 370 · MIT OR Apache-2.0
+### 文本 372 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22764,9 +23014,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-371"></a>
+<a id="text-373"></a>
 
-### 文本 371 · MIT OR Apache-2.0
+### 文本 373 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22796,9 +23046,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-372"></a>
+<a id="text-374"></a>
 
-### 文本 372 · MIT OR Apache-2.0
+### 文本 374 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22828,9 +23078,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-373"></a>
+<a id="text-375"></a>
 
-### 文本 373 · MIT OR Apache-2.0
+### 文本 375 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22864,9 +23114,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-374"></a>
+<a id="text-376"></a>
 
-### 文本 374 · MIT OR Apache-2.0
+### 文本 376 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22900,9 +23150,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-375"></a>
+<a id="text-377"></a>
 
-### 文本 375 · MIT OR Apache-2.0
+### 文本 377 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22931,9 +23181,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-376"></a>
+<a id="text-378"></a>
 
-### 文本 376 · MIT OR Apache-2.0
+### 文本 378 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22963,9 +23213,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-377"></a>
+<a id="text-379"></a>
 
-### 文本 377 · MIT OR Apache-2.0
+### 文本 379 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -22999,9 +23249,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-378"></a>
+<a id="text-380"></a>
 
-### 文本 378 · MIT OR Apache-2.0
+### 文本 380 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23035,9 +23285,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-379"></a>
+<a id="text-381"></a>
 
-### 文本 379 · MIT OR Apache-2.0
+### 文本 381 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23071,9 +23321,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-380"></a>
+<a id="text-382"></a>
 
-### 文本 380 · MIT OR Apache-2.0
+### 文本 382 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23103,9 +23353,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-381"></a>
+<a id="text-383"></a>
 
-### 文本 381 · MIT OR Apache-2.0
+### 文本 383 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23133,9 +23383,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-382"></a>
+<a id="text-384"></a>
 
-### 文本 382 · MIT OR Apache-2.0
+### 文本 384 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23165,9 +23415,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-383"></a>
+<a id="text-385"></a>
 
-### 文本 383 · MIT OR Apache-2.0
+### 文本 385 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23201,9 +23451,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-384"></a>
+<a id="text-386"></a>
 
-### 文本 384 · MIT OR Apache-2.0
+### 文本 386 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23237,9 +23487,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-385"></a>
+<a id="text-387"></a>
 
-### 文本 385 · MIT OR Apache-2.0
+### 文本 387 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23273,9 +23523,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-386"></a>
+<a id="text-388"></a>
 
-### 文本 386 · MIT OR Apache-2.0
+### 文本 388 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23303,9 +23553,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-387"></a>
+<a id="text-389"></a>
 
-### 文本 387 · MIT OR Apache-2.0
+### 文本 389 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23335,9 +23585,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-388"></a>
+<a id="text-390"></a>
 
-### 文本 388 · MIT OR Apache-2.0
+### 文本 390 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23367,9 +23617,39 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-389"></a>
+<a id="text-391"></a>
 
-### 文本 389 · MIT OR Apache-2.0
+### 文本 391 · MIT OR Apache-2.0
+
+来源文件：`LICENSE-MIT`
+
+适用组件：unicode_categories
+
+```text
+Copyright (c) 2015 The unicode-categories Developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+<a id="text-392"></a>
+
+### 文本 392 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23399,9 +23679,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-390"></a>
+<a id="text-393"></a>
 
-### 文本 390 · MIT OR Apache-2.0
+### 文本 393 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23431,9 +23711,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-391"></a>
+<a id="text-394"></a>
 
-### 文本 391 · MIT OR Apache-2.0
+### 文本 394 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23463,9 +23743,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-392"></a>
+<a id="text-395"></a>
 
-### 文本 392 · MIT OR Apache-2.0
+### 文本 395 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -23499,9 +23779,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-393"></a>
+<a id="text-396"></a>
 
-### 文本 393 · MIT OR Apache-2.0
+### 文本 396 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT.txt`
 
@@ -23531,9 +23811,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-394"></a>
+<a id="text-397"></a>
 
-### 文本 394 · MIT OR Apache-2.0
+### 文本 397 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-MIT.txt`
 
@@ -23549,9 +23829,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-395"></a>
+<a id="text-398"></a>
 
-### 文本 395 · MIT OR Apache-2.0
+### 文本 398 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-THIRD-PARTY`
 
@@ -24153,9 +24433,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-396"></a>
+<a id="text-399"></a>
 
-### 文本 396 · MIT OR Apache-2.0
+### 文本 399 · MIT OR Apache-2.0
 
 来源文件：`LICENSE-THIRD-PARTY`
 
@@ -24608,9 +24888,9 @@ https://github.com/nvzqz/fruity/blob/320efcf715c2c5fbd2f3084f671f2be2e03a6f2b/LI
    limitations under the License.
 ```
 
-<a id="text-397"></a>
+<a id="text-400"></a>
 
-### 文本 397 · MIT OR Apache-2.0
+### 文本 400 · MIT OR Apache-2.0
 
 来源文件：`LICENSE.MIT`
 
@@ -24640,9 +24920,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-398"></a>
+<a id="text-401"></a>
 
-### 文本 398 · MIT OR Apache-2.0
+### 文本 401 · MIT OR Apache-2.0
 
 来源文件：`LICENSE.MIT`
 
@@ -24672,9 +24952,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-399"></a>
+<a id="text-402"></a>
 
-### 文本 399 · MIT OR Apache-2.0
+### 文本 402 · MIT OR Apache-2.0
 
 来源文件：`LICENSE.spdx`
 
@@ -24702,9 +24982,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/winrt-notification.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-<a id="text-400"></a>
+<a id="text-403"></a>
 
-### 文本 400 · MIT OR Apache-2.0
+### 文本 403 · MIT OR Apache-2.0
 
 来源文件：`LICENSE.spdx`
 
@@ -24732,9 +25012,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tray-icon.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-<a id="text-401"></a>
+<a id="text-404"></a>
 
-### 文本 401 · MIT OR Apache-2.0
+### 文本 404 · MIT OR Apache-2.0
 
 来源文件：`LICENSE.txt`
 
@@ -24982,9 +25262,9 @@ limitations under the License.
 ~~~~
 ```
 
-<a id="text-402"></a>
+<a id="text-405"></a>
 
-### 文本 402 · MIT OR Apache-2.0
+### 文本 405 · MIT OR Apache-2.0
 
 来源文件：`LICENSE_MIT`
 
@@ -25014,9 +25294,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-403"></a>
+<a id="text-406"></a>
 
-### 文本 403 · MIT OR Apache-2.0
+### 文本 406 · MIT OR Apache-2.0
 
 来源文件：`license-apache-2.0`
 
@@ -25226,9 +25506,9 @@ SOFTWARE.
    limitations under the License.
 ```
 
-<a id="text-404"></a>
+<a id="text-407"></a>
 
-### 文本 404 · MIT OR Apache-2.0
+### 文本 407 · MIT OR Apache-2.0
 
 来源文件：`license-mit`
 
@@ -25258,9 +25538,9 @@ SOFTWARE.
     SOFTWARE
 ```
 
-<a id="text-405"></a>
+<a id="text-408"></a>
 
-### 文本 405 · MIT OR Apache-2.0 OR Zlib
+### 文本 408 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-APACHE`
 
@@ -25470,9 +25750,9 @@ SOFTWARE.
    limitations under the License.
 ```
 
-<a id="text-406"></a>
+<a id="text-409"></a>
 
-### 文本 406 · MIT OR Apache-2.0 OR Zlib
+### 文本 409 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-APACHE`
 
@@ -25682,9 +25962,9 @@ SOFTWARE.
    limitations under the License.
 ```
 
-<a id="text-407"></a>
+<a id="text-410"></a>
 
-### 文本 407 · MIT OR Apache-2.0 OR Zlib
+### 文本 410 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-MIT`
 
@@ -25712,9 +25992,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-408"></a>
+<a id="text-411"></a>
 
-### 文本 408 · MIT OR Apache-2.0 OR Zlib
+### 文本 411 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-MIT`
 
@@ -25730,9 +26010,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-409"></a>
+<a id="text-412"></a>
 
-### 文本 409 · MIT OR Apache-2.0 OR Zlib
+### 文本 412 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-MIT`
 
@@ -25760,9 +26040,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-410"></a>
+<a id="text-413"></a>
 
-### 文本 410 · MIT OR Apache-2.0 OR Zlib
+### 文本 413 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-MIT`
 
@@ -25792,9 +26072,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-411"></a>
+<a id="text-414"></a>
 
-### 文本 411 · MIT OR Apache-2.0 OR Zlib
+### 文本 414 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-MIT.md`
 
@@ -25824,9 +26104,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-412"></a>
+<a id="text-415"></a>
 
-### 文本 412 · MIT OR Apache-2.0 OR Zlib
+### 文本 415 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-ZLIB`
 
@@ -25846,9 +26126,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-413"></a>
+<a id="text-416"></a>
 
-### 文本 413 · MIT OR Apache-2.0 OR Zlib
+### 文本 416 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-ZLIB`
 
@@ -25872,9 +26152,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-414"></a>
+<a id="text-417"></a>
 
-### 文本 414 · MIT OR Apache-2.0 OR Zlib
+### 文本 417 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-ZLIB`
 
@@ -25902,9 +26182,9 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-415"></a>
+<a id="text-418"></a>
 
-### 文本 415 · MIT OR Apache-2.0 OR Zlib
+### 文本 418 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-ZLIB`
 
@@ -25924,9 +26204,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-416"></a>
+<a id="text-419"></a>
 
-### 文本 416 · MIT OR Apache-2.0 OR Zlib
+### 文本 419 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-ZLIB`
 
@@ -25954,9 +26234,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-417"></a>
+<a id="text-420"></a>
 
-### 文本 417 · MIT OR Apache-2.0 OR Zlib
+### 文本 420 · MIT OR Apache-2.0 OR Zlib
 
 来源文件：`LICENSE-ZLIB.md`
 
@@ -25976,9 +26256,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-418"></a>
+<a id="text-421"></a>
 
-### 文本 418 · MIT OR Zlib OR Apache-2.0
+### 文本 421 · MIT OR Zlib OR Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -26012,9 +26292,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-419"></a>
+<a id="text-422"></a>
 
-### 文本 419 · MIT OR Zlib OR Apache-2.0
+### 文本 422 · MIT OR Zlib OR Apache-2.0
 
 来源文件：`LICENSE-MIT.md`
 
@@ -26047,9 +26327,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-420"></a>
+<a id="text-423"></a>
 
-### 文本 420 · MIT OR Zlib OR Apache-2.0
+### 文本 423 · MIT OR Zlib OR Apache-2.0
 
 来源文件：`LICENSE-ZLIB.md`
 
@@ -26072,9 +26352,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-421"></a>
+<a id="text-424"></a>
 
-### 文本 421 · MIT/Apache-2.0
+### 文本 424 · MIT/Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -26104,9 +26384,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-422"></a>
+<a id="text-425"></a>
 
-### 文本 422 · MIT/Apache-2.0
+### 文本 425 · MIT/Apache-2.0
 
 来源文件：`LICENSE`
 
@@ -26136,9 +26416,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-423"></a>
+<a id="text-426"></a>
 
-### 文本 423 · MIT/Apache-2.0
+### 文本 426 · MIT/Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -26160,9 +26440,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-424"></a>
+<a id="text-427"></a>
 
-### 文本 424 · MIT/Apache-2.0
+### 文本 427 · MIT/Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -26361,9 +26641,9 @@ limitations under the License.
    limitations under the License.
 ```
 
-<a id="text-425"></a>
+<a id="text-428"></a>
 
-### 文本 425 · MIT/Apache-2.0
+### 文本 428 · MIT/Apache-2.0
 
 来源文件：`LICENSE-APACHE`
 
@@ -26573,9 +26853,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-426"></a>
+<a id="text-429"></a>
 
-### 文本 426 · MIT/Apache-2.0
+### 文本 429 · MIT/Apache-2.0
 
 来源文件：`LICENSE-APACHE.txt`
 
@@ -26785,9 +27065,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-427"></a>
+<a id="text-430"></a>
 
-### 文本 427 · MIT/Apache-2.0
+### 文本 430 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -26821,45 +27101,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-428"></a>
+<a id="text-431"></a>
 
-### 文本 428 · MIT/Apache-2.0
-
-来源文件：`LICENSE-MIT`
-
-适用组件：core_detect
-
-```text
-Copyright (c) 2017-2020 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
-<a id="text-429"></a>
-
-### 文本 429 · MIT/Apache-2.0
+### 文本 431 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -26893,9 +27137,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-430"></a>
+<a id="text-432"></a>
 
-### 文本 430 · MIT/Apache-2.0
+### 文本 432 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -26924,9 +27168,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-431"></a>
+<a id="text-433"></a>
 
-### 文本 431 · MIT/Apache-2.0
+### 文本 433 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -26954,9 +27198,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-432"></a>
+<a id="text-434"></a>
 
-### 文本 432 · MIT/Apache-2.0
+### 文本 434 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -26984,9 +27228,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-433"></a>
+<a id="text-435"></a>
 
-### 文本 433 · MIT/Apache-2.0
+### 文本 435 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27014,9 +27258,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-434"></a>
+<a id="text-436"></a>
 
-### 文本 434 · MIT/Apache-2.0
+### 文本 436 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27043,9 +27287,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-435"></a>
+<a id="text-437"></a>
 
-### 文本 435 · MIT/Apache-2.0
+### 文本 437 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27079,9 +27323,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-436"></a>
+<a id="text-438"></a>
 
-### 文本 436 · MIT/Apache-2.0
+### 文本 438 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27109,9 +27353,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-437"></a>
+<a id="text-439"></a>
 
-### 文本 437 · MIT/Apache-2.0
+### 文本 439 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27127,9 +27371,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-438"></a>
+<a id="text-440"></a>
 
-### 文本 438 · MIT/Apache-2.0
+### 文本 440 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27163,9 +27407,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-439"></a>
+<a id="text-441"></a>
 
-### 文本 439 · MIT/Apache-2.0
+### 文本 441 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27195,9 +27439,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-440"></a>
+<a id="text-442"></a>
 
-### 文本 440 · MIT/Apache-2.0
+### 文本 442 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27225,9 +27469,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-441"></a>
+<a id="text-443"></a>
 
-### 文本 441 · MIT/Apache-2.0
+### 文本 443 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27261,9 +27505,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-442"></a>
+<a id="text-444"></a>
 
-### 文本 442 · MIT/Apache-2.0
+### 文本 444 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27297,9 +27541,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-443"></a>
+<a id="text-445"></a>
 
-### 文本 443 · MIT/Apache-2.0
+### 文本 445 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27327,9 +27571,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-444"></a>
+<a id="text-446"></a>
 
-### 文本 444 · MIT/Apache-2.0
+### 文本 446 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27357,9 +27601,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-445"></a>
+<a id="text-447"></a>
 
-### 文本 445 · MIT/Apache-2.0
+### 文本 447 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT`
 
@@ -27387,9 +27631,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-<a id="text-446"></a>
+<a id="text-448"></a>
 
-### 文本 446 · MIT/Apache-2.0
+### 文本 448 · MIT/Apache-2.0
 
 来源文件：`LICENSE-MIT.txt`
 
@@ -27423,9 +27667,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-447"></a>
+<a id="text-449"></a>
 
-### 文本 447 · MIT/Apache-2.0
+### 文本 449 · MIT/Apache-2.0
 
 来源文件：`LICENSE.md`
 
@@ -27471,9 +27715,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-<a id="text-448"></a>
+<a id="text-450"></a>
 
-### 文本 448 · MPL-2.0
+### 文本 450 · MPL-2.0
 
 来源文件：`LICENSE`
 
@@ -27855,9 +28099,9 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-<a id="text-449"></a>
+<a id="text-451"></a>
 
-### 文本 449 · MPL-2.0
+### 文本 451 · MPL-2.0
 
 来源文件：`LICENSE.txt`
 
@@ -28239,9 +28483,9 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-<a id="text-450"></a>
+<a id="text-452"></a>
 
-### 文本 450 · Unicode-3.0
+### 文本 452 · Unicode-3.0
 
 来源文件：`LICENSE`
 
@@ -28296,9 +28540,9 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-<a id="text-451"></a>
+<a id="text-453"></a>
 
-### 文本 451 · Unlicense OR MIT
+### 文本 453 · Unlicense OR MIT
 
 来源文件：`COPYING`
 
@@ -28310,9 +28554,9 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-<a id="text-452"></a>
+<a id="text-454"></a>
 
-### 文本 452 · Unlicense OR MIT
+### 文本 454 · Unlicense OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -28342,9 +28586,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-453"></a>
+<a id="text-455"></a>
 
-### 文本 453 · Unlicense OR MIT
+### 文本 455 · Unlicense OR MIT
 
 来源文件：`UNLICENSE`
 
@@ -28377,9 +28621,9 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-<a id="text-454"></a>
+<a id="text-456"></a>
 
-### 文本 454 · Unlicense/MIT
+### 文本 456 · Unlicense/MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -28409,9 +28653,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-<a id="text-455"></a>
+<a id="text-457"></a>
 
-### 文本 455 · Zlib
+### 文本 457 · Zlib
 
 来源文件：`LICENSE`
 
@@ -28439,9 +28683,9 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-456"></a>
+<a id="text-458"></a>
 
-### 文本 456 · Zlib
+### 文本 458 · Zlib
 
 来源文件：`LICENSE`
 
@@ -28469,9 +28713,9 @@ the following restrictions:
  3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-457"></a>
+<a id="text-459"></a>
 
-### 文本 457 · Zlib
+### 文本 459 · Zlib
 
 来源文件：`LICENSE`
 
@@ -28499,9 +28743,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-<a id="text-458"></a>
+<a id="text-460"></a>
 
-### 文本 458 · Zlib OR Apache-2.0 OR MIT
+### 文本 460 · Zlib OR Apache-2.0 OR MIT
 
 来源文件：`LICENSE-APACHE`
 
@@ -28571,9 +28815,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-<a id="text-459"></a>
+<a id="text-461"></a>
 
-### 文本 459 · Zlib OR Apache-2.0 OR MIT
+### 文本 461 · Zlib OR Apache-2.0 OR MIT
 
 来源文件：`LICENSE-MIT`
 
@@ -28591,9 +28835,9 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<a id="text-460"></a>
+<a id="text-462"></a>
 
-### 文本 460 · Zlib OR Apache-2.0 OR MIT
+### 文本 462 · Zlib OR Apache-2.0 OR MIT
 
 来源文件：`LICENSE-ZLIB`
 

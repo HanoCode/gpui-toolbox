@@ -8,8 +8,8 @@ use gpui::{
     AnyElement, App, Axis, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle,
     Hsla, Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, IsZero as _,
     Length, ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString,
-    SharedUri, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace,
-    Window, div, img, prelude::FluentBuilder as _, px, relative, rems,
+    SharedUri, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, TextAlign,
+    WhiteSpace, Window, div, img, prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 
@@ -40,6 +40,43 @@ use super::{
 const CHECK_SVG_LIGHT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none"><path d="m3.25 8.25 3 3 6.5-7" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 const CHECK_SVG_DARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none"><path d="m3.25 8.25 3 3 6.5-7" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 
+/// DUCK PATCH: block-level visual style lifted out of an HTML `style` attribute.
+///
+/// The document model has no CSS engine, so only the declarations that map onto
+/// container-level gpui styles are kept: a background color, box padding and
+/// text alignment. They apply to the whole block — text inside inherits the
+/// alignment the same way a CSS block container does, and a child block with its
+/// own background paints over the parent's (CSS backgrounds are not inherited,
+/// so nesting looks right for free).
+///
+/// `is_empty` matters: the parser only wraps a node in a styled container when
+/// something was actually declared, and [`BlockNode::compact`] refuses to fold
+/// away a container that carries one.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct BlockStyle {
+    /// `background-color`, `background` or the legacy `bgcolor` attribute.
+    pub(crate) background: Option<Hsla>,
+    /// `text-align` or the legacy `align` attribute.
+    pub(crate) text_align: Option<TextAlign>,
+    /// Resolved CSS pixels. `None` leaves gpui's default for that side.
+    pub(crate) padding_top: Option<f32>,
+    pub(crate) padding_right: Option<f32>,
+    pub(crate) padding_bottom: Option<f32>,
+    pub(crate) padding_left: Option<f32>,
+}
+
+impl BlockStyle {
+    /// Whether nothing was declared — the block needs no wrapper.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.background.is_none()
+            && self.text_align.is_none()
+            && self.padding_top.is_none()
+            && self.padding_right.is_none()
+            && self.padding_bottom.is_none()
+            && self.padding_left.is_none()
+    }
+}
+
 /// The block-level nodes.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BlockNode {
@@ -47,6 +84,9 @@ pub(crate) enum BlockNode {
     Root {
         children: Vec<BlockNode>,
         span: Option<Span>,
+        /// DUCK PATCH: background / padding / text-align declared on the
+        /// container element (`<div>`, `<p>`, `<td>`, …).
+        style: BlockStyle,
     },
     Paragraph(Paragraph),
     Heading {
@@ -111,7 +151,25 @@ impl BlockNode {
     /// Combine all children, omitting the empt parent nodes.
     pub(super) fn compact(self) -> BlockNode {
         match self {
-            Self::Root { mut children, .. } if children.len() == 1 => children.remove(0).compact(),
+            // DUCK PATCH: a container that carries block-level style is load
+            // bearing — folding it away would drop its background / padding /
+            // alignment. Its single child is still compacted in place.
+            Self::Root {
+                mut children,
+                span,
+                style,
+            } if children.len() == 1 => {
+                let child = children.remove(0).compact();
+                if style.is_empty() {
+                    child
+                } else {
+                    Self::Root {
+                        children: vec![child],
+                        span,
+                        style,
+                    }
+                }
+            }
             _ => self,
         }
     }
@@ -415,6 +473,14 @@ pub struct TextMark {
     /// `None` means the text is not highlighted.
     pub highlight: Option<Hsla>,
     pub link: Option<LinkMark>,
+    /// DUCK PATCH: inline `style="color: …"` — the text color. `None` inherits
+    /// from the enclosing style; a nested mark with a color replaces the
+    /// inherited one (CSS cascade, see [`TextMark::merge`]).
+    pub color: Option<Hsla>,
+    /// DUCK PATCH: inline `style="font-size: …"` in CSS pixels. `None`
+    /// inherits. Percentage / em values resolve against the mail document at
+    /// parse time, so what lands here is always absolute.
+    pub font_size: Option<f32>,
 }
 
 impl TextMark {
@@ -465,6 +531,14 @@ impl TextMark {
         }
         if let Some(link) = other.link {
             self.link = Some(link);
+        }
+        // DUCK PATCH: color / font-size cascade like CSS — the innermost
+        // declaration wins, an absent one keeps the inherited value.
+        if other.color.is_some() {
+            self.color = other.color;
+        }
+        if other.font_size.is_some() {
+            self.font_size = other.font_size;
         }
     }
 }
@@ -1208,7 +1282,11 @@ impl Paragraph {
                 let inner_range = (offset + range.start)..(offset + range.end);
                 let mut highlight = mark_highlight(style, node_cx, cx);
                 if let Some(link_mark) = style.link.clone() {
-                    highlight.style.color = Some(node_cx.style.link());
+                    // DUCK PATCH: an inline `style="color: …"` on the link wins
+                    // over the theme link color.
+                    if style.color.is_none() {
+                        highlight.style.color = Some(node_cx.style.link());
+                    }
                     highlight.style.underline = Some(gpui::UnderlineStyle {
                         thickness: gpui::px(1.),
                         ..Default::default()
@@ -2151,10 +2229,16 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHig
     if let Some(color) = mark.highlight {
         highlight.background_color = Some(color);
     }
+    // DUCK PATCH: inline `style="color: …"`.
+    if let Some(color) = mark.color {
+        highlight.color = Some(color);
+    }
     InlineHighlight {
         style: highlight,
         font_family,
         font_size_scale: mark.code.then_some(0.875),
+        // DUCK PATCH: inline `style="font-size: …"` in CSS pixels.
+        font_size: mark.font_size.map(gpui::px),
     }
 }
 
@@ -2189,9 +2273,14 @@ impl Paragraph {
     /// `fade_key` names this paragraph's text for the streamed fade-in and
     /// for range highlights; the owning block supplies it because a heading
     /// or table cell paragraph carries no span of its own.
+    ///
+    /// `ix` is this paragraph's index among its siblings. It is used for
+    /// nothing but the element id when `fade_key` is absent, where it is what
+    /// keeps the id unique (see [`leaf_element_id`]).
     fn render(
         &self,
         fade_key: Option<TextLeafKey>,
+        ix: usize,
         node_cx: &NodeContext,
         _window: &mut Window,
         cx: &mut App,
@@ -2199,10 +2288,13 @@ impl Paragraph {
         let children = &self.children;
         let fades = node_cx.stream_fades(fade_key);
         let backgrounds = node_cx.range_backgrounds(fade_key);
+        // The inline flow and the image box below are alternatives, but both
+        // key their element state by this id.
+        let element_id = leaf_element_id(fade_key, ix);
 
         if self.should_render_inline_flow() {
             return InlineFlow::new(
-                leaf_element_id(fade_key),
+                element_id,
                 self.inline_flow_items(fade_key, fades, backgrounds, node_cx, cx),
                 node_cx.link_click_handler.clone(),
             )
@@ -2329,7 +2421,11 @@ impl Paragraph {
                     let mut highlight = mark_highlight(style, node_cx, cx);
 
                     if let Some(mut link_mark) = style.link.clone() {
-                        highlight.style.color = Some(node_cx.style.link());
+                        // DUCK PATCH: an inline `style="color: …"` on the link
+                        // wins over the theme link color.
+                        if style.color.is_none() {
+                            highlight.style.color = Some(node_cx.style.link());
+                        }
                         highlight.style.underline = Some(gpui::UnderlineStyle {
                             thickness: gpui::px(1.),
                             ..Default::default()
@@ -2383,7 +2479,7 @@ impl Paragraph {
         }
 
         div()
-            .id(leaf_element_id(fade_key))
+            .id(element_id)
             .children(child_nodes)
             .into_any_element()
     }
@@ -2448,7 +2544,7 @@ impl Paragraph {
                                 .unwrap_or(link)
                                 .clone(),
                         );
-                        object_style.color = Some(node_cx.style.link());
+                        object_style.color = mark.color.or(Some(node_cx.style.link()));
                         object_style.underline = Some(gpui::UnderlineStyle {
                             thickness: px(1.),
                             ..Default::default()
@@ -2517,7 +2613,11 @@ impl Paragraph {
                     let mut highlight = mark_highlight(style, node_cx, cx);
 
                     if let Some(mut link_mark) = style.link.clone() {
-                        highlight.style.color = Some(node_cx.style.link());
+                        // DUCK PATCH: an inline `style="color: …"` on the link
+                        // wins over the theme link color.
+                        if style.color.is_none() {
+                            highlight.style.color = Some(node_cx.style.link());
+                        }
                         highlight.style.underline = Some(gpui::UnderlineStyle {
                             thickness: gpui::px(1.),
                             ..Default::default()
@@ -2575,9 +2675,21 @@ fn block_element_id(kind: &'static str, span: Option<Span>, ix: usize) -> Elemen
 /// The element id of a paragraph that needs one: an inline flow, whose
 /// objects are accessibility nodes, or an image, whose element state is its
 /// animation. The leaf key is unique per paragraph in a parsed Markdown
-/// document; the HTML parser records no spans, so its paragraphs share one.
-fn leaf_element_id(fade_key: Option<TextLeafKey>) -> ElementId {
-    fade_key.map_or_else(|| ElementId::from("p"), ElementId::from)
+/// document; the HTML parser records no spans, so its paragraphs fall back to
+/// `ix`, their index among their siblings — as [`block_element_id`] does.
+///
+/// DUCK PATCH: the fallback used to be the bare `"p"`, which gave *every*
+/// span-less paragraph the same id. gpui keys element state by the id *path*
+/// (`GlobalElementId`), and requires an id to be unique among the children of
+/// the first containing element with an id, with no sibling disambiguation.
+/// Two such paragraphs are siblings, so they shared one global id — and with
+/// it one inline-flow frame state: the cached layout of whichever was
+/// measured last. `prepaint` then walked a layout built for the other
+/// paragraph's item list, indexed past the end of its own, and aborted the
+/// process (`index out of bounds`, `inline_flow.rs`, the `Image` arm). The
+/// index restores the uniqueness the id has to have.
+fn leaf_element_id(fade_key: Option<TextLeafKey>, ix: usize) -> ElementId {
+    fade_key.map_or_else(|| ElementId::from(("p", ix)), ElementId::from)
 }
 
 /// `block` with `gap` below it. The box only exists to hold the padding,
@@ -2733,7 +2845,7 @@ fn measure_table_text_columns(
                     })
                     .collect::<Vec<_>>();
                 let mut line_w = gpui::Pixels::ZERO;
-                for (range, scale) in text_size_ranges(line.len(), &line_highlights) {
+                for (range, scale) in text_size_ranges(line.len(), &line_highlights, font_size) {
                     let highlights = slice_ranges(
                         &line_highlights,
                         range.start,
@@ -3024,6 +3136,9 @@ impl BlockNode {
                                         depth: options.depth + 1,
                                         todo: checked.is_some(),
                                         is_last: true,
+                                        // The item's children are siblings of
+                                        // each other — give them their own.
+                                        ix: child_ix,
                                         ..options
                                     },
                                     node_cx,
@@ -3064,6 +3179,9 @@ impl BlockNode {
                                         depth: options.depth + 1,
                                         todo: checked.is_some(),
                                         is_last: true,
+                                        // The item's children are siblings of
+                                        // each other — give them their own.
+                                        ix: child_ix,
                                         ..options
                                     },
                                     node_cx,
@@ -3083,6 +3201,9 @@ impl BlockNode {
                                         depth: options.depth + 1,
                                         todo: checked.is_some(),
                                         is_last: true,
+                                        // The item's children are siblings of
+                                        // each other — give them their own.
+                                        ix: child_ix,
                                         ..options
                                     },
                                     node_cx,
@@ -3239,9 +3360,10 @@ impl BlockNode {
         for (row_ix, row) in table.children.iter().enumerate() {
             let mut cells = Vec::with_capacity(row.children.len());
             for (ix, cell) in row.children.iter().enumerate() {
+                let cell_ix = cell_ordinal;
                 let fade_key = table
                     .span
-                    .map(|span| TextLeafKey::table_cell(span.start, cell_ordinal));
+                    .map(|span| TextLeafKey::table_cell(span.start, cell_ix));
                 cell_ordinal += 1;
                 let align = table.column_align(ix);
                 let is_last_col = ix == row.children.len() - 1;
@@ -3268,7 +3390,7 @@ impl BlockNode {
                             this.border_r_1().border_color(style.border())
                         })
                         .refine_style(&style.table_cell())
-                        .child(cell.children.render(fade_key, node_cx, window, cx)),
+                        .child(cell.children.render(fade_key, cell_ix, node_cx, window, cx)),
                 );
             }
             rows.push(
@@ -3355,9 +3477,10 @@ impl BlockNode {
         for (row_ix, row) in table.children.iter().enumerate() {
             let mut cells = Vec::with_capacity(row.children.len());
             for (ix, cell) in row.children.iter().enumerate() {
+                let cell_ix = cell_ordinal;
                 let fade_key = table
                     .span
-                    .map(|span| TextLeafKey::table_cell(span.start, cell_ordinal));
+                    .map(|span| TextLeafKey::table_cell(span.start, cell_ix));
                 cell_ordinal += 1;
                 let align = table.column_align(ix);
                 let is_last_col = ix == row.children.len() - 1;
@@ -3380,7 +3503,7 @@ impl BlockNode {
                             this.border_r_1().border_color(style.border())
                         })
                         .refine_style(&style.table_cell())
-                        .child(cell.children.render(fade_key, node_cx, window, cx)),
+                        .child(cell.children.render(fade_key, cell_ix, node_cx, window, cx)),
                 );
             }
 
@@ -3447,14 +3570,42 @@ impl BlockNode {
         };
 
         match self {
-            BlockNode::Root { children, .. } => div()
-                .children(children.into_iter().enumerate().map(move |(ix, node)| {
+            BlockNode::Root {
+                children, style, ..
+            } => {
+                // DUCK PATCH: block-level CSS (background / padding /
+                // text-align). `text_align` is a text-style refinement, so the
+                // descendants of this container inherit it and a nested block
+                // that declares its own wins (CSS inheritance).
+                let mut root = div();
+                if let Some(background) = style.background {
+                    root = root.w_full().bg(background);
+                }
+                if let Some(top) = style.padding_top {
+                    root = root.pt(px(top));
+                }
+                if let Some(right) = style.padding_right {
+                    root = root.pr(px(right));
+                }
+                if let Some(bottom) = style.padding_bottom {
+                    root = root.pb(px(bottom));
+                }
+                if let Some(left) = style.padding_left {
+                    root = root.pl(px(left));
+                }
+                if let Some(align) = style.text_align {
+                    root = root.when(align == TextAlign::Center, |this| this.text_center());
+                    root = root.when(align == TextAlign::Right, |this| this.text_right());
+                }
+                root.children(children.into_iter().enumerate().map(move |(ix, node)| {
                     node.render_block(NodeRenderOptions { ix, ..options }, node_cx, window, cx)
                 }))
-                .into_any_element(),
+                .into_any_element()
+            }
             BlockNode::Paragraph(paragraph) => gapped(
                 paragraph.render(
                     paragraph.span.map(|span| TextLeafKey::block(span.start)),
+                    options.ix,
                     node_cx,
                     window,
                     cx,
@@ -3486,6 +3637,7 @@ impl BlockNode {
                     .refine_style(&node_cx.style.heading(*level))
                     .child(children.render(
                         span.map(|span| TextLeafKey::block(span.start)),
+                        options.ix,
                         node_cx,
                         window,
                         cx,
@@ -3503,7 +3655,14 @@ impl BlockNode {
                         let children_len = children.len();
                         children.into_iter().enumerate().map(move |(index, c)| {
                             let is_last = index == children_len - 1;
-                            c.render_block(options.is_last(is_last), node_cx, window, cx)
+                            // `ix: index` — the children are siblings of each
+                            // other, so they need distinct ids of their own.
+                            c.render_block(
+                                NodeRenderOptions { ix: index, ..options }.is_last(is_last),
+                                node_cx,
+                                window,
+                                cx,
+                            )
                         })
                     })
                     .into_any_element(),
@@ -3580,6 +3739,28 @@ impl BlockNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The HTML parser records no spans, so `fade_key` is `None` for every
+    /// paragraph it produces. The id has to stay unique among siblings anyway:
+    /// gpui keys element state by the id path, and two paragraphs sharing an id
+    /// share one inline-flow frame state — including the cached layout, which
+    /// `prepaint` walks with the *other* paragraph's item indices.
+    #[test]
+    fn span_less_paragraphs_get_distinct_element_ids() {
+        assert_ne!(leaf_element_id(None, 0), leaf_element_id(None, 1));
+        // A span-less paragraph must not collide with a Markdown one either,
+        // nor with a sibling block of another kind.
+        assert_ne!(
+            leaf_element_id(None, 0),
+            leaf_element_id(Some(TextLeafKey::block(0)), 0)
+        );
+        // Distinct from the id a sibling block of another kind gets (`"p"` is
+        // not a kind any block uses, so the fallback cannot collide with one).
+        assert_ne!(
+            leaf_element_id(None, 7),
+            block_element_id("codeblock", None, 7)
+        );
+    }
 
     #[test]
     fn selected_inline_objects_coalesce_surrounding_emphasis() {

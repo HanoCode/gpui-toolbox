@@ -374,6 +374,10 @@ impl ImapSession {
     ///
     /// 只拉头部（`BODY.PEEK[HEADER]`）而不是整封：列表要在拿到正文前就出来，
     /// 正文按需再拉（`docs/email-design.md` §4.6 的「UI 不等全量完成」）。
+    ///
+    /// ⚠️ **返回集恒满足 `uid >= uid_from`**。服务端会用 `n:*` 的范围语义回吐越界
+    /// 信封（见 [`uid_in_requested_range`]），调用方不必自己再挡一遍——
+    /// 「拉回几封」与「新增几封」是两回事，计数要另算。
     pub async fn fetch_envelopes(&mut self, uid_from: u32) -> Result<Vec<FetchedEnvelope>> {
         let range = format!("{uid_from}:*");
         let stream = with_timeout(
@@ -389,8 +393,10 @@ impl ImapSession {
         while let Some(item) = stream.next().await {
             let fetch = item.map_err(|e| MailError::Protocol(format!("FETCH: {e}")))?;
             let Some(uid) = fetch.uid else { continue };
-            // `1:*` 在空文件夹上会回一条 UID 为 0 的伪响应，跳过。
-            if uid == 0 {
+            // 越界回吐必须就地丢掉，理由见 [`uid_in_requested_range`]：本地已经追平
+            // 服务端时（`uid_from` = 最大 UID + 1），`n:*` 会把**最大 UID 那封**回吐
+            // 给客户端，照单全收就会每轮上报一封并不存在的新邮件。
+            if !uid_in_requested_range(uid, uid_from) {
                 continue;
             }
             let (seen, flagged) = flags_of(&fetch);
@@ -529,6 +535,38 @@ impl ImapSession {
                 self.expunge_uids(uids).await
             }
         }
+    }
+
+    // ---- 发信写回：APPEND ----
+
+    /// `APPEND <mailbox> (\Seen) {<n>}`：把一整封**原始报文**追加到指定邮箱。
+    ///
+    /// 发信之后靠它把副本写进服务端「已发送」（RFC 3501 §6.3.11）。这一步不能省：
+    /// SMTP 只负责投递，**副本要发信方自己塞**——服务端不会把发出去的信替你托管进
+    /// `\Sent`（QQ / 163 / Gmail / Outlook 都不做）。缺了它，用户发完信在「已发送」
+    /// 里找不着自己，换台设备打开更是完全没有。调用方见 `duck-mail/src/lib.rs` 的
+    /// `write_back_sent`。
+    ///
+    /// ⚠️ 与本节其它写命令不同，**它不需要先 `SELECT`**：`APPEND` 作用于未选中的
+    /// 邮箱，直接指定目标即可（`add_flags` / `move_messages` 则必须选好再发）。
+    ///
+    /// `\Seen`：自己发出去的信自然是读过的，服务端也据此算未读计数（不给的话，
+    /// 「已发送」上会挂出一个假的未读角标）。
+    /// `INTERNALDATE` 交给服务端打（`None`）——列表按报文里的 `Date` 头排序，那个由
+    /// `compose::build_message` 写进头部，与 IMAP 的到达时间无关。
+    ///
+    /// 邮箱名交给 `async-imap` 的 `validate_str`（恒加双引号并转义），所以带空格或
+    /// 引号的名字（`Sent Items`）也能直接传；本模块传的是服务端 `LIST` 回的**原始名**，
+    /// 与 `SELECT` 用的是同一个串（含 Modified UTF-7 形态，见 [`crate::proto::utf7`]）。
+    pub async fn append_message(&mut self, mailbox: &str, message: &[u8]) -> Result<()> {
+        with_timeout(
+            "append",
+            ImapConfig::COMMAND_TIMEOUT,
+            self.session
+                .append(mailbox, Some("(\\Seen)"), None, message),
+        )
+        .await?;
+        Ok(())
     }
 
     /// 删除一组 UID：有垃圾箱就移进垃圾箱，否则就地 `\Deleted` + `UID EXPUNGE`。
@@ -889,6 +927,24 @@ fn capability_atoms(caps: &Capabilities) -> Vec<String> {
         .collect()
 }
 
+/// 服务端回的信封是否真的落在请求区间 `uid_from:*` 内。
+///
+/// 两条过滤合成一个判据，**两条都必要**：
+///
+/// - `uid == 0`：空文件夹上 `UID FETCH 1:*` 会回一条 UID 为 0 的**伪响应**，它不是邮件；
+/// - `uid < uid_from`：**RFC 3501 的 `seq-range` 语义取 `min..max`**——最大 UID 小于
+///   `n` 时 `n:*` 等价于 `n:max`，服务端会把**最大 UID 那封原样回吐**（请求 `96:*`、
+///   最大 UID 95 → 回 95）。本地一旦追平（`uid_from` = 最大 UID + 1），回吐的正是
+///   「最后一封」，照单全收就会让增量同步**每轮上报一封并不存在的新邮件**
+///   ——「一直提示有新邮件、其实什么都没有」的协议层成因。
+///
+/// 提到模块级是因为它是个**纯函数**：越界回吐取决于服务端实现，在真机上极难复现，
+/// 只能靠单测把语义钉住（见本文件 `tests`）。
+fn uid_in_requested_range(uid: u32, uid_from: u32) -> bool {
+    // `uid_from` 为 0（`0:*` 即「全部」）时只剩伪响应过滤这一条。
+    uid != 0 && uid >= uid_from
+}
+
 fn flags_of(fetch: &async_imap::types::Fetch) -> (bool, bool) {
     use async_imap::types::Flag;
     let mut seen = false;
@@ -944,6 +1000,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `UID FETCH n:*` 的越界回吐与空文件夹伪响应都必须被挡在「新邮件」判定之外。
+    ///
+    /// 真机上要复现得恰好卡在「本地追平服务端」那一刻，且行为还随服务端实现而变；
+    /// 这里把 RFC 3501 的 `seq-range` 语义（取 `min..max`）钉死：请求 `96:*` 而服务端
+    /// 回了 95（最后一封），必须判为**不在区间内**——否则增量同步每轮都会报出一条
+    /// 并不存在的新邮件（「一直提示有新邮件、其实什么都没有」）。
+    #[test]
+    fn envelope_outside_the_requested_uid_range_is_filtered_out() {
+        // 越界回吐：请求 96 起，服务端把最大 UID 95 原样回了过来（`96:*` ≡ `96:95`）。
+        assert!(!uid_in_requested_range(95, 96));
+        // 正常增量：起点本身就是新邮件，必须留下。
+        assert!(uid_in_requested_range(96, 96));
+        assert!(uid_in_requested_range(1000, 96));
+        // 空文件夹上 `1:*` 的伪响应（UID 0）不是邮件。
+        assert!(!uid_in_requested_range(0, 1));
+        // `0:*`（整箱）只剩伪响应过滤这一条：`uid_from` 为 0 不该把什么都挡掉。
+        assert!(uid_in_requested_range(1, 0));
+    }
 
     #[test]
     fn cleartext_is_refused_before_touching_the_network() {

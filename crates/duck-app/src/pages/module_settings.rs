@@ -350,11 +350,32 @@ pub(crate) struct DbSettings {
     pub new_timeout_secs: Option<u32>,
     /// 新建连接的默认环境标签（`EnvTag` 的 wire 值）；`None` = 无标签。
     pub new_env_tag: Option<String>,
+    /// SQL 格式化的关键字大小写档（wire 值：`preserve` / `upper` / `lower`）。
+    pub sql_keyword_case: String,
+    /// SQL 格式化缩进是否用 Tab（`false` = 空格）。
+    pub sql_indent_tabs: bool,
+    /// SQL 格式化空格缩进宽度（`sql_indent_tabs == false` 时生效）。
+    pub sql_indent_width: u32,
+    /// SQL 编辑器是否自动换行。
+    pub editor_word_wrap: bool,
+    /// SQL 语义诊断（解析报错 + 未知表提示，dbx 同款）是否开启。
+    pub semantic_diagnostics: bool,
+}
+
+impl DbSettings {
+    /// 关键字大小写档解析成内核枚举；wire 值不在取值域时回落「大写」（历史默认）。
+    pub(crate) fn sql_keyword_case(&self) -> duck_db::SqlKeywordCase {
+        match self.sql_keyword_case.as_str() {
+            "preserve" => duck_db::SqlKeywordCase::Preserve,
+            "lower" => duck_db::SqlKeywordCase::Lower,
+            _ => duck_db::SqlKeywordCase::Upper,
+        }
+    }
 }
 
 impl Default for DbSettings {
     fn default() -> Self {
-        // 三个默认值直接取数据库页自己的常量：改那里，这里跟着变（不搞第二处真源）。
+        // 默认值直接取数据库页自己的常量 / 历史行为：改那里，这里跟着变（不搞第二处真源）。
         Self {
             row_cap: super::db::QUERY_ROW_CAP as u32,
             page_size: super::db::PAGE_SIZE as u32,
@@ -362,6 +383,12 @@ impl Default for DbSettings {
             new_read_only: false,
             new_timeout_secs: None,
             new_env_tag: None,
+            sql_keyword_case: "upper".into(),
+            sql_indent_tabs: false,
+            sql_indent_width: 2,
+            editor_word_wrap: false,
+            // dbx 同款：支持的引擎上默认开启（`SQL_SEMANTIC_DIAGNOSTICS_AUTO_ENABLED`）。
+            semantic_diagnostics: true,
         }
     }
 }
@@ -369,6 +396,57 @@ impl Default for DbSettings {
 /// 读数据库偏好。
 pub(super) fn db_settings(cx: &App) -> DbSettings {
     load(cx, KV_DB)
+}
+
+/// 只改「每页行数」并落盘（表浏览翻页条的就地切换走这里）。
+///
+/// 不给调用方直接 `save(KV_DB, ..)`：`save` 是模块私有的，而且「读现状 → 改一个
+/// 字段 → 写回」必须在**同一次**读改写里完成——调用方自己拼一份 `DbSettings`
+/// 会把此刻的 `row_cap` / `history_limit` 一起写回旧值（用户在设置页刚调过的
+/// 上限会被这一次翻页条操作悄悄退回去）。
+pub(super) fn set_db_page_size(cx: &mut App, page_size: u32) {
+    let mut next = db_settings(cx);
+    let page_size = page_size.max(1);
+    if next.page_size == page_size {
+        return;
+    }
+    next.page_size = page_size;
+    save(cx, KV_DB, &next);
+}
+
+/// 只改「SQL 编辑器自动换行」并落盘（工具条开关走这里）。
+pub(super) fn set_db_editor_word_wrap(cx: &mut App, on: bool) {
+    let mut next = db_settings(cx);
+    if next.editor_word_wrap == on {
+        return;
+    }
+    next.editor_word_wrap = on;
+    save(cx, KV_DB, &next);
+}
+
+/// 只改「SQL 语义诊断」并落盘（工具条开关走这里）。
+pub(super) fn set_db_semantic_diagnostics(cx: &mut App, on: bool) {
+    let mut next = db_settings(cx);
+    if next.semantic_diagnostics == on {
+        return;
+    }
+    next.semantic_diagnostics = on;
+    save(cx, KV_DB, &next);
+}
+
+/// 只改「SQL 格式化关键字大小写」并落盘（工具条「小写关键字」开关走这里）。
+pub(super) fn set_db_sql_keyword_case(cx: &mut App, case: duck_db::SqlKeywordCase) {
+    let wire = match case {
+        duck_db::SqlKeywordCase::Preserve => "preserve",
+        duck_db::SqlKeywordCase::Upper => "upper",
+        duck_db::SqlKeywordCase::Lower => "lower",
+    };
+    let mut next = db_settings(cx);
+    if next.sql_keyword_case == wire {
+        return;
+    }
+    next.sql_keyword_case = wire.into();
+    save(cx, KV_DB, &next);
 }
 
 /// 数据库偏好页的正文。
@@ -540,11 +618,146 @@ pub(super) fn database_body(cx: &mut App) -> Div {
         cx,
     );
 
+    // SQL 格式化与编辑器（dbx 对齐：关键字大小写 / 缩进 / 自动换行）。
+    let keyword_options: Vec<(SharedString, SharedString)> = vec![
+        (
+            SharedString::from("preserve"),
+            SharedString::from(tr(cx, "保留原样")),
+        ),
+        (
+            SharedString::from("upper"),
+            SharedString::from(tr(cx, "大写")),
+        ),
+        (
+            SharedString::from("lower"),
+            SharedString::from(tr(cx, "小写")),
+        ),
+    ];
+    let keyword_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "关键字大小写"),
+            Some(tr(cx, "格式化 SQL 时把关键字统一成的大小写。").into()),
+            dropdown_select(
+                "duck-settings-db-sql-keyword-case",
+                keyword_options,
+                SharedString::from(settings.sql_keyword_case.clone()),
+                move |value: SharedString, _, cx| {
+                    let mut next = settings.clone();
+                    next.sql_keyword_case = value.to_string();
+                    save(cx, KV_DB, &next);
+                },
+                cx,
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let indent_options: Vec<(SharedString, SharedString)> = vec![
+        (
+            SharedString::from("spaces-2"),
+            SharedString::from(tr(cx, "空格 × 2")),
+        ),
+        (
+            SharedString::from("spaces-4"),
+            SharedString::from(tr(cx, "空格 × 4")),
+        ),
+        (
+            SharedString::from("tabs"),
+            SharedString::from(tr(cx, "Tab")),
+        ),
+    ];
+    let indent_current = if settings.sql_indent_tabs {
+        SharedString::from("tabs")
+    } else if settings.sql_indent_width >= 4 {
+        SharedString::from("spaces-4")
+    } else {
+        SharedString::from("spaces-2")
+    };
+    let indent_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "缩进"),
+            Some(tr(cx, "格式化 SQL 时的缩进方式与宽度。").into()),
+            dropdown_select(
+                "duck-settings-db-sql-indent",
+                indent_options,
+                indent_current,
+                move |value: SharedString, _, cx| {
+                    let mut next = settings.clone();
+                    match value.as_ref() {
+                        "tabs" => {
+                            next.sql_indent_tabs = true;
+                        }
+                        "spaces-4" => {
+                            next.sql_indent_tabs = false;
+                            next.sql_indent_width = 4;
+                        }
+                        _ => {
+                            next.sql_indent_tabs = false;
+                            next.sql_indent_width = 2;
+                        }
+                    }
+                    save(cx, KV_DB, &next);
+                },
+                cx,
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let word_wrap_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "自动换行"),
+            Some(tr(cx, "SQL 过长时在编辑器内折行，而不是横向滚动。").into()),
+            switch_control(
+                "duck-settings-db-editor-word-wrap",
+                settings.editor_word_wrap,
+                move |on: &bool, _, cx| {
+                    let mut next = settings.clone();
+                    next.editor_word_wrap = *on;
+                    save(cx, KV_DB, &next);
+                },
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let semantic_diag_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "SQL 语义诊断"),
+            Some(tr(cx, "编辑器下方提示解析报错与目录里不存在的表。").into()),
+            switch_control(
+                "duck-settings-db-semantic-diagnostics",
+                settings.semantic_diagnostics,
+                move |on: &bool, _, cx| {
+                    let mut next = settings.clone();
+                    next.semantic_diagnostics = *on;
+                    save(cx, KV_DB, &next);
+                },
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let format_section = settings_section(
+        Some(tr(cx, "SQL 格式化与编辑器").into()),
+        [keyword_row, indent_row, word_wrap_row, semantic_diag_row],
+        cx,
+    );
+
     v_flex()
         .w_full()
         .gap(tokens.spacing.lg)
         .child(query_section)
         .child(default_section)
+        .child(format_section)
 }
 
 // ── 邮箱 ────────────────────────────────────────────────────────────────
