@@ -40,7 +40,7 @@ gpui-toolbox/
 │   ├── duck-plugin-js/       # 插件 JS 执行轨：QuickJS 沙箱 + 能力仲裁的宿主函数桥
 │   ├── duck-plugin-registry/ # 插件市场：远端索引、拉取、SHA-256 校验、安装/卸载
 │   └── duck-update/          # 更新器：JSON manifest + SHA-256 校验 + 就地替换 .app
-├── sbin/                     # 构建脚本：run.sh / package.sh / package.ps1 / licenses.py 等
+├── sbin/                     # 构建脚本：run.sh / package.sh（菜单） / package-*.sh / licenses.py 等
 ├── plugins/                  # 随仓库分发的插件（text-stat 等）
 ├── docs/                     # 架构与设计文档（含架构差距分析）
 ├── .skills/                  # GPUI Kit 编码与设计指南（供 AI 助手与开发者查阅）
@@ -63,8 +63,11 @@ sbin/run.sh --release
 sbin/run.sh --log-level debug
 
 # 打包 macOS 应用包：dist/Duck.app，可附产 .dmg / .zip
-sbin/package.sh --dmg --zip
-sbin/package.sh --universal --sign "Developer ID Application: ..."
+sbin/package.sh --ci --mac
+# 交互菜单（选平台）
+sbin/package.sh
+# 全平台打包（macOS + Windows + Linux + RPM）
+sbin/package.sh --ci --all
 
 # 直接使用 cargo
 cargo run -p duck-app

@@ -54,7 +54,7 @@ fn array_after(text: &str, key: &str) -> String {
 
 #[test]
 fn the_macos_bundle_registers_our_url_scheme() {
-    let script = read("sbin/package.sh");
+    let script = read("sbin/package-macos.sh");
     let schemes = array_after(&script, "CFBundleURLSchemes");
     let expected = format!("<string>{}</string>", duck_platform::URL_SCHEME);
     assert!(
@@ -65,7 +65,7 @@ fn the_macos_bundle_registers_our_url_scheme() {
 
 #[test]
 fn the_macos_bundle_registers_our_package_extension() {
-    let script = read("sbin/package.sh");
+    let script = read("sbin/package-macos.sh");
     let extensions = array_after(&script, "CFBundleTypeExtensions");
     let expected = format!("<string>{}</string>", duck_platform::PACKAGE_EXTENSION);
     assert!(

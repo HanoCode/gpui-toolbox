@@ -65,6 +65,12 @@ jobs:
           - os: windows-latest
             platform: windows-x64
             target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            platform: linux-arm64
+            target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
@@ -102,10 +108,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${MACOS_SIGN_IDENTITY}" ]; then
-            sbin/package.sh --target "${{ matrix.target }}" --app-archive \
+            sbin/package-macos.sh --target "${{ matrix.target }}" --app-archive \
               --sign "${MACOS_SIGN_IDENTITY}"
           else
-            sbin/package.sh --target "${{ matrix.target }}" --app-archive --no-sign
+            sbin/package-macos.sh --target "${{ matrix.target }}" --app-archive --no-sign
           fi
 
       - name: 打包（Windows）
@@ -116,11 +122,33 @@ jobs:
           DUCK_UPDATE_PUBKEY: ${{ vars.DUCK_UPDATE_PUBKEY }}
         run: ./sbin/package.ps1 -Target ${{ matrix.target }} -UpdateArchive
 
+      # Linux 分两阶段：先编译（内建公钥），再打包（--no-build 跳过重复编译）。
+      # ubuntu-latest 原生编译 x86_64；arm64 通过 rustup cross-compile。
+      - name: 编译（Linux）
+        if: runner.os == 'Linux'
+        env:
+          DUCK_UPDATE_PUBKEY: ${{ vars.DUCK_UPDATE_PUBKEY }}
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.target }}" != "$(rustc -vV | awk '/host:/{print $2}')" ]; then
+            rustup target add "${{ matrix.target }}"
+          fi
+          cargo build --release -p duck-app --target "${{ matrix.target }}"
+
+      - name: 打包（Linux）
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sbin/package-linux.sh \
+            --target "${{ matrix.target }}" \
+            --tarball --deb --update-archive \
+            --no-build
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}
           # 只收**更新归档**：分发用的 dmg / 便携目录 zip 是另一回事，
-          # 需要时在本地用 `sbin/package.sh --dmg --zip` 生成。
+          # 需要时在本地用 `sbin/package-macos.sh --dmg --zip` 生成。
           #
           # 注意末尾**没有**连字符：macOS 是 `…-macos-arm64-app.tar.gz`，而 Windows 是
           # `…-windows-x64.zip`——多一个 `-` 就会把 Windows 那条整个漏掉。

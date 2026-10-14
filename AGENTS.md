@@ -23,7 +23,8 @@ Duck Toolbox 是 macOS 桌面工具箱外壳。Cargo workspace，成员为 `crat
 
 ```bash
 sbin/run.sh [--release] [--no-build] [--log-level debug]   # 构建并启动
-sbin/package.sh [--dmg] [--zip] [--universal] [--sign ...]  # 打包 .app
+sbin/package.sh                      # 全平台菜单入口（macOS）
+sbin/package-macos.sh --dmg --zip    # macOS 专用
 cargo build -p duck-app                                     # 仅构建
 cargo test -p duck-theme                                    # i18n 覆盖率守卫等单测
 cargo fmt --all                                             # 格式化（提交前必跑）

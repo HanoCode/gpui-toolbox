@@ -142,13 +142,20 @@ host_triple() {
 }
 
 if [ -n "${target_triple}" ]; then
-    step "编译目标：${target_triple}"
-    command -v rustup >/dev/null 2>&1 || die "--target 需要 rustup"
-    if ! rustup target list --installed 2>/dev/null | grep -qx "${target_triple}"; then
-        info "安装 target：${target_triple}"
-        rustup target add "${target_triple}"
+    if [ "${do_build}" -eq 1 ]; then
+        step "编译目标：${target_triple}"
+        command -v rustup >/dev/null 2>&1 || die "--target 需要 rustup"
+        if ! rustup target list --installed 2>/dev/null | grep -qx "${target_triple}"; then
+            info "安装 target：${target_triple}"
+            rustup target add "${target_triple}"
+        fi
+        # DUCK_UPDATE_PUBKEY 在编译期内建进二进制（duck-update::signature）。
+        # 未设置时内建空值，更新校验关闭，不影响正常运行。
+        if [ -n "${DUCK_UPDATE_PUBKEY:-}" ]; then
+            export DUCK_UPDATE_PUBKEY
+        fi
+        cargo build --release -p "${DUCK_CRATE}" --target "${target_triple}"
     fi
-    cargo build --release -p "${DUCK_CRATE}" --target "${target_triple}"
     built_bin="${DUCK_ROOT}/target/${target_triple}/release/${DUCK_BIN_NAME}"
     archive_arch="$(arch_from_triple "${target_triple}")"
 else
