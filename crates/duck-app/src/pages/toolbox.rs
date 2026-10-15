@@ -303,7 +303,10 @@ impl ToolboxPage {
                     nav = nav.child(
                         sidebar_navigation_button(
                             SharedString::from(format!("toolbox-tool-{}", row.id)),
-                            SharedString::from(t(lang, row.name)),
+                            // 插件工具走「插件表 → 宿主表 → 源串」；内置工具直接走宿主表。
+                            SharedString::from(crate::plugins::plugin_text_of_tool(
+                                cx, lang, row.id, row.name,
+                            )),
                             // 图标不设色，继承行的文字色：悬停/选中随文字一起转强调色。
                             Icon::new(row.icon).size(extended.icon.md),
                             div(),
@@ -402,7 +405,16 @@ impl ToolboxPage {
         for route in &self.routes {
             // 工具被移除（或 dev 过滤）时标签退化成裸 id，至少还能关掉它。
             let (tool_icon, tool_name, tool_beta) = match snapshot_of(route.tool_id, cx) {
-                Some(tool) => (tool.icon, SharedString::from(t(lang, tool.name)), tool.beta),
+                Some(tool) => (
+                    tool.icon,
+                    SharedString::from(crate::plugins::plugin_text_of_tool(
+                        cx,
+                        lang,
+                        route.tool_id,
+                        tool.name,
+                    )),
+                    tool.beta,
+                ),
                 None => (DuckIcon::Box, SharedString::from(route.tool_id), false),
             };
             let active = self.active == Some(route.tool_id);

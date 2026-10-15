@@ -4,17 +4,15 @@
 //! 处理器一视同仁地弹同一个菜单（`projects-mock.html:3045-3052`），所以这里也收成
 //! 一个函数，而不是各写一份 —— 两处各写一遍，迟早只有一处跟着原型改。
 //!
-//! # 与原型的三处刻意差异
+//! # 与原型的差异
 //!
-//! 1. **不做「打开完整编辑器」（`⌘E`）与「复制任务」**：前者要 S5 的完整任务表单，
-//!    后者要「新建一条 + 复制字段」，两者都还没落地。摆一个点了没反应的入口比不摆
-//!    更糟（P3-6）。
-//! 2. **不做「置顶 / 取消置顶」**：内核 `Task` 没有 `starred` 字段，做不了。
-//! 3. **「删除任务」走二次确认**：内核 `delete_task` 是**物理删除**（子任务随
+//! 1. **「删除任务」走二次确认**：内核 `delete_task` 是**物理删除**（子任务随
 //!    `ON DELETE CASCADE` 一起没），和原型那个「从数组里挪走 + 底部提示条 7 秒
 //!    撤销」的软删除不是一回事。本仓对不可逆动作的既有口径就是「先弹确认」（§5.6），
 //!    看板的 `⌫` 与归档中心的彻底删除都这么做，这里复用它
 //!    （`ConfirmScope::DeleteTask`）而不是另开一条不设防的路径。
+//! 2. **回执不带「撤销」按钮**：同一条理由 —— 写进库里的动作靠二次确认拦在前面，
+//!    而不是靠「先做了再撤回」。原型里 `pushUndo` 那条 7 秒撤销带子在本仓没有对应物。
 //!
 //! # 子菜单怎么建
 //!
@@ -55,6 +53,7 @@ pub(crate) fn task_menu(
 ) -> PopupMenu {
     let id = task.id;
     let status = task.status;
+    let starred = task.starred;
 
     // ---- 详情 ----
     menu = menu
@@ -68,6 +67,36 @@ pub(crate) fn task_menu(
                         let _ = view.update(cx, |page, cx| page.select_task(Some(id), cx));
                     }
                 }),
+        )
+        .item(
+            PopupMenuItem::new(tr(cx, "打开完整编辑器"))
+                .icon(Icon::new(DuckIcon::Pencil))
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        // `preset_project` / `preset_status` 只对**新建**有意义，
+                        // 编辑既有任务时内核自己会把原值读回来，所以这里传 `None`
+                        // 加当前状态即可。
+                        let _ = view.update(cx, |page, cx| {
+                            page.open_task_editor(Some(id), None, status, window, cx);
+                        });
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new(if starred {
+                tr(cx, "取消置顶")
+            } else {
+                tr(cx, "置顶任务")
+            })
+            .icon(Icon::new(DuckIcon::Star))
+            .on_click({
+                let view = view.clone();
+                let next = !starred;
+                move |_, _, cx| {
+                    let _ = view.update(cx, |page, cx| page.set_starred(id, next, cx));
+                }
+            }),
         )
         .separator();
 
@@ -128,8 +157,18 @@ pub(crate) fn task_menu(
             .icon(Icon::new(DuckIcon::Columns2)),
     );
 
-    // ---- 收尾：归档（本仓特有）+ 删除（不可逆，走二次确认）----
+    // ---- 收尾：复制（本仓口径：真建一条新任务）+ 归档 + 删除（不可逆，走二次确认）----
     menu.separator()
+        .item(
+            PopupMenuItem::new(tr(cx, "复制任务"))
+                .icon(Icon::new(DuckIcon::Copy))
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        let _ = view.update(cx, |page, cx| page.duplicate_task(id, cx));
+                    }
+                }),
+        )
         .item(
             PopupMenuItem::new(tr(cx, "归档任务"))
                 .icon(Icon::new(DuckIcon::Archive))

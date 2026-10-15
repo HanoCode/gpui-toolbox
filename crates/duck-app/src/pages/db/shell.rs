@@ -31,8 +31,8 @@ impl DatabasePage {
                 // 工具条上的开关与设置页共用同一个键。
                 .soft_wrap(db_prefs(cx).editor_word_wrap)
         });
-        // 结果区搜索框：变字就重渲一次页面，网格在渲染路径上现算命中集
-        //（见 [`Self::render_result`]），不需要中间状态。
+        // 结果区搜索框：命中集是**展示行序**的输入，变了就重推一次给数据表组件
+        //（见 `sync_data_table_rows`）。
         let result_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "在结果中搜索…")));
         // 翻页条的「跳转到第 N 页」输入框：两套翻页组（查询客户端分页 / 表浏览服务器
@@ -76,11 +76,13 @@ impl DatabasePage {
         ));
         subscriptions.push(cx.subscribe(
             &result_search,
-            |_this: &mut Self,
+            |this: &mut Self,
              _source: Entity<InputState>,
              event: &InputEvent,
              cx: &mut Context<Self>| {
                 if matches!(event, InputEvent::Change) {
+                    // 命中集变了 = 展示行序变了：重推一次（组件不再每帧现算命中集）。
+                    this.sync_data_table_rows(cx);
                     cx.notify();
                 }
             },
@@ -97,6 +99,21 @@ impl DatabasePage {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     this.jump_to_page(window, cx);
                 }
+            },
+        ));
+
+        // 结果网格的组件状态：先建、再订阅。`Self` 持有它（`data_table` 字段），
+        // 交互经事件回到页面 —— 事件只承载「靠 `cx` 就能落地」的动作（选中 / 勾选 /
+        // 排序 / 就地编辑提交 / 单元格详情）；需要窗口的（双击开编辑器、右键菜单
+        // 内容）走 [`Self::data_table_hooks`]。
+        let data_table = cx.new(|_| DataTableState::new(Arc::new(TableModel::default())));
+        subscriptions.push(cx.subscribe(
+            &data_table,
+            |this: &mut Self,
+             _source: Entity<DataTableState>,
+             event: &DataTableEvent,
+             cx: &mut Context<Self>| {
+                this.on_data_table_event(event, cx);
             },
         ));
 
@@ -145,14 +162,11 @@ impl DatabasePage {
             plan_next: false,
             browse_open_pending: false,
             plan_flat: false,
-            column_widths: Vec::new(),
-            col_resize: None,
+            data_table,
             columns_mode_widths: COLUMNS_MODE_DEFAULT_WIDTHS,
             columns_mode_resize: None,
             results_visible: true,
             hidden_columns: BTreeSet::new(),
-            result_x_scroll: ScrollHandle::new(),
-            result_v_scroll: Arc::new(UniformListScrollHandle::new()),
             sql_diagnostics: Vec::new(),
             selected_row: None,
             checked_rows: BTreeSet::new(),

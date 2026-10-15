@@ -137,8 +137,14 @@ plugins/<id>/revoked.json
 | `build.rs`（根） | 把 `official-plugins.pub` 编进二进制 |
 | `crates/duck-plugin-registry/src/revocation.rs`（新增） | 撤列表 + 校验 |
 | `crates/duck-update/src/signature.rs::verify_minisign` | 已是 `pub`，确认签名接口稳定 |
+| `crates/duck-plugin-registry/src/install.rs::prepare` | 打包清单加 `locales/`（插件自带翻译，见 `docs/plugin-i18n-design.md`）：签名覆盖整包、`locales/` 随包解出即可，无需额外白名单 |
 | `docs/plugin-signing.md` | 用户向的「插件开发者如何签名」指南 |
 | `sbin/sign_plugin.sh` | CI 脚本：拉 tarball + 调 `minisign -S` + 推索引 |
+
+> ⚠️ 打包时**别漏 `locales/`**：它不在 `extract` 的白名单里（那里只挡 `..` 与链接），
+> 漏进包不至于安装失败，但插件在英文界面会整片回落中文源串——而签名与 SHA-256
+> 校验都**不会**发现（包是完整且真实的，只是内容不全）。
+> 发布前跑一次 `python3 scripts/plugin_locales.py <plugin_dir> --strict`。
 
 ## 9. 验收清单
 
@@ -147,6 +153,7 @@ plugins/<id>/revoked.json
 - [ ] 公钥编进二进制，**没有**明文私钥
 - [ ] 撤列表同源签名
 - [ ] `sbin/sign_plugin.sh` 走完一遍 release 演练
+- [ ] 包内含插件的 `locales/`（自带翻译，见 `docs/plugin-i18n-design.md`）
 - [ ] `docs/plugin-signing.md` 第三方插件作者看得懂
 
 ## 10. 实施顺序（1 个 PR ≈ 6 人日）

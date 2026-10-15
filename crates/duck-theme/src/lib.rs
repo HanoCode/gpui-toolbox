@@ -9,6 +9,7 @@
 mod builtin;
 mod color;
 mod i18n;
+mod i18n_backend;
 mod manager;
 mod syntax;
 mod tokens;

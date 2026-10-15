@@ -353,7 +353,7 @@
 
 ```
 duck-app（bin）
-  └─ pages/db.rs            DbPage 实体（照抄 TerminalPage 样板）
+  └─ pages/db/              DbPage 实体（目录模块，20 个文件，见 §3.1）
        │  Entity / render / 左栏连接树 / 右栏对象详情
        ▼
 duck-db-ui（可选，若页面长大再拆；M1 先留 duck-app）
@@ -375,6 +375,63 @@ duck-platform（paths / secret / dialog）   duck-store（kv 持久化）
 依赖方向严格向下；`duck-db` 内核**零 `gpui::` 引用**（对齐 terminal-ssh-sftp-design §依赖纪律），可用普通 `#[test]` 覆盖。`duck-db` 依赖 `duck-platform`（secret/paths）与 `duck-store`（连接档案），均为既有底层 crate。
 
 > 备选：把 sqlintel / ai 拆成 `duck-db-sqlintel`、`duck-db-ai` 子 crate。M1 不拆，等 ai 真正落地且 sqlintel 被外部（如插件）消费时再拆——避免过早碎片化。
+
+### 3.1 `pages/db` 目录模块划分（2026-10-14）
+
+页面层原本是**单文件** `crates/duck-app/src/pages/db.rs`：**24,100 行 / 497 个函数**，
+其中 `struct DatabasePage` 一个实体同时承担 8 个领域（连接管理、会话与标签生命周期、
+SQL 编辑与执行、结果网格、表浏览、图表与仪表板、实例监控、AI 助手）。这踩了
+AGENTS.md §4.1 点名的反模式：`Entity<T: Render>` 持有业务字段、订阅 kv、绑键位，撑到
+两万行后任何一处改动都要在一整块上下文里定位。
+
+拆法沿用 `pages::terminal` / `pages::redis` 的「三件套」范式：`pages/db/` 目录 + 本目录
+只留**类型定义 / 常量 / 键位 / 模块装配**，行为按领域切片。子模块用 `use super::*;` 取
+父模块的私有绑定；搬出去的方法一律标 `pub(super)`（父模块与兄弟子模块才调得到）；含
+自由函数的子模块在父模块里 `use self::<mod>::*;` 转出名字。
+
+| 文件 | 行数 | 承担 |
+|---|---|---|
+| `mod.rs` | 2,329 | 全部类型定义（60 个结构 / 枚举）、常量、`bind_keys`、模块装配 |
+| `helpers.rs` | 451 | 跨领域自由函数：kv 档案读取、偏好取值、格式化、结果集纯计算 |
+| `objects.rs` | 115 | 模式对象的图标 / 标签与 DDL 骨架（建表 / 改表 / 删表模板） |
+| `tunnel.rs` | 314 | 传输四档：解析 / 展开 / 打开 / 探活，失败分层与文案 |
+| `hooks.rs` | 297 | 连接钩子四相位 + 并发闸门 `DbOpGate` / `DbOpPermit` |
+| `completion.rs` | 202 | SQL 编辑器补全（`CompletionProvider` 实现，不碰会话） |
+| `profiles.rs` | 709 | 连接档案 CRUD / 分组 / 隧道档案 / 导入导出 / 新建·编辑弹窗 |
+| `connect.rs` | 1,910 | 连接表单 `EditFormView` 与引擎选择器 `DriverPickerView` |
+| `session.rs` | 865 | 会话与标签生命周期、当前标签 / 当前会话的取值 |
+| `browse.rs` | 3,149 | 表浏览：分页 / 排序 / 过滤条、单元格详情、左栏对象树 |
+| `query.rs` | 2,932 | SQL 执行：排队 / 取消 / 超时、编辑器状态、单元格与行编辑、暂存区、导出 |
+| `grid.rs` | 3,569 | 结果区：格式分发、tab 栏、列宽 / 列序、摘要·消息·计划三档、批量条 |
+| `charts.rs` | 2,152 | 图表与用户仪表板（12 栏网格） |
+| `instance.rs` | 904 | 实例监控四档：总览 / 指标 / 检查器 / 仪表板 |
+| `ai.rs` | 499 | AI 助手（text-to-SQL）：动作入口、产出落点、助手条与解释面板 |
+| `render_editor.rs` | 609 | 编辑器工具条 + 诊断条 |
+| `render_tabs.rs` | 596 | 标签条 + 「历史」抽屉 |
+| `render_sidebar.rs` | 271 | 右栏（shell 级 dock 的数据库分段） |
+| `shell.rs` | 1,049 | 页面骨架：`new` / `impl Render` / 主区拼装 / 状态栏 / 浮层提示 |
+| `tests.rs` | 1,537 | 模块单测（51 个 `#[test]`，纯函数口径；i18n 守卫按 `tests.rs` 名字跳过它） |
+
+**拆解口径是「纯搬移」**，可验证：
+
+1. **零行为变更指纹**：拆前对全部 497 个函数取「函数名 + 规范化签名 md5 + 规范化函数体
+   md5」（规范化 = 删所有空白与逗号）。拆完逐项比对，498 项里除下表 6 项外全部命中。
+2. **仅有的语义改动 6 处**，同一成因：这些函数原本用 `super::module_settings::…` 指兄弟页
+   `pages::module_settings`；进了 `pages::db` 的子模块后 `super` 变成 `pages::db`，须补一层
+   →`super::super::module_settings::…`。落在 `helpers.rs::db_prefs`、
+   `browse.rs::set_browse_page_size`、`query.rs` 的 `toggle_keyword_case` /
+   `toggle_editor_word_wrap` / `toggle_semantic_diagnostics` / `apply_query_page_size`。
+3. **`render_result` 的函数内拆**（1,154 行 → 273 行）：把「列切片 + 列头 / 列宽把手 +
+   行列表」整段搬进新方法 `render_result_grid`（899 行），父函数只剩「守卫 + 面板拼装」。
+   校验方式：被搬走的两段在规范化后**逐字连续出现**于新方法体内，且新旧文件非空行的
+   多重集差恰为 14 行脚手架（新方法文档 / 签名 / 重声明的 `theme`·`tokens` / 收尾 / 父函数
+   的 3 行调用），**零行丢失**。
+4. **对外接口零改动**：`pages/mod.rs` 仍然只 `pub use db::DatabasePage;` 与
+   `pub(crate) use db::bind_keys as bind_db_keys;` —— 单文件改目录对外部不可见。
+
+`grid.rs` 里还有一处**可继续拆**但本轮未动：`render_result_grid`（899 行）里「列头 +
+列宽把手」自成一节（约 230 行），要拆得把 15 个 `'static` 闭包捕获量当参数传或就地重算，
+收益/风险不划算，留待下次。
 
 ## 4. 核心设计决策
 
@@ -470,7 +527,8 @@ pub trait KeyValueExt  { fn scan_keys(&self, ...) -> ...; }
 - **主区**：连接页签 + 双模式（表浏览 / SQL 编辑器），SQL 编辑器用现有输入原语起步，M2 评估语法高亮（tree-sitter 或先正则着色）。
 - **右栏**（`with_right_sidebar`）：对象详情（列/索引/DDL 预览/行数估算）。
 - 状态栏：执行耗时、行数、截断提示、事务状态（`BEGIN` 开着要显示，dbui `TransactionState`）。
-- i18n：全部中文源串 + EN 表按字节序补齐；新图标进 `duck-components/assets/icons/`（Lucide 1.75）。
+- i18n：全部中文源串 + 英译补 `duck-theme/locales/en.toml`（**顺序无关**；2026-10-15 起
+  数据源从 `i18n.rs` 的 `EN` 表迁来）；新图标进 `duck-components/assets/icons/`（Lucide 1.75）。
 - 后续把「数据库」登记为 `ToolMeta` 进命令面板（duck-tools），导航动作 `ROUTE_DATABASE`（⌘4）已存在。
 
 ### 4.8 AI 集成（M3，架构先行、实现靠后）

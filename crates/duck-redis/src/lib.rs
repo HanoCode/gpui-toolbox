@@ -9,8 +9,8 @@
 //! duck-app/pages/redis/（UI，gpui）
 //!   │  background_executor().spawn(async move { 阻塞调用 })
 //!   ▼
-//! duck-redis（本 crate：config / capability / writegate / conn / scan / value /
-//! server / monitor）
+//! duck-redis（本 crate：config / capability / writegate / conn / scan / query /
+//! sort / ttl / tags / trash / value / decode / json_tree / server / monitor）
 //!   ▼
 //! duck-platform::secret（凭据）  redis（阻塞客户端）
 //! ```
@@ -41,9 +41,15 @@ pub mod config;
 pub mod conn;
 pub mod decode;
 pub mod error;
+pub mod json_tree;
 pub mod monitor;
+pub mod query;
 pub mod scan;
 pub mod server;
+pub mod sort;
+pub mod tags;
+pub mod trash;
+pub mod ttl;
 pub mod value;
 pub mod writegate;
 
@@ -52,18 +58,39 @@ pub use config::{
     DEFAULT_PORT, EnvTag, MAX_DB, RedisConfig, SshTunnelConfig, TlsMode, WritePolicy,
 };
 pub use conn::{
-    AclProbe, RedisConnection, parse_info_pairs, parse_info_sections, split_command_args,
+    AclProbe, KeyMeta, KeyObjectInfo, META_CHUNK_KEYS, RedisConnection, info_field,
+    object_info_from, parse_info_pairs, parse_info_sections, parse_meta_replies,
+    split_command_args,
 };
 pub use decode::{DecodeKind, Decoded, HEX_PREVIEW_BYTES, Message, decode, hex_dump};
 pub use error::RedisError;
+pub use json_tree::{
+    JSON_TREE_MAX_CHILDREN, JSON_TREE_MAX_NODES, JSON_TREE_PREVIEW_CHARS, JsonNodeKind,
+    JsonTreeNode, JsonTreeRow, default_expanded, flatten, json_tree, toggle_path, tree_of,
+};
 pub use monitor::{MonitorSession, POLL_TIMEOUT};
+pub use query::{QueryMode, ScanPlan, escape_glob, scan_plan};
 pub use scan::{
-    ScanPage, TreeNode, build_tree, build_tree_with_depth, prefix_pattern, should_auto_expand,
-    split_namespace,
+    AUTO_EXPAND_DEFAULT, ScanPage, TreeNode, build_tree, build_tree_sorted, build_tree_with_depth,
+    prefix_pattern, should_auto_expand, split_namespace, stamp_folder_tags,
 };
 pub use server::{
-    ClientInfo, ConfigEntry, ServerFeatures, SlowlogEntry, parse_client_list, parse_config_entries,
-    parse_memory_stats, parse_slowlog,
+    ClientInfo, ConfigEntry, DbKeyStats, MemoryOverview, ServerFeatures, SlowlogEntry,
+    StatusOverview, memory_overview, parse_client_list, parse_config_entries, parse_keyspace,
+    parse_memory_stats, parse_slowlog, status_overview_from,
+};
+pub use sort::{KeySort, Sortable, ttl_rank};
+pub use tags::{
+    KeyMetadata, KeyTags, TAG_COLOR_COUNT, TAG_STORE_VERSION, TagColor, TagFilter, TagHistogram,
+    TagStore, resolve_folder_tag,
+};
+pub use trash::{
+    TRASH_MAX_ENTRIES, TRASH_MAX_PAYLOAD, TRASH_MAX_TOTAL_BYTES, TRASH_MAX_VALUE_MEMORY,
+    TRASH_RETENTION_MS, TRASH_STORE_VERSION, TrashEntry, TrashMeta, TrashStore, now_millis,
+    payload_fits, should_stash,
+};
+pub use ttl::{
+    TTL_EXPIRING_THRESHOLD_SECS, TtlChipKind, TtlFilter, format_ttl_chip, ttl_chip_kind,
 };
 pub use value::{FieldPair, KeyType, RedisValue, StreamEntry, format_reply};
 pub use writegate::{ConfirmKind, confirm_kind, is_destructive, is_write_command};

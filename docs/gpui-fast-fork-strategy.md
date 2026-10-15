@@ -98,13 +98,23 @@ git push origin v0.2.0
 | 场景 | 目标帧时间 | 实测 |
 | --- | --- | --- |
 | 主窗打开（cold start） | < 100 ms | （待测） |
-| 1000 行列表滚动 | < 8 ms / 帧 | （待测） |
+| 1000 行列表滚动 | < 8 ms / 帧 | **7.2 ms / 帧**（1000 行 × 20 列数据网格，release，1400×860 无头，探针 `crates/duck-components/tests/data_table_cost.rs`） |
 | 切路由（toolbox ↔ database） | < 16 ms | （待测） |
 | retained mode 启 / 停环境变量切换 | < 50 ms | （待测） |
+
+⚠️ **读这张表前必须确认编译档**：同一帧（上表那一行）在 dev 档是 **68.2 ms**、release 档是
+**7.2 ms** —— 相差约 9.5 倍，而**两次的分配次数完全相同**（28,090 次）。dev 档默认
+opt-level 0 时 taffy 排版 / 文本整形 / gpui 都不优化，界面会「看起来很卡」。所以
+根 `Cargo.toml` 的 `[profile.dev]`（本仓 1 / 依赖 3，zed 同款）是这张表成立的前提：
+拿掉它再测，数字会整体塌掉一个数量级，那不是回归，是编译档。
 
 环境变量闸门（保留回退能力）：
 - `GPUI_VIEW_RETENTION=0` 关 retained mode
 - `GPUI_SCROLL_LAYERS=0` 关 scroll layers
+
+⚠️ **scroll layers 在无头测试里量不到**：`layout_stats()` 的 `layer_frames_composited` /
+`layer_frames_repainted` 恒为 0（连一个裸 `uniform_list` 也是），因为 headless 渲染器
+没有 tile 合成路径 ⇒ 别拿它当验收口径，也别据此判定「层没生效」。
 
 ## 5. CHANGELOG 与 release tag
 

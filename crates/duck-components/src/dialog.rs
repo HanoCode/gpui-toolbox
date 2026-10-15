@@ -156,6 +156,29 @@ pub fn dialog_footer_with_action(
         .children(cancel_and_ok(id_prefix, ok_text, ok_variant, confirm, cx))
 }
 
+/// 底部操作区：**左侧提示文字** + 次要「取消」+ 主「确认」——[`dialog_footer`] 的带提示形态。
+///
+/// 提示与按钮之间同样靠一个 `flex_1` 的空盒顶开（理由同
+/// [`dialog_footer_with_action`]）：`DialogFooter` 是 `justify_end` 的 `h_flex`，
+/// 不撑开的话提示会紧贴在「取消」左边。
+///
+/// 用来放「按 ⏎ 直接保存」这类**关于本弹窗的说明**——它与确认键同一条视线，
+/// 但不占一个按钮位。真正的校验错误仍贴在字段上（[`crate::field_error`]），
+/// 两者不是一回事。
+pub fn dialog_footer_with_hint(
+    id_prefix: &'static str,
+    hint: impl Into<SharedString>,
+    ok_text: impl Into<SharedString>,
+    ok_variant: ButtonVariant,
+    confirm: ConfirmHandler,
+    cx: &App,
+) -> DialogFooter {
+    DialogFooter::new()
+        .child(crate::field_hint(hint, cx))
+        .child(div().flex_1())
+        .children(cancel_and_ok(id_prefix, ok_text, ok_variant, confirm, cx))
+}
+
 /// 「取消 + 确认」两按钮，两种 footer 形态共用。
 ///
 /// 确认按钮的语义色由 `ok_variant` 指定：普通表单用 `Primary`，删除类不可逆动作
@@ -363,6 +386,16 @@ pub fn modal_title_row(
 /// 置脏 + 置 `refreshing`，让这一帧绕开 prepaint 缓存、把新落点重算一遍。
 ///
 /// 只在高度真的变了（超过 [`HEIGHT_EPSILON`]）时才要帧，避免自激成每帧重绘。
+///
+/// ⚠️ **「递交那一帧」是平台/测试各自的责任**，本模块只负责「挂上回调」：
+/// - 实机：`on_next_frame` 自己会把平台帧源唤醒（`schedule_frame()` +
+///   `invalidator.wake_platform()`，`gpui-pre/src/window.rs:2650-2656`），平台帧循环在
+///   下一帧**开头**先跑掉待办回调、再判脏（`window.rs:1815-1824` → `1833`），所以
+///   `refresh()` 一定落在同一个帧里 —— 居中**不依赖别的帧需求**。
+/// - 无头测试：**没有平台帧循环**，回调没人递 ⇒ 必须由测试自己递
+///   （`crates/duck-components/tests/dialog_centering.rs` 的 `next_frame`）。
+///   漏了这步的表现是「面板停在贴顶落点」，而且**只在窗口里关过一次弹窗之后**才出现
+///   （此前别的帧需求会顺手把回调冲掉）——2026-10-15 的失败就是这么来的。
 pub fn modal_drag_area(drag: &Entity<ModalDrag>, child: impl IntoElement) -> Div {
     let drag = drag.clone();
     div().w_full().child(child).child(

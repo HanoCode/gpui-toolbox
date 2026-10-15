@@ -291,6 +291,27 @@ unsafe_op_in_unsafe_fn = "deny"
 dbg_macro = "deny"
 todo = "deny"
 
+# ── 开发档（`cargo run` / `sbin/run.sh` / `cargo test`）────────────────────────
+# 为什么必须给**依赖**单独提优化：本仓是 GPUI 界面，`cargo run` 出来的帧时间由
+# taffy 排版 + 文本整形 + gpui 自己的 prepaint/paint 决定，而这三块全在**依赖**里。
+# dev 档默认 opt-level 0 时它们不优化，界面手感与发版差了**一个数量级**——
+# 实测同一帧（数据网格 1000 行 × 20 列，滚轮）：
+#   dev（全 opt-level 0）68.2 ms ≈ 15 fps   ← 会被误判成「产品卡顿」
+#   本配置/ release         7.2 ms ≈ 140 fps
+# 两次的分配次数完全相同（28,090 次），差别只在编译档 ⇒ 性能判断必须在这两档下做，
+# 别拿 opt-level 0 的观感当结论。
+#
+# 口径（与 zed 上游同款）：**依赖 3 / 本仓 1**。自己的 crate 保持 opt-level 1，
+# 增量编译仍然快；依赖只在依赖本身变化时重编。
+# ⚠️ 代价（两处，都是改这一节就要认的）：① 首次全量重编依赖（十几分钟量级，之后
+# 走增量）；② CI 的 test / clippy 作业同样按 dev 档编译，冷缓存会更慢（rust-cache
+# 命中后只多出一次性重建）。要临时恢复「纯 debug 档」：把这两节注释掉即可。
+# 想要最接近发版的数字，仍然用 `sbin/run.sh --release`。
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+
 # GPUI 核心性能分叉 gpui-fast（longbridge/gpui-fast，基于 zed upstream a1b71072e5）。
 # 通过 compat/ 提供的同名同版本替身替换 crates.io 快照：retained mode 增量渲染与
 # scroll layers（Windows D3D11 / macOS Metal）默认开启，可用环境变量

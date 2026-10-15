@@ -69,10 +69,9 @@ impl SettingsWindowView {
             title,
             Some(hint.into()),
             switch_control(
-                ElementId::Name(SharedString::from(format!(
-                    "duck-settings-hotkey-enabled-{}",
-                    slot.name()
-                ))),
+                // `SharedString` 自己就 `Into<ElementId>`（`ElementId::Name` 那层包装是多余的，
+                // 而且 `ElementId` 不在这里的作用域里）。
+                SharedString::from(format!("duck-settings-hotkey-enabled-{}", slot.name())),
                 self.hotkey_entry(slot).enabled,
                 cx.listener(move |this, next: &bool, window, cx| {
                     this.hotkey_entry_mut(slot).enabled = *next;
@@ -159,10 +158,10 @@ impl SettingsWindowView {
         };
 
         div()
-            .id(ElementId::Name(SharedString::from(format!(
+            .id(SharedString::from(format!(
                 "duck-settings-hotkey-recorder-{}",
                 slot.name()
-            ))))
+            )))
             // 无障碍：`track_focus` 只置 `focusable`、**不置 `tab_stop`**，所以此前这个
             // 控件 Tab 根本到不了。可访问名 = 行标签 + 当前键位（两段文案都取自既有
             // i18n 表，不新增待翻译串）；只报键位等于报了个值却没说它是什么。录入中

@@ -1,0 +1,15 @@
+# 双语插件（fixture）：验证自动发现 + 降级链。
+# 字段与真实清单一致，便于 fixture 被复用。
+id = "dev.duck.i18nfull"
+name = "文本统计"
+version = "0.1.0"
+description = "统计剪贴板文本的字符、单词与行数"
+api_version = 1
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+
+[[tools]]
+id = "dev.duck.i18nfull.stats"
+name = "文本统计"

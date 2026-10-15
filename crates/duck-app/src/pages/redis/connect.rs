@@ -82,7 +82,7 @@ impl RedisPage {
         self.persist_connections(cx);
         self.editing = None;
         // 档案里改的可能正是树参数（分隔符 / 深度 / 展开阈值），树要跟着重建。
-        self.rebuild_tree();
+        self.rebuild_views();
         notify::success(tr(cx, "连接已保存"), window, cx);
         cx.notify();
         true
@@ -99,12 +99,17 @@ impl RedisPage {
         self.sessions.remove(id);
         let _ = delete_password(id);
         let _ = duck_redis::config::delete_ssh_password(id);
+        // 标注也跟着走：连接都没了，那台服务端上的颜色 / 备注 / 收藏再也点不到，
+        // 留着只会在盘上积一份永远用不上的记录。
+        self.forget_connection_tags(id, cx);
+        // 回收站同理，而且更贵——里面是 `DUMP` 载荷（最大可到十几 MB）。
+        self.forget_connection_trash(id, cx);
         if self.active.as_deref() == Some(id) {
             self.active = None;
             self.keys.clear();
             self.detail = None;
             self.selected = None;
-            self.rebuild_tree();
+            self.rebuild_views();
         }
         self.persist_connections(cx);
         self.editing = None;
@@ -294,12 +299,16 @@ impl RedisPage {
                         );
                         this.active = Some(id.clone());
                         // 换了连接：面板数据与监控流都作废（旧服务端的数字挂在新连接上没有意义）。
+                        // 状态栏探测同理：延迟 / 内存 / 库键数都是**这一台**的读数。
                         this.panel_data = PanelData::default();
+                        this.probe = StatusProbe::default();
                         this.stop_monitor(cx);
                         this.status = trf(cx, "已连接 {}（{}）", &[&target, &version]).into();
                         notify::success(tr(cx, "连接成功"), window, cx);
                         // 连上就取一次键总数并扫第一页。
-                        this.refresh_keys(window, cx);
+                        this.refresh_keys(cx);
+                        // 再跑一次状态栏探测（延迟 / 内存 / 各库键数）。
+                        this.probe_status(cx);
                     }
                     Err(error) => {
                         this.status = trf(cx, "连接失败：{}", &[&error.to_string()]).into();
@@ -327,7 +336,7 @@ impl RedisPage {
             // 换了连接就是换了一个键空间：展开状态（按节点路径记的）全部作废，
             // 留着会以旧路径误展开新键空间里同名但不同层的节点。
             self.tree_overrides.clear();
-            self.rebuild_tree();
+            self.rebuild_views();
             // 面板数据与监控流同理作废：它们反映的是**另一台服务端**的现状。
             self.panel_data = PanelData::default();
             self.stop_monitor(cx);
@@ -348,7 +357,7 @@ impl RedisPage {
         self.detail = None;
         self.selected = None;
         self.scan_done = true;
-        self.rebuild_tree();
+        self.rebuild_views();
         self.status = tr(cx, "已断开").into();
         notify::info(tr(cx, "已断开连接"), window, cx);
         cx.notify();

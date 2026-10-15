@@ -486,7 +486,13 @@ pub(super) fn render_tab_keys(form: &Entity<EditForm>, cx: &App) -> Div {
             tr(cx, "自动展开阈值"),
             input_shell(&auto_expand, false, false, cx),
             None,
-            Some(tr(cx, "子树键数不超过它就默认展开；留空或 0 表示不自动展开").into()),
+            Some(
+                tr(
+                    cx,
+                    "子树键数不超过它就默认展开；留空用默认 100，填 0 表示不自动展开",
+                )
+                .into(),
+            ),
             cx,
         ))
 }

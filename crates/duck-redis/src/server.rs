@@ -14,8 +14,8 @@ use std::collections::HashMap;
 
 use redis::Value;
 
-use crate::conn::pair_up;
-use crate::value::{as_array, as_bytes, as_int};
+use crate::conn::{info_field, pair_up};
+use crate::value::{as_array, as_bytes, as_int, as_text};
 
 /// 连接后一次性探测的命令清单。
 ///
@@ -431,6 +431,193 @@ fn render_stat_value(value: &Value) -> String {
     }
 }
 
+// ----------------------------------------------------------------------
+// 状态栏的一次探测（`INFO memory` + `INFO keyspace`）
+// ----------------------------------------------------------------------
+
+/// `INFO memory` 的四个关键字段（状态栏「内存」那一段）。
+///
+/// ⚠️ **不做单位换算**：`used_memory_human` 是服务端自己算好的可读串
+/// （`1.05M` / `823.51K`），拿 `used_memory` 的字节数在界面重算一遍只会与
+/// 服务端显示的不一致。字节数留着是为了算占比，不是为了再格式化一次。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemoryOverview {
+    /// `used_memory_human`。
+    pub used_human: Option<String>,
+    /// `used_memory`（字节）。
+    pub used_bytes: Option<u64>,
+    /// `maxmemory_human`。
+    ///
+    /// ⚠️ `maxmemory` 为 `0` 表示**未设上限**，此时它是 `None`——
+    /// 把 `0B` 摆到状态栏上会被读成「内存已满」。
+    pub max_human: Option<String>,
+    /// `maxmemory`（字节）；未设上限时为 `None`。
+    pub max_bytes: Option<u64>,
+    /// `maxmemory_policy`（`noeviction` / `allkeys-lru` …）。
+    pub policy: Option<String>,
+}
+
+impl MemoryOverview {
+    /// 所有字段都没取到（`INFO memory` 没拿到 / 应答不认识）。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.used_human.is_none()
+            && self.used_bytes.is_none()
+            && self.max_human.is_none()
+            && self.max_bytes.is_none()
+            && self.policy.is_none()
+    }
+
+    /// 已用 / 上限（`0.0..=1.0` 之外也可能——服务端能超上限）。未设上限时为 `None`。
+    #[must_use]
+    pub fn used_ratio(&self) -> Option<f64> {
+        let max = self.max_bytes?;
+        if max == 0 {
+            return None;
+        }
+        let used = self.used_bytes?;
+        // `u64 as f64` 在 2^53 以上会丢精度，但那是 8 PiB 的内存——
+        // 到那个量级「占比」本身已经没有意义了。
+        #[allow(clippy::cast_precision_loss)]
+        Some(used as f64 / max as f64)
+    }
+}
+
+/// 从 `INFO memory` 文本里取内存概览。
+#[must_use]
+pub fn memory_overview(text: &str) -> MemoryOverview {
+    // 上限的两个字段**成对**取：`maxmemory` 是 0（或压根没这行）就一起当没有，
+    // 免得状态栏出现「1.05M / 0B」这种自相矛盾的组合。
+    let max_bytes = info_field(text, "maxmemory")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|bytes| *bytes > 0);
+    MemoryOverview {
+        used_human: info_field(text, "used_memory_human"),
+        used_bytes: info_field(text, "used_memory").and_then(|value| value.parse().ok()),
+        max_human: max_bytes.and_then(|_| info_field(text, "maxmemory_human")),
+        max_bytes,
+        policy: info_field(text, "maxmemory_policy"),
+    }
+}
+
+/// `INFO keyspace` 里一个逻辑库的键统计。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbKeyStats {
+    /// 库号（`db0` → `0`）。
+    pub db: u32,
+    /// 键数（`keys=`）。
+    pub keys: u64,
+    /// 设有过期时间的键数（`expires=`）。
+    pub expires: u64,
+    /// 平均剩余存活毫秒数（`avg_ttl=`）；服务端没给时是 `None`。
+    pub avg_ttl_ms: Option<u64>,
+}
+
+/// 解析 `INFO keyspace`。
+///
+/// 应答形如：
+///
+/// ```text
+/// # Keyspace
+/// db0:keys=1,expires=0,avg_ttl=0
+/// db2:keys=5,expires=1,avg_ttl=1234567
+/// ```
+///
+/// ⚠️ **只列有键的库**——空库根本不出现。所以「查不到某个库」与「那个库是空的」
+/// 是同一件事，[`StatusOverview::keys_in`] 把这条口径替调用方钉住。
+///
+/// 认不出的行（`# Keyspace` 这行标题、以及 `keys=` 缺失的行）一律跳过，
+/// **不补 0**：补 0 会凭空造出一个「空库」。
+#[must_use]
+pub fn parse_keyspace(text: &str) -> Vec<DbKeyStats> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some((name, rest)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let Some(db) = name
+            .strip_prefix("db")
+            .and_then(|digits| digits.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let (mut keys, mut expires, mut avg_ttl_ms) = (None, 0u64, None);
+        for field in rest.split(',') {
+            let Some((field, value)) = field.split_once('=') else {
+                continue;
+            };
+            let value = value.trim();
+            match field.trim() {
+                "keys" => keys = value.parse::<u64>().ok(),
+                "expires" => expires = value.parse::<u64>().unwrap_or(0),
+                "avg_ttl" => avg_ttl_ms = value.parse::<u64>().ok(),
+                // 新版本可能加字段（比如 `subexpiry`），不认识的直接忽略。
+                _ => {}
+            }
+        }
+        let Some(keys) = keys else { continue };
+        out.push(DbKeyStats {
+            db,
+            keys,
+            expires,
+            avg_ttl_ms,
+        });
+    }
+    out.sort_by_key(|stats| stats.db);
+    out
+}
+
+/// 状态栏一次探测的结果：内存 + 各库键数。
+///
+/// 类型统计**不在这里**：它按已加载的键元数据在界面侧统计（见设计文档 §4.8.2
+/// 的口径说明），内核不发任何命令。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StatusOverview {
+    /// `INFO memory` 的概览；没拿到时是 `None`。
+    pub memory: Option<MemoryOverview>,
+    /// `INFO keyspace` 的各库键数（按库号升序，只含非空库）。
+    pub keyspace: Vec<DbKeyStats>,
+}
+
+impl StatusOverview {
+    /// 指定库的键数。
+    ///
+    /// ⚠️ `INFO keyspace` 只列有键的库，所以「表里没有」与「键数为 0」是同一件事
+    /// ——这里直接返回 `0`，免得每个调用点自己写一遍 `unwrap_or(0)`。
+    #[must_use]
+    pub fn keys_in(&self, db: u32) -> u64 {
+        self.keyspace
+            .iter()
+            .find(|stats| stats.db == db)
+            .map_or(0, |stats| stats.keys)
+    }
+
+    /// 有键的库号（升序）。DB 选择器据此高亮「哪些库不是空的」。
+    #[must_use]
+    pub fn non_empty_dbs(&self) -> Vec<u32> {
+        self.keyspace.iter().map(|stats| stats.db).collect()
+    }
+}
+
+/// 把两条 `INFO` 应答配成 [`StatusOverview`]。
+///
+/// 入参是**两条命令各自的应答**，`None` 表示那条没成功。与
+/// [`crate::conn::object_info_from`] 同一套写法：网络那一半在
+/// [`crate::conn::RedisConnection::status_overview`] 里，解析这一半是纯函数。
+#[must_use]
+pub fn status_overview_from(memory: Option<&Value>, keyspace: Option<&Value>) -> StatusOverview {
+    let memory = memory
+        .and_then(as_text)
+        .map(|text| memory_overview(&text))
+        // 服务端认这个段但整段没内容时不摆一个空壳出来。
+        .filter(|overview| !overview.is_empty());
+    let keyspace = keyspace
+        .and_then(as_text)
+        .map(|text| parse_keyspace(&text))
+        .unwrap_or_default();
+    StatusOverview { memory, keyspace }
+}
+
 /// 解析 `COMMAND INFO` 的应答，取出**存在的**命令名。
 ///
 /// 不存在的命令在应答里是一个 `Nil` 占位——跳过它，剩下的就是本服务端支持的。
@@ -654,5 +841,123 @@ mod tests {
         // 非标准版本号（例如 255.255.255 的 unstable）解析失败 → 不隐藏能力。
         let weird = ServerFeatures::new(Some("unstable".to_owned()), Vec::new(), Vec::new());
         assert!(weird.version_at_least(9, 9));
+    }
+
+    /// `INFO memory`：取到四个字段，未设上限时上限成对为空。
+    #[test]
+    fn memory_overview_reads_the_four_fields() {
+        let text = "# Memory\r\n\
+                    used_memory:1101200\r\n\
+                    used_memory_human:1.05M\r\n\
+                    used_memory_peak_human:1.20M\r\n\
+                    maxmemory:536870912\r\n\
+                    maxmemory_human:512.00M\r\n\
+                    maxmemory_policy:allkeys-lru\r\n";
+        let overview = memory_overview(text);
+        assert_eq!(overview.used_human.as_deref(), Some("1.05M"));
+        assert_eq!(overview.used_bytes, Some(1_101_200));
+        assert_eq!(overview.max_human.as_deref(), Some("512.00M"));
+        assert_eq!(overview.max_bytes, Some(536_870_912));
+        assert_eq!(overview.policy.as_deref(), Some("allkeys-lru"));
+        assert!(!overview.is_empty());
+        let ratio = overview.used_ratio().expect("设了上限就该有占比");
+        assert!((ratio - 0.002_05).abs() < 0.000_1, "占比算错了：{ratio}");
+    }
+
+    /// ⚠️ `maxmemory:0` = 未设上限 ⇒ 上限两个字段**一起**变成 `None`，
+    /// 不能出现「1.05M / 0B」这种自相矛盾的组合。
+    #[test]
+    fn unlimited_memory_reports_no_ceiling() {
+        let overview = memory_overview(
+            "# Memory\r\nused_memory:1101200\r\nused_memory_human:1.05M\r\n\
+             maxmemory:0\r\nmaxmemory_human:0B\r\nmaxmemory_policy:noeviction\r\n",
+        );
+        assert_eq!(overview.used_human.as_deref(), Some("1.05M"));
+        assert_eq!(overview.max_bytes, None, "0 = 未设上限");
+        assert_eq!(overview.max_human, None, "上限的两个字段要成对为空");
+        assert_eq!(overview.used_ratio(), None);
+        // 策略与上限无关，仍然留着。
+        assert_eq!(overview.policy.as_deref(), Some("noeviction"));
+    }
+
+    /// 整段没内容（代理回了空串）⇒ `is_empty()`，界面据此不渲染那一段。
+    #[test]
+    fn blank_memory_section_is_empty() {
+        assert!(memory_overview("").is_empty());
+        assert!(memory_overview("# Memory\r\n").is_empty());
+    }
+
+    /// `INFO keyspace`：按库号升序，跳过标题行与认不出的行。
+    #[test]
+    fn keyspace_lists_only_non_empty_databases() {
+        let text = "# Keyspace\r\n\
+                    db0:keys=1,expires=0,avg_ttl=0\r\n\
+                    db2:keys=5,expires=1,avg_ttl=1234567\r\n";
+        let stats = parse_keyspace(text);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].db, 0);
+        assert_eq!(stats[0].keys, 1);
+        assert_eq!(stats[0].avg_ttl_ms, Some(0));
+        assert_eq!(stats[1].db, 2);
+        assert_eq!(stats[1].keys, 5);
+        assert_eq!(stats[1].expires, 1);
+        assert_eq!(stats[1].avg_ttl_ms, Some(1_234_567));
+        // 乱序输入也要按库号排好。
+        let shuffled = parse_keyspace("db9:keys=1\ndb3:keys=2\n");
+        assert_eq!(
+            shuffled.iter().map(|s| s.db).collect::<Vec<_>>(),
+            vec![3, 9]
+        );
+    }
+
+    /// ⚠️ 「查不到这个库」= 「这个库是空的」——`INFO keyspace` 不列空库。
+    #[test]
+    fn absent_database_means_zero_keys() {
+        let overview = status_overview_from(
+            None,
+            Some(&Value::BulkString(
+                b"db0:keys=3,expires=0,avg_ttl=0".to_vec(),
+            )),
+        );
+        assert_eq!(overview.keys_in(0), 3);
+        assert_eq!(overview.keys_in(5), 0, "不列出来的库就是空库");
+        assert_eq!(overview.non_empty_dbs(), vec![0]);
+        assert_eq!(overview.memory, None);
+    }
+
+    /// 两条应答都拿不到时不摆空壳（`memory` 是 `None`，`keyspace` 是空表）。
+    #[test]
+    fn failed_probe_yields_no_fake_values() {
+        let overview = status_overview_from(None, None);
+        assert_eq!(overview, StatusOverview::default());
+        assert!(overview.memory.is_none());
+        assert!(overview.keyspace.is_empty());
+    }
+
+    /// 认不出的行**不补 0**：补 0 会凭空造出一个「空库」。
+    #[test]
+    fn unrecognised_keyspace_lines_are_dropped() {
+        assert!(parse_keyspace("# Keyspace\n").is_empty());
+        assert!(
+            parse_keyspace("db0:expires=3\n").is_empty(),
+            "缺 keys= 不认识"
+        );
+        assert!(parse_keyspace("nonsense\n").is_empty());
+        assert!(parse_keyspace("").is_empty());
+    }
+
+    /// `used_ratio` 在没有字节数时也要给出 `None`，不能除出个 0。
+    #[test]
+    fn ratio_needs_both_numbers() {
+        // `INFO` 是**一行一个字段**（不是逗号分隔），所以这里必须带换行。
+        let only_used = status_overview_from(
+            Some(&Value::BulkString(
+                b"used_memory:1024\r\nmaxmemory:0\r\n".to_vec(),
+            )),
+            None,
+        );
+        let memory = only_used.memory.expect("有 used_memory 就是非空");
+        assert_eq!(memory.used_bytes, Some(1024));
+        assert_eq!(memory.used_ratio(), None);
     }
 }

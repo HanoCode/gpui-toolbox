@@ -540,7 +540,7 @@ ANSI 16 色 + 光标/选区/背景**不复用** UI 语义槽位，而是在 `duc
 | `crates/duck-app/src/app.rs:608` | `PlaceholderPage::new("SSH 终端", DuckIcon::SquareTerminal)` → 真实页实体。**路由常量、id、`ShellRoute::new` 那一行都不用改** |
 | `crates/duck-app/src/app.rs` 路由登记表 | 加 `.with_sidebar(...)`（左栏连接列表） |
 | `crates/duck-app/src/actions.rs` | 新增 ActionMeta（新建标签/连接、打开 SFTP、分屏、字体缩放…）→ 快捷键/菜单/命令面板/活动栏**四处输出面同时生效** |
-| `crates/duck-theme/src/i18n.rs` | 新中文文案补 `EN` 表（**按 UTF-8 字节序插入**，否则覆盖率守卫失败） |
+| `crates/duck-theme/locales/en.toml` | 新中文文案补英译（一行 `"中文源串" = "English"`，**顺序无关**；2026-10-15 起数据源从 `i18n.rs` 的 `static EN` 迁来），改完跑 `scripts/i18n_en_toml.py`，否则覆盖率守卫失败 |
 | `crates/duck-theme`（内置 token） | 终端调色板（§8.5） |
 | `crates/duck-store` | **不改**（M1~M3 走 kv） |
 | 根 `Cargo.toml` | 新增 workspace 依赖 + 版本理由注释；`[patch.crates-io]` 加 vendored `alacritty_terminal` / `vte` |

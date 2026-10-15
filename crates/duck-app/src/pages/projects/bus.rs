@@ -61,27 +61,33 @@ pub(crate) fn notify(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{ProjectBus, handle, install, notify};
-    use gpui::{AppContext as _, Context, IntoElement as _, TestAppContext, Window, div};
+    use gpui::{AppContext as _, Context, IntoElement, Subscription, TestAppContext, Window, div};
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     /// 一个只数广播次数的宿主。
     ///
     /// 订阅必须发生在**实体的 `Context`** 上（`subscribe` 是 `Context` 的方法），
     /// 所以这里用一个真实实体承接，而不是在裸 `App` 上试。
     struct Counter {
-        hits: std::rc::Rc<std::cell::Cell<u32>>,
+        hits: Rc<Cell<u32>>,
+        /// 订阅跟着宿主走：实体活着它就活着，drop 时自动退订 —— 正好也是产品里
+        /// 两个视图的用法（存进 `_subscriptions`）。
+        _subscription: Subscription,
     }
 
     impl Counter {
         fn new(cx: &mut Context<Self>) -> Self {
             let bus = handle(cx);
-            let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+            let hits = Rc::new(Cell::new(0));
             let seen = hits.clone();
-            let _sub = cx.subscribe(&bus, move |_this, _bus, _event, _cx| {
+            let subscription = cx.subscribe(&bus, move |_this, _bus, _event, _cx| {
                 seen.set(seen.get() + 1);
             });
-            // 订阅要活到测试结束；这个实体本身就是宿主，让订阅跟着它走即可。
-            std::mem::forget(_sub);
-            Self { hits }
+            Self {
+                hits,
+                _subscription: subscription,
+            }
         }
     }
 
@@ -92,14 +98,25 @@ mod tests {
     }
 
     /// 广播要真的送到订阅方手里（这是「悬浮窗跟着主窗变」的全部机制）。
+    ///
+    /// ⚠️ 断言必须在 `update` **返回之后**：`Context::subscribe` 拿到的
+    /// [`Subscription`] 是**惰性**的（`SubscriberSet::insert` 建出来时 `active=false`），
+    /// 激活走 `App::new_subscription` 里的 `defer`；而 `emit` 本身也是一个
+    /// `Effect::Emit`。两者都躺在 `pending_effects` 队列里，要等 `update` 的
+    /// `finish_update` → `flush_effects` 才按 FIFO 依次跑掉（激活排在 emit 前面）。
+    /// 在闭包里读，activate 还没执行，收方一律是 0 —— 这条测试第一版就是这么红的。
     #[test]
     fn a_notification_reaches_every_subscriber() {
-        let mut cx = TestAppContext::single();
-        cx.update(|cx| {
+        let cx = TestAppContext::single();
+        let (first, second) = cx.update(|cx| {
             let first = cx.new(Counter::new);
             let second = cx.new(Counter::new);
             notify(cx);
             notify(cx);
+            // 实体在这里交出去：出了闭包它们仍被持有，订阅才活得过效果冲写。
+            (first, second)
+        });
+        cx.update(|cx| {
             assert_eq!(first.read(cx).hits.get(), 2, "两条广播都该收到");
             assert_eq!(second.read(cx).hits.get(), 2);
         });
@@ -109,7 +126,7 @@ mod tests {
     /// `install` 的幂等性就是钉这件事。
     #[test]
     fn the_handle_is_stable() {
-        let mut cx = TestAppContext::single();
+        let cx = TestAppContext::single();
         cx.update(|cx| {
             let first: gpui::Entity<ProjectBus> = handle(cx);
             assert_eq!(first.entity_id(), handle(cx).entity_id());

@@ -80,6 +80,7 @@ impl Harness {
             &granted,
             TOOL_ID,
             "",
+            "zh-Hans",
         )
         .map(|outcome| outcome.output)
         .map_err(|error| error.to_string())

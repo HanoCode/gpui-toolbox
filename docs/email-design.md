@@ -577,7 +577,8 @@ duck-ai::{provider, sse, tool, kb, wire}   ← 本仓既有：协议 / 流式 / 
 - 每个弹窗调用点必须 `.close_button(false)`（否则与 `modal_title_row` 叠成两个 ✕）；
 - "边打边过滤"的输入框必须挂**独立视图**（`Entity<V: Render>`），靠 `cx.subscribe(&input, Change → notify())`；
 - 图标进 `duck-components/assets/icons/`（Lucide，stroke 1.75），标签用 `content::accent_tag`；
-- 中文文案必须同步补 `crates/duck-theme/src/i18n.rs` 的 EN 表（字节序）。
+- 中文文案必须同步补 `crates/duck-theme/locales/en.toml`（**顺序无关**；2026-10-15 起
+  数据源从 `i18n.rs` 的 `EN` 表迁来，不再需要按字节序插入）。
 
 **布局落地状态**（2026-10-12，M1 已接数据）：`duck-mail` 内核与 `crates/duck-app/src/pages/mail.rs` 一起落地，`app.rs` 的 `duck-route-email` 从占位页换成真实页面（活动栏图标 / `⌘8` / 原生菜单 / 命令面板四个输出面早在占位阶段就已派生，无需再动）：
 

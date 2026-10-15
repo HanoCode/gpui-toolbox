@@ -19,6 +19,12 @@
 //! [`duck_plugin::CapabilityGranter`] 仲裁（声明 + 授予双闸门，默认拒绝）：
 //!
 //! - `duck.id` / `duck.dataDir`：插件标识与数据目录（能力 glob 的根）；
+//! - `duck.locale`：当前语言 tag（`"en"` / `"zh-Hans"`），在**执行时**由宿主注入，
+//!   跟随「外观 → 语言」开关；
+//! - `duck.t(source, ...args)`：用**插件自己的** `locales/<tag>.toml` 取词
+//!   （装载与降级链见 `duck_plugin::i18n`）；miss 返回源串本身；给了 `args` 就按
+//!   顺序替换模板里的 `{}`（语义同宿主 `trf`）。与 `duck.locale` 一样**不加能力
+//!   闸门**——它们只在插件自己的包内数据上做纯查表；
 //! - `duck.notify(message)`：产出用户提示（执行结束后由宿主统一弹 toast），
 //!   需 `notifications` 能力；
 //! - `duck.readClipboard()` / `duck.writeClipboard(text)`：剪贴板；
@@ -37,7 +43,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use duck_plugin::{Capabilities, CapabilityGranter, PluginError, PluginManifest};
+use duck_plugin::{
+    Capabilities, CapabilityGranter, DEFAULT_SOURCE_TAG, PluginError, PluginLocales, PluginManifest,
+};
 
 /// 入口文件名（每个插件目录固定一份，与 `plugin.toml` 同级）。
 pub const ENTRY_FILE: &str = "main.js";
@@ -87,7 +95,10 @@ type SharedState = Rc<RefCell<ExecState>>;
 /// - `manifest`：清单（插件标识与**能力上限**的来源）；
 /// - `granted`：用户授予的能力（安装确认框上勾过的那些）；
 /// - `tool_id`：被调用的工具 id（原样传给 `handle`）；
-/// - `input`：输入文本（P1 固定空串，插件可自行读剪贴板）。
+/// - `input`：输入文本（P1 固定空串，插件可自行读剪贴板）；
+/// - `lang`：当前语言 tag（如 `"en"` / `"zh-Hans"`）。喂给沙箱里的
+///   `duck.locale` 与 `duck.t`，让插件自己产出的文案跟随宿主的语言开关。
+///   按**执行时**的语言取值：插件跑到一半用户切了语言，本次提示仍是发起时的语言。
 ///
 /// 真正授予的是 `manifest.capabilities ∩ granted`——两边缺一不可，见
 /// [`Capabilities::intersect`]。本函数**不读存储**：授予是宿主的事，这一层不依赖
@@ -102,11 +113,22 @@ pub fn run_tool(
     granted: &Capabilities,
     tool_id: &str,
     input: &str,
+    lang: &str,
 ) -> Result<JsToolOutcome, PluginError> {
     let entry = plugin_dir.join(ENTRY_FILE);
     let source = std::fs::read_to_string(&entry).map_err(|error| {
         PluginError::Execution(format!("cannot read {}: {error}", entry.display()))
     })?;
+
+    // 翻译表**每次执行重新装载**（而不是缓存）：`locales/` 与 `main.js` 同级、
+    // 同属插件源码，`main.js` 改完重启生效的语义应当对译文一样成立 ——
+    // 译者改一行 TOML 就能立刻看到，不必等进程重启。
+    // 代价是一次目录读 + 若干小文件解析，而工具执行本就是用户点击触发（非每帧）。
+    let (source_tag, declared) = match manifest.i18n.as_ref() {
+        Some(config) => (config.source_tag(), config.declared_locales()),
+        None => (DEFAULT_SOURCE_TAG, None),
+    };
+    let locales = PluginLocales::load(plugin_dir, source_tag, declared);
 
     // 截止时刻先算出来：它同时喂给 QuickJS 的中断处理器**和**出网预算。
     // 两者必须同源——引擎的中断在阻塞调用里不触发，出网那条路的时长只能靠
@@ -132,8 +154,16 @@ pub fn run_tool(
 
     let data_dir_string = data_dir.to_string_lossy().into_owned();
     let outcome = ctx.with(|ctx| -> Result<JsToolOutcome, PluginError> {
-        install_host_functions(&ctx, &manifest.id, &data_dir_string, &state, &budget)
-            .map_err(|error| js_failure(&ctx, error))?;
+        install_host_functions(
+            &ctx,
+            &manifest.id,
+            &data_dir_string,
+            lang,
+            &locales,
+            &state,
+            &budget,
+        )
+        .map_err(|error| js_failure(&ctx, error))?;
 
         let (module, promise) = rquickjs::Module::declare(ctx.clone(), ENTRY_FILE, source)
             .and_then(|module| module.eval())
@@ -191,6 +221,8 @@ fn install_host_functions<'js>(
     ctx: &rquickjs::Ctx<'js>,
     plugin_id: &str,
     data_dir: &str,
+    lang: &str,
+    locales: &PluginLocales,
     state: &SharedState,
     budget: &NetBudgetHandle,
 ) -> Result<(), rquickjs::Error> {
@@ -201,6 +233,23 @@ fn install_host_functions<'js>(
     let duck = rquickjs::Object::new(ctx.clone())?;
     duck.set("id", plugin_id)?;
     duck.set("dataDir", data_dir)?;
+    // 当前语言 tag 与「用插件自己的 locales/ 取词」。两者都**不加能力闸门**：
+    // 它们只在插件自己的包内数据上做纯查表，和 `duck.id` 同级，不触达宿主资源。
+    duck.set("locale", lang)?;
+    duck.set(
+        "t",
+        Func::from({
+            let locales = locales.clone();
+            let lang = lang.to_owned();
+            move |source: String, args: Rest<rquickjs::Value>| -> String {
+                // miss 返回源串本身（与宿主 `t()` 同一口径）。这一跳走
+                // `PluginLocales::text`，与 process / wasm 轨**共用同一处实现**——
+                // 各轨各写一遍 `lookup(..).unwrap_or(..)` 迟早会有一条漏成空串。
+                let template = locales.text(&lang, &source);
+                fill_placeholders(template, args.iter().map(value_to_string))
+            }
+        }),
+    )?;
     duck.set(
         "notify",
         Func::from({
@@ -298,6 +347,28 @@ fn install_host_functions<'js>(
     }
     globals.set("console", console)?;
     Ok(())
+}
+
+/// 把 `duck.t` 的模板里 `{}` 按 `args` 顺序替换——语义与宿主的
+/// `duck_theme::tf` 完全一致（多余的参数忽略、不足时保留未替换的 `{}`）。
+///
+/// 单开一份而不复用 `duck_theme`：那是 gpui 侧 crate，本 crate 的分层纪律是
+/// 「不依赖 gpui」，跨过去只为这 10 行不划算。
+fn fill_placeholders(template: &str, args: impl Iterator<Item = String>) -> String {
+    let mut out = String::with_capacity(template.len() + 16);
+    let mut rest = template;
+    for arg in args {
+        match rest.find("{}") {
+            Some(index) => {
+                out.push_str(&rest[..index]);
+                out.push_str(&arg);
+                rest = &rest[index + 2..];
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 脚本**不许**自设的请求头。
@@ -548,10 +619,60 @@ mod tests {
     }
 
     fn sample_manifest() -> PluginManifest {
-        std::fs::read_to_string(fixtures_dir().join("sample/plugin.toml"))
+        manifest_of("sample")
+    }
+
+    /// 读某个 fixture 的 `plugin.toml`。
+    fn manifest_of(name: &str) -> PluginManifest {
+        std::fs::read_to_string(fixtures_dir().join(name).join("plugin.toml"))
             .map_err(PluginError::Io)
             .and_then(|source| PluginManifest::parse(&source))
-            .expect("sample manifest must parse")
+            .unwrap_or_else(|error| panic!("{name} 的清单必须解析通过：{error}"))
+    }
+
+    /// `duck.locale` / `duck.t` 跟随宿主注入的语言 tag：
+    /// 命中取译文、没登记的源串原样返回、`...args` 按顺序填 `{}`。
+    ///
+    /// 这是「插件文案跟随语言开关」在 JS 轨上的端到端证据：译文来自
+    /// **插件自己的** `locales/<tag>.toml`，与宿主 `locales/en.toml` 无关。
+    #[test]
+    fn duck_t_follows_the_injected_locale() {
+        let dir = fixtures_dir().join("i18n");
+        let manifest = manifest_of("i18n");
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        // 取词是纯查表，不需要任何能力。
+        let granted = Capabilities::default();
+
+        let english = run_tool(
+            &dir,
+            &data,
+            &manifest,
+            &granted,
+            "dev.duck.i18n.stats",
+            "",
+            "en",
+        )
+        .expect("must run");
+        assert_eq!(
+            english.output,
+            "en|Text stats|Report written to out.txt|这条没翻"
+        );
+
+        let chinese = run_tool(
+            &dir,
+            &data,
+            &manifest,
+            &granted,
+            "dev.duck.i18n.stats",
+            "",
+            "zh-Hans",
+        )
+        .expect("must run");
+        assert_eq!(
+            chinese.output,
+            "zh-Hans|文本统计|报告已写入 out.txt|这条没翻"
+        );
     }
 
     #[test]
@@ -569,6 +690,7 @@ mod tests {
             &granted,
             "dev.duck.sample.hash",
             "duck",
+            "zh-Hans",
         )
         .expect("must run");
         assert_eq!(outcome.output, "handled: dev.duck.sample.hash:duck");
@@ -583,8 +705,16 @@ mod tests {
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
         let granted = manifest.capabilities.clone();
-        let error =
-            run_tool(&dir, &data, &manifest, &granted, "dev.duck.sample.hash", "").unwrap_err();
+        let error = run_tool(
+            &dir,
+            &data,
+            &manifest,
+            &granted,
+            "dev.duck.sample.hash",
+            "",
+            "zh-Hans",
+        )
+        .unwrap_err();
         assert!(
             error.to_string().contains("handle"),
             "unexpected error: {error}"
@@ -605,6 +735,7 @@ mod tests {
             &granted,
             "dev.duck.sample.hash",
             "deny",
+            "zh-Hans",
         )
         .expect("must run");
         assert!(

@@ -452,7 +452,7 @@ pub fn bind(slot: Slot, hotkey: Option<&Hotkey>) -> Result<(), HotkeyError> {
                     tracing::warn!(%error, slot, "failed to unregister the global hotkey");
                 }
             }
-            publish();
+            publish(routes_of(state));
             set_last_error(slot, None);
             return Ok(());
         };
@@ -465,7 +465,7 @@ pub fn bind(slot: Slot, hotkey: Option<&Hotkey>) -> Result<(), HotkeyError> {
             // 同一个组合：不重复登记。macOS 上再登记一次会留下一个野 `EventHotKeyRef`
             // （库内部按 id 存表，第二次会覆盖掉第一次的句柄，注销不掉）。
             // 仍然要 `publish`：`bind` 可能先于 `start` 被调到，那时投递侧还没有路由表。
-            publish();
+            publish(routes_of(state));
             set_last_error(slot, None);
             return Ok(());
         }
@@ -493,7 +493,7 @@ pub fn bind(slot: Slot, hotkey: Option<&Hotkey>) -> Result<(), HotkeyError> {
         state
             .active
             .insert(slot, (wanted.spec.clone(), wanted.inner));
-        publish();
+        publish(routes_of(state));
         set_last_error(slot, None);
         tracing::info!(spec = wanted.spec(), slot, "global hotkey registered");
         Ok(())
@@ -515,26 +515,33 @@ fn spec_owner<'a>(
         .map(|(other, _)| other)
 }
 
+/// 「注册 id → 槽位名」的路由快照。
+///
+/// 纯函数：只读管理器状态，**不取锁**。[`bind`] 在自己的闭包里（那时 `MANAGER` 锁已在本
+/// 线程手里）要刷新投递路由，就只能走这里 —— 再进一次 [`with_manager`] 是**自死锁**，
+/// 不是编译错误，是主线程静默卡死（曾经就是这么坏的）。
+fn routes_of(state: &Manager) -> HashMap<u32, Slot> {
+    state
+        .active
+        .iter()
+        .map(|(slot, (_, hotkey))| (hotkey.id(), *slot))
+        .collect()
+}
+
 /// 「注册 id → 槽位名」的投递路由表。投递线程拿按下事件的 id 来这里查该叫哪个落点。
+///
+/// ⚠️ 会取 `MANAGER` 锁，**只能在锁外调**（现仅 [`start`] 一处）。锁内要用 [`routes_of`]。
 fn active_routes() -> HashMap<u32, Slot> {
-    with_manager(|manager| {
-        manager
-            .as_ref()
-            .map(|state| {
-                state
-                    .active
-                    .iter()
-                    .map(|(slot, (_, hotkey))| (hotkey.id(), *slot))
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
+    with_manager(|manager| manager.as_ref().map(routes_of).unwrap_or_default())
 }
 
 /// 把「当前各槽位在听哪个 id」告知投递线程。服务没起来时是空操作（`start` 会补一次）。
-fn publish() {
+///
+/// `routes` 由调用方从**已经拿在手里的**管理器状态算好（[`routes_of`]），本函数自己绝不去
+/// 读管理器：唯一的调用方 [`bind`] 跑在 [`with_manager`] 的闭包内，回头读锁就是死锁。
+fn publish(routes: HashMap<u32, Slot>) {
     if let Some(shared) = SHARED.get() {
-        *lock(&shared.routes) = active_routes();
+        *lock(&shared.routes) = routes;
     }
 }
 
@@ -612,8 +619,13 @@ thread_local! {
 
 /// 以统一方式访问管理器槽位；两条后端见 [`MANAGER`]。
 ///
-/// ⚠️ 回调内**不得**再次进入本函数：Windows 那一侧是 `RefCell::borrow_mut`，二次借出会
-/// panic。现有调用点（`bind` / `active_spec` / `active_spec_id`）都不递归。
+/// ⚠️ 回调内**不得**再次进入本函数。这不是「小心一点」级别的提醒：非 Windows 侧是
+/// `Mutex::lock`，而 `std::sync::Mutex` **不可重入** —— 同一线程二次加锁会**永久阻塞**，
+/// 既不 panic 也不留日志，表现就是「应用启动了、主界面永远不出现」（2026-10-15 实测踩过）；
+/// Windows 侧是 `RefCell::borrow_mut`，二次借出会 panic。
+///
+/// 要在回调内刷新投递路由，用纯函数 [`routes_of`]（[`bind`] 就是这么做的），
+/// 而不是 [`active_routes`] —— 后者会回来取这把锁。
 fn with_manager<T>(f: impl FnOnce(&mut Option<Manager>) -> T) -> T {
     #[cfg(not(target_os = "windows"))]
     {

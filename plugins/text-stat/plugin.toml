@@ -26,6 +26,15 @@ execution_model = "js"
 filesystem_write = ["last-report.txt"]
 notifications = true
 
+# 插件自带翻译（可选段）。字段说明：
+#   source   插件源串的语言 tag（默认 zh-Hans）。本插件的中文文案就是源串。
+#   locales  随包分发的语言文件；缺省 = 自动发现 locales/*.toml。
+# 译文放 locales/<tag>.toml，键就是这里的中文源串（与宿主同一套写法）。
+# 注意：本段必须写在 [[tools]] **之前**——TOML 里 [[tools]] 之后的裸表会被
+# 并进最后一个 tools 元素，清单会解析失败。
+[i18n]
+source = "zh-Hans"
+
 [[tools]]
 id = "dev.duck.textstat.stats"
 name = "剪贴板统计"

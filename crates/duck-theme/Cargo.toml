@@ -9,6 +9,7 @@ description = "Duck Toolbox 主题层：token 快照与运行时装配。"
 gpui.workspace = true
 gpui-base.workspace = true
 gpui-component.workspace = true
+rust-i18n = "4"
 
 [dependencies.serde]
 workspace = true

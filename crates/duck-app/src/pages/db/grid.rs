@@ -1,5 +1,23 @@
 use super::*;
 
+/// 列模式（转置视图）的列宽拖拽载荷：只带**列下标**（0 = 名称，1 = 值，2 = 类型）。
+///
+/// 行模式网格的同类载荷（原先的 `ColResizeDrag`）已经随网格一起搬进公共数据表组件；
+/// 列模式仍是页面自己画的，所以它这份留在这里 —— 起拖的指针位置与起始列宽另存在
+/// [`DatabasePage::columns_mode_resize`]，因为那两样在 `on_drag` 的构造回调里拿不到
+/// 稳定值（它给的是元素内偏移，列宽一变就跟着变，用来算宽度会自激）。
+#[derive(Clone)]
+struct ColumnsModeResizeDrag {
+    col: usize,
+}
+
+impl Render for ColumnsModeResizeDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // 拖动期间跟手的是光标形状（`CursorStyle::ResizeColumn`），不需要拖影。
+        Empty
+    }
+}
+
 impl DatabasePage {
     /// 摘要「执行过程」里的**来源语句 chip**（dbx 的「SQL 结果」tag 同款）：单行化显示 + 左键复制。
     ///
@@ -346,9 +364,10 @@ impl DatabasePage {
                     return;
                 };
                 entity.update(cx, |this, cx| match this.mode {
-                    // 查询 = 客户端分页：改序号即刻生效。
+                    // 查询 = 客户端分页：改序号即刻生效（展示行序在组件那边，改完推一次）。
                     Mode::Query => {
                         this.query_page = target;
+                        this.sync_data_table_rows(cx);
                         cx.notify();
                     }
                     // 表浏览 = 服务器侧分页：**只走本页 / 下一页的既有路径**
@@ -520,22 +539,13 @@ impl DatabasePage {
         result.rows.get(index).map(Vec::as_slice)
     }
 
-    /// 当前结果每一列的宽度（缓存命中就用缓存，否则按内容现算）。
-    ///
-    /// 「字段筛选」与「跳转列」都要按**同一份**宽度算横向偏移，所以口径收在一处：
-    /// 两处各写一遍那句 `column_widths.len() == columns.len()` 的判断，漏一处就是
-    /// 「跳转到的位置差一列」这种只在特定结果集上才出现的 bug。
-    pub(super) fn result_widths(&self, result: &ResultSet) -> Vec<f32> {
-        if self.column_widths.len() == result.columns.len() {
-            self.column_widths.clone()
-        } else {
-            compute_column_widths(result)
-        }
-    }
-
     /// 切换某一列的显示 / 隐藏（结果区「字段筛选」）。
+    ///
+    /// 藏列同时影响**两处**：组件那边要重排列头与行（`set_hidden_names`），页面这边
+    /// 要按新的可见列重算搜索命中集 —— 两件事都收在 [`Self::sync_data_table_rows`] 里。
     pub(super) fn toggle_column_hidden(&mut self, column: &str, cx: &mut Context<Self>) {
         if self.hidden_columns.remove(column) {
+            self.sync_data_table_rows(cx);
             cx.notify();
             return;
         }
@@ -549,32 +559,29 @@ impl DatabasePage {
             return;
         }
         self.hidden_columns.insert(column.to_owned());
+        self.sync_data_table_rows(cx);
         cx.notify();
     }
 
     /// 把结果网格横向滚到某一列（结果区「跳转列」）。
     ///
-    /// 横向偏移 = 行首多选列宽 + 它前面各列的宽度之和（`widths` 不含多选列，
-    /// 见 [`SELECT_COLUMN_WIDTH`]）。纵向不动：这块区域只允许横向滚动
-    /// （`restrict_scroll_to_axis`），纵向那个句柄归行列表。
+    /// 横向偏移 = 行首两根固定柱（行号 + 多选）+ 它前面各列的宽度之和 —— 前缀和与
+    /// 滚动**都归组件**（[`DataTableState::scroll_to_column`] 用的是同一份列宽，
+    /// 不会与列头实际布局漂移）。纵向不动：这块区域只允许横向滚动。
     pub(super) fn jump_to_column(&mut self, index: usize, cx: &mut Context<Self>) {
-        // 借用先结束再写 `self` 的字段：`current_result()` 借的是 `&self`，
-        // 与后面的写入不能重叠。
-        let (offset, name) = {
+        // 借用先结束再写 `self`：`current_result()` 借的是 `&self`，与后面的
+        // `data_table.update` 不能重叠（虽然那只是 `&self`，但列名要活着带走）。
+        let name = {
             let Some(result) = self.current_result() else {
                 return;
             };
-            let Some(column) = result.columns.get(index) else {
-                return;
-            };
-            let widths = self.result_widths(result);
-            (
-                // 网格里数据列之前有两根固定柱：行号 + 多选框（见 `render_result`）。
-                ROWNUM_WIDTH + SELECT_COLUMN_WIDTH + widths.iter().take(index).sum::<f32>(),
-                column.name.clone(),
-            )
+            match result.columns.get(index) {
+                Some(column) => column.name.clone(),
+                None => return,
+            }
         };
-        self.result_x_scroll.set_offset(point(px(offset), px(0.)));
+        self.data_table
+            .update(cx, |state, cx| state.scroll_to_column(index, cx));
         self.status = trf(cx, "已定位到列「{}」。", &[&name]).into();
         cx.notify();
     }
@@ -628,6 +635,7 @@ impl DatabasePage {
                     .item(PopupMenuItem::new(show_all).on_click(move |_, _, cx| {
                         let _ = view.update(cx, |this, cx| {
                             this.hidden_columns.clear();
+                            this.sync_data_table_rows(cx);
                             cx.notify();
                         });
                     }))
@@ -678,6 +686,10 @@ impl DatabasePage {
     }
 
     /// 清空结果内搜索（切标签 / 换表时调用：旧词对新结果几乎必然失效）。
+    ///
+    /// 清空走的是 `set_value`，那是输入框自己的事件 —— 页面这条订阅里
+    /// `InputEvent::Change` 会把展示行序重推一遍（见 `shell.rs` 的 `result_search`
+    /// 订阅），所以这里不必也不该再推一次（推两次会白算两遍命中集）。
     pub(super) fn clear_result_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.result_search_text(cx).is_empty() {
             return;
@@ -690,8 +702,8 @@ impl DatabasePage {
 
     /// 结果区 tab 栏右端的「在结果中搜索」框（dbx resSearch 对位）。
     ///
-    /// 过滤是**客户端**的（[`matched_row_indexes`] 在渲染路径上现算命中集），
-    /// 输入框变字由订阅推一次重渲（`InputEvent::Change → cx.notify()`）。
+    /// 搜索是**客户端**的：命中集只搜可见列，算出来的是展示行序的输入 ——
+    /// 输入框变字由订阅推一次 [`Self::sync_data_table_rows`]，不在渲染路径上现算。
     /// 有词时在框尾给一枚清除按钮——搜索词藏在小框里，没有一键清除就得全选删除。
     pub(super) fn result_search_box(&self, cx: &Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
@@ -943,11 +955,11 @@ impl DatabasePage {
                         });
                     }
                 })
-                .on_drag(ColResizeDrag { col }, |drag, _, _, cx| {
+                .on_drag(ColumnsModeResizeDrag { col }, |drag, _, _, cx| {
                     cx.stop_propagation();
                     cx.new(|_| drag.clone())
                 })
-                .on_drag_move::<ColResizeDrag>({
+                .on_drag_move::<ColumnsModeResizeDrag>({
                     let view = view.clone();
                     move |event, _, cx| {
                         let dragged = event.drag(cx).col;
@@ -996,14 +1008,19 @@ impl DatabasePage {
 
         // 「字段筛选」藏起来的列不转置：网格 / 列 / JSON 三个视图看的是同一份结果，
         // 显示口径必须一致（否则「藏了一列，切到列模式它又冒出来」）。
-        let mut list = v_flex()
+        //
+        // 两层滚动：**外层**横向滚（表头与行区都是它的子项，天然共享同一份横向
+        // 偏移，不会错位），**内层**只有行区纵向滚 —— 表头固定不动（行模式网格
+        // 同款语义）。`restrict_scroll_to_axis` 锁轴：竖向滚轮归行区、横向手势归
+        // 外层，互不串扰（网格横向滚动区同款）。
+        let mut rows_list = v_flex()
             .id("db-result-columns")
             .flex_1()
             .min_h_0()
-            .min_w_0()
-            .overflow_x_scroll()
+            // 宽度钉成内容总宽：行区与表头同宽，外层按子项边界算可滚距离。
+            .w(px(total_width))
             .overflow_y_scroll()
-            .child(header);
+            .restrict_scroll_to_axis();
         for (index, column) in visible_columns(&result.columns, &self.hidden_columns) {
             let cell = row
                 .get(index)
@@ -1161,7 +1178,7 @@ impl DatabasePage {
                         }))
                     }
                 });
-            list = list.child(
+            rows_list = rows_list.child(
                 h_flex()
                     .w(px(total_width))
                     .flex_none()
@@ -1194,7 +1211,18 @@ impl DatabasePage {
                     ),
             );
         }
-        list.into_any_element()
+        // 外层横向滚动区：装下「表头 + 行区」，两者同一份横向偏移；表头 `flex_none`
+        // 不参与纵向滚动，行区在内层自己滚自己的。
+        v_flex()
+            .id("db-result-columns-x")
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_x_scroll()
+            .restrict_scroll_to_axis()
+            .child(header)
+            .child(rows_list)
+            .into_any_element()
     }
 
     /// JSON 模式：把当前行序列化成对象预览。
@@ -1567,76 +1595,27 @@ impl DatabasePage {
             .child(self.render_result_resbar(cx))
             .child(self.render_result_tabbar(cx))
             .children(self.render_result_error_banner(cx))
-            .child(div().flex_1().min_h_0().min_w_0().child(content));
+            // 同上：flex 容器，子项的 `flex_1` 才生效（摘要 / 消息 / 图表正文）。
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(content),
+            );
         if with_footer {
             panel = panel.child(self.render_result_footer(cx));
         }
         panel.into_any_element()
     }
 
-    /// 拖拽后的列宽写回缓存（按原始列下标；缓存没对齐当前结果集时先按内容补齐）。
-    pub(super) fn set_column_width(&mut self, col: usize, width: f32, cx: &mut Context<Self>) {
-        if self.column_widths.len() <= col {
-            self.column_widths = self
-                .current_result()
-                .map(compute_column_widths)
-                .unwrap_or_default();
-        }
-        if let Some(slot) = self.column_widths.get_mut(col)
-            && (*slot - width).abs() > f32::EPSILON
-        {
-            *slot = width;
-            cx.notify();
-        }
-    }
-
-    /// 双击列宽把手：按内容自适应该列（与初始估宽同一套采样口径）。
-    pub(super) fn auto_fit_column(&mut self, col: usize, cx: &mut Context<Self>) {
-        let Some(result) = self.current_result() else {
-            return;
-        };
-        if let Some(width) = compute_column_widths(result).get(col).copied() {
-            self.set_column_width(col, width, cx);
-        }
-    }
-
-    /// 列宽把手按下：记下起点（双击则改走「自适应」，不进入拖动态）。
-    pub(super) fn begin_col_resize(
-        &mut self,
-        col: usize,
-        position: gpui::Point<gpui::Pixels>,
-        click_count: usize,
-        cx: &mut Context<Self>,
-    ) {
-        if click_count >= 2 {
-            self.col_resize = None;
-            self.auto_fit_column(col, cx);
-            return;
-        }
-        let start_width = self
-            .column_widths
-            .get(col)
-            .copied()
-            .unwrap_or(COLUMN_MIN_WIDTH);
-        self.col_resize = Some((col, f32::from(position.x), start_width));
-    }
-
-    /// 拖动中：按位移改列宽（夹在上下限之间）。
-    pub(super) fn drag_col_resize(&mut self, col: usize, x: f32, cx: &mut Context<Self>) {
-        let Some((active, start_x, start_width)) = self.col_resize else {
-            return;
-        };
-        if active != col {
-            return;
-        }
-        let width = (start_width + (x - start_x)).clamp(COLUMN_MIN_WIDTH, COLUMN_RESIZE_MAX);
-        self.set_column_width(col, width, cx);
-    }
-
-    /// 松手 / 拖出：结束拖动态（列宽已经逐帧写进缓存，这里只清标记）。
-    pub(super) fn end_col_resize(&mut self) {
-        self.col_resize = None;
-    }
+    // 列宽的写回 / 自适应 / 拖拽（原先的 `set_column_width` / `auto_fit_column` /
+    // `begin_col_resize` / `drag_col_resize` / `end_col_resize`）已整体搬进公共数据表
+    // 组件（`DataTableState::set_width` / `begin_resize` / `drag_resize` / `end_resize`）。
+    // 页面不再持有列宽 —— 组件在**拖拽收尾**时经 `DataTableEvent::ColumnResized` 报
+    // 最终宽度（宿主将来要落盘时接这个事件即可）。
 
     /// 列模式：开始拖第 `col` 列（0 = 名称，1 = 值，2 = 类型）。
     pub(super) fn begin_columns_mode_resize(
@@ -1790,6 +1769,10 @@ impl DatabasePage {
                     h_flex()
                         .id(SharedString::from(format!("db-summary-col-{index}")))
                         .h(px(GRID_ROW_HEIGHT))
+                        // uniform_list 的行是 taffy 根节点：flex 根不会自动撑满可用
+                        // 宽度（只有 block 根会），不写 w_full 行就收缩成内容宽，
+                        // 固定列宽（类型 150 / 空值 90）与 `flex_1` 全部失效。
+                        .w_full()
                         .px(row_pad)
                         .items_center()
                         .gap(col_gap)
@@ -1917,6 +1900,9 @@ impl DatabasePage {
                     h_flex()
                         .id(SharedString::from(format!("db-exec-log-{index}")))
                         .h(px(GRID_ROW_HEIGHT))
+                        // 同 `db-summary-cols`：taffy flex 根不自动撑满，缺 w_full
+                        // 会让右侧耗时列跟着内容跑。
+                        .w_full()
                         .px(row_pad)
                         .items_center()
                         .gap(row_gap)
@@ -1957,10 +1943,6 @@ impl DatabasePage {
     pub(super) fn render_result(&self, cx: &Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
-        let extended = theme.extended();
-        let hover = extended.colors.hover_tint;
-        let selected_bg = extended.colors.nav_selected;
-        let tertiary = extended.colors.text_tertiary;
 
         if self.mode == Mode::Table && self.selected_table.is_none() {
             return empty_state(
@@ -2085,7 +2067,18 @@ impl DatabasePage {
             if let Some(bar) = plan_bar {
                 panel = panel.child(bar);
             }
-            panel = panel.child(div().flex_1().min_h_0().min_w_0().child(content));
+            // ⚠️ 这层包裹必须是 **flex 容器**（`div()` 默认 Block）：里面的滚动容器
+            // （列模式 / JSON）靠 `flex_1` 吃满剩余高度，Block 下它不生效 —— 内容
+            // 有多高容器就有多高，永远不溢出 = 永远不滚动，行还会直接画过脚注。
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(content),
+            );
             if self.mode == Mode::Query && self.query_has_more {
                 panel = panel.child(self.render_load_more_bar(cx));
             } else if result.truncated {
@@ -2107,864 +2100,10 @@ impl DatabasePage {
             return panel.into_any_element();
         }
 
-        let columns = result.columns.clone();
-        let rows = result.rows.clone();
-        let widths = self.result_widths(result);
-        // 「字段筛选」藏起来的列不进列头与行渲染。**只有渲染这一步过滤**：`widths`
-        // 与行数据仍按原始列序对齐，所以单元格取宽要用原始下标。
-        let visible = visible_columns(&columns, &self.hidden_columns);
-        // 结果内搜索：**客户端**过滤，只影响网格显示（多选 / 行编辑 / 导出仍按完整
-        // 行集，与「字段筛选」同一条口径）。命中集存**原始行下标**，网格按它取行。
-        let search_text = self.result_search_text(cx);
-        let matched = matched_row_indexes(&rows, &visible, &search_text);
-        // 客户端分页（查询模式，设计稿 grid-foot 的翻页组）：结果已整批加载，
-        // 按「每页行数」切片展示；表浏览本身是服务器侧分页，整页即一页。
-        // 切片存原始行下标——选中 / 勾选仍按原始下标，翻译只此一次。
-        let (page_rows, page_start) = if self.mode == Mode::Query {
-            let page_size = self.query_page_size(cx);
-            let start = (self.query_page * page_size).min(matched.len());
-            let end = (start + page_size).min(matched.len());
-            (matched[start..end].to_vec(), start)
-        } else {
-            (matched.clone(), 0)
-        };
-        let matched_count = page_rows.len();
-        let no_match = !search_text.is_empty() && matched.is_empty();
         let truncated = result.truncated;
-        let view = self.view.clone();
-        let selected_row = self.selected_row;
-        let row_count = rows.len();
-        // 多选态：表头三态由「勾了几行」推出来，行内是二态。
-        let checked_rows = self.checked_rows.clone();
-        let checked_count = checked_rows.len();
-        let all_checked = row_count > 0 && checked_count == row_count;
-        let header_state = if checked_count == 0 {
-            CheckState::Unchecked
-        } else if all_checked {
-            CheckState::Checked
-        } else {
-            CheckState::Indeterminate
-        };
-        // 网格闭包拿不到 `tokens`（跨入 'static），把用到的量提前拷出来。
-        let cell_pad = tokens.spacing.xs;
-        let cell_text = tokens.typography.sm.size;
-        let rownum_bg = extended.colors.chrome;
-        // 框线（dbx 同款：列间竖线 + 行间横线）与图标尺寸先拷成 `Copy` 值，
-        // uniform_list 的 `'static` 闭包拿不到 `extended`。
-        let hairline = extended.colors.hairline;
-        let thin = extended.stroke.thin;
-        let icon_sm = extended.icon.sm;
-        // 悬停 ⓘ / 就地编辑 ✓ 还要用：底色、圆角、间距、强调与成功色。
-        let surface_bg = tokens.colors.surface;
-        let radius_sm = tokens.radius.sm;
-        let cell_gap = tokens.spacing.xxs;
-        let hover_tint = extended.colors.hover_tint;
-        let success = extended.colors.success;
-        // 就地编辑态（dbx / dbflux 同款）：2px 强调描边 + 焦点环色、编辑行的
-        // 行号用「文本选区底色 + 强调色文字」点亮。先拷成 `Copy` 值带进
-        // `uniform_list` 的 `'static` 闭包（同上面 thin / hover_tint 的原因）。
-        let edit_strong = extended.stroke.strong;
-        let edit_ring = tokens.colors.ring;
-        let selection_bg = tokens.colors.selection;
-        let accent_text = extended.colors.accent_text;
-        // 就地编辑中的格子（行, 列, 输入框）：闭包拿不到 `self`，借用阶段先拷出来。
-        let cell_editing = self
-            .cell_editor
-            .as_ref()
-            .map(|editor| (editor.row, editor.col, editor.input.clone()));
-
-        // 列宽把手：贴着每列右缘的一条竖带（dbx / gpui-component Table 同款）。
-        //
-        // 绝对定位挂在**列头行**上，而不是塞进列头格：列头格自己有
-        // `overflow_x_hidden`（负责列名截断），嵌进去的把手会被它裁掉一半而够不着。
-        // 这组把手在 `.children()` 里**最后**追加 —— 绘制顺序靠后即优先接到拖拽，
-        // 否则列头格自己的「点一下排序」会把按下的那一下吃掉。
-        let header_view = view.clone();
-        let handle_widths = widths.clone();
-        let mut resize_offset = ROWNUM_WIDTH + SELECT_COLUMN_WIDTH;
-        let resize_handles = visible.iter().map(move |(index, column)| {
-            let width = handle_widths
-                .get(*index)
-                .copied()
-                .unwrap_or(COLUMN_MIN_WIDTH);
-            let left = resize_offset + width - COLUMN_RESIZE_HANDLE / 2.;
-            resize_offset += width;
-            let col = *index;
-            let view = header_view.clone();
-            div()
-                .id(SharedString::from(format!("db-col-resize-{}", column.name)))
-                .absolute()
-                .top_0()
-                .left(px(left))
-                .w(px(COLUMN_RESIZE_HANDLE))
-                .h(px(GRID_HEADER_HEIGHT))
-                .occlude()
-                .cursor(CursorStyle::ResizeColumn)
-                .on_mouse_down(MouseButton::Left, {
-                    let view = view.clone();
-                    move |event, _, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.begin_col_resize(col, event.position, event.click_count, cx);
-                        });
-                    }
-                })
-                .on_drag(ColResizeDrag { col }, |drag, _, _, cx| {
-                    // 别让这次按下再冒泡成「点列头排序」。
-                    cx.stop_propagation();
-                    cx.new(|_| drag.clone())
-                })
-                .on_drag_move::<ColResizeDrag>({
-                    let view = view.clone();
-                    move |event, _, cx| {
-                        // 拖拽载荷里带的是**真正在拖的那一列**：多列把手各自注册了
-                        // 同一个监听，用载荷的列号而不是闭包捕获的列号，才不会被
-                        // 光标掠过的邻列抢走。
-                        let dragged = event.drag(cx).col;
-                        let x = f32::from(event.event.position.x);
-                        let _ = view.update(cx, |this, cx| this.drag_col_resize(dragged, x, cx));
-                    }
-                })
-                .on_mouse_up_out(MouseButton::Left, {
-                    let view = view.clone();
-                    move |_, _, cx| {
-                        let _ = view.update(cx, |this, _| this.end_col_resize());
-                    }
-                })
-        });
-
-        let header = h_flex()
-            .relative()
-            .flex_none()
-            .h(px(GRID_HEADER_HEIGHT))
-            .bg(tokens.colors.surface)
-            .border_b(extended.stroke.thin)
-            .border_color(extended.colors.hairline)
-            .overflow_x_hidden()
-            // 行号列头（设计稿 rownum：`#`，底色比网格面深一档）。
-            .child(
-                div()
-                    .w(px(ROWNUM_WIDTH))
-                    .h(px(GRID_HEADER_HEIGHT))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(rownum_bg)
-                    .border_r(thin)
-                    .border_color(hairline)
-                    .text_size(tokens.typography.xs.size)
-                    .text_color(tokens.colors.muted_foreground)
-                    .child("#"),
-            )
-            .child(
-                div()
-                    .w(px(SELECT_COLUMN_WIDTH))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .border_r(thin)
-                    .border_color(hairline)
-                    .child(grid_checkbox(
-                        SharedString::from("db-select-all"),
-                        header_state,
-                        // 查询模式的客户端分页下勾的是**全部已加载行**（跨页），
-                        // 不再说「本页」——表浏览的整页即全部已加载，两种模式都成立。
-                        SharedString::from(tr(cx, "勾选全部行")),
-                        {
-                            let view = view.clone();
-                            move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| this.toggle_all_checked(cx));
-                            }
-                        },
-                        cx,
-                    )),
-            )
-            .children(visible.iter().map(|(index, column)| {
-                let sortable = self.mode == Mode::Table;
-                let arrow = if sortable {
-                    match self.table_sort.as_ref() {
-                        Some(spec) if spec.column == column.name && spec.descending => Some(" ↓"),
-                        Some(spec) if spec.column == column.name => Some(" ↑"),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                // 两行列头（设计稿 colhead）：上行列名（含排序箭头），下行类型。
-                let cell = div()
-                    .id(SharedString::from(format!("db-head-{}", column.name)))
-                    .w(px(widths.get(*index).copied().unwrap_or(COLUMN_MIN_WIDTH)))
-                    .flex_none()
-                    .px(tokens.spacing.xs)
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .overflow_x_hidden()
-                    .border_r(thin)
-                    .border_color(hairline)
-                    .text_size(tokens.typography.xs.size)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(tokens.colors.muted_foreground)
-                    .child(div().flex_none().truncate().child(match arrow {
-                        Some(arrow) => SharedString::from(format!("{}{arrow}", column.name)),
-                        None => SharedString::from(column.name.clone()),
-                    }))
-                    // 类型行：引擎报什么画什么；拿不到类型就只画一行，别摆空档。
-                    .when(!column.type_name.is_empty(), |cell| {
-                        cell.child(
-                            div()
-                                .flex_none()
-                                .truncate()
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(tertiary)
-                                .child(SharedString::from(column.type_name.clone())),
-                        )
-                    });
-                if !sortable {
-                    // SQL 结果集的列头不可排：那块内容由用户自己的 ORDER BY 决定，
-                    // 界面上再加一层排序会与语句里的写法打架。
-                    return cell.into_any_element();
-                }
-                // 列头点一次「升 → 降 → 取消」；排序在服务器侧做（见 [`page_order`]）。
-                let name = column.name.clone();
-                cell.cursor_pointer()
-                    .role(Role::Button)
-                    .aria_label(SharedString::from(trf(cx, "按 {} 排序", &[&column.name])))
-                    .hover(move |style| style.bg(hover))
-                    .on_click({
-                        let view = view.clone();
-                        move |_, _, cx| {
-                            let name = name.clone();
-                            let _ = view.update(cx, |this, cx| this.toggle_table_sort(&name, cx));
-                        }
-                    })
-                    // 列头右键：直接定序 / 预选过滤列 / 复制列名（DBX / TablePlus 的
-                    // 标准列头菜单；「筛选」只是把草稿列填上，仍要点「添加」生效）。
-                    .context_menu({
-                        let view = view.clone();
-                        let menu_name = column.name.clone();
-                        let asc_label = trf(cx, "按 {} 升序", &[&column.name]).to_string();
-                        let desc_label = trf(cx, "按 {} 降序", &[&column.name]).to_string();
-                        let filter_label = trf(cx, "筛选「{}」", &[&column.name]).to_string();
-                        let copy_label = tr(cx, "复制列名");
-                        let copied_note = tr(cx, "已复制列名。");
-                        move |menu, _, _| {
-                            let asc_view = view.clone();
-                            let asc_name = menu_name.clone();
-                            // 菜单闭包是 `Fn`（右键一次构建一次）：String 标签只许
-                            // 借出克隆，不许搬走（`&'static str` 的文案是 Copy，无此约束）。
-                            let mut menu = menu
-                                .item(PopupMenuItem::new(asc_label.clone()).on_click(
-                                    move |_, _, cx| {
-                                        let Some(entity) = asc_view.upgrade() else {
-                                            return;
-                                        };
-                                        entity.update(cx, |this, cx| {
-                                            this.sort_table_by(&asc_name, false, cx);
-                                        });
-                                    },
-                                ))
-                                .item(PopupMenuItem::new(desc_label.clone()).on_click({
-                                    let view = view.clone();
-                                    let desc_name = menu_name.clone();
-                                    move |_, _, cx| {
-                                        let Some(entity) = view.upgrade() else {
-                                            return;
-                                        };
-                                        entity.update(cx, |this, cx| {
-                                            this.sort_table_by(&desc_name, true, cx);
-                                        });
-                                    }
-                                }));
-                            let filter_view = view.clone();
-                            let filter_name = menu_name.clone();
-                            menu = menu
-                                .item(PopupMenuItem::new(filter_label.clone()).on_click(
-                                    move |_, _, cx| {
-                                        let Some(entity) = filter_view.upgrade() else {
-                                            return;
-                                        };
-                                        entity.update(cx, |this, cx| {
-                                            this.draft_filter_column(&filter_name, cx);
-                                        });
-                                    },
-                                ))
-                                .separator();
-                            let copy_view = view.clone();
-                            let copy_name = menu_name.clone();
-                            menu.item(PopupMenuItem::new(copy_label).on_click(move |_, _, cx| {
-                                let Some(entity) = copy_view.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    this.put_on_clipboard(copy_name.clone(), copied_note, cx);
-                                });
-                            }))
-                        }
-                    })
-                    .into_any_element()
-            }))
-            // 列宽把手最后追加：绘制顺序靠后 = 优先接到拖拽。
-            .children(resize_handles);
-
-        // 单元格右键菜单（网格**唯一**一层）的「复制 ▸」档位：文案与可插入判定都在
-        // 渲染期取好 —— `cx` 与 `self` 都进不了 `'static` 菜单闭包，闭包里只搬
-        // 「档位 + 文案」对与两个 `Copy` 值。
-        let copy_items: Vec<(ResultFormat, &'static str)> = ResultFormat::ALL
-            .iter()
-            .map(|format| (*format, format.copy_label(cx)))
-            .collect();
-        let can_insert = self.insert_context().is_some();
-
-        let grid = uniform_list(
-            "db-result-grid",
-            // 搜索 + 客户端分页后的**本页行**：`page_rows` 把「列表下标」翻译回原始行
-            // 下标（选中 / 勾选都仍用原始下标，闭包里不许再换算一次）。
-            matched_count.max(1),
-            move |range, _window, cx| {
-                range
-                    .filter_map(|vis_index| {
-                        let index = *page_rows.get(vis_index)?;
-                        let row = rows.get(index)?;
-                        let selected = selected_row == Some(index);
-                        let checked = checked_rows.contains(&index);
-                        // 这一行是否正在就地编辑（行号格要跟着点亮，见下面 rownum）。
-                        let editing_row =
-                            cell_editing.as_ref().map(|(row, _, _)| *row) == Some(index);
-                        // 右键菜单闭包 `'static`：整行文本在这里备好（单元格菜单的
-                        // 「复制整行」用；行级菜单已并入单元格菜单，见下面）。
-                        let row_text = row_as_tsv(row);
-                        Some(
-                            h_flex()
-                                .id(SharedString::from(format!("db-row-{index}")))
-                                .h(px(GRID_ROW_HEIGHT))
-                                .w_full()
-                                .flex_none()
-                                .items_center()
-                                .overflow_x_hidden()
-                                // 行框线（dbx 同款：每行一条底线，格与行不再糊成一片）。
-                                .border_b(thin)
-                                .border_color(hairline)
-                                .when(selected, |row| row.bg(selected_bg))
-                                .hover(move |style| style.bg(hover))
-                                .on_click({
-                                    let view = view.clone();
-                                    move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                        let Some(entity) = view.upgrade() else {
-                                            return;
-                                        };
-                                        // 单击 = 选中这一行；**双击**才进编辑（dbx 同款：
-                                        // 选中与编辑是两步，单击开弹窗等于把浏览打断成编辑）。
-                                        // 单元格上的点击在内层已 `stop_propagation`，走不到这。
-                                        let clicks = match event {
-                                            ClickEvent::Mouse(mouse) => mouse.up.click_count,
-                                            ClickEvent::Touch(tap) => tap.tap_count,
-                                            ClickEvent::Keyboard(_) => 1,
-                                        };
-                                        if clicks <= 1 {
-                                            let _ = view.update(cx, |this, cx| {
-                                                this.selected_row = Some(index);
-                                                cx.notify();
-                                            });
-                                            return;
-                                        }
-                                        // 双击：只读借用阶段取数据，随后构造输入框实体。
-                                        let specs = entity.read(cx).row_editor_specs(index);
-                                        let cells = specs.map(|columns| {
-                                            columns
-                                                .into_iter()
-                                                .map(|(column, original, was_null)| {
-                                                    let input = cx.new(|cell_cx| {
-                                                        InputState::new(&mut *window, cell_cx)
-                                                    });
-                                                    // 原值回填：编辑器的起点就是「库里现在是什么」。
-                                                    if !was_null {
-                                                        input.update(cx, |state, cx| {
-                                                            state.set_value(
-                                                                original.clone(),
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        });
-                                                    }
-                                                    RowCell {
-                                                        column,
-                                                        original,
-                                                        was_null,
-                                                        input,
-                                                        null: Rc::new(std::cell::Cell::new(false)),
-                                                    }
-                                                })
-                                                .collect()
-                                        });
-                                        let _ = view.update(cx, |this, cx| {
-                                            this.selected_row = Some(index);
-                                            this.row_editor = cells.map(|cells| RowEditor {
-                                                row_index: Some(index),
-                                                cells,
-                                            });
-                                            cx.notify();
-                                        });
-                                    }
-                                })
-                                // 行号列（设计稿 rownum）：显示**结果里的绝对序号**——
-                                // 客户端分页翻到第 2 页从 201 起编，跟「第几行数据」一致。
-                                // 正在就地编辑的行，行号跟着点亮（dbx 同款：编辑态
-                                // 不止落在格子上，行号也参与指位）。
-                                .child(
-                                    div()
-                                        .w(px(ROWNUM_WIDTH))
-                                        .h(px(GRID_ROW_HEIGHT))
-                                        .flex_none()
-                                        .flex()
-                                        .items_center()
-                                        .justify_end()
-                                        .px(cell_pad)
-                                        .bg(if editing_row {
-                                            selection_bg
-                                        } else {
-                                            rownum_bg
-                                        })
-                                        .border_r(thin)
-                                        .border_color(hairline)
-                                        .text_size(cell_text)
-                                        .text_color(if editing_row {
-                                            accent_text
-                                        } else {
-                                            tertiary
-                                        })
-                                        .child(SharedString::from(
-                                            (page_start + vis_index + 1).to_string(),
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(SELECT_COLUMN_WIDTH))
-                                        .flex_none()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .border_r(thin)
-                                        .border_color(hairline)
-                                        .child(grid_checkbox(
-                                            SharedString::from(format!("db-select-{index}")),
-                                            if checked {
-                                                CheckState::Checked
-                                            } else {
-                                                CheckState::Unchecked
-                                            },
-                                            SharedString::from(format!("第 {} 行", index + 1)),
-                                            {
-                                                let view = view.clone();
-                                                move |_, _, cx| {
-                                                    // 勾选框是行内的独立点击目标：
-                                                    // 不拦一下，点它会把「选中这一行」
-                                                    // （右侧行编辑器）也一起触发。
-                                                    cx.stop_propagation();
-                                                    let _ = view.update(cx, |this, cx| {
-                                                        this.toggle_row_checked(index, cx);
-                                                    });
-                                                }
-                                            },
-                                            cx,
-                                        )),
-                                )
-                                // 行级右键菜单已并入**单元格**菜单（复制单元格 / 复制整行 /
-                                // 复制全部 / 单元格详情）：gpui-component 的 `ContextMenu`
-                                // 右键处理不截停冒泡，行与格两层嵌套会各弹一份叠在一起 ——
-                                // 网格里只留最内一层（行号 / 勾选列右键无菜单，dbx 同款语义
-                                // 是「菜单只挂在数据格上」）。
-                                .children(visible.iter().filter_map(|(cell_index, _column)| {
-                                    // 藏起来的列直接跳过；取宽仍用**原始**列下标
-                                    //（`widths` 按完整列序对齐，见上面 `visible` 的定义）。
-                                    let cell_index = *cell_index;
-                                    let cell = row.get(cell_index)?;
-                                    // 右键菜单的闭包是 `'static`：单元格文本先取出来带走。
-                                    let cell_value = cell.render();
-                                    let null_cell = cell.is_null();
-                                    let copy_cell_label = tr(cx, "复制单元格");
-                                    let copied_cell_note = tr(cx, "已复制单元格。");
-                                    // 行级菜单并入单元格菜单后多出来的文案。
-                                    let copy_row_label = tr(cx, "复制整行");
-                                    let copied_row_note = tr(cx, "已复制该行。");
-                                    // 「复制 ▸」的父项文案跟着选区走（dbx 同款：复制永远
-                                    // 作用于选区）—— 勾选行优先，其次单击选中的行，都没有
-                                    // 才整份结果。文案让目标一眼可辨，不再有「选中一行却
-                                    // 复制了整页」的错位。
-                                    let submenu_label: SharedString = if !checked_rows.is_empty()
-                                    {
-                                        trf(
-                                            cx,
-                                            "复制所选 {} 行",
-                                            &[&checked_rows.len().to_string()],
-                                        )
-                                        .into()
-                                    } else if selected_row.is_some() {
-                                        tr(cx, "复制选中行").into()
-                                    } else {
-                                        tr(cx, "复制全部").into()
-                                    };
-                                    let detail_label = tr(cx, "单元格详情");
-                                    // 就地编辑中的这一格：正文换成输入框（双击进入，
-                                    // 回车提交 —— 订阅在 `install_cell_editor` 里挂着）。
-                                    let editing_input = cell_editing.as_ref().and_then(
-                                        |(edit_row, edit_col, input)| {
-                                            (*edit_row == index
-                                                && *edit_col == cell_index)
-                                                .then(|| input.clone())
-                                        },
-                                    );
-                                    Some(
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "db-cell-{index}-{cell_index}"
-                                            )))
-                                            .w(px(widths
-                                                .get(cell_index)
-                                                .copied()
-                                                .unwrap_or(COLUMN_MIN_WIDTH)))
-                                            .flex_none()
-                                            .px(cell_pad)
-                                            .flex()
-                                            .items_center()
-                                            .overflow_x_hidden()
-                                            .text_size(cell_text)
-                                            .line_height(px(GRID_ROW_HEIGHT))
-                                            // 格框线（dbx 同款：列与列之间一条竖线）。
-                                            .border_r(thin)
-                                            .border_color(hairline)
-                                            .when_some(editing_input.clone(), |cell, input| {
-                                                // 就地编辑的**整格**视觉（dbx / dbflux 同款）：
-                                                // 2px 强调描边框住整格 + 提亮底色 —— 输入框
-                                                // 本身 appearance(false)，没有这层框的话编辑态
-                                                // 和普通格几乎没差别，用户看不出「已经进编辑」。
-                                                // 后写的 `.border` 覆盖上面按边的 `border_r`。
-                                                let view = view.clone();
-                                                cell.bg(surface_bg)
-                                                    .border(edit_strong)
-                                                    .border_color(edit_ring)
-                                                    .child(
-                                                    h_flex()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .gap(cell_gap)
-                                                        .child(
-                                                            Input::new(&input)
-                                                                .appearance(false)
-                                                                .with_size(Size::Small)
-                                                                .flex_1()
-                                                                .min_w_0(),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .id(SharedString::from(format!(
-                                                                    "db-cell-commit-{index}-{cell_index}"
-                                                                )))
-                                                                .flex_none()
-                                                                .flex()
-                                                                .items_center()
-                                                                .justify_center()
-                                                                .w(px(18.))
-                                                                .h(px(18.))
-                                                                .rounded(radius_sm)
-                                                                .cursor_pointer()
-                                                                .role(Role::Button)
-                                                                .aria_label(tr(cx, "提交"))
-                                                                .hover(move |style| style.bg(hover_tint))
-                                                                .on_click({
-                                                                    let view = view.clone();
-                                                                    move |_, _, cx| {
-                                                                        cx.stop_propagation();
-                                                                        let Some(entity) =
-                                                                            view.upgrade()
-                                                                        else {
-                                                                            return;
-                                                                        };
-                                                                        entity.update(cx, |this, cx| {
-                                                                            this.commit_cell_edit(cx);
-                                                                        });
-                                                                    }
-                                                                })
-                                                                .child(
-                                                                    Icon::new(DuckIcon::Check)
-                                                                        .size(icon_sm)
-                                                                        .text_color(success),
-                                                                ),
-                                                        ),
-                                                )
-                                            })
-                                            .when(editing_input.is_none(), |cell| {
-                                                // 悬停 ⓘ（dbx 同款）：详情入口**贴在每格上**，
-                                                // 平时隐形、悬停所在格才现身（0 / 1 是显隐
-                                                // 开关，不是透明档位；`group` 与 `group_hover`
-                                                // 必须成对，组名带行列号防串格）。
-                                                let group = SharedString::from(format!(
-                                                    "db-cell-group-{index}-{cell_index}"
-                                                ));
-                                                cell.group(group.clone())
-                                                    .relative()
-                                                    .child(
-                                                        div()
-                                                            .truncate()
-                                                            .when(null_cell, |text| {
-                                                                text.text_color(tertiary)
-                                                            })
-                                                            .child(cell_value.clone()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .id(SharedString::from(format!(
-                                                                "db-cell-info-{index}-{cell_index}"
-                                                            )))
-                                                            .absolute()
-                                                            .right(px(2.))
-                                                            .top(px(0.))
-                                                            .bottom(px(0.))
-                                                            .flex()
-                                                            .items_center()
-                                                            .cursor_pointer()
-                                                            .opacity(0.)
-                                                            .group_hover(group, |style| {
-                                                                style.opacity(1.)
-                                                            })
-                                                            .role(Role::Button)
-                                                            .aria_label(detail_label)
-                                                            .tooltip({
-                                                                let tip = SharedString::from(detail_label);
-                                                                move |window, cx| {
-                                                                    Tooltip::new(tip.clone())
-                                                                        .build(window, cx)
-                                                                }
-                                                            })
-                                                            .on_click({
-                                                                let view = view.clone();
-                                                                move |_, _, cx| {
-                                                                    cx.stop_propagation();
-                                                                    let Some(entity) = view.upgrade()
-                                                                    else {
-                                                                        return;
-                                                                    };
-                                                                    entity.update(cx, |this, cx| {
-                                                                        this.open_cell_detail(
-                                                                            index, cell_index, cx,
-                                                                        );
-                                                                    });
-                                                                }
-                                                            })
-                                                            .child(
-                                                                div()
-                                                                    .flex()
-                                                                    .items_center()
-                                                                    .justify_center()
-                                                                    .w(px(18.))
-                                                                    .h(px(18.))
-                                                                    .rounded(radius_sm)
-                                                                    .bg(surface_bg)
-                                                                    .child(
-                                                                        Icon::new(DuckIcon::Info)
-                                                                            .size(icon_sm)
-                                                                            .text_color(tertiary),
-                                                                    ),
-                                                            ),
-                                                    )
-                                            })
-                                            // 单击选中这一格（ⓘ 的详情指向）；双击就地编辑。
-                                            // 不拦一下，点击会先落到「选中这一行」上。
-                                            .on_click({
-                                                let view = view.clone();
-                                                move |event: &ClickEvent,
-                                                      window: &mut Window,
-                                                      cx: &mut App| {
-                                                    cx.stop_propagation();
-                                                    let Some(entity) = view.upgrade() else {
-                                                        return;
-                                                    };
-                                                    let double = match event {
-                                                        ClickEvent::Mouse(mouse) => {
-                                                            mouse.up.click_count > 1
-                                                        }
-                                                        ClickEvent::Touch(tap) => tap.tap_count > 1,
-                                                        ClickEvent::Keyboard(_) => false,
-                                                    };
-                                                    let prep = if double {
-                                                        entity.read(cx).cell_editor_prep(
-                                                            index, cell_index,
-                                                        )
-                                                    } else {
-                                                        None
-                                                    };
-                                                    let Some((original, was_null)) = prep else {
-                                                        let _ = view.update(cx, |this, cx| {
-                                                            this.selected_row = Some(index);
-                                                            this.cell_detail =
-                                                                Some((index, cell_index));
-                                                            cx.notify();
-                                                        });
-                                                        return;
-                                                    };
-                                                    // 结果集不可编辑就明说，不摆空编辑框。
-                                                    if entity.read(cx).edit_source().is_none() {
-                                                        notify::info(
-                                                            tr(cx, "当前结果集不可编辑（需要单表 + 主键）。"),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                        return;
-                                                    }
-                                                    let input = cx.new(|cell_cx| {
-                                                        InputState::new(&mut *window, cell_cx)
-                                                    });
-                                                    if !was_null {
-                                                        let seed = original.clone();
-                                                        input.update(cx, |state, cx| {
-                                                            state.set_value(seed, window, cx);
-                                                        });
-                                                    }
-                                                    // dbx / dbflux 同款：进编辑即聚焦 + **全选**
-                                                    // ——高亮选区本身就是「输入框已接管这一格」
-                                                    // 的视觉信号，直接打字即可整格覆盖。
-                                                    input.update(cx, |state, cx| {
-                                                        state.focus(window, cx);
-                                                        state.select_all(window, cx);
-                                                    });
-                                                    let _ = view.update(cx, |this, cx| {
-                                                        this.selected_row = Some(index);
-                                                        this.cell_detail = Some((index, cell_index));
-                                                        this.install_cell_editor(
-                                                            index, cell_index, original, was_null,
-                                                            input, cx,
-                                                        );
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            })
-                                            .context_menu({
-                                                // **网格唯一的一层右键菜单**（dbx 同款：一个弹层
-                                                // 入口，内容按目标合成）。行级菜单并到了这里，
-                                                // 面板层的「复制为 …」收进「复制 ▸」子菜单 ——
-                                                // 组件库的 ContextMenu 不截停冒泡，两层嵌套
-                                                // 会各弹一份叠在一起（外层还盖在内层上面）。
-                                                let view = view.clone();
-                                                let row_text = row_text.clone();
-                                                let copy_items = copy_items.clone();
-                                                move |menu, window, cx| {
-                                                    let view = view.clone();
-                                                    let text = cell_value.clone();
-                                                    let row_text = row_text.clone();
-                                                    let all_view = view.clone();
-                                                    let detail_view = view.clone();
-                                                    let cell_view = view.clone();
-                                                    let items = copy_items.clone();
-                                                    // 「复制 ▸」子菜单：一次拿走**全部**行。文本
-                                                    // 在点某档的那一刻才按当前结果集渲染（一万行
-                                                    // 也不在渲染路径上白白拼几百 KB）。
-                                                    let copy_menu = PopupMenu::build(
-                                                        window,
-                                                        cx,
-                                                        |menu, _, _| {
-                                                            items.iter().fold(menu, |menu, (format, label)| {
-                                                                let enabled = format.exportable(
-                                                                    true, can_insert, false,
-                                                                );
-                                                                menu.item(
-                                                                    PopupMenuItem::new(*label)
-                                                                        .disabled(!enabled)
-                                                                        .on_click({
-                                                                            let view =
-                                                                                all_view.clone();
-                                                                            let format = *format;
-                                                                            move |_, _, cx| {
-                                                                                let Some(entity) =
-                                                                                    view.upgrade()
-                                                                                else {
-                                                                                    return;
-                                                                                };
-                                                                                entity.update(
-                                                                                    cx, |this, cx| {
-                                                                                        this.copy_result_as(
-                                                                                            format, cx,
-                                                                                        );
-                                                                                    },
-                                                                                );
-                                                                            }
-                                                                        }),
-                                                                )
-                                                            })
-                                                        },
-                                                    );
-                                                    menu.item(
-                                                        PopupMenuItem::new(copy_cell_label)
-                                                            .on_click(move |_, _, cx| {
-                                                                let Some(entity) = cell_view.upgrade()
-                                                                else {
-                                                                    return;
-                                                                };
-                                                                entity.update(cx, |this, cx| {
-                                                                    this.put_on_clipboard(
-                                                                        text.clone(),
-                                                                        copied_cell_note,
-                                                                        cx,
-                                                                    );
-                                                                });
-                                                            }),
-                                                    )
-                                                    // 整行一条 TSV，粘进表格软件就是一整行单元格。
-                                                    .item(
-                                                        PopupMenuItem::new(copy_row_label)
-                                                            .on_click({
-                                                                let view = view.clone();
-                                                                move |_, _, cx| {
-                                                                    let Some(entity) = view.upgrade()
-                                                                    else {
-                                                                        return;
-                                                                    };
-                                                                    entity.update(cx, |this, cx| {
-                                                                        this.put_on_clipboard(
-                                                                            row_text.clone(),
-                                                                            copied_row_note,
-                                                                            cx,
-                                                                        );
-                                                                    });
-                                                                }
-                                                            }),
-                                                    )
-                                                    .item(PopupMenuItem::submenu(
-                                                        // 菜单闭包是 `Fn`（每次右键重建一次）：
-                                                        // 标题只许借出克隆，不许搬走。
-                                                        submenu_label.clone(),
-                                                        copy_menu,
-                                                    ))
-                                                    .item(
-                                                        PopupMenuItem::new(detail_label).on_click(
-                                                            move |_, _, cx| {
-                                                                let Some(entity) =
-                                                                    detail_view.upgrade()
-                                                                else {
-                                                                    return;
-                                                                };
-                                                                entity.update(cx, |this, cx| {
-                                                                    this.open_cell_detail(
-                                                                        index, cell_index, cx,
-                                                                    );
-                                                                });
-                                                            },
-                                                        ),
-                                                    )
-                                                }
-                                            }),
-                                    )
-                                }))
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            },
-        )
-        .flex_1()
-        .min_h_0()
-        // 纵向滚动句柄交给页面持有（跨帧持久）：纵向滚动条从它读位置 ——
-        // 滚动时现身、停下淡出（[`ScrollbarMode::Scrolling`]，见 overlay 处）。
-        .track_scroll(&self.result_v_scroll);
+        // 网格主体（列切片 + 列头 / 列宽把手 + 行列表）已单独成方法 `render_result_grid`：
+        // 本函数只剩「守卫 + 面板拼装」两段。
+        let content = self.render_result_grid(result, cx);
 
         let mut panel = v_flex()
             .flex_1()
@@ -3000,78 +2139,15 @@ impl DatabasePage {
         if self.mode == Mode::Table {
             panel = panel.child(self.render_filter_bar(cx));
         }
-        // 列宽之和经常超过视口（宽表 / 窄窗口 / 多列结果集）：把「列头 + 行网格」
-        // 装进同一个横向滚动区，两者共用一份横向偏移，滚动时不会错位。行与单元格
-        // 各自仍有 `overflow_x_hidden`（负责单元格内截断），所以溢出必须在这里被
-        // 滚动消化掉，否则右侧列会被整块裁掉、连滚动条都没有。
+        // 列宽之和经常超过视口（宽表 / 窄窗口 / 多列结果集）：表头与行区装进**同一个**
+        // 横向滚动容器、共用一份横向偏移，滚动时不会错位。
         //
-        // 滚动条**常驻**（`ScrollbarMode::Always`）：gpui-component 的
-        // `overflow_x_scrollbar` 包装器不透出 mode，档位走主题投影 = Hover
-        // （悬停才现身）——数据网格里等于没有可发现的滚动条。Scrollbar 自己会在
-        // 无溢出时隐藏（gpui-base scrollbar.rs「Hide scrollbar, if the scroll area
-        // is smaller than the container」），不会摆一条死轨道。
-        //
-        // `restrict_scroll_to_axis` 锁轴：竖向滚轮只归行列表纵向滚动，不会被映射
-        // 成横向滚动；横向靠触控板横扫、Shift+滚轮或拖这条滚动条。
-        // 过滤条 / 编辑条 / 批量条 / 翻页条留在滚动区外，保持固定（同主流数据库客户端）。
-        let content = v_flex()
-            .flex_none()
-            .w_auto()
-            .min_w_full()
-            .child(header)
-            // 搜了个词却一行没中：必须明说，否则「空网格」与「查询返回了 0 行」
-            // 分不清（前者清掉搜索词就有数据）。
-            .when(no_match, |content| {
-                content.child(
-                    div()
-                        .flex_none()
-                        .px(tokens.spacing.sm)
-                        .py(tokens.spacing.xs)
-                        .child(meta_text(
-                            trf(cx, "没有命中「{}」的行。", &[&search_text]),
-                            cx,
-                        )),
-                )
-            })
-            .child(grid);
-        panel = panel.child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .relative()
-                .child(
-                    div()
-                        .id("db-result-x-area")
-                        .size_full()
-                        .flex()
-                        .flex_row()
-                        .overflow_x_scroll()
-                        .restrict_scroll_to_axis()
-                        .track_scroll(&self.result_x_scroll)
-                        .child(content),
-                )
-                .child(
-                    div().absolute().inset_0().child(
-                        Scrollbar::horizontal(&self.result_x_scroll)
-                            .id("db-result-x-scrollbar")
-                            .mode(ScrollbarMode::Always)
-                            .viewport_from_layout(),
-                    ),
-                )
-                // 纵向滚动条（用户反馈：侧边滚动条要在滚动时显示）：档位
-                // [`ScrollbarMode::Scrolling`] = 滚动时现身、停下淡出 —— 数据
-                // 网格行多，常驻太重、悬停才现身又等于不可发现，滚动态是
-                // dbx / 主流客户端的折衷。句柄是 `uniform_list` 自己的
-                // （见上面 `track_scroll`），无溢出时 Scrollbar 自己隐藏。
-                .child(
-                    div().absolute().inset_0().child(
-                        Scrollbar::vertical(self.result_v_scroll.as_ref())
-                            .id("db-result-v-scrollbar")
-                            .mode(ScrollbarMode::Scrolling),
-                    ),
-                ),
-        );
+        // ⚠️ 这一层（横向滚动容器 + 常驻横向滚动条 + 滚动态纵向滚动条 + 固定列头 +
+        // 行虚拟化）现在**整体由公共数据表组件提供**（`duck_components::data_table`），
+        // 页面只要把 `content` 交过去 —— 再包一层就是两层横向滚动，滚动条会打架，
+        // 表头也会跟着滚走。过滤条 / 编辑条 / 批量条 / 翻页条仍留在滚动区外（固定，
+        // 同主流数据库客户端），见下面几行。
+        panel = panel.child(content);
         // 截断提示与「加载更多」互斥，口径一致：能续拉就给按钮，不能续拉才如实说「只展示了前一部分」。
         if self.mode == Mode::Query && self.query_has_more {
             panel = panel.child(self.render_load_more_bar(cx));
@@ -3097,6 +2173,446 @@ impl DatabasePage {
         // 的却是外层的「复制为 TSV」，整页结果进了剪贴板）。「复制全部」已并入单元格
         // 菜单（`ResultFormat::Tsv` 一档），其余格式走脚注「导出」落盘。
         panel.into_any_element()
+    }
+
+    /// 结果网格主体：把宿主的展示态交给**公共数据表组件**
+    ///（`duck_components::data_table`）。
+    ///
+    /// 这里只组装三样东西就返回 —— 几何、虚拟化、两条滚动条、固定列头都在组件里：
+    ///
+    /// | 传入 | 内容 |
+    /// | --- | --- |
+    /// | [`DataTableView`] | 宿主真源：选中行 / 勾选集 / 排序态 / 就地编辑器 / 空态提示 |
+    /// | [`DataTableLabels`] | 界面文案（组件自身不含文案，`tr` 的结果在这里注入） |
+    /// | [`DataTableHooks`] | 只有「要窗口的交互」走闭包：右键菜单内容、双击开编辑器 |
+    ///
+    /// 表模型 / 列宽 / 藏列 / 展示行序早就在 [`Self::sync_data_table`] 里推给组件了
+    ///（结果、搜索、分页、藏列一变各推一次），所以这条渲染路径上**没有任何逐帧计算**
+    /// —— 这正是「行再多也不卡」的口径：每帧只碰可见的几十行。
+    pub(super) fn render_result_grid(&self, result: &ResultSet, cx: &Context<Self>) -> AnyElement {
+        // 组件里的模型必须正是这一次要画的结果：不同步 = 画面与数据对不上。
+        // 开发期约束，不是用户可见文案（panic 消息写英文）。
+        debug_assert!(
+            self.current_result()
+                .is_some_and(|current| std::ptr::eq(current, result)),
+            "data table component was not synced to the result being rendered"
+        );
+        // 本帧要用的宿主真源：都是小值 / 借用（`'static` 那份由组件自己拷）。
+        let sort = self.table_sort.as_ref();
+        let editing = self.cell_editor.as_ref();
+        let view = DataTableView {
+            selected_row: self.selected_row,
+            checked: Some(&self.checked_rows),
+            // SQL 结果集的列头不可排：那块内容由用户自己的 `ORDER BY` 决定，界面上
+            // 再加一层排序会与语句里的写法打架（只有表浏览才可点列头排序）。
+            sortable: self.mode == Mode::Table,
+            sort_column: sort.map(|spec| spec.column.as_str()),
+            sort_descending: sort.is_some_and(|spec| spec.descending),
+            editing: editing.map(|editor| CellPos::new(editor.row, editor.col)),
+            editing_input: editing.map(|editor| editor.input.clone()),
+            empty_hint: self.result_empty_hint(cx),
+        };
+        let labels = self.data_table_labels(cx);
+        let hooks = self.data_table_hooks();
+        data_table(
+            "db-result-grid",
+            &self.data_table,
+            &view,
+            &labels,
+            &hooks,
+            cx,
+        )
+    }
+
+    /// 「搜了个词却一行没中」的提示文案。
+    ///
+    /// 组件只在**展示行序为空**时渲染它，所以这里只要如实回答「有没有在搜」——
+    /// 绝不在渲染路径上重算命中集（那是 O(行 × 列)，正是要消灭的那种逐帧开销）。
+    fn result_empty_hint(&self, cx: &App) -> Option<SharedString> {
+        let text = self.result_search_text(cx);
+        (!text.is_empty()).then(|| trf(cx, "没有命中「{}」的行。", &[&text]).into())
+    }
+
+    /// 组件里的用户可见文案。
+    ///
+    /// `duck-components` 的口径是**组件不含任何界面文案**（i18n 守卫扫得到），所以
+    /// `tr` 留在宿主；动态部分用 `{}` 模板交进去，组件按出现顺序填 —— 行勾选框的名字
+    /// 就是「第 {} 行」+ 行号（这比原来自拼的 `format!` 强：那个串永远只有中文）。
+    fn data_table_labels(&self, cx: &App) -> DataTableLabels {
+        DataTableLabels::new(
+            tr(cx, "勾选全部行"),
+            tr(cx, "第 {} 行"),
+            tr(cx, "按 {} 排序"),
+            tr(cx, "提交"),
+            tr(cx, "单元格详情"),
+        )
+    }
+
+    /// 只有「**要窗口**的交互」才走闭包。
+    ///
+    /// 事件订阅只给 `&mut Context<Self>`（没有窗口），而两件事离不开窗口：
+    ///
+    /// 1. **右键菜单内容** —— gpui-component 的菜单是声明式的（`.context_menu()` 挂在
+    ///    元素上、构建闭包在弹出时才跑），没有「弹出时再问宿主」的机会；
+    /// 2. **双击开就地编辑 / 行编辑器** —— `InputState::new` 必须要 `&mut Window`。
+    ///
+    /// 其余交互（选中 / 勾选 / 排序 / 提交 / 详情）都走 [`DataTableEvent`]。
+    fn data_table_hooks(&self) -> DataTableHooks {
+        let menu_view = self.view.clone();
+        let cell_dbl_view = self.view.clone();
+        let row_dbl_view = self.view.clone();
+        DataTableHooks {
+            // 单元格右键菜单（网格**唯一**一层）：复制单元格 / 复制整行 / 复制 ▸ /
+            // 单元格详情。行级菜单也并到这里 —— 组件库的 `ContextMenu` 不截停冒泡，
+            // 行与格两层嵌套会各弹一份叠在一起（见 `git log` 里那一轮修复）。
+            cell_menu: Some(Rc::new(move |menu, pos, window, cx| {
+                let view = menu_view.clone();
+                let Some(entity) = view.upgrade() else {
+                    return menu;
+                };
+                // 文本与选区口径都**弹出时**才算：一万行也不在渲染路径上白拼几百 KB。
+                let (cell_text, row_text, can_insert, submenu_label) = {
+                    let page = entity.read(cx);
+                    let Some(result) = page.current_result() else {
+                        return menu;
+                    };
+                    let cell_text = result
+                        .rows
+                        .get(pos.row)
+                        .and_then(|row| row.get(pos.col))
+                        .map(Value::render)
+                        .unwrap_or_default();
+                    // 整行一条 TSV，粘进表格软件就是一整行单元格。
+                    let row_text = result
+                        .rows
+                        .get(pos.row)
+                        .map(|row| row_as_tsv(row))
+                        .unwrap_or_default();
+                    // 「复制 ▸」的父项文案跟着选区走（dbx 同款：复制永远作用于选区）
+                    // —— 勾选行优先，其次单击选中的行，都没有才整份结果。文案让目标
+                    // 一眼可辨，不再有「选中一行却复制了整页」的错位。
+                    let checked_count = page.checked_rows.len();
+                    let submenu_label: SharedString = if checked_count > 0 {
+                        trf(cx, "复制所选 {} 行", &[&checked_count.to_string()]).into()
+                    } else if page.selected_row.is_some() {
+                        tr(cx, "复制选中行").into()
+                    } else {
+                        tr(cx, "复制全部").into()
+                    };
+                    (
+                        cell_text,
+                        row_text,
+                        page.insert_context().is_some(),
+                        submenu_label,
+                    )
+                };
+                // 菜单构建闭包是 `Fn`（每次右键 rebuild 一次）：文案只许借出克隆。
+                let copy_cell_label = tr(cx, "复制单元格");
+                let copied_cell_note = tr(cx, "已复制单元格。");
+                let copy_row_label = tr(cx, "复制整行");
+                let copied_row_note = tr(cx, "已复制该行。");
+                let detail_label = tr(cx, "单元格详情");
+                // 「复制 ▸」子菜单：一次拿走**全部**行。文本在点某档的那一刻才按当前
+                // 结果集渲染（一万行也不在渲染路径上白白拼几百 KB）。
+                let copy_items: Vec<(ResultFormat, &'static str)> = ResultFormat::ALL
+                    .iter()
+                    .map(|format| (*format, format.copy_label(cx)))
+                    .collect();
+                let all_view = view.clone();
+                let copy_menu = PopupMenu::build(window, cx, move |menu, _, _| {
+                    copy_items.into_iter().fold(menu, |menu, (format, label)| {
+                        let enabled = format.exportable(true, can_insert, false);
+                        let all_view = all_view.clone();
+                        menu.item(PopupMenuItem::new(label).disabled(!enabled).on_click(
+                            move |_, _, cx| {
+                                let Some(entity) = all_view.upgrade() else {
+                                    return;
+                                };
+                                entity.update(cx, |this, cx| {
+                                    this.copy_result_as(format, cx);
+                                });
+                            },
+                        ))
+                    })
+                });
+                let cell_view = view.clone();
+                let row_view = view.clone();
+                let detail_view = view.clone();
+                menu.item(
+                    PopupMenuItem::new(copy_cell_label).on_click(move |_, _, cx| {
+                        let Some(entity) = cell_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| {
+                            this.put_on_clipboard(cell_text.clone(), copied_cell_note, cx);
+                        });
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(copy_row_label).on_click(move |_, _, cx| {
+                        let Some(entity) = row_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| {
+                            this.put_on_clipboard(row_text.clone(), copied_row_note, cx);
+                        });
+                    }),
+                )
+                .item(PopupMenuItem::submenu(submenu_label, copy_menu))
+                .item(PopupMenuItem::new(detail_label).on_click(move |_, _, cx| {
+                    let Some(entity) = detail_view.upgrade() else {
+                        return;
+                    };
+                    entity.update(cx, |this, cx| {
+                        this.open_cell_detail(pos.row, pos.col, cx);
+                    });
+                }))
+            })),
+            // 列头右键：直接定序 / 预选过滤列 / 复制列名（DBX / TablePlus 的标准列头
+            // 菜单；「筛选」只是把草稿列填上，仍要点「添加」生效）。
+            //
+            // ⚠️ 只在**表浏览**下给：排序与筛选都是服务器侧的表页动作
+            //（`toggle_table_sort` / `draft_filter_column` 的前置判断），SQL 结果集的
+            // 列头本来就是纯展示 —— 给它挂菜单只会剩一个「复制列名」。
+            header_menu: (self.mode == Mode::Table).then(|| {
+                let view = self.view.clone();
+                let hook: HeaderMenuHook = Rc::new(move |menu, col, _window, cx| {
+                    let view = view.clone();
+                    let Some(entity) = view.upgrade() else {
+                        return menu;
+                    };
+                    let name = {
+                        let page = entity.read(cx);
+                        let Some(result) = page.current_result() else {
+                            return menu;
+                        };
+                        match result.columns.get(col) {
+                            Some(column) => column.name.clone(),
+                            None => return menu,
+                        }
+                    };
+                    let asc_label = trf(cx, "按 {} 升序", &[&name]).to_string();
+                    let desc_label = trf(cx, "按 {} 降序", &[&name]).to_string();
+                    let filter_label = trf(cx, "筛选「{}」", &[&name]).to_string();
+                    let copy_label = tr(cx, "复制列名");
+                    let copied_note = tr(cx, "已复制列名。");
+                    let asc_view = view.clone();
+                    let desc_view = view.clone();
+                    let filter_view = view.clone();
+                    let copy_view = view.clone();
+                    let asc_name = name.clone();
+                    let desc_name = name.clone();
+                    let filter_name = name.clone();
+                    menu.item(PopupMenuItem::new(asc_label).on_click(move |_, _, cx| {
+                        let Some(entity) = asc_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| this.sort_table_by(&asc_name, false, cx));
+                    }))
+                    .item(PopupMenuItem::new(desc_label).on_click(move |_, _, cx| {
+                        let Some(entity) = desc_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| this.sort_table_by(&desc_name, true, cx));
+                    }))
+                    .item(PopupMenuItem::new(filter_label).on_click(move |_, _, cx| {
+                        let Some(entity) = filter_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| this.draft_filter_column(&filter_name, cx));
+                    }))
+                    .separator()
+                    .item(PopupMenuItem::new(copy_label).on_click(move |_, _, cx| {
+                        let Some(entity) = copy_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| {
+                            this.put_on_clipboard(name.clone(), copied_note, cx);
+                        });
+                    }))
+                });
+                hook
+            }),
+            // 双击单元格 = 进就地编辑（单击已经在组件里处理成「选中这一格」——
+            // 选中与编辑是两步，单击就开编辑框等于把浏览打断成编辑）。
+            on_cell_double_click: Some(Rc::new(move |pos, window, cx| {
+                let Some(entity) = cell_dbl_view.upgrade() else {
+                    return;
+                };
+                // 只读借用阶段取「原值 + 是否 NULL」，随后才构造输入框实体。
+                let prep = entity.read(cx).cell_editor_prep(pos.row, pos.col);
+                let Some((original, was_null)) = prep else {
+                    entity.update(cx, |this, cx| this.select_cell(pos, cx));
+                    return;
+                };
+                // 结果集不可编辑就明说，不摆空编辑框。
+                if entity.read(cx).edit_source().is_none() {
+                    notify::info(
+                        tr(cx, "当前结果集不可编辑（需要单表 + 主键）。"),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                let input = cx.new(|cell_cx| InputState::new(&mut *window, cell_cx));
+                // 原值回填：编辑器的起点就是「库里现在是什么」。
+                if !was_null {
+                    let seed = original.clone();
+                    input.update(cx, |state, cx| state.set_value(seed, window, cx));
+                }
+                // dbx / dbflux 同款：进编辑即聚焦 + **全选** —— 高亮选区本身就是
+                // 「输入框已接管这一格」的视觉信号，直接打字即可整格覆盖。
+                input.update(cx, |state, cx| {
+                    state.focus(window, cx);
+                    state.select_all(window, cx);
+                });
+                entity.update(cx, |this, cx| {
+                    this.select_cell(pos, cx);
+                    this.install_cell_editor(pos.row, pos.col, original, was_null, input, cx);
+                    cx.notify();
+                });
+            })),
+            // 双击行空白处（行号 / 多选列一带）= 开行编辑器（暂存式：改动只存输入框，
+            // 点保存才落库）。
+            on_row_double_click: Some(Rc::new(move |row, window, cx| {
+                let Some(entity) = row_dbl_view.upgrade() else {
+                    return;
+                };
+                // 只读借用阶段取数据，随后构造输入框实体。
+                let specs = entity.read(cx).row_editor_specs(row);
+                let cells = specs.map(|columns| {
+                    columns
+                        .into_iter()
+                        .map(|(column, original, was_null)| {
+                            let input = cx.new(|cell_cx| InputState::new(&mut *window, cell_cx));
+                            if !was_null {
+                                input.update(cx, |state, cx| {
+                                    state.set_value(original.clone(), window, cx);
+                                });
+                            }
+                            RowCell {
+                                column,
+                                original,
+                                was_null,
+                                input,
+                                null: Rc::new(std::cell::Cell::new(false)),
+                            }
+                        })
+                        .collect()
+                });
+                entity.update(cx, |this, cx| {
+                    this.selected_row = Some(row);
+                    this.row_editor = cells.map(|cells| RowEditor {
+                        row_index: Some(row),
+                        cells,
+                    });
+                    cx.notify();
+                });
+            })),
+        }
+    }
+
+    /// 选中某一格：选中行 + 单元格详情指向一起落。
+    ///
+    /// 组件点单元格时 `RowSelected` 与 `CellSelected` 会各发一次（顺序行在前），
+    /// 这条是「双击进编辑」那条路上的同一落点 —— 两处共用一份，免得一处的口径漂了。
+    fn select_cell(&mut self, pos: CellPos, cx: &mut Context<Self>) {
+        self.selected_row = Some(pos.row);
+        self.cell_detail = Some((pos.row, pos.col));
+        cx.notify();
+    }
+
+    /// 把当前结果推给数据表组件（换结果 / 换标签 / 清结果 / 换库时调用）。
+    ///
+    /// 只做两件事：换**表模型**（组件内部判列名序列要不要重估列宽并清横向位置），
+    /// 再换**展示行序 + 藏列**（见 [`Self::sync_data_table_rows`]）。没有结果就推一份
+    /// 空表 —— 组件恒有一份模型，渲染路径上因此不必判 `Option`。
+    pub(super) fn sync_data_table(&mut self, cx: &mut Context<Self>) {
+        let model = self
+            .current_result()
+            .map(|result| Arc::new(build_table_model(result)))
+            .unwrap_or_default();
+        self.data_table
+            .update(cx, |state, cx| state.set_model(model, cx));
+        self.sync_data_table_rows(cx);
+    }
+
+    /// 推「展示哪些行」和「藏了哪些列」给组件。
+    ///
+    /// 展示行序 = 搜索命中（客户端过滤，只搜可见列）× 客户端分页切片，两边都按
+    /// **原始行下标**记（选中 / 勾选仍用原始下标，翻译只此一次）。表浏览是服务器侧
+    /// 分页，整页即一页，不做切片。
+    ///
+    /// 这三件事（搜索词变 / 翻页 / 藏列变）以前都是**渲染路径上现算**的 —— 现在收成
+    /// 「变化时推一次」。
+    pub(super) fn sync_data_table_rows(&mut self, cx: &mut Context<Self>) {
+        let (rows, offset) = self.visible_row_indexes(cx).unwrap_or_default();
+        let hidden = self.hidden_columns.clone();
+        self.data_table.update(cx, |state, cx| {
+            state.set_hidden_names(&hidden, cx);
+            state.set_view_rows(rows, offset, cx);
+        });
+    }
+
+    /// 当前应在网格里显示的行：`(原始行下标, 行号起点)`；没有结果时 `None`。
+    fn visible_row_indexes(&self, cx: &App) -> Option<(Vec<usize>, usize)> {
+        let result = self.current_result()?;
+        let visible = visible_columns(&result.columns, &self.hidden_columns);
+        let matched = matched_row_indexes(&result.rows, &visible, &self.result_search_text(cx));
+        if self.mode != Mode::Query {
+            // 表浏览 = 服务器侧分页，整页即一页。
+            return Some((matched, 0));
+        }
+        // 查询 = 客户端分页：按「每页行数」切片展示（切片存原始行下标）。
+        let page_size = self.query_page_size(cx);
+        let start = (self.query_page * page_size).min(matched.len());
+        let end = (start + page_size).min(matched.len());
+        Some((matched[start..end].to_vec(), start))
+    }
+
+    /// 组件报回来的交互（[`DataTableEvent`]）。
+    ///
+    /// 这里只接「靠 `cx` 就能落地」的动作；要窗口的（双击开编辑器、右键菜单内容）
+    /// 走 [`Self::data_table_hooks`]。注意 `RowSelected` / `CellSelected` 是**两件事**：
+    /// 前者 = 「正在看 / 正在编辑这一行」（行编辑器、右栏详情），后者 = 「单元格详情
+    /// 指向这一格」—— 点单元格时组件两个都发，顺序是行在前。
+    pub(super) fn on_data_table_event(&mut self, event: &DataTableEvent, cx: &mut Context<Self>) {
+        match event {
+            DataTableEvent::RowSelected { row } => {
+                self.selected_row = Some(*row);
+                cx.notify();
+            }
+            DataTableEvent::CellSelected(pos) => {
+                self.cell_detail = Some((pos.row, pos.col));
+                cx.notify();
+            }
+            DataTableEvent::RowCheckedToggled { row, checked } => {
+                // 事件带的是**目标态**（不是「翻一下」）：勾选集合按它直接写，免得
+                // 与组件那一刻画出来的态出现一帧偏差。
+                if *checked {
+                    self.checked_rows.insert(*row);
+                } else {
+                    self.checked_rows.remove(row);
+                }
+                cx.notify();
+            }
+            DataTableEvent::AllCheckedToggled { .. } => {
+                // 表头三态只有「全勾 / 不全勾」两档可点，语义与既有命令同一份实现
+                //（`ToggleAllChecked` 也走它）。
+                self.toggle_all_checked(cx);
+            }
+            DataTableEvent::SortRequested { column } => {
+                let name = column.to_string();
+                self.toggle_table_sort(&name, cx);
+            }
+            // 列宽由组件自管（拖拽 / 双击自适应都在组件里）。这条事件是「将来要把
+            // 列宽落盘」的接缝，目前没有第二真源要同步。
+            DataTableEvent::ColumnResized { .. } => {}
+            DataTableEvent::CellEditSubmitRequested(_) => self.commit_cell_edit(cx),
+            DataTableEvent::CellDetailRequested(pos) => {
+                self.open_cell_detail(pos.row, pos.col, cx);
+            }
+        }
     }
 
     /// 编辑条：`pending_edits` 模型的界面落点（新增行 + 待提交计数 + 提交 / 丢弃）。

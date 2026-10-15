@@ -1,0 +1,13 @@
+# 翻译取词夹具：验证 duck.locale / duck.t 跟随宿主注入的语言 tag。
+id = "dev.duck.i18n"
+name = "文本统计"
+version = "0.1.0"
+api_version = 1
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+
+[[tools]]
+id = "dev.duck.i18n.stats"
+name = "文本统计"

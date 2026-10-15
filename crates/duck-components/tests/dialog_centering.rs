@@ -143,16 +143,34 @@ fn open_raw(cx: &mut VisualTestContext, body_height: f32) -> (Entity<ModalDrag>,
 }
 
 /// 开一个弹窗并绘制到落点稳定：第一帧量高度，第二帧才按量到的值摆正。
+///
+/// ⚠️ 中间那个 [`next_frame`] **不是保险，是必需**：测试 App 没有平台帧循环，
+/// [`modal_drag_area`] 在 prepaint 里挂上的「下一帧回调」没人递交
+/// （[`Window::on_next_frame`] 的注释与 `next_frame()` 的文档都写着这一条）。
+/// 少了它，量到高度后的那次重绘永远不发生，面板就停在「还没量到」的贴顶落点。
+///
+/// 它之所以曾经看着是好的：`open_raw` / `draw` 里的 `cx.update` 出去时会把当时**已有的**
+/// 待画帧顺手刷掉——而窗口里还留着别的帧需求（首个弹窗的开场动效、`Root` 的首次布局）
+/// 时才会发生。**先开关过一个弹窗之后**这条侥幸就没了：帧需求归零，回调就一直躺着，
+/// 于是「关掉一个弹窗、再开任意一个弹窗」都会贴顶（2026-10-15 实测：单独开 200 / 400
+/// 都居中，`close()` 之后再开则一律停在 `y=16`，与内容高度无关）。
 fn open(cx: &mut VisualTestContext, body_height: f32) {
     let _ = open_raw(cx, body_height);
-    draw(cx);
-    draw(cx);
+    draw(cx); // 首帧：面板整块透明，prepaint 量到内容高度、挂下一帧回调
+    next_frame(cx); // 手动递交那一帧（测试没有平台帧循环）
+    draw(cx); // 第二帧：按量到的落点摆正
 }
 
 /// 关掉当前弹窗并绘两帧，让 `dialog-0` 这个层号能被下一次打开重新占用。
+///
+/// ⚠️ 同 [`open`]：测试没有平台帧循环，关闭前那个弹窗挂上的回调也要**自己递掉**。
+/// 不递的话它会一直躺在队列里，被**下一次** `open` 的递帧一并执行——于是「下一次打开的
+/// 弹窗拿到几帧」取决于上一次关没关过，测试就变成看顺序的（2026-10-15 的失败正是这种
+/// 顺序耦合：同一段代码，单独开绿、关过之后再开红）。
 fn close(cx: &mut VisualTestContext) {
     cx.update(|window, cx| window.close_dialog(cx));
     draw(cx);
+    next_frame(cx);
     draw(cx);
 }
 
@@ -218,6 +236,29 @@ fn a_taller_body_keeps_the_dialog_centered(cx: &mut TestAppContext) {
     assert!(
         (f32::from(center) - f32::from(window.height.half())).abs() <= 2.,
         "长内容弹窗同样要居中：实测中心 {center:?}（面板 {tall:?}）"
+    );
+}
+
+/// 「关掉一个弹窗、再开另一个」也必须居中——实机最常走的一条路径（关掉表单、再开新链接）。
+///
+/// 为什么与上一条分开留：上一条的失败信息是「长内容不居中」，看着像量尺算错了；而
+/// 2026-10-15 实测的真凶是**窗口里关过一次弹窗之后，量到高度的那一帧没人递交**——
+/// 与内容高度无关（拿正文 200 去测一样贴顶，实测中心 169px）。两条钉的是两种不同的
+/// 失败形态（量错 vs 没重绘），别合并成一条。
+#[gpui::test]
+fn a_dialog_opened_after_a_close_is_still_centered(cx: &mut TestAppContext) {
+    let cx = harness(cx);
+    let window = window_size();
+
+    open(cx, 200.);
+    close(cx);
+    open(cx, 200.);
+
+    let bounds = panel(cx);
+    let center = bounds.origin.y + bounds.size.height.half();
+    assert!(
+        (f32::from(center) - f32::from(window.height.half())).abs() <= 2.,
+        "关掉一个弹窗后再开的弹窗同样要居中：实测中心 {center:?}（面板 {bounds:?}）"
     );
 }
 

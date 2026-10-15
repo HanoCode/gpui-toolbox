@@ -1,20 +1,22 @@
-//! 项目管理页的 7 个领域组件。
+//! 项目管理页的 8 个领域组件。
 //!
 //! 拍板 Q4：**页面私有**（整个模块只在 `pages::projects` 内可见），不进
 //! `duck-components` 公共库 —— 它们的语义只对看板成立（列 / 卡片 / 优先级点 /
-//! 标签片 / 进度条 / 详情面板 / 右键菜单），进公共库会让「通用组件」里混进领域概念。
+//! 标签片 / 象限徽标 / 进度条 / 详情面板 / 右键菜单），进公共库会让「通用组件」里
+//! 混进领域概念。
 
 pub(crate) mod kanban_column;
 pub(crate) mod priority_dot;
 pub(crate) mod progress_bar;
+pub(crate) mod quadrant_badge;
 pub(crate) mod tag_chip;
 pub(crate) mod task_card;
 pub(crate) mod task_detail_panel;
 pub(crate) mod task_menu;
 
-use duck_project::{BoardColumn, Quadrant, TaskStatus};
-use duck_theme::tr;
-use gpui::{App, SharedString};
+use duck_project::{BoardColumn, CalendarDate, Quadrant, Task, TaskStatus};
+use duck_theme::{active_theme, tr, trf};
+use gpui::{App, ClickEvent, Hsla, SharedString};
 
 /// 看板拖拽的载荷。
 ///
@@ -24,6 +26,20 @@ use gpui::{App, SharedString};
 pub(crate) struct TaskDrag {
     /// 被拖的任务。
     pub(crate) task_id: i64,
+}
+
+/// 这次点击是不是双击。
+///
+/// 原型在一个全局 `dblclick` 处理器里对**任何**带 `data-card` 的元素开完整编辑器
+/// （`projects-mock.html:3041-3045`），也就是卡片与列表行同一个手势。落在这里而不是
+/// 各写一遍：三种 `ClickEvent`（鼠标 / 触摸 / 键盘）的连击字段名各不相同，漏一支就会
+/// 在触摸板上变成「双击没反应」。
+pub(crate) fn is_double_click(event: &ClickEvent) -> bool {
+    match event {
+        ClickEvent::Mouse(mouse) => mouse.up.click_count > 1,
+        ClickEvent::Touch(tap) => tap.tap_count > 1,
+        ClickEvent::Keyboard(_) => false,
+    }
 }
 
 /// 看板列 / 状态的中文名。
@@ -66,4 +82,48 @@ pub(crate) fn quadrant_label(quadrant: Quadrant, cx: &App) -> &'static str {
         Quadrant::Q3 => tr(cx, "Q3 紧急不重要 · 计划安排"),
         Quadrant::Q4 => tr(cx, "Q4 都不紧急 · 有空再处理"),
     }
+}
+
+/// 截止日文案 + 颜色（原型 `dueLabel`，`docs/projects-mock.html:1041`）。
+///
+/// 看板卡片 `.pmeta` 与列表「截止」列共用一份：两处都只有一格宽，都该说「还差几天」
+/// 而不是印一个 `2026-08-14` 让人自己算今天几号；各写一遍的话，迟早有一处漏掉
+/// 「今天到期」这种只有当天才出现的分支。
+///
+/// 三种「要出事」的情形各自点名（逾期 N 天 / 今天到期 / 明天到期），其余给 `MM-DD`
+/// —— 年份在几十行的清单里是噪声。已完成的回落到「`MM-DD` 完成」：那条日期这时是
+/// **历史记录**，再按逾期去警告它没有意义。
+pub(crate) fn due_label(task: &Task, today: CalendarDate, cx: &App) -> (SharedString, Hsla) {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let normal = tokens.colors.muted_foreground;
+    let Some(due) = task.due_date else {
+        return (SharedString::from(tr(cx, "未排期")), normal);
+    };
+    if task.status == TaskStatus::Done {
+        return (
+            SharedString::from(trf(cx, "{} 完成", &[&mmdd(due)])),
+            normal,
+        );
+    }
+    match today.days_until(due) {
+        days if days < 0 => (
+            SharedString::from(trf(cx, "逾期 {} 天", &[&(-days).to_string()])),
+            tokens.colors.destructive,
+        ),
+        0 => (
+            SharedString::from(tr(cx, "今天到期")),
+            theme.extended().colors.warning,
+        ),
+        1 => (
+            SharedString::from(tr(cx, "明天到期")),
+            theme.extended().colors.warning,
+        ),
+        _ => (SharedString::from(mmdd(due)), normal),
+    }
+}
+
+/// `MM-DD`（原型 `fmtMMDD`）。
+fn mmdd(date: CalendarDate) -> String {
+    format!("{:02}-{:02}", date.month(), date.day())
 }

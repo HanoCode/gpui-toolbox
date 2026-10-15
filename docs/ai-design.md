@@ -388,7 +388,7 @@ pub struct ToolOutcome {
 | 6 | `crates/duck-app/src/app.rs` | `:674` | `PlaceholderPage::new("AI 助手", DuckIcon::Bot)` → `AssistantPage::new(cx)`；`routes` 表（`:764-772`）补 `.with_sidebar(..)` 与 `.with_right_sidebar(..)` |
 | 7 | `crates/duck-app/src/pages/settings/mod.rs` | `PAGES`（`:313`） | 插入 AI 分类一项（顺序在「通知」之前） |
 | 8 | `crates/duck-app/src/pages/settings/mod.rs` | `render_content`（`:905`） | 新增 `key == "ai"` 渲染分支 → `render_ai_settings` |
-| 9 | `crates/duck-theme/src/i18n.rs` | `EN` 表 | 补全部新增中文文案（按 UTF-8 字节序插入，二分查找） |
+| 9 | `crates/duck-theme/locales/en.toml` | 英译表 | 补全部新增中文文案（一行一条，**顺序无关**；2026-10-15 起数据源从 `i18n.rs` 的 `EN` 表迁来），改完跑 `scripts/i18n_en_toml.py` |
 | 10 | `crates/duck-db/src/ai.rs` | 全文 | 改为 `duck-ai` 的薄适配层（§4.9） |
 | 11 | `crates/duck-db/Cargo.toml` | `[dependencies]` | 新增 `duck-ai.workspace = true` |
 | 12 | `crates/duck-components/src/icons.rs` + `assets/icons/` | `duck_icons!` | **仅在需要新图标时**新增（Lucide 1.75；`Bot` 已存在，可直接复用为「AI」分类图标） |

@@ -19,11 +19,13 @@
 //!   chips（今天 / 本周 / 逾期 / 未排期 / 已完成）+ 主区搜索 + 排序切换器 +
 //!   `1` / `2` 切视图。
 //! - **S3-III**：按 `docs/projects-mock.html` 对齐呈现与操作路径（结构差异 13 项全收口）。
-//! - **S4（本增量）**：「随手看」悬浮窗（[`float`]，§4.3 ⑤）+ 两处视图之间的变更广播
+//! - **S4**：「随手看」悬浮窗（[`float`]，§4.3 ⑤）+ 两处视图之间的变更广播
 //!   （[`bus`]）+ 全局键 `⌥⌘T`（两槽位热键，见 `crate::hotkey`）。悬浮窗是**独立窗口、
 //!   独立连接**，所以两处视图靠广播互相同步 —— 本页既订阅它也广播它。
-//! - **未做（见设计文档 §7）**：完整任务编辑器（编辑表单弹窗，与日历 / 时间线 /
-//!   报表 / 工作日志同属 S5）、AI 拆解与周报（S6）。
+//! - **S5-I（本增量）**：完整任务编辑器（`dialogs::open_task_editor` —— 新建 / 编辑
+//!   共用双列表单，日期走 gpui-component 的 `DatePicker`，不再手打 ISO 文本）。
+//! - **未做（见设计文档 §7）**：同属 S5 的日历 / 时间线 / 报表 / 工作日志；
+//!   AI 拆解与周报属 S6（编辑器里那三个 AI 按钮随它一起落地）。
 //!
 //! # 三条本页特有的口径
 //!
@@ -36,17 +38,20 @@
 //!    `pages/db.rs` 的 `Toast` 骨架（绝对定位 + 序号守卫的定时器），
 //!    见 [`ProjectsPage::show`]。
 //! 3. **落库之后要广播一声**（[`bus::notify`]）。写动作**绝大多数**收口在
-//!    [`ProjectsPage::show`]（凡弹回执的都走它），所以广播就发在那一处；剩下四条
+//!    [`ProjectsPage::show`]（凡弹回执的都走它），所以广播就发在那一处；剩下几条
 //!    **不弹回执**的写路径得各自再叫一声 —— 拖拽改列（`move_task_to`）、
-//!    `Space` 标完成（`complete_task` / `toggle_selected`）、快速新建（`submit_quick`）、
-//!    列内新建落在 Todo 列那一支（`submit_new_task`）。漏掉的症状很隐蔽：主窗改了、
-//!    悬浮窗还显示旧的。兜底在 `app::open_task_float` —— 每次唤起都广播一次，
-//!    所以最坏情况也会在「唤起来看一眼」时对齐。
+//!    `Space` 标完成（`complete_task` / `toggle_selected`）、列内新建落在 Todo 列
+//!    那一支（`submit_new_task`）。漏掉的症状很隐蔽：主窗改了、悬浮窗还显示旧的。
+//!    兜底在 `app::open_task_float` —— 每次唤起都广播一次，所以最坏情况也会在
+//!    「唤起来看一眼」时对齐。
 
 mod archive;
-mod bus;
+// `bus` / `float` 对 `app` 可见：跨窗广播（[`bus::notify`]）与「随手看」悬浮窗的
+// 唤起入口都挂在 shell 层（`app::open_task_float` / `app.rs` 的订阅），够不着私有模块。
+pub(crate) mod bus;
 mod dialogs;
-mod float;
+mod export;
+pub(crate) mod float;
 mod prefs;
 mod quickparse;
 mod state;
@@ -62,22 +67,22 @@ use gpui::{
     actions, div, px,
 };
 use gpui_component::{
-    Icon, WindowExt as _,
-    dialog::DialogButtonProps,
-    h_flex,
+    Icon, WindowExt as _, h_flex,
     input::{Input, InputEvent, InputState},
     v_flex,
 };
 
 use duck_components::notify::Tone;
 use duck_components::{
-    ButtonVariant, SidebarPanel, SidebarState, body_text, button, dialog_top_offset, modal_drag,
-    modal_drag_area, modal_offset, modal_title_row,
+    ButtonVariant, ConfirmHandler, SidebarPanel, SidebarState, body_text, button, dialog_footer,
+    dialog_top_offset, modal_drag, modal_drag_area, modal_offset, modal_title_row,
 };
-use duck_project::{ColumnSpec, LogKind, Priority, Quadrant, TaskPatch, TaskSort, TaskStatus};
+use duck_project::{
+    ColumnSpec, LogKind, NewMilestone, Priority, Quadrant, TaskPatch, TaskSort, TaskStatus,
+};
 use duck_theme::{active_theme, tr, trf, trn};
 
-use prefs::ViewMode;
+use prefs::{GroupMode, ViewMode};
 use state::{ArchiveRow, BoardScope, ProjectsState, SmartFilter, UndoAction};
 use widgets::status_label;
 
@@ -122,7 +127,9 @@ const KEY_CONTEXT_BARE: &str = "Projects && !Input";
 actions!(
     projects,
     [
-        /// `N`：新建任务（把焦点送进工具条的快速新建框，回车即建）。
+        /// `N`：快速新建（Spotlight）——把一句话解析成任务。
+        QuickCreate,
+        /// `⌘N`：新建任务（打开任务编辑大表单）。
         NewTask,
         /// `⇧N`：新建项目。
         NewProject,
@@ -146,6 +153,14 @@ actions!(
         ViewBoard,
         /// `2`：切到列表。
         ViewList,
+        /// `3`：切到日历。
+        ViewCalendar,
+        /// `4`：切到时间线。
+        ViewTimeline,
+        /// `5`：切到报表。
+        ViewReport,
+        /// `6`：切到工作日志。
+        ViewLog,
     ]
 );
 
@@ -156,7 +171,7 @@ actions!(
 pub(crate) fn bind_keys(cx: &mut App) {
     let modifier = duck_command::primary_modifier();
     cx.bind_keys([
-        KeyBinding::new("n", NewTask, Some(KEY_CONTEXT_BARE)),
+        KeyBinding::new("n", QuickCreate, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("shift-n", NewProject, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("j", MoveSelectionDown, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("k", MoveSelectionUp, Some(KEY_CONTEXT_BARE)),
@@ -167,12 +182,17 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // `⌘C` / `Ctrl-C`（已逐条核对），所以这一条不会与别处抢。
         KeyBinding::new("backspace", DeleteSelected, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("escape", LeaveArchive, Some(KEY_CONTEXT_BARE)),
-        // `1` / `2` 切常规视图。设计文档 §5.4 写的是 `1`–`4`，但日历 / 时间线还没做
-        // （S5）—— 先只绑做得了的两个，其余等视图落地再补（摆一个按了没反应的键
-        // 就是演示控件）。裸数字键同样要 `!Input`。
+        // `1`–`6` 切常规视图（原型状态栏那条提示的排法）。裸数字键同样要 `!Input`。
         KeyBinding::new("1", ViewBoard, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("2", ViewList, Some(KEY_CONTEXT_BARE)),
-        // `⌘Z` 在文本输入上下文里是上游的「撤销文字」，所以这一条**不带** `!Input`：
+        KeyBinding::new("3", ViewCalendar, Some(KEY_CONTEXT_BARE)),
+        KeyBinding::new("4", ViewTimeline, Some(KEY_CONTEXT_BARE)),
+        KeyBinding::new("5", ViewReport, Some(KEY_CONTEXT_BARE)),
+        KeyBinding::new("6", ViewLog, Some(KEY_CONTEXT_BARE)),
+        // `⌘N` 走 [`KEY_CONTEXT`] 而**不带** `!Input`：它不与文本编辑抢（`⌘N` 在输入
+        // 上下文里没有含义），而「正打着字想直接新建一条」是常态。`⌘Z` 同理，见下。
+        KeyBinding::new(&format!("{modifier}-n"), NewTask, Some(KEY_CONTEXT)),
+        // `⌘Z` 在文本输入上下文里是上游的「撤销文字」，所以这一条也**不带** `!Input`：
         // 焦点在输入框里时更深的 `Input` 上下文先认领，退的是文本（与 db.rs 的
         // `⌘Z` 是同一套分层，无歧义——同一时刻只有一个上下文认领）。
         KeyBinding::new(&format!("{modifier}-z"), UndoLastArchive, Some(KEY_CONTEXT)),
@@ -187,6 +207,13 @@ pub(crate) fn bind_keys(cx: &mut App) {
 enum ConfirmScope {
     /// 物理删除一条**未归档**任务（看板 `⌫`）。
     DeleteTask(i64),
+    /// 物理删除列表里**当前勾选的那一批**（批量条的「删除」）。
+    ///
+    /// 故意不带 `Vec<i64>`：带了这一档就不再是 `Copy`，而 [`ProjectsPage::confirm`]
+    /// 要把 `scope` move 进 `open_dialog` 的内容闭包（那是 `Fn`、每次重排都重跑），
+    /// 一改就得给沿路每个匹配点补一遍 `clone`。反正确认框是**模态**的 —— 弹着的时候
+    /// 勾选动不了，执行时现读 [`ProjectsState::checked_ids`] 与弹框那一刻完全一致。
+    DeleteChecked,
     /// 删除一个**项目**（项目设置弹窗的「删除项目」）——连带它的任务，不可逆。
     DeleteProject(i64),
     /// 彻底删除一条归档记录（归档中心的行内按钮 / 右栏按钮 / `⌫`）。
@@ -231,8 +258,6 @@ pub struct ProjectsPage {
     /// 标签名按它筛（页面自己读，只重绘），主区任务走内核的 `search`。
     /// 与 `archive_search` 仍然是**两个**框：归档区可能和它同屏，共用一个词会打架。
     filter: Entity<InputState>,
-    /// 工具条的快速新建框（回车即建）。
-    quick: Entity<InputState>,
     /// 归档中心的搜索框。
     ///
     /// 与 `filter` 分开是**必须**的：两个框可能同屏（归档中心 + 左栏），共用一个词
@@ -261,7 +286,6 @@ impl ProjectsPage {
             )
         });
         let filter = text_input(window, cx, tr(cx, "筛选任务与项目…"));
-        let quick = text_input(window, cx, tr(cx, "新建任务，回车确认"));
         let archive_search = text_input(window, cx, tr(cx, "搜索归档…"));
 
         let mut subscriptions = Vec::new();
@@ -295,31 +319,17 @@ impl ProjectsPage {
                 }
             },
         ));
-        // 快速新建：回车即建。订阅回调拿不到 `Window`，借 `on_notify_window` 找当前
-        // 窗口（与 Redis 页的 CLI 输入同一条路）。
-        subscriptions.push(cx.subscribe(
-            &quick,
-            |_this: &mut Self,
-             _src: Entity<InputState>,
-             event: &InputEvent,
-             cx: &mut Context<Self>| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    let entity = cx.entity();
-                    crate::update::on_notify_window(cx, move |window, cx| {
-                        // `Entity::update` 返回闭包的返回值（这里是 `()`），不需要 `let _`。
-                        entity.update(cx, |this, cx| this.submit_quick(window, cx));
-                    });
-                }
-            },
-        ));
         // 页面自己订阅状态实体：`ProjectsPage` 读 `state` 渲染，不订阅的话
         // 状态变了页面不会重绘。
         subscriptions.push(cx.observe(&state, |_this, _state, cx| cx.notify()));
         // 「随手看」悬浮窗（§4.3 ⑤）改了库要能传过来 —— 它开的是**另一个**连接，
         // 两边不会自动互知。订阅的是「变了」这条广播而不是某个具体动作：谁改的都一样，
         // 重读一遍就是最新状态（口径与 `float.rs` 的订阅完全对称）。
+        // 先取实体再订阅：`cx.subscribe(&bus::handle(cx), …)` 会在同一次调用里
+        // 两次可变借 `*cx`（`handle` 要 `&mut App`），得拆成两句。
+        let bus = bus::handle(cx);
         subscriptions.push(cx.subscribe(
-            &bus::handle(cx),
+            &bus,
             |this: &mut Self, _bus, _event: &bus::ProjectChanged, cx| {
                 this.state.update(cx, |state, _| state.reload());
                 cx.notify();
@@ -330,7 +340,6 @@ impl ProjectsPage {
             state,
             sidebar,
             filter,
-            quick,
             archive_search,
             hint: None,
             hint_seq: 0,
@@ -371,6 +380,13 @@ impl ProjectsPage {
     /// 换排序口径（工具条的下拉）。排序也是偏好的一部分，改完落盘。
     pub(crate) fn set_sort(&mut self, sort: TaskSort, cx: &mut Context<Self>) {
         self.state.update(cx, |state, _| state.set_sort(sort));
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// 换列表分组轴（工具条的下拉）。与排序同属偏好，改完落盘。
+    pub(crate) fn set_group(&mut self, group: GroupMode, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.set_group(group));
         self.save_prefs(cx);
         cx.notify();
     }
@@ -460,11 +476,12 @@ impl ProjectsPage {
     /// 记在状态里。成功也只回一条「已移动到「X」」—— 与原型 `状态…` 的回执一致。
     pub(crate) fn set_task_status(&mut self, id: i64, status: TaskStatus, cx: &mut Context<Self>) {
         let moved = trf(cx, "已移动到「{}」。", &[status_label(status, cx)]);
+        let before = self.undo_seq(cx);
         let outcome = self
             .state
             .update(cx, |state, _| state.set_task_status(id, status));
         match outcome {
-            Ok(()) => self.show(Tone::Success, moved, None, cx),
+            Ok(()) => self.show(Tone::Success, moved, self.fresh_undo_seq(before, cx), cx),
             Err(err) => self.show(
                 Tone::Error,
                 trf(cx, "修改失败：{}", &[&err.to_string()]),
@@ -503,6 +520,256 @@ impl ProjectsPage {
     pub(crate) fn set_quadrant(&mut self, id: i64, quadrant: Quadrant, cx: &mut Context<Self>) {
         let message = trf(cx, "四象限已设为 {}", &[&format!("{quadrant:?}")]);
         self.patch_task(id, TaskPatch::new().quadrant(quadrant), message, cx);
+    }
+
+    /// 右栏「进度」：**只可前进**地推进到某一档。
+    ///
+    /// 不回退、也不给「不能后退」的回执 —— 原型那句「只可前进」挂在分区标题上，用户
+    /// 已经看得见规则；为一次点击再念一遍只会刷屏。回退走「完整编辑器」（那里能直接
+    /// 改数值），所以这条只拦界面上的快捷档。
+    pub(crate) fn advance_progress(&mut self, id: i64, progress: u8, cx: &mut Context<Self>) {
+        let current = self
+            .state
+            .read(cx)
+            .tasks()
+            .iter()
+            .find(|task| task.id == id)
+            .map(|task| task.progress);
+        let Some(current) = current else {
+            return;
+        };
+        if progress <= current {
+            return;
+        }
+        let message = trf(cx, "进度已推进到 {}%。", &[&progress.to_string()]);
+        self.patch_task(id, TaskPatch::new().progress(progress), message, cx);
+    }
+
+    /// 卡片菜单：置顶 / 取消置顶（星标）。
+    ///
+    /// 走 [`patch_task`](Self::patch_task) 而不是状态层的同名方法：两者完全同形
+    /// （改一个布尔字段 + 成功回执 + 失败提示），再维护一条平行路径只会让「失败时要不要
+    /// 也弹回执」这种细节在两处各飘一次。
+    pub(crate) fn set_starred(&mut self, id: i64, starred: bool, cx: &mut Context<Self>) {
+        let message = if starred {
+            tr(cx, "已置顶。")
+        } else {
+            tr(cx, "已取消置顶。")
+        };
+        self.patch_task(
+            id,
+            TaskPatch::new().starred(starred),
+            message.to_owned(),
+            cx,
+        );
+    }
+
+    /// 卡片菜单：复制任务（新建一条字段相同的，标题加「（副本）」）。
+    ///
+    /// 回执带「撤销」（原型 `已复制为「X」` 同款）：刚复制出来的那条除了这次复制之外
+    /// 没有别的来路，撤销就是把它删掉。
+    pub(crate) fn duplicate_task(&mut self, id: i64, cx: &mut Context<Self>) {
+        let before = self.undo_seq(cx);
+        let outcome = self.state.update(cx, |state, _| state.duplicate_task(id));
+        match outcome {
+            Ok(_) => self.show(
+                Tone::Success,
+                tr(cx, "已复制任务。"),
+                self.fresh_undo_seq(before, cx),
+                cx,
+            ),
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "复制失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    // ------------------------------------------------------------------
+    // 里程碑（右栏「里程碑」分区，原型 openMilestoneEditor）
+    // ------------------------------------------------------------------
+
+    /// 给任务加一个里程碑。
+    ///
+    /// 快照由弹窗给（默认「当前进度 + 20」封顶 100，与原型一致）。内核在创建时若发现
+    /// 快照高于任务当前进度，会把任务进度一并推到快照上 —— 所以这里不用另外改任务本身。
+    pub(crate) fn submit_milestone(
+        &mut self,
+        task_id: i64,
+        title: &str,
+        snapshot: u8,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome = self.state.update(cx, |state, _| {
+            state.add_milestone(NewMilestone::for_task(task_id, title).progress_snapshot(snapshot))
+        });
+        match outcome {
+            Ok(()) => self.show(Tone::Success, tr(cx, "里程碑已添加。"), None, cx),
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "添加失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    /// 右栏「里程碑」：达成 / 取消达成。
+    pub(crate) fn toggle_milestone(&mut self, id: i64, reached: bool, cx: &mut Context<Self>) {
+        let message = if reached {
+            tr(cx, "已标记达成。")
+        } else {
+            tr(cx, "已取消达成。")
+        };
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.toggle_milestone_reached(id, reached));
+        match outcome {
+            Ok(()) => self.show(Tone::Success, message.to_owned(), None, cx),
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "修改失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    /// 右栏「里程碑」：删除一个。里程碑是**节点标记**（不参与进度计算），删掉不牵连任务，
+    /// 所以不走二次确认 —— 与「归档」同一档可逆性判断（§5.6）。
+    pub(crate) fn remove_milestone(&mut self, id: i64, cx: &mut Context<Self>) {
+        let outcome = self.state.update(cx, |state, _| state.remove_milestone(id));
+        match outcome {
+            Ok(()) => self.show(Tone::Success, tr(cx, "里程碑已删除。"), None, cx),
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "删除失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    // ------------------------------------------------------------------
+    // 列表批量操作（原型 `.bulkbar`）
+    // ------------------------------------------------------------------
+
+    /// 列表行最左边那个勾。
+    pub(crate) fn toggle_checked(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.toggle_checked(id));
+        cx.notify();
+    }
+
+    /// 表头的全选勾。
+    pub(crate) fn toggle_check_all(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.toggle_check_all());
+        cx.notify();
+    }
+
+    /// 批量条上的「取消选择」。
+    pub(crate) fn clear_checked(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.clear_checked());
+        cx.notify();
+    }
+
+    /// 批量改字段的公共路径：读勾选 → 写库 → 清勾选 → 回执。
+    ///
+    /// 失败时**不清勾选**：用户还得在那几条上重试，清掉等于逼他再勾一遍。
+    fn bulk_patch_then(
+        &mut self,
+        patch: TaskPatch,
+        message: impl Fn(&App, usize) -> String,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = self.state.read(cx).checked_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.bulk_patch(&ids, &patch));
+        match outcome {
+            Ok(count) => {
+                self.state.update(cx, |state, _| state.clear_checked());
+                let text = message(cx, count);
+                self.show(Tone::Success, text, None, cx);
+            }
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "批量修改失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    /// 批量条：改优先级。
+    pub(crate) fn bulk_priority(&mut self, priority: Priority, cx: &mut Context<Self>) {
+        self.bulk_patch_then(
+            TaskPatch::new().priority(priority),
+            |cx, count| trf(cx, "已更新 {} 条任务的优先级。", &[&count.to_string()]),
+            cx,
+        );
+    }
+
+    /// 批量条：移入项目；`None` = 移出到「未归入项目」。
+    pub(crate) fn bulk_project(&mut self, project_id: Option<i64>, cx: &mut Context<Self>) {
+        let patch = match project_id {
+            Some(id) => TaskPatch::new().project(id),
+            None => TaskPatch::new().clear_project(),
+        };
+        self.bulk_patch_then(
+            patch,
+            |cx, count| trf(cx, "已移动 {} 条任务。", &[&count.to_string()]),
+            cx,
+        );
+    }
+
+    /// 批量条：改状态（「标记完成」就是 `Done` 这一档的特例）。
+    ///
+    /// 单开一条而不是并进 [`Self::bulk_patch_then`]：状态迁移要走内核的
+    /// `move_task`（那里才有 `completed_at` 与进度的联动），不是普通字段 patch。
+    pub(crate) fn bulk_status(&mut self, status: TaskStatus, cx: &mut Context<Self>) {
+        let ids = self.state.read(cx).checked_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.bulk_set_status(&ids, status));
+        match outcome {
+            Ok(count) => {
+                self.state.update(cx, |state, _| state.clear_checked());
+                self.show(
+                    Tone::Success,
+                    trf(cx, "已更新 {} 条任务的状态。", &[&count.to_string()]),
+                    None,
+                    cx,
+                );
+            }
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "批量修改失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    /// 批量条：删除（**不可逆** → 与单条删除同一条纪律，先弹二次确认）。
+    pub(crate) fn confirm_delete_checked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.read(cx).checked_count() == 0 {
+            return;
+        }
+        self.confirm(ConfirmScope::DeleteChecked, window, cx);
     }
 
     /// 卡片菜单 / 右栏：移入项目；`None` = 移出到「未归入项目」。
@@ -701,18 +968,28 @@ impl ProjectsPage {
             let message_for_content = message.clone();
             let view_for_ok = view.clone();
 
+            // 这一窗的每一档都是不可逆删除，确认键统一用警示红 —— 普通蓝会让人
+            // 把「永久删除」当成一次普通保存。
+            let confirm: ConfirmHandler = std::rc::Rc::new(move |_, cx| {
+                // 确认后才真正动手；视图已销毁（`update` 返回 `Err`）也照样关弹窗，
+                // 不让一个点不掉的确认框挂在屏幕上。
+                let _ = view_for_ok.update(cx, |this, cx| this.run_confirm(scope, cx));
+                true
+            });
+            let footer = dialog_footer(
+                "projects-confirm",
+                ok_text.clone(),
+                ButtonVariant::Destructive,
+                confirm,
+                cx,
+            );
+
             dialog
                 .w(px(CONFIRM_WIDTH))
                 .ml(offset.x)
                 .margin_top(dialog_top_offset(cx) + offset.y)
                 .opacity(offset.opacity)
                 .close_button(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(ok_text.clone())
-                        .cancel_text(tr(cx, "取消"))
-                        .show_cancel(true),
-                )
                 .content(move |content, _, cx| {
                     content.child(modal_drag_area(
                         &drag_for_content,
@@ -727,12 +1004,7 @@ impl ProjectsPage {
                             .child(body_text(message_for_content.clone(), cx)),
                     ))
                 })
-                .on_ok(move |_, _, cx| {
-                    // 确认后才真正动手；视图已销毁（`update` 返回 `Err`）也照样关弹窗，
-                    // 不让一个点不掉的确认框挂在屏幕上。
-                    let _ = view_for_ok.update(cx, |this, cx| this.run_confirm(scope, cx));
-                    true
-                })
+                .footer(footer)
         });
     }
 
@@ -745,6 +1017,18 @@ impl ProjectsPage {
                 (
                     SharedString::from(tr(cx, "删除任务？")),
                     SharedString::from(trf(cx, "「{}」将被永久删除，无法恢复。", &[&title])),
+                    SharedString::from(tr(cx, "删除")),
+                )
+            }
+            ConfirmScope::DeleteChecked => {
+                let count = state.checked_count();
+                (
+                    SharedString::from(tr(cx, "删除选中的任务？")),
+                    SharedString::from(trf(
+                        cx,
+                        "选中的 {} 条任务将被永久删除，无法恢复。",
+                        &[&count.to_string()],
+                    )),
                     SharedString::from(tr(cx, "删除")),
                 )
             }
@@ -825,6 +1109,27 @@ impl ProjectsPage {
                     ),
                 }
             }
+            ConfirmScope::DeleteChecked => {
+                let ids = self.state.read(cx).checked_ids();
+                let outcome = self.state.update(cx, |state, _| state.bulk_delete(&ids));
+                match outcome {
+                    Ok(deleted) => {
+                        self.state.update(cx, |state, _| state.clear_checked());
+                        self.show(
+                            Tone::Success,
+                            trf(cx, "已删除 {} 条任务。", &[&deleted.to_string()]),
+                            None,
+                            cx,
+                        );
+                    }
+                    Err(err) => self.show(
+                        Tone::Error,
+                        trf(cx, "删除失败：{}", &[&err.to_string()]),
+                        None,
+                        cx,
+                    ),
+                }
+            }
             ConfirmScope::DeleteProject(id) => {
                 let outcome = self.state.update(cx, |state, _| state.delete_project(id));
                 match outcome {
@@ -877,20 +1182,6 @@ impl ProjectsPage {
     // ------------------------------------------------------------------
     // 快捷键
     // ------------------------------------------------------------------
-
-    /// `N`：把焦点送进工具条的快速新建框（「快速新建」的入口就是它）。
-    ///
-    /// 在归档中心按 `N` 时先把主区切回看板 —— 否则焦点会落到一个当前不可见的输入框上，
-    /// 看起来像「按了没反应」。看板与列表都有这个框，所以只在归档中心才切。
-    fn focus_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.read(cx).view().is_archive() {
-            self.set_view(ViewMode::Board, cx);
-        }
-        // `InputState` 的 `focus_handle` 是私有字段，对外的聚焦口是 `focus(window, cx)`
-        // （`gpui_base::input::InputBaseState::focus`）—— 全仓别处聚焦搜索框都靠给
-        // 外层容器挂一个自己的 `track_focus`，这里直接让输入框自己收焦点，语义更准。
-        self.quick.update(cx, |input, cx| input.focus(window, cx));
-    }
 
     /// `J` / `K`。
     fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
@@ -959,17 +1250,33 @@ impl ProjectsPage {
         }
     }
 
-    /// `⌘Z`（以及提示条上的「撤销」）：把最近一次归档恢复回来。
-    fn undo_archive(&mut self, cx: &mut Context<Self>) {
+    /// `⌘Z`（以及提示条上的「撤销」）：把上一步可撤销的变更退回去。
+    ///
+    /// 撤销槽记的是**动作**（归档 / 改状态 / 复制），不是「上一次归档」——所以这里按动作
+    /// 分派回执文案，而不是一律说「已撤销归档」。
+    fn undo_last(&mut self, cx: &mut Context<Self>) {
         let outcome = self.state.update(cx, |state, _| state.undo());
         match outcome {
-            Ok(Some(UndoAction::RestoreTask(_))) => {
-                self.show(Tone::Success, tr(cx, "已撤销归档，任务已恢复。"), None, cx)
+            Ok(Some(action)) => {
+                let message: SharedString = match action {
+                    UndoAction::RestoreTask(_) => {
+                        SharedString::from(tr(cx, "已撤销归档，任务已恢复。"))
+                    }
+                    UndoAction::RestoreProject(_) => {
+                        SharedString::from(tr(cx, "已撤销归档，项目已恢复。"))
+                    }
+                    UndoAction::RevertStatus { status, .. } => SharedString::from(trf(
+                        cx,
+                        "已把状态改回「{}」。",
+                        &[status_label(status, cx)],
+                    )),
+                    UndoAction::RemoveCreated(_) => {
+                        SharedString::from(tr(cx, "已删掉刚复制出来的那条。"))
+                    }
+                };
+                self.show(Tone::Success, message, None, cx);
             }
-            Ok(Some(UndoAction::RestoreProject(_))) => {
-                self.show(Tone::Success, tr(cx, "已撤销归档，项目已恢复。"), None, cx)
-            }
-            Ok(None) => self.show(Tone::Warning, tr(cx, "没有可撤销的归档。"), None, cx),
+            Ok(None) => self.show(Tone::Warning, tr(cx, "没有可撤销的操作。"), None, cx),
             Err(err) => self.show(
                 Tone::Error,
                 trf(cx, "撤销失败：{}", &[&err.to_string()]),
@@ -977,30 +1284,6 @@ impl ProjectsPage {
                 cx,
             ),
         }
-    }
-
-    /// 快速新建：把输入框里的标题建成任务，落在当前范围里。
-    fn submit_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.quick.read(cx).value().to_owned();
-        if title.trim().is_empty() {
-            return;
-        }
-        let project = match self.state.read(cx).scope() {
-            // 「全部」与「收集箱」下新建都落收集箱（`None`）——「全部」不是容器。
-            BoardScope::Project(id) => Some(id),
-            BoardScope::All | BoardScope::Inbox => None,
-        };
-        let created = self
-            .state
-            .update(cx, |state, _| state.create_task(&title, project));
-        if created.is_some() {
-            self.quick.update(cx, |input, cx| {
-                input.set_value(SharedString::default(), window, cx);
-            });
-            // 快速新建不发回执（输入框清空本身就是回执），所以广播也自己叫一声。
-            bus::notify(cx);
-        }
-        cx.notify();
     }
 
     /// 看板列底的「+ 添加任务」（原型 `.addcard`，`projects-mock.html:1208`）。
@@ -1030,18 +1313,29 @@ impl ProjectsPage {
             let view_for_ok = view.clone();
             let heading_for_content = heading.clone();
 
+            let confirm: ConfirmHandler = std::rc::Rc::new(move |_, cx| {
+                // 只有「弹窗那一刻建的输入框」这一处来源，没有别的可回读对象。
+                let (title, status) = {
+                    let form = form_for_ok.read(cx);
+                    (form.title.read(cx).value().to_owned(), form.status)
+                };
+                let _ = view_for_ok.update(cx, |page, cx| page.submit_new_task(&title, status, cx));
+                true
+            });
+            let footer = dialog_footer(
+                "projects-new-task",
+                tr(cx, "新建"),
+                ButtonVariant::Primary,
+                confirm,
+                cx,
+            );
+
             dialog
                 .w(px(CONFIRM_WIDTH))
                 .ml(offset.x)
                 .margin_top(dialog_top_offset(cx) + offset.y)
                 .opacity(offset.opacity)
                 .close_button(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(tr(cx, "新建"))
-                        .cancel_text(tr(cx, "取消"))
-                        .show_cancel(true),
-                )
                 .content(move |content, _, cx| {
                     content.child(modal_drag_area(
                         &drag_for_content,
@@ -1057,16 +1351,7 @@ impl ProjectsPage {
                             .child(input_box(&form_for_content.read(cx).title, cx)),
                     ))
                 })
-                .on_ok(move |_, _, cx| {
-                    // 只有「弹窗那一刻建的输入框」这一处来源，没有别的可回读对象。
-                    let (title, status) = {
-                        let form = form_for_ok.read(cx);
-                        (form.title.read(cx).value().to_owned(), form.status)
-                    };
-                    let _ =
-                        view_for_ok.update(cx, |page, cx| page.submit_new_task(&title, status, cx));
-                    true
-                })
+                .footer(footer)
         });
     }
 
@@ -1323,10 +1608,24 @@ impl ProjectsPage {
 
     /// 打开快速新建（Spotlight）。
     pub(crate) fn open_spotlight(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let project = match self.state.read(cx).scope() {
+        self.open_spotlight_in(None, window, cx);
+    }
+
+    /// 打开快速新建，并**预填**一个项目。
+    ///
+    /// 项目右键菜单的「新建任务并归入」用 `Some(id)`；工具条与快捷键走 [`open_spotlight`]
+    /// （即 `None`），落点回落到当前范围。两条路只是预填值的来源不同，解析与落库全在
+    /// `submit_spotlight` 一份，所以这里只做到「把 fallback 定下来」为止。
+    pub(crate) fn open_spotlight_in(
+        &mut self,
+        project: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let project = project.or(match self.state.read(cx).scope() {
             BoardScope::Project(id) => Some(id),
             BoardScope::All | BoardScope::Inbox => None,
-        };
+        });
         dialogs::open_spotlight(self, project, window, cx);
     }
 
@@ -1336,13 +1635,81 @@ impl ProjectsPage {
         if text.is_empty() {
             return;
         }
+        // 落点优先级：`@项目` > 当前范围。与原型一致 —— 在某个项目下快速新建，
+        // 不写 `@项目` 就该落在这个项目里；写了就以写的为准。
+        let fallback = match self.state.read(cx).scope() {
+            BoardScope::Project(id) => Some(id),
+            BoardScope::All | BoardScope::Inbox => None,
+        };
         let parsed = quickparse::parse(text, self.state.read(cx).today());
-        let created = self
-            .state
-            .update(cx, |state, _| state.create_task_from_quick(&parsed, None));
+        let created = self.state.update(cx, |state, _| {
+            state.create_task_from_quick(&parsed, fallback)
+        });
         match created {
             Some(_) => self.show(Tone::Success, tr(cx, "已新建任务。"), None, cx),
             None => cx.notify(),
+        }
+    }
+
+    /// 打开「导出任务」弹窗（工具条的导出按钮）。
+    pub(crate) fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::open_export(self, window, cx);
+    }
+
+    /// 导出的「复制到剪贴板」：把生成的文本交出去，并弹一条回执。
+    ///
+    /// 回执与剪贴板写在同一个动作里，不拆开 —— 拆开迟早会出现「复制了但没提示」
+    /// 或者「提示了但没复制」这两种都让人怀疑的情况。
+    pub(crate) fn copy_export(&mut self, text: String, cx: &mut Context<Self>) {
+        let chars = text.chars().count();
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.show(
+            Tone::Success,
+            trf(cx, "已复制到剪贴板（{} 字符）。", &[&chars.to_string()]),
+            None,
+            cx,
+        );
+    }
+
+    /// 打开「从文本导入任务」弹窗（工具条的导入按钮）。
+    pub(crate) fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::open_import(self, window, cx);
+    }
+
+    /// 导入弹窗的「导入」：把粘贴的文本按行解析并落库。
+    ///
+    /// 落点优先级与快速新建一致：`@项目` > 当前范围（见 [`Self::submit_spotlight`]）。
+    pub(crate) fn submit_import(&mut self, text: &str, cx: &mut Context<Self>) {
+        let today = self.state.read(cx).today();
+        let lines = quickparse::parse_lines(text, today);
+        if lines.is_empty() {
+            self.show(Tone::Warning, tr(cx, "没有可导入的行。"), None, cx);
+            return;
+        }
+        let fallback = match self.state.read(cx).scope() {
+            BoardScope::Project(id) => Some(id),
+            BoardScope::All | BoardScope::Inbox => None,
+        };
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.import_lines(&lines, fallback));
+        match outcome {
+            Ok(created) => {
+                // 导入是**批量**写入，自己广播一声（与快速新建同理：它不回执时不该静默）。
+                bus::notify(cx);
+                self.show(
+                    Tone::Success,
+                    trf(cx, "已导入 {} 个任务。", &[&created.to_string()]),
+                    None,
+                    cx,
+                );
+            }
+            Err(err) => self.show(
+                Tone::Error,
+                trf(cx, "导入失败：{}", &[&err.to_string()]),
+                None,
+                cx,
+            ),
         }
     }
 
@@ -1438,24 +1805,34 @@ impl ProjectsPage {
     // 偏好与提示条
     // ------------------------------------------------------------------
 
-    /// 把当前视图 / 排序写进 `kv: projects_ui`（§6.2 的单键 JSON）。
+    /// 把当前视图 / 排序 / 分组写进 `kv: projects_ui`（§6.2 的单键 JSON）。
     ///
-    /// 整份偏好是一个 JSON 对象，**两个字段永远一起写**：只写一半会把另一半点成
+    /// 整份偏好是一个 JSON 对象，**所有字段永远一起写**：只写一半会把另一半写成
     /// 默认值 —— 比如「切个视图」不该把用户刚选的排序悄悄复位。
     fn save_prefs(&self, cx: &mut Context<Self>) {
-        let (view, sort) = {
+        let (view, sort, group) = {
             let state = self.state.read(cx);
-            (state.view(), state.sort())
+            (state.view(), state.sort(), state.group())
         };
         let prefs = prefs::ProjectsPrefs::default()
             .with_view(view)
-            .with_sort(sort);
+            .with_sort(sort)
+            .with_group(group);
         prefs::ProjectsPrefs::save(cx, &prefs);
     }
 
     /// 状态里那条撤销槽的序号（没有就是 `None`）。
     fn undo_seq(&self, cx: &Context<Self>) -> Option<u64> {
         self.state.read(cx).undo_slot().map(|slot| slot.seq)
+    }
+
+    /// 「这次动作有没有压出一条**新的**撤销槽」；有才把序号交给提示条。
+    ///
+    /// 直接用 [`Self::undo_seq`] 是不够的：改回同一档状态是空操作、不压槽，此时它返回的
+    /// 还是上一条动作的槽 —— 把那个序号挂到这次的提示条上，按「撤销」撤掉的是上一步
+    /// 而不是这一步。
+    fn fresh_undo_seq(&self, before: Option<u64>, cx: &Context<Self>) -> Option<u64> {
+        self.undo_seq(cx).filter(|seq| Some(*seq) != before)
     }
 
     /// 弹一条底部提示条。
@@ -1467,7 +1844,7 @@ impl ProjectsPage {
     ///
     /// 提示条超时也顺手作废状态里的撤销槽（[`ProjectsState::expire_undo`]，同样带序号
     /// 守卫）：§5.6 的撤销窗口就是 7 秒，过了窗口 `⌘Z` 不该还能翻出一条十秒前的归档。
-    fn show(
+    pub(crate) fn show(
         &mut self,
         tone: Tone,
         message: impl Into<SharedString>,
@@ -1565,7 +1942,7 @@ impl ProjectsPage {
                             .on_click({
                                 let view = view.clone();
                                 move |_, _window, cx| {
-                                    let _ = view.update(cx, |page, cx| page.undo_archive(cx));
+                                    let _ = view.update(cx, |page, cx| page.undo_last(cx));
                                 }
                             })
                         })),
@@ -1577,13 +1954,7 @@ impl ProjectsPage {
 
 impl Render for ProjectsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = view::render_main(
-            self.state.read(cx),
-            &self.view,
-            &self.quick,
-            &self.archive_search,
-            cx,
-        );
+        let content = view::render_main(self.state.read(cx), &self.view, &self.archive_search, cx);
 
         let mut panel = SidebarPanel::new("projects-content", &self.sidebar, content, window, cx);
         if panel.is_sidebar_visible() {
@@ -1602,8 +1973,11 @@ impl Render for ProjectsPage {
             .min_w_0()
             .min_h_0()
             .key_context(KEY_CONTEXT)
+            .on_action(cx.listener(|this, _: &QuickCreate, window, cx| {
+                this.open_spotlight(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &NewTask, window, cx| {
-                this.focus_quick(window, cx);
+                this.new_task_in_scope(window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewProject, _window, cx| {
                 this.create_project(cx);
@@ -1630,13 +2004,25 @@ impl Render for ProjectsPage {
                 this.leave_archive(cx);
             }))
             .on_action(cx.listener(|this, _: &UndoLastArchive, _window, cx| {
-                this.undo_archive(cx);
+                this.undo_last(cx);
             }))
             .on_action(cx.listener(|this, _: &ViewBoard, _window, cx| {
                 this.set_view(ViewMode::Board, cx);
             }))
             .on_action(cx.listener(|this, _: &ViewList, _window, cx| {
                 this.set_view(ViewMode::List, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ViewCalendar, _window, cx| {
+                this.set_view(ViewMode::Calendar, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ViewTimeline, _window, cx| {
+                this.set_view(ViewMode::Timeline, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ViewReport, _window, cx| {
+                this.set_view(ViewMode::Report, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ViewLog, _window, cx| {
+                this.set_view(ViewMode::Log, cx);
             }))
             .child(div().flex_1().min_h_0().min_w_0().child(panel))
             // 浮层放最后：绝对定位、贴在页面底沿。
@@ -1699,7 +2085,25 @@ fn unique_name(base: &str, taken: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{KEY_CONTEXT, KEY_CONTEXT_BARE, unique_name};
+    use super::{KEY_CONTEXT, KEY_CONTEXT_BARE, dialogs, unique_name};
+
+    /// 里程碑快照的默认值：当前进度 + 20，封顶 100（原型 `Math.min(100, t.prog + 20)`）。
+    ///
+    /// 封顶那一条是真会踩到的：进度 90 时 +20 会溢出 `u8` 之外的语义（155%），
+    /// 内核把它钳到 100 之前这里就得对。
+    #[test]
+    fn the_default_milestone_snapshot_advances_twenty_and_caps_at_hundred() {
+        assert_eq!(dialogs::default_milestone_snapshot(0), 20);
+        assert_eq!(dialogs::default_milestone_snapshot(35), 55);
+        assert_eq!(dialogs::default_milestone_snapshot(80), 100);
+        assert_eq!(dialogs::default_milestone_snapshot(90), 100, "封顶");
+        assert_eq!(dialogs::default_milestone_snapshot(100), 100);
+        assert_eq!(
+            dialogs::default_milestone_snapshot(255),
+            100,
+            "极端值也不能溢出（`saturating_add`）"
+        );
+    }
 
     /// 裸键上下文必须仍然落在页面上下文里、并且仍然排除输入框。
     ///

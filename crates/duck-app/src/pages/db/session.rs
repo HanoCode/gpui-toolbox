@@ -94,6 +94,9 @@ impl DatabasePage {
         self.table_ddl = None;
         self.update_connection_field(&id, cx, |cfg| cfg.database = name.clone());
         self.status = trf(cx, "正在切换数据库 {}…", &[&name]).into();
+        // 模式落到 Query、表页数据清空：组件里那份模型必须跟着走，否则切回来会拿
+        // 「上一次表浏览的表」去画 SQL 结果。
+        self.sync_data_table(cx);
         cx.notify();
 
         let for_conn = name.clone();
@@ -164,6 +167,8 @@ impl DatabasePage {
         self.table_ddl = None;
         self.update_connection_field(&id, cx, |cfg| cfg.schema = schema.clone());
         self.status = tr(cx, "正在切换命名空间…").into();
+        // 同「切换数据库」：模式 / 表页都换了，组件里的模型跟着走。
+        self.sync_data_table(cx);
         cx.notify();
         let for_conn = schema.clone();
         self.spawn_db(

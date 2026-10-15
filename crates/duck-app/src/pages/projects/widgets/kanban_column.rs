@@ -7,12 +7,14 @@ use gpui::{
 };
 use gpui_component::{Icon, h_flex, v_flex};
 
-use duck_components::DuckIcon;
-use duck_components::content::neutral_tag;
-use duck_project::{BoardColumn, CalendarDate, Task};
-use duck_theme::{active_theme, tr};
+use duck_components::content::{neutral_tag, tag};
+use duck_components::notify::Tone;
+use duck_components::{ButtonVariant, DuckIcon, icon_button};
+use duck_project::{BoardColumn, CalendarDate, Project, Task};
+use duck_theme::{active_theme, tr, trf};
 
 use super::super::ProjectsPage;
+use super::super::view::status_color;
 use super::TaskDrag;
 use super::column_title;
 use super::task_card::task_card;
@@ -29,6 +31,7 @@ const COLUMN_WIDTH: f32 = 268.;
 pub(crate) fn kanban_column(
     column: &BoardColumn,
     tasks: &[&Task],
+    projects: &[Project],
     today: CalendarDate,
     selected: Option<i64>,
     view: &WeakEntity<ProjectsPage>,
@@ -45,11 +48,29 @@ pub(crate) fn kanban_column(
     let title = column_title(column, cx);
     let count = tasks.len();
     // 超出 WIP 只提示、不阻断：看板是给人看的，不是写闸门。
-    let over_wip = column.wip_limit.is_some_and(|limit| count as i64 > limit);
+    //
+    // 读数按原型写成「WIP 5」/「超 WIP 2」而不是笼统的「超出 WIP」：只告诉用户
+    // 「超了」不告诉超了几个，他还得自己数一遍。超限才用警示色 —— 常态挂一个
+    // 橙色徽标会让人以为每一列都有问题。
+    let wip = column.wip_limit.map(|limit| {
+        let over = count as i64 - limit;
+        if over > 0 {
+            tag(
+                trf(cx, "超 WIP {}", &[&over.to_string()]),
+                Tone::Warning,
+                cx,
+            )
+        } else {
+            neutral_tag(
+                SharedString::from(trf(cx, "WIP {}", &[&limit.to_string()])),
+                cx,
+            )
+        }
+    });
 
     let cards: Vec<AnyElement> = tasks
         .iter()
-        .map(|task| task_card(task, today, selected == Some(task.id), view, cx))
+        .map(|task| task_card(task, projects, today, selected == Some(task.id), view, cx))
         .collect();
 
     // `drag_over` / `on_drop` / `hover` 的闭包必须是 `'static`，而 `extended` 借的是
@@ -87,6 +108,14 @@ pub(crate) fn kanban_column(
                     h_flex()
                         .min_w_0()
                         .gap(tokens.spacing.xs)
+                        // 列色点（原型 `.colhead .cdot`）：与卡片上的状态点同源取色。
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(8.))
+                                .rounded_full()
+                                .bg(status_color(status, cx)),
+                        )
                         .child(
                             div()
                                 .truncate()
@@ -98,7 +127,34 @@ pub(crate) fn kanban_column(
                         )
                         .child(neutral_tag(SharedString::from(count.to_string()), cx)),
                 )
-                .children(over_wip.then(|| neutral_tag(tr(cx, "超出 WIP"), cx))),
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(tokens.spacing.xs)
+                        .children(wip)
+                        // 「列设置」入口（原型 `data-col-edit`）：列名、WIP 上限、增删
+                        // 列都收在同一个弹窗里 —— 放在列头上，改的就是眼前这一列。
+                        .child(
+                            icon_button(
+                                SharedString::from(format!("project-column-settings-{status_key}")),
+                                tr(cx, "列设置"),
+                                Icon::new(DuckIcon::Ellipsis)
+                                    .size(extended.icon.sm)
+                                    .text_color(tokens.colors.muted_foreground),
+                                ButtonVariant::Ghost,
+                                cx,
+                            )
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    let _ = view.update(cx, |page, cx| {
+                                        page.open_column_settings(window, cx);
+                                    });
+                                }
+                            }),
+                        ),
+                ),
         )
         .child(
             div()

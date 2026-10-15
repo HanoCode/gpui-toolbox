@@ -23,9 +23,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use duck_components::DuckIcon;
-use duck_plugin::{Capabilities, Capability, DiscoveredPlugin, ExecutionModel, PluginIndex};
+use duck_plugin::{
+    Capabilities, Capability, DEFAULT_SOURCE_TAG, DiscoveredPlugin, ExecutionModel, PluginIndex,
+    PluginLocales,
+};
 use duck_plugin_js::JsToolOutcome;
-use duck_theme::{tr, trf};
+use duck_theme::{Lang, active_theme, t, tr, trf};
 use duck_tools::{ToolCategory, ToolMeta, ToolRegistry};
 use gpui::{App, Global, Window};
 
@@ -55,6 +58,18 @@ impl Global for PluginState {}
 struct PluginGrants(HashMap<String, Capabilities>);
 
 impl Global for PluginGrants {}
+
+/// 插件自带翻译（`plugin_id` → 已装载的 [`PluginLocales`]）。
+///
+/// **必须放全局、且与 [`PluginState`] 同一次装配里重建**：取词发生在渲染路径上
+/// （每帧、每个工具一项），每次现读磁盘等于把帧时间绑在文件 I/O 上。
+/// 与 [`PluginGrants`] 同一条纪律——运行时值放全局，磁盘只在扫描时读。
+///
+/// 只收「至少成功装载一种语言」的插件：老插件（没有 `locales/`）不进表，
+/// 取词直接落到宿主表兜底，省下一张空表。
+struct PluginLocaleState(HashMap<String, PluginLocales>);
+
+impl Global for PluginLocaleState {}
 
 /// 插件安装目录：`app_data_dir()/plugins`（macOS 为
 /// `~/Library/Application Support/DuckToolbox/plugins`）。
@@ -110,6 +125,77 @@ pub fn dir_of<'a>(cx: &'a App, plugin_id: &str) -> Option<&'a std::path::Path> {
         .iter()
         .find(|plugin| plugin.manifest.as_ref().is_some_and(|m| m.id == plugin_id))
         .map(|plugin| plugin.dir.as_path())
+}
+
+/// 插件文案取词：**三档降级** —— 插件表 → 宿主表 → 源串。
+///
+/// 第三档由 [`duck_theme::t`] 自己完成（它 miss 时回落源串，不会翻成空串）。
+///
+/// 为什么保留「宿主表」这一档（而不是插件表 miss 就直接给源串）：
+///
+/// 1. **老插件零回归**——没有 `locales/` 的插件，渲染结果与迁移前**逐字节相同**；
+/// 2. **同字不翻车**——插件的源串恰好与宿主某条文案同字时（例如插件名就叫「设置」），
+///    行为与今天一致，不会突然变成「英文界面显示中文」。
+///
+/// ⚠️ **必须在渲染期调用，不能把结果烘进 `ToolMeta`**：语言切换靠全窗口
+/// `refresh()`，烘进注册表就得重建整个注册表才能切语言（见 `AGENTS.md §3.3`）。
+///
+/// 返回 `&'static str` 是给 `ToolMeta` 的既有契约让路（它的字段就是 `&'static str`）：
+/// 命中的译文经内容去重的 [`leak_str`] 收一次，重复渲染不再增长。
+#[must_use]
+pub fn plugin_text_of_plugin(
+    cx: &App,
+    lang: Lang,
+    plugin_id: &str,
+    source: &'static str,
+) -> &'static str {
+    match lookup_plugin_text(cx, lang, plugin_id, source) {
+        Some(text) => leak_str(text),
+        None => t(lang, source),
+    }
+}
+
+/// 工具来源的文案取词：先按 `tool_id` 反查归属插件，再走 [`plugin_text_of_plugin`]。
+///
+/// 内置工具（无归属）直接走宿主表，行为与迁移前一致。
+#[must_use]
+pub fn plugin_text_of_tool(
+    cx: &App,
+    lang: Lang,
+    tool_id: &str,
+    source: &'static str,
+) -> &'static str {
+    match plugin_id_of_tool(cx, tool_id) {
+        Some(plugin_id) => plugin_text_of_plugin(cx, lang, plugin_id, source),
+        None => t(lang, source),
+    }
+}
+
+/// 插件中心的入口：那里的文案来自 `String`（市场索引 / 清单副本），不是静态串。
+///
+/// 先经 [`leak_str`] 收成 `&'static str` 再查——这与工具注册时的做法完全一致
+/// （`register_tools` 也是先 `leak_str` 再交给注册表），所以重复渲染不会漏字。
+#[must_use]
+pub fn plugin_text_owned(cx: &App, lang: Lang, plugin_id: &str, source: &str) -> &'static str {
+    plugin_text_of_plugin(cx, lang, plugin_id, leak_str(source))
+}
+
+/// 插件表查词（第一档）：命中返回借用自全局表的 `&str`。
+fn lookup_plugin_text<'a>(
+    cx: &'a App,
+    lang: Lang,
+    plugin_id: &str,
+    source: &str,
+) -> Option<&'a str> {
+    cx.try_global::<PluginLocaleState>()?
+        .0
+        .get(plugin_id)?
+        .lookup(lang.tag(), source)
+}
+
+/// 反查某个工具属于哪个插件（`None` = 内置工具 / 未注册）。
+fn plugin_id_of_tool<'a>(cx: &'a App, tool_id: &str) -> Option<&'a str> {
+    index(cx)?.plugin_for_tool(tool_id)?.id()
 }
 
 /// 执行模型的中文展示名：`js` → JS 脚本 / `wasm` → WASM 组件 / 其余 → 独立进程。
@@ -297,6 +383,11 @@ pub fn plugin_data_dir(plugin_id: &str) -> std::path::PathBuf {
 /// - 其余轨（`wasm` / `process`）运行时未接入，落到「后端尚未接入」占位。
 fn run_plugin_tool(tool_id: &str, window: &mut Window, cx: &mut App) {
     let name = ToolRegistry::get(cx, tool_id).map_or("工具", |tool| tool.meta().name());
+    // 展示名在**派发前**解析好：后台闭包是 `'static` 的，读不到 `cx`；
+    // 而它要跨三个 `move` 闭包活到结果回来那一刻，所以收成 `&'static str`
+    // （`plugin_text_of_*` 的返回类型，正好）。
+    let lang = active_theme(cx).lang();
+    let display_name = plugin_text_of_tool(cx, lang, tool_id, name);
     let info = index(cx)
         .and_then(|plugin_index| plugin_index.plugin_for_tool(tool_id))
         .and_then(|plugin| {
@@ -332,7 +423,17 @@ fn run_plugin_tool(tool_id: &str, window: &mut Window, cx: &mut App) {
     // 记下来才知道某次网络请求 / 文件写入是哪次点击放出去的。
     let plugin_id = manifest.id.clone();
     let execution = cx.background_executor().spawn(async move {
-        duck_plugin_js::run_tool(&dir, &data_dir, &manifest, &granted, &tool_id_for_run, "")
+        // 语言 tag 随任务带走：沙箱里的 `duck.locale` / `duck.t` 要按**执行时**的
+        // 语言取词，而后台闭包读不到 `cx`。
+        duck_plugin_js::run_tool(
+            &dir,
+            &data_dir,
+            &manifest,
+            &granted,
+            &tool_id_for_run,
+            "",
+            lang.tag(),
+        )
     });
     cx.spawn(async move |cx| {
         let result = execution.await;
@@ -340,7 +441,7 @@ fn run_plugin_tool(tool_id: &str, window: &mut Window, cx: &mut App) {
             crate::update::on_notify_window(cx, move |window, cx| {
                 // 译好的工具名先落局部变量：`record_event` 要可变借 `cx`，
                 // 参数里再套一个 `trf(cx, …)` 会同时借两次（E0502）。
-                let tool = tr(cx, name);
+                let tool = display_name;
                 match result {
                     Ok(outcome) => {
                         let detail = trf(cx, "调用插件工具：{}", &[tool]);
@@ -352,7 +453,7 @@ fn run_plugin_tool(tool_id: &str, window: &mut Window, cx: &mut App) {
                             &plugin_id,
                             detail,
                         );
-                        emit_outcome(name, outcome, window, cx);
+                        emit_outcome(display_name, outcome, window, cx);
                     }
                     Err(error) => {
                         tracing::warn!(tool = %tool_id_for_log, %error, "plugin tool execution failed");
@@ -379,8 +480,12 @@ fn run_plugin_tool(tool_id: &str, window: &mut Window, cx: &mut App) {
 }
 
 /// 把一次执行的产出投影成用户可见的反馈。
+///
+/// `display_name` 是**已译好的**工具展示名（插件表 → 宿主表 → 源串三档已在调用点
+/// 走完）。这里再 `tr` 一次会把插件自己提供的译文丢回宿主表重查，等于把插件的
+/// 翻译抹掉——所以入口只收成品。
 fn emit_outcome(
-    tool_name: &'static str,
+    display_name: &'static str,
     outcome: JsToolOutcome,
     window: &mut Window,
     cx: &mut App,
@@ -393,8 +498,7 @@ fn emit_outcome(
     }
     if outcome.output.is_empty() {
         if outcome.notifications.is_empty() {
-            let name = tr(cx, tool_name);
-            duck_components::notify::info(trf(cx, "「{}」执行完成", &[name]), window, cx);
+            duck_components::notify::info(trf(cx, "「{}」执行完成", &[display_name]), window, cx);
         }
         return;
     }
@@ -436,7 +540,7 @@ pub fn init(cx: &mut App) {
         dirs = %dirs.iter().map(|dir| dir.display().to_string()).collect::<Vec<_>>().join(", "),
         "plugin discovery finished"
     );
-    cx.set_global(PluginState(plugin_index));
+    install_index(cx, plugin_index);
 }
 
 /// 重新发现并装配。安装 / 卸载插件之后调用，让新贡献立刻出现在侧栏与搜索里。
@@ -452,8 +556,32 @@ pub fn rescan(cx: &mut App) {
         tools = registered,
         "plugin rescan finished"
     );
-    cx.set_global(PluginState(plugin_index));
+    install_index(cx, plugin_index);
     cx.refresh_windows();
+}
+
+/// 把一次发现的结果装进全局：索引 + 各插件的翻译表。
+///
+/// 两者**必须一起换**：只换索引会让翻译表与新索引错位（新插件的译文查不到、
+/// 已卸载插件的译文还留着），而这类错位在界面上只表现为「某些文案没翻」，
+/// 排查成本极高。
+fn install_index(cx: &mut App, plugin_index: PluginIndex) {
+    let mut locales: HashMap<String, PluginLocales> = HashMap::new();
+    for plugin in plugin_index.plugins() {
+        let Some(manifest) = plugin.manifest.as_ref() else {
+            continue; // 清单无效的条目没有 id，也无从谈译文。
+        };
+        let (source_tag, declared) = match manifest.i18n.as_ref() {
+            Some(config) => (config.source_tag(), config.declared_locales()),
+            None => (DEFAULT_SOURCE_TAG, None),
+        };
+        let loaded = PluginLocales::load(&plugin.dir, source_tag, declared);
+        if !loaded.is_empty() {
+            locales.insert(manifest.id.clone(), loaded);
+        }
+    }
+    cx.set_global(PluginState(plugin_index));
+    cx.set_global(PluginLocaleState(locales));
 }
 
 /// 扫描目录清单：dev 构建把仓库目录排在前（同一 id 覆盖安装版），release 只有安装目录。

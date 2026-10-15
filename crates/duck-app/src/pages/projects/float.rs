@@ -28,8 +28,8 @@ use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, WeakEntity, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::FluentBuilder as _,
-    px, size,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point,
+    prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
     Icon,
@@ -128,9 +128,15 @@ pub(crate) struct FloatState {
     doing: Vec<Task>,
     /// 待办（未展开时只有前 [`TODO_PREVIEW`] 条）。
     todos: Vec<Task>,
-    /// 待办总数（算「展开剩余 N 个任务」用）。
+    /// 待办总数 —— **顶层待办的条数**（与 [`Self::todos`] 同源，算「展开剩余 N 个任务」用）。
+    ///
+    /// ⚠️ 别改用 `board_stats().todo`：那个口径只按 `archived_at` 过滤、**含子任务**，
+    /// 会把「展开剩余」算多（展开后一条不多、那一行自己消失）。
     todos_total: u32,
     /// 待办段是否已展开。
+    ///
+    /// **单向**：展开后不再给「收起」—— 这一窗本来就小，收起只会让人再点一次，
+    /// 而原始形态就是「5 条 + 展开剩余」。
     expanded: bool,
     /// 就地展开详情的那条任务。
     open: Option<i64>,
@@ -189,10 +195,6 @@ impl FloatState {
             Ok(projects) => self.projects = projects,
             Err(err) => return self.fail(err),
         }
-        match store.board_stats(self.today) {
-            Ok(stats) => self.todos_total = stats.todo,
-            Err(err) => return self.fail(err),
-        }
         // 两段都按优先级排：这一窗存在的意义就是「我该干什么」，手动顺序留给看板。
         let doing = store.list_tasks(
             &TaskQuery::new()
@@ -204,17 +206,28 @@ impl FloatState {
             Ok(tasks) => self.doing = tasks,
             Err(err) => return self.fail(err),
         }
-        let mut query = TaskQuery::new()
-            .top_level_only()
-            .statuses([TaskStatus::Todo])
-            .sort(TaskSort::PriorityFirst);
-        if !self.expanded {
-            query = query.limit(TODO_PREVIEW as u32);
-        }
-        match store.list_tasks(&query) {
-            Ok(tasks) => self.todos = tasks,
+        // 待办：**一次把全部顶层待办读回来**，再按需截前几条。
+        //
+        // ⚠️ 总数别拿 `board_stats().todo` 顶替：那个口径只按 `archived_at` 过滤，
+        // **含子任务**；而这一段只列顶层（`top_level_only`）。两者一混，只要有待办
+        // 子任务，「展开剩余 N 个任务」就会多算 —— 点下去一条不多，那一行自己消失。
+        // 与其在两个口径之间换算，不如让**总数与列表同源**。
+        let todos = store.list_tasks(
+            &TaskQuery::new()
+                .top_level_only()
+                .statuses([TaskStatus::Todo])
+                .sort(TaskSort::PriorityFirst),
+        );
+        let todos = match todos {
+            Ok(tasks) => tasks,
             Err(err) => return self.fail(err),
-        }
+        };
+        self.todos_total = todos.len() as u32;
+        self.todos = if self.expanded {
+            todos
+        } else {
+            todos.into_iter().take(TODO_PREVIEW).collect()
+        };
         // 展开着的那条可能刚被改到别的状态（或删了），这一遍就把它放下 ——
         // 否则详情会一直挂在一条已经不在列表里的任务上。
         if let Some(id) = self.open
@@ -248,14 +261,6 @@ impl FloatState {
         }
         self.todos_total
             .saturating_sub(u32::try_from(self.todos.len()).unwrap_or(u32::MAX))
-    }
-
-    /// 待办段是不是已经展开过。
-    ///
-    /// 展开后不再给「收起」：这一窗本来就小，收起只会让人再点一次，
-    /// 而原始形态就是「5 条 + 展开剩余」。
-    pub(crate) fn expanded(&self) -> bool {
-        self.expanded
     }
 
     /// 就地展开的那条任务 id。
@@ -417,7 +422,7 @@ impl FloatWindow {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr(cx, "任务标题")));
         self.draft_sub = Some(cx.subscribe(
             &input,
-            |this: &mut Self, _input, event: &InputEvent, cx| {
+            |_this: &mut Self, _input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let entity = cx.entity();
                     crate::update::on_notify_window(cx, move |window, cx| {
@@ -538,7 +543,7 @@ impl Render for FloatWindow {
             root = root.child(error_line(error, cx));
         }
 
-        root            .child(head_doing)
+        root.child(head_doing)
             .child(
                 div()
                     .flex_none()
@@ -933,18 +938,13 @@ fn detail_card(
                 .child(meta_text(tr(cx, "子任务"), tokens.colors.muted_foreground)),
         );
     }
-    card.child(action_row(this, task, view, cx)).into_any_element()
+    card.child(action_row(task, view, cx)).into_any_element()
 }
 
 /// 详情里的动作行：开始 / 暂停 · 完成 · 返回。
 ///
 /// 不发「编辑」：完整编辑器属 S5，摆一个点了没反应的按钮比不摆更糟（P3-6）。
-fn action_row(
-    this: &FloatWindow,
-    task: &Task,
-    view: &WeakEntity<FloatWindow>,
-    cx: &App,
-) -> AnyElement {
+fn action_row(task: &Task, view: &WeakEntity<FloatWindow>, cx: &App) -> AnyElement {
     let tokens = active_theme(cx).tokens();
     let id = task.id;
     let view = view.clone();
@@ -1238,8 +1238,9 @@ mod tests {
 
     /// 待办折叠的算术：显示了 `todos.len()` 条、总数 `todos_total`，剩下的才是「展开剩余 N」。
     ///
-    /// 这条容易写成 `todos_total - TODO_PREVIEW`（错的）：总数来自 `board_stats`，
-    /// 数的是库里真实条数，只有减「实际查回来的条数」才对得上屏上看到的东西。
+    /// 这条容易写成 `todos_total - TODO_PREVIEW`（错的）：总数是**库里顶层待办的条数**，
+    /// 折叠只是"没全取回来"，只有减「实际查回来的条数」才对得上屏上看到的东西
+    /// （总数为什么不能改用 `board_stats().todo` 见 [`the_todo_total_counts_top_level_tasks_only`]）。
     #[test]
     fn the_collapsed_count_tracks_what_is_left_to_show() {
         let mut state = state(9);
@@ -1262,7 +1263,7 @@ mod tests {
     fn expanding_todos_is_one_way() {
         let mut state = state(0);
         state.expand_todos();
-        assert!(state.expanded());
+        assert!(state.expanded, "展开是单向的，点一次就该立住");
         assert_eq!(state.todos_collapsed(), 0);
     }
 
@@ -1295,6 +1296,47 @@ mod tests {
             "已完成的任务不该还在待办段"
         );
         assert_eq!(state.open(), None, "详情该跟着收起");
+    }
+
+    /// 「展开剩余 N」的总数**必须与列表同源**（都是顶层任务）。
+    ///
+    /// 反例：拿 `board_stats().todo` 当总数 —— 那个口径只按 `archived_at` 过滤、
+    /// **含子任务**。于是有待办子任务时总数偏大，「展开剩余 N」多算，点下去一条不多、
+    /// 那一行自己消失。真库跑一遍：6 条顶层待办 + 2 条待办子任务。
+    #[test]
+    fn the_todo_total_counts_top_level_tasks_only() {
+        let store = ProjectStore::open_in_memory().expect("in-memory sqlite");
+        let mut parent = 0;
+        for index in 1..=6 {
+            let id = store
+                .create_task(NewTask::new(format!("顶层 {index}")))
+                .expect("建顶层任务");
+            parent = parent.max(id);
+        }
+        for index in 1..=2 {
+            store
+                .create_task(NewTask::new(format!("子任务 {index}")).parent(parent))
+                .expect("建子任务");
+        }
+        let mut state = FloatState {
+            store: Some(store),
+            error: None,
+            doing: Vec::new(),
+            todos: Vec::new(),
+            todos_total: 0,
+            expanded: false,
+            open: None,
+            projects: Vec::new(),
+            today: today(),
+        };
+        state.reload();
+        assert_eq!(state.todos_total, 6, "子任务不计入（这一段只列顶层）");
+        assert_eq!(state.todos().len(), TODO_PREVIEW, "折叠时只显示前几条");
+        assert_eq!(state.todos_collapsed(), 1, "点开确实还会多出一条");
+        state.expand_todos();
+        state.reload();
+        assert_eq!(state.todos().len(), 6, "展开后 6 条顶层全在");
+        assert_eq!(state.todos_collapsed(), 0, "一条不剩，那一行该消失");
     }
 
     /// 描述截断按**字符**而不是字节（中文按字节切会把一个字劈成两个乱码）。
@@ -1348,6 +1390,9 @@ mod tests {
             archived_root: None,
             tags: Vec::new(),
             subtasks: duck_project::SubtaskProgress::default(),
+            starred: false,
+            block_reason: String::new(),
+            note: String::new(),
         }
     }
 }

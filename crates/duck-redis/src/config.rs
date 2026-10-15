@@ -324,12 +324,23 @@ impl RedisConfig {
             .unwrap_or(crate::scan::MAX_TREE_DEPTH)
     }
 
-    /// 生效自动展开阈值；未填 / 0 一律返回 0（不自动展开）。
+    /// 生效自动展开阈值。
+    ///
+    /// 语义与 zedis 对齐（`temp/zedis/src/states/app.rs::auto_expand_threshold`）：
+    ///
+    /// | 档案里的值 | 生效值 | 含义 |
+    /// |---|---|---|
+    /// | 未填 | [`crate::scan::AUTO_EXPAND_DEFAULT`]（100） | 缺省：小命名空间直接铺开 |
+    /// | `0` | `0` | 显式关掉自动展开（只看顶层，自己点开） |
+    /// | `n` | `n` | 子树键数 ≤ `n` 就展开 |
+    ///
+    /// 注意「未填」与「显式 0」**不再是同一个可观察结果**：前者是缺省 100。
     #[must_use]
     pub fn effective_auto_expand(&self) -> usize {
-        self.auto_expand_threshold
-            .and_then(|threshold| usize::try_from(threshold).ok())
-            .unwrap_or(0)
+        match self.auto_expand_threshold {
+            None => crate::scan::AUTO_EXPAND_DEFAULT,
+            Some(raw) => usize::try_from(raw).unwrap_or(0),
+        }
     }
 
     /// 连接显示名兜底：未命名时用「主机:端口/N」拼一个。
@@ -519,11 +530,15 @@ mod tests {
         assert_eq!(old.scan_count, None);
         assert!(!old.require_confirm_writes);
         assert_eq!(old.key_separator, ":", "分隔符缺省应为冒号");
-        // 键树两档缺省：深度用内核缺省、自动展开关闭（旧存档逐字段可读）。
+        // 键树两档缺省：深度用内核缺省、自动展开用 zedis 同款缺省 100
+        // （旧存档逐字段可读）。
         assert_eq!(old.max_key_tree_depth, None);
         assert_eq!(old.auto_expand_threshold, None);
         assert_eq!(old.effective_tree_depth(), crate::scan::MAX_TREE_DEPTH);
-        assert_eq!(old.effective_auto_expand(), 0);
+        assert_eq!(
+            old.effective_auto_expand(),
+            crate::scan::AUTO_EXPAND_DEFAULT
+        );
     }
 
     /// 键树两档的生效值：填了用填的，0 的语义由内核收口。
@@ -539,12 +554,23 @@ mod tests {
         assert_eq!(cfg.effective_tree_depth(), 3);
         assert_eq!(cfg.effective_auto_expand(), 20);
 
-        // 阈值显式填 0 = 不自动展开（与「未填」同一个可观察结果，但语义明确）。
+        // 阈值显式填 0 = 关掉自动展开（**与「未填」不同**：未填是缺省 100）。
         let off = RedisConfig {
             auto_expand_threshold: Some(0),
             ..cfg.clone()
         };
         assert_eq!(off.effective_auto_expand(), 0);
+
+        // 未填走缺省 100（zedis 同款）——「留空」不再是「不展开」。
+        let unset = RedisConfig {
+            auto_expand_threshold: None,
+            ..cfg.clone()
+        };
+        assert_eq!(
+            unset.effective_auto_expand(),
+            crate::scan::AUTO_EXPAND_DEFAULT
+        );
+        assert_eq!(crate::scan::AUTO_EXPAND_DEFAULT, 100);
     }
 
     /// 旧档案迁移：2026-10-12 之前的 `read_only` 布尔 → `write_policy` 单选轴。

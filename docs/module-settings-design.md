@@ -131,9 +131,14 @@
 
 ## 6. i18n
 
-新增文案按 `AGENTS.md §3.3` 登记进 `duck-theme/src/i18n.rs` 的 `static EN`，
-**按 UTF-8 字节序插入**（表是二分查找，乱序会静默查不到）。本批 EN 表增至 **1 944 条**，
-`table_is_sorted` + `every_chinese_literal_is_translated` 双守卫通过。
+新增文案按 `AGENTS.md §3.3` 登记进 `duck-theme/locales/en.toml`（一行
+`"中文源串" = "English"`，**顺序无关**），改完跑 `scripts/i18n_en_toml.py` 同步 key 清单。
+本批英译增至 **1 944 条**，`every_chinese_literal_is_translated` 守卫通过。
+
+> 📌 **2026-10-15 迁移**：英译数据源已从 `i18n.rs` 的 `static EN`（要求按 UTF-8
+> 字节序插入、二分查找）迁到 `locales/en.toml`（顺序无关，由 rust-i18n 编译期装载），
+> `table_is_sorted` 守卫随之删除。本文下方与其它设计文档里「按字节序插入 EN 表」的
+> 写法均为迁移前口径，新增文案一律改 TOML。
 
 > ⚠️ **守卫盲区（本批发现）**：`contains_cjk` 只认 `\u{4e00}..=\u{9fff}` 基本汉字区，
 > **全角标点（U+FF00–FFEF）、扩展 A 区、兼容汉字区都不在内**。

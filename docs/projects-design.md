@@ -1,8 +1,9 @@
 # 项目管理模块设计（`projects`）
 
-> 状态：**S1 + S2 + S3-I + S3-II + S3-III 已落地**（内核 crate `crates/duck-project` 103 单测；`duck-app` 侧 `pages/projects` 三件套（state / view / mod）+ 归档渲染 `archive.rs` + 偏好 `prefs.rs` + **7 个**页面私有组件，`duck-app` 项目管理页 55 单测全绿，`duck-app` 全量 289 单测通过）
+> 状态：**S1 + S2 + S3-I + S3-II + S3-III + S4 已落地**（内核 crate `crates/duck-project` 103 单测；`duck-app` 侧 `pages/projects` 三件套（state / view / mod）+ 归档渲染 `archive.rs` + 偏好 `prefs.rs` + **7 个**页面私有组件 + **S4 新增**「随手看」悬浮窗 `float.rs` 与跨窗广播 `bus.rs`，`duck-app` 项目管理页 55 单测全绿，`duck-app` 全量 289 单测通过）
 > 六项拍板决议见 §8 · 对应路由 `PROJECTS_ROUTE = "projects"`（**已替换占位页**，见 §9 S2 记录）
 > S3 拆三批：**S3-I（归档中心 + 撤销条 + 快捷键 + 偏好落盘）已落地**（见 §9 S3-I 记录）；**S3-II（列表视图 + 筛选 chips + 主区搜索 + 排序切换器）已落地**（见 §9 S3-II 记录）；**S3-III（以 `docs/projects-mock.html` 为真源对齐左栏 / 工具条 / 状态栏 / 卡片菜单 / 看板列）已落地**（见 §9 S3-III 记录）
+> **S4（「随手看」悬浮窗，首发）已落地**：`pages/projects/float.rs`（300×550 无边框置顶、`focus: false` 不抢焦点、两段列表 + 内联详情 + 内联新建）+ `pages/projects/bus.rs`（进程内变更广播，主窗与悬浮窗各开一个 `duck-project` 连接靠它互相同步）+ 全局热键**单键槽位化**（`duck-platform/src/hotkey.rs` 从「一条绑定」改成「按 `Slot` 分槽」，`⌥⌘T` 唤起；见 §9 S4 记录）
 > 参考实现：`temp/devAssistant/`（Vue 3 + Tauri 的任务管理）
 > 配套 UI 原型：`docs/projects-mock.html`（完整可交互，全部弹窗可点通）；设计注记与取舍见 `docs/projects-ui-mockup.html`
 
@@ -296,6 +297,18 @@ Group（分组）1 ── n Project（项目）1 ── n Task（任务）1 ─�
 - 右列「任务属性」：项目（下拉）、状态（下拉）、优先级（下拉）、四象限（2×2 选择器）、标签（标签选择器 + 管理入口）、父任务（下拉）
 - 底部：左"必填校验提示"，右"取消 / 保存"
 
+> **交付注记（S5-I 落地，2026-10-15）** —— 与上面规格的差异，逐条给理由：
+> 1. **宽度 940 是上限，不是定值**：按 `window.viewport_size().width - 32` 现算并取两者较小值，窗口窄到放不下时两列一起挤窄，而不是往两侧出界。右列**没有**加 `minmax(340px,…)` 那个下限 —— 窄窗口下硬撑 340 会让面板比窗口还宽。
+> 2. **日期是 `DatePicker`（日历弹层），不是手打 ISO 文本**：原型是 `<input type="date">`，语义本来就是「选」；本仓用 gpui-component 0.7.1 的现成控件。⚠️ 它的公开类型全踩 `chrono::NaiveDate`，而本仓依赖准入结论是**不引 chrono**（见 `duck-project/src/time.rs` 的说明），所以读写都经 ISO 文本中转（`Date::format` + `CalendarDate::parse`），`dialogs.rs` 的 `picker_date` / `set_picker_date` 是唯一出入口。
+> 3. **进度用滑块**，下限 = 打开弹窗那一刻的进度（原型 `min="t.prog"`，`projects-mock.html:1787`）：进度是累积量，只该前进；允许回退的话改别的字段时手一滑就抹回去了，而弹窗里没有撤销。滑块 + 读数单独做成一个视图实体（`TaskProgressSlider`）—— 读数要跟着拖动实时变，而弹窗 `content` 闭包不会因为滑块自己 `notify` 而重跑。
+> 4. **右列多了「里程碑」区块**：清单**渲染期**从页面状态现读（弹窗开着时也能从下层「添加里程碑」弹窗里加一条），行复用右栏 `task_detail_panel::milestone_row`（达成 / 删除都在里面），**id 前缀换成 `projects-task-editor-milestone`** —— 两处会同时画同一批里程碑，`ElementId` 只在一个窗口内唯一。**新建态只给一句说明**（内核的里程碑挂在 `task_id` 上，凭空造不了），不摆点了没用的入口。
+> 5. **父任务下拉的候选 = 顶层任务且排除自身**：内核 `check_parent` 只许一层嵌套（父自己不能再有父），界面侧按同一条口径先筛，别等保存失败。选「顶层任务」= 明确摘掉父任务（走 `clear_parent`），不是「不动」。
+> 6. **底部左侧写「按 ⏎ 直接保存」，不是原型的 ⌘↵**：本仓弹窗的提交键绑定就是 ⏎（`gpui-base/src/dialog.rs:92`），照原型写会指错键。
+> 7. **AI 三按钮仍属 S6**（`pages/projects/mod.rs` 的已落地清单），编辑器里先不摆 —— 「点了没反应」的入口比不摆更糟。
+> 8. **预估工时随日期自动算**（2026-10-15 追加）：开始 / 截止都排上之后，预估工时按 `(截止 − 开始 + 1) × 8` 自动填 —— **含首尾两天**（10-01 → 10-02 = 2 天 = 16 小时）。每天的小时数是常量 `HOURS_PER_WORKDAY`，经 `trf` 传进说明文案，改常量界面上那句「每天 N 小时」跟着变，不留第二份真源。
+>    写入时机只有两种：**输入框为空**、或**当前值就是自动算出来的**。用户一旦手填过（`InputEvent::Change` 置 `estimate_auto = false`），日期再改也不再覆盖 —— 想拉回自动点同一格右侧的「按日期重算」。⚠️ 程序化回填走 `InputState::set_value`，它**不**发 `Change`，所以自动写进去的值不会把自己误标成「手填」（这是整套联动能成立的前提）。
+>    按钮**不随「日期排全没有」切换禁用态**：弹窗正文的 `content` 闭包只跑一次，日期选择器自己 `notify` 到不了那里，禁用态画上去就不会更新；「先排好期」这个前提写进说明文字，跨度不成立时按了没反应。**实际工时永远手填** —— 它记的是已经花掉的量，与排期无关。
+
 **④ 快速新建（Spotlight）**
 
 ```
@@ -318,6 +331,14 @@ Group（分组）1 ── n Project（项目）1 ── n Task（任务）1 ─�
 - 唤起：`⌥⌘T` 全局键（走 `app::toggle_launcher` 既有通道），或从概览页/托盘菜单打开
 - 数据源同主窗口（共享 `duck-project`），显示**默认排除归档项**；每张卡右侧有"完成 / 归档"快捷按钮
 - 关闭 = 隐藏窗口，不销毁状态；重启后是否自动出现由设置项控制（默认关，遵循"不打扰"）
+
+> **交付注记（S4 落地，2026-10-15）** —— 与上面规格的四处差异，逐条给理由：
+> 1. **不抢焦点**：窗口建为 `WindowKind::PopUp`（macOS 上是 `NSPanel`）且 `focus: false`。规格只写了「不占 Dock」，但"随手看"的用途是**瞄一眼** —— 抢走前台会把「瞥一下」变成「切走一次」。代价是 `Esc` 收不起来（它压根不是 key window），收起只有「再按一次 `⌥⌘T`」与「点 ✕」两条路；点它照样能拿键盘（gpui 的 `acceptsFirstMouse` 返回 YES，第一下点击就送进内容区）。
+> 2. **拖动条用系统那 28pt，而不是自绘 26px**：没有"手工拖动窗口"的 gpui API。正确做法是 `is_movable: true` 且**不**声明 `app_owns_titlebar_drag`，让 AppKit 保留的隐形标题栏当命中区 —— 它正好盖住原型那条 `.fhead`（本来也不接点击）。命令面板正相反（`app_owns_titlebar_drag: true`），因为它的整窗都是可点内容。
+> 3. **卡片上不加常驻的「完成 / 归档」按钮**：300pt 宽的卡片并排放两个按钮会把标题压到一行两三个字；快捷动作改放**点卡片就地展开的详情里**（开始|暂停 / 完成 / 返回）。
+> 4. **内联详情不发「编辑」按钮**：完整任务编辑器属 S5，摆一个点了没反应的按钮比不摆更糟（P3-6 的判据）。
+>
+> 另：唤起键**不再经 `app::toggle_launcher`**，而是走热键槽位 `HotkeySlot::TaskFloat` → `app::toggle_task_float`。理由：`toggle_launcher` 的语义是「命令面板 / 主窗」，把它复用成"看情况开哪个窗"会让两条路径互相污染设置项（`launcher_opens_main_window`）；改成两个槽位后各自有独立的开关与键位（设置 → 行为 → 热键里是两段，与"不打扰"原则一致）。
 
 **⑦ 归档中心（M1）**
 
@@ -576,7 +597,7 @@ CREATE TABLE work_logs (                         -- M2；v1 先把表建好
 | S3-I | **归档中心**（两段列表 + 搜索 + 每行恢复/彻底删除 + 清空归档）+ 撤销条（7s）+ 页面级快捷键（`N`/`⇧N`/`J`/`K`/`Space`/`A`/`⇧A`/`⌫`/`Esc`/`⌘Z`）+ 偏好落盘（`kv: projects_ui`） | ✅ **已落地**（快捷键全通；归档/恢复/彻底删除/清空全通且不可逆动作全走二次确认；空态与错误态齐备；`duck-app` 项目管理页 37 单测全绿；详见 §9 S3-I 记录） |
 | S3-II | 列表视图（`ViewMode::List`）+ 筛选 chips + 主区搜索 + 排序切换器 | ✅ **已落地**（四项全通；另加视图切换 tab + `1` / `2` 两个快捷键 + 三分支空态；`duck-app` 项目管理页 50 单测全绿；详见 §9 S3-II 记录） |
 | S3-III | **按 `docs/projects-mock.html` 对齐呈现与操作路径**：左栏四段重写 + 搜索框移入左栏 + 智能列表（与范围互斥）+ 「显示已完成」独立开关 + 工具条范围 chips + 状态栏重写 + 卡片右键菜单 11 项 + 「更多」显式入口 + 看板列底「+ 添加任务」+ 卡片四象限 / 阻塞标记 + 排序补「按进度」档 + 子菜单标题 | ✅ **已落地**（差异清单 **13 项**全收口；`duck-app` bin **289 单测全绿**、`pages/projects` 55 个 `#[test]`；i18n EN 表本批 **+53 条**；详见 §9 S3-III 记录） |
-| S4 | **悬浮窗（"随手看"，首发）** | 全局键唤起；显示未归档的进行中/待办；与主窗口数据一致 |
+| S4 | **悬浮窗（"随手看"，首发）** | ✅ **已落地**（`⌥⌘T` 全局键唤起、再按一次收起；显示**未归档**的进行中（全部）+ 待办（前 5 条 + 「展开剩余 N 个任务」）；与主窗口经 `bus` 广播保持一致（四条不弹回执的写路径各自补广播）；窗口几何落 `kv: window.task_float`；本批新增 8 条单测（`float` 6 + `bus` 2）；四处刻意偏离原型已在 §4.3 ⑤ 与 §9 S4 记录写明；详见 §9 S4 记录） |
 | S5 | M2：日历 / 时间线 / 报表 / 工作日志 / 导入导出 | 逐项验收 |
 | S6 | M3：AI 分类 / 拆解 / 周报生成 / 自然语言查询 | AI 未配置时正确降级 |
 
@@ -1079,6 +1100,58 @@ S3 的**第三批**，也是唯一一批**不改功能范围、只改呈现与�
 - **不做**（→ S5）：工具条的「分组方式」下拉（按优先级 / 项目 / 状态 / 不分组）、导入导出、完整任务编辑弹窗、标签管理、列设置、里程碑。
 - **做不了**（内核无字段）：卡片上的 `kind` 徽标（Ticket/Doc/Issue）、置顶（`starred`）、阻塞**原因**（`block`）—— 都要先加内核字段。本批只做到「状态为 `Blocked` 时挂一个 `阻塞` 标签」：状态本身在内核里，原因是另一回事。
 - **图标顶替**：`DuckIcon` 无日历族（`CalendarToday` / `CalendarWeek` 不存在）→ 智能列表用 `Clock` / `Layers`；四象限原型用 `target` → 这里用 `Columns2`。
+
+### S4（已落地，2026-10-15）
+
+**目标**（§7 S4 行）：全局键唤起；显示未归档的进行中 / 待办；与主窗口数据一致。
+
+**交付物**
+
+| 文件 | 内容 | 规模 |
+| --- | --- | --- |
+| `crates/duck-platform/src/hotkey.rs` | **单绑定 → 命名槽位**：`pub type Slot = &'static str`；`start(on_press: impl Fn(Slot) + …)` / `bind(slot, Option<&Hotkey>)` / `active_spec(slot)` / `last_error(slot)` / `spec_owner(&map, slot, spec)`（跨槽撞键检查）；两个默认常量 `LAUNCHER_SPEC`（`alt+Space`）与 `FLOAT_SPEC`（`alt+super+KeyT` = `⌥⌘T`） | 1046 行 / **19 单测** |
+| `crates/duck-platform/src/lib.rs` | 导出 `FLOAT_SPEC as FLOAT_HOTKEY_SPEC` 等 | — |
+| `crates/duck-app/src/hotkey.rs` | `HotkeySlot::{Launcher, TaskFloat}` + `ALL: [Self; 2]`（`name`/`keys`/`default_spec`/`index`/`label`/`of_name`）；`dispatch`：`Launcher → app::toggle_launcher`、`TaskFloat → app::toggle_task_float`；`effective`/`raw_spec`/`pretty_spec`/`rebind`/`set_enabled`/`announce_startup_failure`/`report_failure`/`explain`/`failure_message` 全部带 `slot` | 356 行 / 1 单测（槽位表一致性） |
+| `crates/duck-app/src/settings.rs` | 热键访问器全部带 `slot`；**新增** `const WINDOW_TASK_FLOAT = "task_float"` + `restore_task_float(cx)`（只取原点、过 `clamp_bounds`）+ `save_task_float_bounds(window, cx)`（走 `save_bounds` → `window_put` 自带 400ms 去抖） | — |
+| `crates/duck-app/src/pages/settings/pages_hotkey.rs` | 从「一段」改成**两段**（命令面板 / 随手看），行与录入器由槽位参数化 | 308 行 |
+| `crates/duck-app/src/app.rs` | `WindowKind::Float`（**单开变体**，不复用 `Palette`）+ `Desktop::float_window` + `on_window_closed` 自关分支；`toggle_task_float` / `open_task_float` / `close_task_float` / `float_window_is_open`（探活用 `handle.update(cx, \|_,_,_\| {}).is_ok()`）；`install` 里插 `pages::projects::bus::install(cx)` | — |
+| `crates/duck-app/src/pages/projects/float.rs` | **新建**：`FloatState`（数据）+ `FloatWindow`（装配）+ 渲染块函数；`float_window_options` / `float_window_bounds` | **1400 行 / 6 单测** |
+| `crates/duck-app/src/pages/projects/bus.rs` | **新建**：`ProjectChanged`（空载荷）+ `ProjectBus`（`EventEmitter`）+ `Handle(Entity<…>)`（`Global`）+ `install`（幂等）/ `handle` / `notify` | **127 行 / 2 单测** |
+| `crates/duck-app/src/pages/projects/mod.rs` | `pub(crate) mod bus;` / `pub(crate) mod float;`（`app.rs` 要够得着）；页面与悬浮窗各自 `subscribe(bus)`；`show()` 里补一次广播 + 四条不弹回执的写路径各补一次 | — |
+| `crates/duck-app/src/pages/mod.rs` | `mod projects;` → `pub(crate) mod projects;` | — |
+
+**七条关键裁决**
+
+1. **悬浮窗自己开一个 `duck-project` 连接**，不借主窗那个。理由：主窗关掉之后它还得能用 ——「随手看」的价值正在这里。
+2. **由此而来的「两处视图互不同步」用进程内广播解决**（`bus.rs`）：写入方**落库之后** `notify`，两处各自 `subscribe` → 重读。广播的是**「变了」而不是「变了什么」** —— 一个视图重读一次是几次本地 SELECT，比维护差异表便宜得多，也不会漏字段。中心选 `Entity` 而不是裸 `Global` 是为了拿到 `cx.subscribe` 的**生命周期管理**（订阅随实体走，窗口关掉自动退订）。**不用 `kv` 版本号**：那要写存储（去抖 400ms）、还要轮询，而两个视图本就在同一个 `App` 里，没有跨进程需求。
+3. **广播落点收口**：写动作绝大多数走 `ProjectsPage::show`（凡弹回执的都经它），所以广播发在那一处；**四条不弹回执**的写路径各自再叫一声 —— 拖拽改列（`move_task_to`）、`Space` 标完成（`complete_task` / `toggle_selected`）、快速新建（`submit_quick`）、列内新建落在 Todo 列那一支（`submit_new_task`）。**兜底**在 `app::open_task_float`：每次唤起都广播一次，所以最坏情况也会在「唤起来看一眼」时对齐。
+4. **全局热键从「一条绑定」扩到「按槽位分」**，且**跨槽不许撞键**：`bind` 会拒绝「另一个槽已经登记着同一个组合」—— 注册库内部按 id 存表，两个槽位用同一个 `HotKey` 时会互相覆盖句柄而注销不掉（macOS 上 Carbon 甚至允许重复登记，靠返回值看不出问题）。launcher 槽沿用旧 `kv` 键名，以免老用户设置被静默复位。
+5. **`WindowKind::Float` 单开一个变体而不是复用 `Palette`**：两个窗口可以**同时**开着（一边打字搜命令、一边瞥待办），共用一个槽位会让后开的把先开的句柄顶掉。
+6. **窗口几何只存原点**（尺寸是常量 300×550、不可缩放）：`restore_task_float` 只取 `Point` 并过 `clamp_bounds`，与命令面板同款；**不跟随鼠标所在屏**（唤起是键盘操作，鼠标可能停在任意位置），首启落主屏右上角。
+7. **两段列表的「总数」与「列表」同源**：待办段一次把**全部顶层待办**读回来，`todos_total = all.len()`、折叠时再 `take(5)`。
+   不能拿 `board_stats().todo` 当总数 —— 那个口径（`GROUP BY status WHERE archived_at IS NULL`）**含子任务**，而这一段用 `top_level_only()` 只列顶层。两者一混，**只要有待办子任务就会多算**「展开剩余 N 个任务」，而点下去一条不多、那一行自己消失（展开后重读 `todos.len()` 仍等于原值）。已加回归测试 `the_todo_total_counts_top_level_tasks_only`（6 条顶层 + 2 条子任务 → 总数必须是 6 而不是 8）。**可复用判据：凡「列表 + 总数」两处取值，先问总数那一路的口径是否与列表同源。**
+
+**刻意偏离原型** —— 四条，理由已写在 §4.3 ⑤ 的交付注记与 `float.rs` 模块头：不抢焦点（`focus: false`）｜拖动靠 AppKit 隐形标题栏而非自绘抓取条｜卡片上不加常驻快捷按钮（改放就地展开的详情里）｜详情不发「编辑」（属 S5）。另：唤起键**不走 `toggle_launcher`**，改为独立槽位 `HotkeySlot::TaskFloat`。
+
+**i18n**：本批新增 **26 条**入 `EN`（2511 → **2537**）+ **1 条**入 `EN_PLURAL`（11 → **12**，`展开剩余 {} 个任务` → `Show {} more task` / `Show {} more tasks`，因为 `float.rs` 用的是 `trn`）。
+插入脚本 `/tmp/i18n_insert.py` 的口径：**保留既有条目块逐字节原样**，只把新块按 UTF-8 字节序插进去（不做整表重排、不重排别人的排版）→ `diff` 结果是 **纯新增 43 行 / 删 0 行**；排版规则按仓内既有的**内容显示宽 ≤63 单行否则三行**（实测：全表单行最大 63、三行最小 64），插完 `rustfmt --edition 2024 --check` 干净。
+
+**门禁结果（区分本批 / 仓库级）**
+
+| 门禁 | 本批状态 | 证据 |
+| --- | --- | --- |
+| `cargo check -p duck-app --locked`（bin） | ✅ 本批文件 0 错 0 警 | `--message-format short` 日志里本批文件路径 **0 命中** |
+| `cargo check -p duck-app --locked --all-targets` | ✅ 本批文件 0 错 0 警 | 同上（test cfg 下曾报的 `bus.rs:97 E0405 IntoElement` 已修：`IntoElement as _` 是**匿名**导入，不能用来命名 trait，改回具名导入） |
+| `cargo test -p duck-platform --locked` | ✅ 全绿 | 含 `hotkey` 19 单测 |
+| `cargo test -p duck-theme --locked --lib i18n` | ⚠️ `table_is_sorted` / `plural_table_is_sorted` / `plural_entries_are_well_formed` ✅；`every_chinese_literal_is_translated` **仍红**，但**本批文件 0 命中** | 剩余 **92 条**全在并发会话的 `pages/projects/{dialogs,view,quickparse,state}.rs`（S5 五件套） |
+| `rustfmt --edition 2024 --check`（本批文件） | ✅ | `i18n.rs` / `float.rs` / `bus.rs` / `mod.rs` / `app.rs` / `hotkey.rs` / `pages_hotkey.rs` |
+| `cargo test -p duck-app --locked` | ⛔ **跑不起来**（非本批原因） | `pages/projects/view.rs:777/794` 调 `page.open_import` / `page.open_export` 而方法不存在 —— 并发会话正在做 S5 的**导入导出**（同目录新出现 `export.rs`，6 单测）。bin 的 test 目标整包编译不过，所以本批 8 条单测**尚未在本机跑过一次** |
+
+**已知边界（不是缺陷，是范围划分）**
+
+- **详情里不发「编辑」**（完整任务编辑器属 S5）、**没有「重启后自动出现」设置项**（规格里写的是「默认关」，即当前行为；开关本身随设置页一起做）—— 后者严格说属于规格未交付项，登记在此。
+- 两段列表**都按优先级排**（`TaskSort::PriorityFirst`），手动顺序留给看板：这一窗存在的意义就是「我该干什么」。
+- 展开待办**不给「收起」**：原始形态就是「5 条 + 展开剩余」，收起只会让人再点一次。
 
 ---
 

@@ -1,6 +1,9 @@
 //! 跨模块复用的自由函数：锁 / 拒绝文案 / 连接档案读写 / 面板骨架与时间与标签。
 
 use super::*;
+// `Hsla` 是 `key_type_color` / `ttl_chip_color` 的返回类型：父模块的 `use gpui::{…}`
+// 里没列它（父模块自己不直接用），glob 取不到，这里显式引一次。
+use gpui::Hsla;
 
 /// 会话互斥锁的取用：毒化时返回连接错误（不 panic——UI 线程不该被后台线程的崩溃带走）。
 pub(super) fn lock(
@@ -37,6 +40,56 @@ pub(super) fn text_input<C: AppContext>(
     placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
+}
+
+/// 顶栏 / 状态栏档位下拉的通用骨架（查询模式 / 过期时间 / 排序 / DB 选择共用）。
+///
+/// `options` 的每一项是 `(档位, 菜单文案)`，按钮上显示**当前档位**的文案；
+/// `on_select` 拿到被点的档位与窗口——有的档位要重扫（查询模式 / DB 切换），
+/// 有的只重算本地视图（过期时间 / 排序），差别留给调用方。
+///
+/// `anchor` 要跟着按钮在工具条里的位置走：左端的按钮用 `BottomLeft`（菜单向右展开），
+/// 右端的用 `BottomRight`（向左展开），否则菜单会顶出窗口右缘。
+/// ⚠️ 状态栏在窗口**底部**，那里的按钮也要用 `*Bottom*`——`Anchor::TopLeft` 会把弹层
+/// 挂到按钮下缘之外，只能靠 `Positioner` 的视口钳位救回来。
+pub(super) fn toolbar_switcher<V>(
+    id: &'static str,
+    anchor: Anchor,
+    options: &[(V, SharedString)],
+    current: V,
+    icon: impl IntoElement,
+    on_select: impl Fn(V, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement
+where
+    V: Copy + PartialEq + 'static,
+{
+    let current_label = options
+        .iter()
+        .find(|(value, _)| *value == current)
+        .map_or_else(SharedString::default, |(_, label)| label.clone());
+    let items = options.to_vec();
+    // 不写 `Rc<dyn Fn(..)>` 标注：菜单项要多次回调，用 `Rc` 共享**具体闭包类型**即可
+    // （`dyn` 那层只会招来 clippy 的 `type_complexity`，没有实际好处）。
+    let on_select = Rc::new(on_select);
+    toolbar_text_dropdown_button(
+        id,
+        current_label,
+        icon,
+        anchor,
+        move |menu, _, _| {
+            items.iter().fold(menu, |menu, (value, label)| {
+                let value = *value;
+                let on_select = Rc::clone(&on_select);
+                menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .checked(value == current)
+                        .on_click(move |_, window, cx| on_select(value, window, cx)),
+                )
+            })
+        },
+        cx,
+    )
 }
 
 /// 从 kv 读连接档案；解析失败回落空表（用户重存即可覆盖）。
@@ -144,6 +197,29 @@ pub(super) fn relative_age(timestamp: i64, now: i64, cx: &App) -> String {
     tr_relative_time(cx, delta, UnderMinute::Seconds)
 }
 
+/// 字节数的紧凑写法（`512 B` / `1.2 KB` / `3.4 MB`）。
+///
+/// 值面板顶部要给的是**服务端上的原始字节数**（解码、解压之前的那一份），
+/// 所以单位走二进制前缀（1024 进制）、最多一位小数——差几个字节没有意义，
+/// 有用的信息是量级。
+///
+/// 不带 `cx`：单位和数字都是 ASCII，没有要翻的文案。
+pub(super) fn format_bytes(bytes: usize) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        // 字节档不留小数：`512 B` 比 `512.0 B` 干净。
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// 环境标签的展示文案（`None` 档不显示标签）。
 pub(super) fn env_tag_label(tag: EnvTag, cx: &App) -> Option<&'static str> {
     match tag {
@@ -175,5 +251,65 @@ pub(super) fn mode_label(mode: AccessMode, cx: &App) -> &'static str {
         AccessMode::ReadWrite => tr(cx, "读写"),
         AccessMode::SafeMode => tr(cx, "安全模式（锁写）"),
         AccessMode::StrictReadOnly => tr(cx, "严格只读（ACL 限制）"),
+    }
+}
+
+/// 类型徽标的颜色（移植 zedis `KeyType::color` 的**去饱和**调色板）。
+///
+/// 一套色服务两种主题行不通：深色行上好看的取值放到浅色行只有 2.3–3.0:1 对比度，
+/// 所以明暗各一套，且**每套在各自最难读的底（浅色选中 `#e2e2e2` / 深色选中
+/// `#222222`）上都不低于 4.5:1**。
+///
+/// 之所以整列去饱和：类型徽标会在键树每一行重复，鲜艳填充会堆成一条噪音色带，
+/// 跟键名抢注意力。
+pub(super) fn key_type_color(key_type: KeyType, dark: bool) -> Hsla {
+    let (light, dark_value) = match key_type {
+        KeyType::String => (0x3c649f, 0x6e8cb9), // 蓝
+        KeyType::List => (0x923fa6, 0xae75bd),   // 紫
+        KeyType::Hash => (0x805d28, 0xb88f51),   // 橙
+        KeyType::Set => (0x296b6b, 0x5aafaf),    // 青
+        KeyType::ZSet => (0xb23838, 0xc77575),   // 红
+        KeyType::Stream => (0x386f2a, 0x5b9b4b), // 绿
+        KeyType::Module | KeyType::Missing => (0x735e5e, 0x8a8a8a), // 灰
+    };
+    duck_theme::color_from_rgb(if dark { dark_value } else { light })
+}
+
+/// TTL 芯片的三层配色（`< 1m` / `< 1h` / 其余），与 zedis 的 `render_item` 同口径。
+///
+/// **按值取好再带进渲染闭包**：`uniform_list` 的行闭包要求 `'static`，不能持有
+/// 借自 `cx` 的 `&ExtendedTokens`；而 `Hsla` 是 `Copy` 的，先算成三个色值即可。
+#[derive(Clone, Copy)]
+pub(super) struct TtlChipPalette {
+    /// `< 1m`：马上就没（警示色）。
+    urgent: Hsla,
+    /// `< 1h`：本次会话内可能消失（琥珀）。
+    soon: Hsla,
+    /// 其余：弱化色。
+    calm: Hsla,
+}
+
+impl TtlChipPalette {
+    pub(super) fn of(tokens: &duck_theme::ExtendedTokens) -> Self {
+        Self {
+            urgent: tokens.colors.status_failed,
+            // zedis 的琥珀 `#cba26a`：比警示色弱、比正文弱化色显眼。
+            soon: duck_theme::color_from_rgb(0xcba26a),
+            calm: tokens.colors.text_tertiary,
+        }
+    }
+
+    /// 按剩余秒数选一档。
+    ///
+    /// 调用点已先过 [`duck_redis::ttl_chip_kind`] 滤掉持久的键，
+    /// 所以这里的入参只可能是真会过期的正值。
+    pub(super) fn pick(&self, ttl_secs: i64) -> Hsla {
+        if (0..60).contains(&ttl_secs) {
+            self.urgent
+        } else if (60..3600).contains(&ttl_secs) {
+            self.soon
+        } else {
+            self.calm
+        }
     }
 }

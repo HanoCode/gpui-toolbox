@@ -12,7 +12,21 @@ description = "Redis / Valkey 模块内核：连接档案、分级锁写闸门�
 duck-platform.workspace = true
 redis.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# ⚠️ `preserve_order` **必须显式打开**，不能靠特性统一「碰巧」拿到。
+#
+# `serde_json::Map` 在没有这个特性时是 `BTreeMap`（键序），开了之后是 `IndexMap`
+# （**文档里的原始顺序**）。本 crate 为两件事需要后者：
+#
+# 1. `json_tree.rs` 的 JSON 树必须按**原文顺序**列成员，好与「文本档」看到的
+#    `to_string_pretty` 输出一致——两个档位对同一份文档给出不同顺序是说不通的；
+# 2. 参考实现 zedis 也是显式开的（`temp/zed/Cargo.toml` 的
+#    `serde_json = { features = ["preserve_order", "raw_value"] }`）。
+#
+# 不显式打开的后果非常隐蔽：工作区里 `schemars`（经 gpui-base / gpui-component）
+# 会传递地打开它，于是 **`cargo test -p duck-theme -p duck-redis` 与
+# `cargo test -p duck-redis` 得到两种行为**——单跑绿、一起跑红。
+# 依赖是 `indexmap 2.14.2`（已在图内，`rust-version = "1.85"`，正好压线）。
+serde_json = { workspace = true, features = ["preserve_order"] }
 tracing.workspace = true
 
 # 解码管线（`decode.rs`）的两条现成通道，**零新增包**——两者都早已在工作区依赖图里

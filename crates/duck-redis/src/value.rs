@@ -83,6 +83,25 @@ impl KeyType {
             Self::Missing | Self::Module => None,
         }
     }
+
+    /// 键树里的**类型徽标**文本（对齐 zedis 的 `KeyType::badge_code`）。
+    ///
+    /// 前六档与 zedis 逐字一致（`STR` / `LIST` / `HASH` / `SET` / `ZSET` / `STRM`）；
+    /// 模块类型在 zedis 里取模块名前缀，本仓不记录模块名，统一用 `MOD`；
+    /// 键已消失（`Missing`）返回空串——那种行不会出现在键树里。
+    #[must_use]
+    pub const fn badge_code(self) -> &'static str {
+        match self {
+            Self::String => "STR",
+            Self::List => "LIST",
+            Self::Set => "SET",
+            Self::ZSet => "ZSET",
+            Self::Hash => "HASH",
+            Self::Stream => "STRM",
+            Self::Module => "MOD",
+            Self::Missing => "",
+        }
+    }
 }
 
 /// 哈希字段 / 流字段的一对 `(field, value)`（都是原始字节，二进制安全）。
@@ -324,6 +343,23 @@ mod tests {
         }
         assert_eq!(KeyType::Missing.server_name(), None);
         assert_eq!(KeyType::Module.server_name(), None);
+    }
+
+    /// 类型徽标：六个内建类型与 zedis 逐字一致，模块兜底 `MOD`，缺失为空串。
+    #[test]
+    fn badge_codes_match_zedis() {
+        assert_eq!(KeyType::String.badge_code(), "STR");
+        assert_eq!(KeyType::List.badge_code(), "LIST");
+        assert_eq!(KeyType::Hash.badge_code(), "HASH");
+        assert_eq!(KeyType::Set.badge_code(), "SET");
+        assert_eq!(KeyType::ZSet.badge_code(), "ZSET");
+        assert_eq!(KeyType::Stream.badge_code(), "STRM");
+        assert_eq!(KeyType::Module.badge_code(), "MOD");
+        assert_eq!(KeyType::Missing.badge_code(), "");
+        // 徽标长度受控（固定宽度的树内芯片排得整齐）。
+        for key_type in KeyType::ALL {
+            assert!(key_type.badge_code().len() <= 4);
+        }
     }
 
     /// 字节转换：各态应答都能取到字节，且与 RESP 协议版本无关。

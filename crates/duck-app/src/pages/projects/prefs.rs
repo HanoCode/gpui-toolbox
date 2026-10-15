@@ -117,6 +117,50 @@ pub(crate) fn sort_from_key(text: &str) -> Option<TaskSort> {
         .find(|sort| sort_key(*sort) == text)
 }
 
+/// 列表视图的分组轴：同一批任务按什么「摆成几摞」。
+///
+/// 与 [`ViewMode`] / [`TaskSort`] 同一个待遇 —— 内核不认识它（分组是纯界面概念，
+/// `duck-project` 只负责把任务查出来），wire 形式由本模块钉住：认不出的键一律回落
+/// 默认值，**不 panic、不清档**。
+///
+/// 只作用于列表视图：看板的「分组」就是列本身，日历 / 时间线 / 报表各有自己的
+/// 骨架，拿一个轴去套它们只会多出一层按钮。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum GroupMode {
+    /// 不分组（原型 `none`）：一整张表，只有表头。
+    None,
+    /// 按优先级分组（默认 —— 与原型 `S.group` 的初值 `priority` 一致）。
+    #[default]
+    Priority,
+    /// 按项目分组；未归入项目的合成**最后一组**（原型同款）。
+    Project,
+    /// 按状态分组（按看板列序）；**空组也画**，它顺带把列名当成了分组表头。
+    Status,
+}
+
+impl GroupMode {
+    /// 全部取值，按原型菜单的排列顺序。
+    pub(crate) const ALL: [Self; 4] = [Self::Priority, Self::Project, Self::Status, Self::None];
+}
+
+/// [`GroupMode`] 的 wire 键。与 [`GroupMode::ALL`] **逐一对应**，由
+/// `group_keys_cover_every_variant` 钉住：加了变体却忘了给键，那条测试立刻红。
+pub(crate) const fn group_key(mode: GroupMode) -> &'static str {
+    match mode {
+        GroupMode::None => "none",
+        GroupMode::Priority => "priority",
+        GroupMode::Project => "project",
+        GroupMode::Status => "status",
+    }
+}
+
+/// 解析 [`GroupMode`] 的 wire 键；未知值返回 `None`。
+pub(crate) fn group_from_key(text: &str) -> Option<GroupMode> {
+    GroupMode::ALL
+        .into_iter()
+        .find(|mode| group_key(*mode) == text)
+}
+
 /// 落盘的偏好快照。
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -125,6 +169,8 @@ pub(crate) struct ProjectsPrefs {
     pub(crate) view: Option<String>,
     /// 任务排序口径（[`sort_key`] 的 wire 键）。
     pub(crate) sort: Option<String>,
+    /// 列表分组轴（[`group_key`] 的 wire 键）。
+    pub(crate) group: Option<String>,
 }
 
 impl ProjectsPrefs {
@@ -169,6 +215,14 @@ impl ProjectsPrefs {
             .unwrap_or_default()
     }
 
+    /// 列表分组轴；缺字段或认不出时回落到按优先级（原型的初值）。
+    pub(crate) fn group_mode(&self) -> GroupMode {
+        self.group
+            .as_deref()
+            .and_then(group_from_key)
+            .unwrap_or_default()
+    }
+
     /// 记下视图。
     pub(crate) fn with_view(mut self, mode: ViewMode) -> Self {
         self.view = Some(mode.key().to_owned());
@@ -178,6 +232,12 @@ impl ProjectsPrefs {
     /// 记下排序口径。
     pub(crate) fn with_sort(mut self, sort: TaskSort) -> Self {
         self.sort = Some(sort_key(sort).to_owned());
+        self
+    }
+
+    /// 记下列表分组轴。
+    pub(crate) fn with_group(mut self, mode: GroupMode) -> Self {
+        self.group = Some(group_key(mode).to_owned());
         self
     }
 }
@@ -196,19 +256,37 @@ mod tests {
     }
 
     #[test]
+    fn group_keys_cover_every_variant() {
+        for mode in GroupMode::ALL {
+            let key = group_key(mode);
+            assert_eq!(group_from_key(key), Some(mode), "{key} 应能还原");
+        }
+        assert_eq!(group_from_key("nope"), None);
+    }
+
+    #[test]
+    fn group_menu_lists_none_last() {
+        // 原型菜单把「不分组」摆在最后（前三条都是「按……分组」，最后一条是不分组）。
+        assert_eq!(GroupMode::ALL[3], GroupMode::None);
+    }
+
+    #[test]
     fn missing_fields_fall_back_to_the_defaults() {
         let prefs: ProjectsPrefs = serde_json::from_str("{}").expect("空对象可解析");
         assert_eq!(prefs.view_mode(), ViewMode::Board);
         assert_eq!(prefs.task_sort(), TaskSort::Manual);
+        assert_eq!(prefs.group_mode(), GroupMode::Priority);
     }
 
     #[test]
     fn unknown_keys_fall_back_to_the_defaults_instead_of_failing() {
         // 旧版本写下、或被手改坏的 JSON 都不该让偏好读不出来。
         let prefs: ProjectsPrefs =
-            serde_json::from_str(r#"{"view":"gantt","sort":"by_vibes"}"#).expect("仍可解析");
+            serde_json::from_str(r#"{"view":"gantt","sort":"by_vibes","group":"by_vibes"}"#)
+                .expect("仍可解析");
         assert_eq!(prefs.view_mode(), ViewMode::Board);
         assert_eq!(prefs.task_sort(), TaskSort::Manual);
+        assert_eq!(prefs.group_mode(), GroupMode::Priority);
     }
 
     #[test]
@@ -258,14 +336,16 @@ mod tests {
     }
 
     #[test]
-    fn a_round_trip_keeps_both_fields() {
+    fn a_round_trip_keeps_every_field() {
         let prefs = ProjectsPrefs::default()
             .with_view(ViewMode::Archive)
-            .with_sort(TaskSort::DueAsc);
+            .with_sort(TaskSort::DueAsc)
+            .with_group(GroupMode::Status);
         let json = serde_json::to_string(&prefs).expect("可序列化");
         let back: ProjectsPrefs = serde_json::from_str(&json).expect("可反序列化");
         assert_eq!(back, prefs);
         assert_eq!(back.view_mode(), ViewMode::Archive);
         assert_eq!(back.task_sort(), TaskSort::DueAsc);
+        assert_eq!(back.group_mode(), GroupMode::Status);
     }
 }

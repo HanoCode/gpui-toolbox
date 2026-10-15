@@ -6,14 +6,14 @@
 //! 本模块只做「拼命令 → 取应答 → 转成本地模型」，不做任何解码与展示。
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use redis::{Client, Connection, Value};
 
 use crate::config::RedisConfig;
 use crate::error::RedisError;
 use crate::scan::{ScanPage, clamp_count, parse_scan_reply};
-use crate::server::{self, ClientInfo, ConfigEntry, ServerFeatures, SlowlogEntry};
+use crate::server::{self, ClientInfo, ConfigEntry, ServerFeatures, SlowlogEntry, StatusOverview};
 use crate::value::{KeyType, RedisValue, StreamEntry, as_byte_array, as_bytes, as_int, as_text};
 
 /// ACL 只读探测的结果。
@@ -46,6 +46,59 @@ pub struct RedisConnection {
     target: String,
 }
 
+/// 单次批量元数据里最多塞多少个键。
+///
+/// 每个键两条命令（`TYPE` + `TTL`），256 键 = 512 条命令一个 pipeline，
+/// 一页默认 1000 键就是 4 次往返——比逐键 1000 次好上三个数量级，
+/// 又不会让单个 pipeline 的请求缓冲过肥。
+pub const META_CHUNK_KEYS: usize = 256;
+
+/// 一个键的元数据（键树每行都要：类型徽标 + TTL 芯片）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyMeta {
+    /// 键类型（`TYPE`）。
+    pub key_type: KeyType,
+    /// 剩余存活秒数：`-1` 无过期、`-2` 键已消失（沿用协议语义，不做归一）。
+    pub ttl_secs: i64,
+}
+
+impl KeyMeta {
+    /// 取不到元数据时的占位（键已消失 / 应答形态不认识）。
+    #[must_use]
+    pub const fn missing() -> Self {
+        Self {
+            key_type: KeyType::Missing,
+            ttl_secs: -2,
+        }
+    }
+}
+
+/// 单键的 `OBJECT` 信息：内部编码 + 空闲时长。
+///
+/// **刻意不进 [`KeyMeta`] / [`RedisConnection::key_meta`] 的批量 pipeline**：
+/// 那条 pipeline 每键两条命令（`TYPE` + `TTL`），再加两条就是翻倍——而编码与
+/// 空闲时间只有**被选中的那一个键**才要显示（对齐 zedis：`OBJECT ENCODING`
+/// 与热度都是选中后才取）。
+///
+/// 两个字段都是 `Option`，因为 `OBJECT` **随时可能不可用**：代理、托管云、
+/// 权限受限的账号（`NOPERM`）都会拒它。拿不到就是 `None`，界面那一行不渲染，
+/// 不弹错、不降级成「未知」之类的假值。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyObjectInfo {
+    /// `OBJECT ENCODING` 的结果（`listpack` / `hashtable` / `int` / `embstr` …）。
+    pub encoding: Option<String>,
+    /// `OBJECT IDLETIME` 的秒数（服务端自上次访问以来的空闲时长）。
+    pub idletime_secs: Option<u64>,
+}
+
+impl KeyObjectInfo {
+    /// 两条命令都没拿到结果（服务端不支持 / 无权限 / 键不存在）。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.encoding.is_none() && self.idletime_secs.is_none()
+    }
+}
+
 impl RedisConnection {
     /// 按档案建连。
     ///
@@ -76,6 +129,43 @@ impl RedisConnection {
                 "unexpected PING reply: {reply}"
             )))
         }
+    }
+
+    /// 计时 `PING`：一次往返的耗时（状态栏「延迟」那一段）。
+    ///
+    /// 走的是和 [`Self::ping`] 同一条命令，只在外面套一层秒表。刻意**不复用
+    /// `ping()` 再单独计时**——那会量到「ping 完了又过了一段时间」，而不是往返本身。
+    ///
+    /// ⚠️ 量的是**客户端观测到的往返**（含服务器执行 + 网络 + 客户端处理），
+    /// 不是服务端的内部延迟；跨网络 / 走代理时天然偏大。这是所有客户端的状态栏
+    /// 都在用的口径，误差方向也是用户能理解的那一侧。
+    pub fn ping_latency(&mut self) -> Result<Duration, RedisError> {
+        let started = Instant::now();
+        self.ping()?;
+        Ok(started.elapsed())
+    }
+
+    /// 状态栏的一次探测：`INFO memory` + `INFO keyspace`，一条 pipeline 一个往返。
+    ///
+    /// **永不失败**（返回 [`StatusOverview`] 而不是 `Result`），与
+    /// [`Self::object_info`] 同一套取舍：状态栏的内存 / 库键数是**装饰**，
+    /// 拿不到就不显示那一段，不该为它弹一个错误提示。
+    ///
+    /// ⚠️ **分成两个 `INFO <section>` 而不是一次 `INFO`**：整份 `INFO` 有几十个
+    /// 字段、几 KB 的正文，状态栏只用得上四五个；按段取让服务端少序列化一大截。
+    /// 两条命令进同一条 pipeline ⇒ 仍然只有一个往返。
+    pub fn status_overview(&mut self) -> StatusOverview {
+        let mut pipe = redis::pipe();
+        pipe.ignore_errors()
+            .cmd("INFO")
+            .arg("memory")
+            .cmd("INFO")
+            .arg("keyspace");
+        let Ok(replies) = pipe.query::<Vec<redis::RedisResult<Value>>>(&mut self.conn) else {
+            return StatusOverview::default();
+        };
+        let ok_at = |index: usize| replies.get(index).and_then(|reply| reply.as_ref().ok());
+        server::status_overview_from(ok_at(0), ok_at(1))
     }
 
     /// 切换逻辑库。
@@ -173,6 +263,16 @@ impl RedisConnection {
         as_int(&reply).ok_or_else(|| RedisError::Command("TTL reply is not an integer".into()))
     }
 
+    /// 取键的剩余存活**毫秒**（`PTTL`）。
+    ///
+    /// 与 [`Self::ttl`] 是两条命令而不是同一个的两种叫法：秒级精度在回收站里不够用
+    /// （删一个 1.4 秒后过期的键，`TTL` 读出来是 1、`PTTL` 读出来是 1400）。
+    /// `-1` = 无过期、`-2` = 键不存在，沿用协议语义不做归一。
+    pub fn pttl(&mut self, key: &str) -> Result<i64, RedisError> {
+        let reply: Value = redis::cmd("PTTL").arg(key).query(&mut self.conn)?;
+        as_int(&reply).ok_or_else(|| RedisError::Command("PTTL reply is not an integer".into()))
+    }
+
     /// 单批 `SCAN`。
     ///
     /// `pattern` 为 `None` 时不过滤；`type_filter` 走服务端 `TYPE` 过滤
@@ -196,6 +296,56 @@ impl RedisConnection {
         }
         let reply: Value = cmd.query(&mut self.conn)?;
         parse_scan_reply(&reply)
+    }
+
+    /// 批量取一页键的**元数据**（类型 + TTL），键树每行都要用。
+    ///
+    /// 走 `pipeline`：每键两条命令（`TYPE` / `TTL`）在一次往返里发完，
+    /// 而不是逐键 `N` 次往返（45 键就是 45 RTT，百万键根本跑不动）。
+    /// 超过 [`META_CHUNK_KEYS`] 的键按块拆成多个 pipeline，
+    /// 避免单个 pipeline 把请求缓冲撑得过大。
+    ///
+    /// 与其余读路径同一纪律：**只发参数化命令**，不拼命令行。
+    /// 返回的下标与入参 `keys` 一一对应（长度相同，顺序一致）。
+    pub fn key_meta(&mut self, keys: &[String]) -> Result<Vec<KeyMeta>, RedisError> {
+        let mut out = Vec::with_capacity(keys.len());
+        for chunk in keys.chunks(META_CHUNK_KEYS) {
+            let mut pipe = redis::pipe();
+            for key in chunk {
+                pipe.cmd("TYPE").arg(key);
+                pipe.cmd("TTL").arg(key);
+            }
+            let replies: Vec<Value> = pipe.query(&mut self.conn)?;
+            out.extend(parse_meta_replies(&replies, chunk.len()));
+        }
+        Ok(out)
+    }
+
+    /// 探测**单个**键的 `OBJECT ENCODING` / `OBJECT IDLETIME`。
+    ///
+    /// 两条命令一次往返，**永不失败**（返回 [`KeyObjectInfo`] 而不是 `Result`）：
+    ///
+    /// - `ignore_errors()` 让单条命令的失败（不支持 `OBJECT` / `NOPERM` / 键不存在）
+    ///   只把该条的应答标成错误，而不是把整个 pipeline 判死；
+    /// - 整个查询连不上时也返回空值——调用方是「给右栏多显示两行」，
+    ///   为它弹一个错误提示是把可选信息当成了必需信息。
+    ///
+    /// ⚠️ **只对选中的键发**，不要放进批量读路径（见 [`KeyObjectInfo`] 的说明）。
+    pub fn object_info(&mut self, key: &str) -> KeyObjectInfo {
+        let mut pipe = redis::pipe();
+        pipe.ignore_errors()
+            .cmd("OBJECT")
+            .arg("ENCODING")
+            .arg(key)
+            .cmd("OBJECT")
+            .arg("IDLETIME")
+            .arg(key);
+        let Ok(replies) = pipe.query::<Vec<redis::RedisResult<Value>>>(&mut self.conn) else {
+            return KeyObjectInfo::default();
+        };
+        // 单条失败的应答在这里就被丢掉：失败与「服务端没给值」在展示上是同一件事。
+        let ok_at = |index: usize| replies.get(index).and_then(|reply| reply.as_ref().ok());
+        object_info_from(ok_at(0), ok_at(1))
     }
 
     /// 读取一个键的**第一页**内容。
@@ -269,7 +419,8 @@ impl RedisConnection {
                     .query(&mut self.conn)?;
                 Ok(RedisValue::Stream(parse_stream_entries(&reply)))
             }
-            // 模块类型的值需要 `DUMP`，M1.6 才做（且要限制体积）。
+            // 模块类型的值要经 `DUMP` 才能看到（[`Self::dump_key`] 已经在了），
+            // 但类型化查看器本身 M1.6 还没做——且它必须自己限体积，理由见 `dump_key`。
             KeyType::Module => Err(RedisError::Unsupported(format!(
                 "module type `{}` viewer is not implemented yet",
                 key_type_label(key_type)
@@ -284,6 +435,43 @@ impl RedisConnection {
     pub fn del_key(&mut self, key: &str) -> Result<u64, RedisError> {
         let reply: Value = redis::cmd("DEL").arg(key).query(&mut self.conn)?;
         Ok(u64::try_from(as_int(&reply).unwrap_or(0)).unwrap_or(0))
+    }
+
+    /// 取一个键的序列化字节（`DUMP`）。软删除入站前的「抄一份」走这里。
+    ///
+    /// ⚠️ **不要拿它做「大键预览」**：`DUMP` 在服务端**主线程**上把整个值序列化一遍，
+    /// 且没有任何分页手段。回收站之所以在调它之前先过一道
+    /// [`crate::trash::should_stash`] 体积闸，就是因为这一点（见 `trash` 模块文档）。
+    ///
+    /// 键在「读元信息」与「取载荷」两次往返之间消失时，服务端回 `Nil`；这里转成
+    /// **错误**而不是空 `Vec`——「没有这个键」与「这个键的值是空的」是两件事，
+    /// 回收站需要区分（前者应当什么都不入站）。
+    pub fn dump_key(&mut self, key: &str) -> Result<Vec<u8>, RedisError> {
+        let reply: Value = redis::cmd("DUMP").arg(key).query(&mut self.conn)?;
+        as_bytes(&reply)
+            .ok_or_else(|| RedisError::Command(format!("DUMP returned no payload for `{key}`")))
+    }
+
+    /// 把一份 `DUMP` 载荷写回成一个键（`RESTORE`）。回收站的「恢复」走这里。
+    ///
+    /// **刻意不带 `REPLACE`**：同名键在删除之后被重新建出来时，服务端会以
+    /// `BUSYKEY` 拒绝，由调用方把它算作「跳过」——从回收站恢复一个键不该顺手
+    /// 覆盖别人刚写进去的数据。要覆盖是另一个动作，得由人显式选。
+    ///
+    /// `pttl_ms` **为 `0` 表示不过期**（协议语义）。调用方应先把负值归一成 `0`
+    /// （见 `TrashEntry::restore_pttl_ms`），别把 `-1` 直接下发。
+    pub fn restore_key(
+        &mut self,
+        key: &str,
+        pttl_ms: i64,
+        payload: &[u8],
+    ) -> Result<(), RedisError> {
+        let _: Value = redis::cmd("RESTORE")
+            .arg(key)
+            .arg(pttl_ms)
+            .arg(payload)
+            .query(&mut self.conn)?;
+        Ok(())
     }
 
     /// 覆盖写入一个字符串键（`SET`）。
@@ -692,6 +880,58 @@ fn unique_marker(avoid: &[u8]) -> Vec<u8> {
     }
 }
 
+/// 把 `OBJECT ENCODING` / `OBJECT IDLETIME` 两条应答配成 [`KeyObjectInfo`]。
+///
+/// 入参是**两条命令各自的应答**，`None` 表示那条没成功（无权限 / 不支持 / 键不存在）。
+/// 解析规则：
+///
+/// - 编码去掉首尾空白；**空串按「没拿到」算**（某些网关会回一个空串表示不支持）；
+/// - 空闲秒数只接受非负数——`OBJECT` 在键不存在时是**报错**而不是回负数，
+///   但真回负数时宁可当没拿到，也不要把它显示成一个巨大的无符号数。
+#[must_use]
+pub fn object_info_from(encoding: Option<&Value>, idletime: Option<&Value>) -> KeyObjectInfo {
+    KeyObjectInfo {
+        encoding: encoding
+            .and_then(as_text)
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty()),
+        idletime_secs: idletime
+            .and_then(as_int)
+            .and_then(|secs| u64::try_from(secs).ok()),
+    }
+}
+
+/// 把 `TYPE` / `TTL` 交替排列的 pipeline 应答配成 [`KeyMeta`]。
+///
+/// 入参是**扁平**的应答列表：`[type0, ttl0, type1, ttl1, …]`。
+/// 任何一处取不出值（应答短了、形态不认识）都按 [`KeyMeta::missing`] 处理，
+/// **不整批丢弃**——一个坏应答不该让整页键树失去元数据。
+/// 返回值长度恒为 `expected`（多了截断、少了补占位）。
+#[must_use]
+pub fn parse_meta_replies(replies: &[Value], expected: usize) -> Vec<KeyMeta> {
+    let mut out: Vec<KeyMeta> = replies
+        .chunks(2)
+        .map(|pair| match (pair.first(), pair.get(1)) {
+            (Some(type_reply), Some(ttl_reply)) => {
+                let Some(text) = as_text(type_reply) else {
+                    return KeyMeta::missing();
+                };
+                let Some(ttl) = as_int(ttl_reply) else {
+                    return KeyMeta::missing();
+                };
+                KeyMeta {
+                    key_type: KeyType::from_type_reply(text.trim()),
+                    ttl_secs: ttl,
+                }
+            }
+            _ => KeyMeta::missing(),
+        })
+        .collect();
+    out.truncate(expected);
+    out.resize(expected, KeyMeta::missing());
+    out
+}
+
 /// 从 `INFO` 文本里取一个字段。
 #[must_use]
 pub fn info_field(text: &str, field: &str) -> Option<String> {
@@ -839,6 +1079,37 @@ pub fn parse_info_sections(text: &str) -> Vec<(String, Vec<(String, String)>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `OBJECT` 两条应答的装配：拿到、缺失、空串、负数各走哪条路。
+    #[test]
+    fn object_info_assembly() {
+        let encoding = Value::BulkString(b"  listpack ".to_vec());
+        let idletime = Value::Int(42);
+        let info = object_info_from(Some(&encoding), Some(&idletime));
+        assert_eq!(info.encoding.as_deref(), Some("listpack"), "首尾空白要去掉");
+        assert_eq!(info.idletime_secs, Some(42));
+        assert!(!info.is_empty());
+
+        // 空串编码 = 服务端没给值（某些网关这么表达「不支持」）。
+        let blank = Value::SimpleString(String::new());
+        let info = object_info_from(Some(&blank), Some(&idletime));
+        assert_eq!(info.encoding, None);
+        assert_eq!(info.idletime_secs, Some(42), "一条拿不到不影响另一条");
+
+        // 两条都失败 = 空值（`OBJECT` 不可用的服务端）。
+        let info = object_info_from(None, None);
+        assert!(info.is_empty());
+        assert_eq!(info, KeyObjectInfo::default());
+
+        // 空闲时间回负数：宁可当没拿到，也不显示成一个巨大的无符号数。
+        let negative = Value::Int(-1);
+        let info = object_info_from(Some(&encoding), Some(&negative));
+        assert_eq!(info.idletime_secs, None);
+
+        // 空闲时间回非整数（形态不认识）：同样按没拿到。
+        let junk = Value::BulkString(b"n/a".to_vec());
+        assert_eq!(object_info_from(None, Some(&junk)).idletime_secs, None);
+    }
 
     /// `INFO` 字段提取：命中、缺失、空值、同名前缀不误命中。
     #[test]
@@ -1000,5 +1271,53 @@ mod tests {
             !AclProbe::Unknown.acl_read_only(),
             "探测不出来时必须按可写处理，否则旧服务端会被全面禁写"
         );
+    }
+
+    /// 批量元数据应答配对：正常、键已消失、坏形态、应答短了 / 长了。
+    #[test]
+    fn meta_replies_pairing() {
+        // 正常：type/ttl 交替。
+        let replies = vec![
+            Value::SimpleString("string".into()),
+            Value::Int(3600),
+            Value::SimpleString("list".into()),
+            Value::Int(-1),
+        ];
+        let meta = parse_meta_replies(&replies, 2);
+        assert_eq!(
+            meta[0],
+            KeyMeta {
+                key_type: KeyType::String,
+                ttl_secs: 3600
+            }
+        );
+        assert_eq!(meta[1].key_type, KeyType::List);
+        assert_eq!(meta[1].ttl_secs, -1, "无过期的键原样保留 -1");
+
+        // 键已消失：TYPE 回 none、TTL 回 -2。
+        let gone = vec![Value::SimpleString("none".into()), Value::Int(-2)];
+        assert_eq!(parse_meta_replies(&gone, 1)[0].ttl_secs, -2);
+
+        // 坏形态（TTL 不是整数）→ 占位，不 panic、不丢整批。
+        let broken = vec![Value::SimpleString("hash".into()), Value::Nil];
+        let meta = parse_meta_replies(&broken, 1);
+        assert_eq!(meta[0], KeyMeta::missing());
+
+        // 应答短了：补齐到 expected，长度恒等于键数（下标一一对应）。
+        let short = vec![Value::SimpleString("set".into()), Value::Int(5)];
+        let meta = parse_meta_replies(&short, 3);
+        assert_eq!(meta.len(), 3);
+        assert_eq!(meta[1], KeyMeta::missing());
+        assert_eq!(meta[2], KeyMeta::missing());
+
+        // 应答多了：截断到 expected。
+        let long = vec![
+            Value::SimpleString("set".into()),
+            Value::Int(5),
+            Value::SimpleString("set".into()),
+            Value::Int(5),
+        ];
+        assert_eq!(parse_meta_replies(&long, 1).len(), 1);
+        assert!(parse_meta_replies(&[], 0).is_empty());
     }
 }

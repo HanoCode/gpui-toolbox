@@ -59,6 +59,7 @@ fn repo_dev_plugin_discovers_and_executes() {
         &manifest.capabilities.clone(),
         "dev.duck.textstat.stats",
         "",
+        "zh-Hans",
     )
     .expect("sample tool must execute when every declared capability is granted");
     assert!(
@@ -90,6 +91,7 @@ fn nothing_granted_means_the_plugin_cannot_even_write_its_report() {
         &Capabilities::default(),
         "dev.duck.textstat.stats",
         "",
+        "zh-Hans",
     );
 
     let error = result.expect_err("no capability granted: the tool must fail");
@@ -124,6 +126,7 @@ fn granting_only_the_write_leaves_the_notification_denied() {
         &granted,
         "dev.duck.textstat.stats",
         "",
+        "zh-Hans",
     );
 
     let error = result.expect_err("notifications were not granted: the tool must fail");
@@ -154,6 +157,7 @@ fn granting_only_notifications_leaves_the_write_denied() {
         &granted,
         "dev.duck.textstat.stats",
         "",
+        "zh-Hans",
     );
 
     let error = result.expect_err("filesystem write was not granted: the tool must fail");

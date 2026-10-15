@@ -8,6 +8,7 @@
 
 pub mod command_palette;
 pub mod content;
+pub mod data_table;
 pub mod dblogos;
 mod dialog;
 mod icons;
@@ -20,8 +21,8 @@ mod sidebar;
 pub use dblogos::DatabaseLogo;
 pub use dialog::{
     ActionHandler, ConfirmHandler, FooterAction, ModalDrag, ModalOffset, dialog_footer,
-    dialog_footer_with_action, dialog_top_offset, modal_drag, modal_drag_area, modal_offset,
-    modal_title_row,
+    dialog_footer_with_action, dialog_footer_with_hint, dialog_top_offset, modal_drag,
+    modal_drag_area, modal_offset, modal_title_row,
 };
 pub use icons::{ComponentAssets, DuckIcon, LOGO_ASSET_PATH};
 pub use kit::{

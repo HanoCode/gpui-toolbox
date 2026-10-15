@@ -504,7 +504,6 @@ impl DatabasePage {
             result_tabs: std::mem::take(&mut self.result_tabs),
             active_result_tab: self.active_result_tab,
             plan_view: self.plan_view.take(),
-            column_widths: std::mem::take(&mut self.column_widths),
             selected_row: self.selected_row.take(),
             checked_rows: std::mem::take(&mut self.checked_rows),
             batch_column: self.batch_column.take(),
@@ -560,9 +559,9 @@ impl DatabasePage {
         self.active_result_tab = view.active_result_tab;
         self.stmt_queue.clear();
         self.plan_view = view.plan_view.take();
-        self.column_widths = std::mem::take(&mut view.column_widths);
-        // 快照不带横向偏移，切回标签一律回最左（与换结果集同一口径）。
-        self.result_x_scroll.set_offset(point(px(0.), px(0.)));
+        // 列宽**不进快照**：它现在是数据表组件的内部状态（页面级），换标签时由
+        // `sync_data_table` 用 `set_model` 推新模型 —— 列名序列没变就沿用现有列宽
+        //（同结构的两个标签切来切去宽度不重置），变了才重估并清掉横向位置。
         self.selected_row = view.selected_row.take();
         self.checked_rows = std::mem::take(&mut view.checked_rows);
         self.batch_column = view.batch_column.take();
@@ -579,6 +578,8 @@ impl DatabasePage {
         self.page_jump
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.hidden_columns = std::mem::take(&mut view.hidden_columns);
+        // 结果区整体换了一份：把新结果推给数据表组件（表模型 / 行序 / 藏列一次推齐）。
+        self.sync_data_table(cx);
     }
 
     /// 记一次相位报告：进会话内日志 + 失败时给用户一个提示。
@@ -1576,17 +1577,9 @@ impl DatabasePage {
             .as_ref()
             .map_or(0, |result| result.row_count() as u64);
         self.query_has_more = single_read_only && paging_capable && truncated;
-        // 新语句 = 新结果：列宽变了（列集不同）才把横向位置回零；同一份结构的
-        // 「加载更多」不经过这里，不会打断正在看右侧列的人。
-        let widths = outcome
-            .result
-            .as_ref()
-            .map(compute_column_widths)
-            .unwrap_or_default();
-        if widths != self.column_widths {
-            self.result_x_scroll.set_offset(point(px(0.), px(0.)));
-        }
-        self.column_widths = widths;
+        // 新语句 = 新结果：**列名序列**变了才把横向位置回零；同一份结构的
+        // 「加载更多」不经过这里，不会打断正在看右侧列的人。这步归数据表组件
+        // （`set_model` 内部判列名），页面只管把新结果推过去。
         let view = QueryView {
             result: outcome.result,
         };
@@ -1662,6 +1655,8 @@ impl DatabasePage {
         if planned && self.plan_view.is_some() {
             self.result_area_tab = ResultAreaTab::Plan;
         }
+        // 结果换完了：表模型 / 展示行序 / 藏列一次推齐给数据表组件。
+        self.sync_data_table(cx);
     }
 
     /// 批次队列的下一条语句（`run_query` 排队、`execute_sql` 收尾时续跑）。
@@ -1708,11 +1703,6 @@ impl DatabasePage {
             .result
             .as_ref()
             .map_or(0, |result| result.row_count() as u64);
-        let widths = view
-            .result
-            .as_ref()
-            .map(compute_column_widths)
-            .unwrap_or_default();
         self.active_result_tab = index;
         self.query_result = Some(view);
         self.query_target = target;
@@ -1736,10 +1726,9 @@ impl DatabasePage {
         self.chart_view = None;
         self.last_error = None;
         self.ai_explain = None;
-        if widths != self.column_widths {
-            self.result_x_scroll.set_offset(point(px(0.), px(0.)));
-        }
-        self.column_widths = widths;
+        // 换标签 = 换结果集：把这一条标签的结果推给数据表组件。列宽**不随标签存**
+        // ——`set_model` 只在列名序列变化时重估，所以与本标签同结构时宽度自然沿用。
+        self.sync_data_table(cx);
         cx.notify();
     }
 
@@ -1792,8 +1781,8 @@ impl DatabasePage {
         self.chart_view = None;
         self.last_error = None;
         self.ai_explain = None;
-        self.column_widths.clear();
-        self.result_x_scroll.set_offset(point(px(0.), px(0.)));
+        // 结果区清空：给组件推一份空表（行序也清掉）；下一次装结果时会重新推。
+        self.sync_data_table(cx);
         cx.notify();
     }
 
@@ -2355,13 +2344,9 @@ impl DatabasePage {
         );
     }
 
-    /// 勾选 / 取消勾选一行。
-    pub(super) fn toggle_row_checked(&mut self, index: usize, cx: &mut Context<Self>) {
-        if !self.checked_rows.remove(&index) {
-            self.checked_rows.insert(index);
-        }
-        cx.notify();
-    }
+    // 「勾选 / 取消勾选一行」原先在这里（`toggle_row_checked`）：行勾选框现在由数据表
+    // 组件画，事件带回来的是**目标态**（`DataTableEvent::RowCheckedToggled { checked }`），
+    // 页面按它直接写集合即可 —— 不需要「翻一下」这种会与组件渲染态错开一帧的写法。
 
     /// 表头全选 / 全不选（范围 = 当前页；勾满时点一下就是清空）。
     pub(super) fn toggle_all_checked(&mut self, cx: &mut Context<Self>) {
@@ -2927,6 +2912,9 @@ impl DatabasePage {
             )
             .into()
         };
+        // 行追加完了：组件里的模型要跟着长（列集没变，所以列宽 / 横向位置原样保留
+        // ——「加载更多」不该把人拽回最左列）。展示行序随后按新行数重推。
+        self.sync_data_table(cx);
         cx.notify();
     }
 }

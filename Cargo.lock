@@ -2027,6 +2027,7 @@ dependencies = [
  "gpui-base",
  "gpui-component",
  "gpui-pre",
+ "rust-i18n",
  "serde",
  "serde_json",
  "tracing",

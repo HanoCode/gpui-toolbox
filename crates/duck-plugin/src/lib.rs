@@ -7,10 +7,15 @@
 //!    （JS 脚本 / WASM 组件 / 独立进程）共用同一份声明；
 //! 2. **能力网关**（[`capability`]）——声明 + 授予双闸门，未授予的能力一律拒绝；
 //! 3. **发现与索引**（[`registry`]）——扫描插件目录，产出 [`PluginIndex`]，
-//!    由上层（`duck-app`）把它装配进 [`duck-tools`] 的工具注册表与设置界面。
+//!    由上层（`duck-app`）把它装配进 [`duck-tools`] 的工具注册表与设置界面；
+//! 4. **自带翻译**（[`i18n`]）——`locales/<tag>.toml` 的装载与语言降级链，
+//!    让插件文案跟随宿主的语言开关（方案见 `docs/plugin-i18n-design.md`）。
+//!    JS / process / wasm 三类轨道**共用这一份数据与同一条降级链**，差别只在
+//!    取词 API 的传输层（沙箱全局 / 环境变量 / host import）。
 //!
 //! 本 crate 刻意**不依赖 gpui / duck-tools**：清单校验与能力仲裁必须是
 //! 可独立单测的纯函数，gpui 侧的注册与渲染全部留在 `duck-app`。
+//! 这条纪律也决定了 [`i18n`] 的语言入参只能是 `&str` tag（不是 `duck-theme::Lang`）。
 //!
 //! [`duck-platform`]: https://docs.rs/duck-platform
 //! [`duck-store`]: https://docs.rs/duck-store
@@ -19,12 +24,17 @@
 use std::fmt;
 
 mod capability;
+pub mod i18n;
 mod manifest;
 mod registry;
 
 pub use capability::{Capability, CapabilityGranter};
+pub use i18n::{
+    DEFAULT_SOURCE_TAG, ENV_LOCALE, ENV_LOCALES_DIR, PluginLocales, locale_env, locales_dir,
+};
 pub use manifest::{
-    Capabilities, ExecutionModel, PluginManifest, SUPPORTED_API_VERSION, ToolContribution,
+    Capabilities, ExecutionModel, I18nConfig, PluginManifest, SUPPORTED_API_VERSION,
+    ToolContribution,
 };
 pub use registry::{DiscoveredPlugin, MANIFEST_FILE, PluginIndex};
 

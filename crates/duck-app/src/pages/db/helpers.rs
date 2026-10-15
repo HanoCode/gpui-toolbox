@@ -280,24 +280,45 @@ pub(super) fn row_as_tsv(row: &[duck_db::Value]) -> String {
         .join("\t")
 }
 
-/// 结果集的列宽估算：采样前 200 行，按最长展示文本估宽再夹在上下限之间。
-pub(super) fn compute_column_widths(result: &ResultSet) -> Vec<f32> {
-    let sample = result.rows.len().min(200);
-    result
+/// 把结果集转成数据表组件的**中性模型**（见 `duck_components::data_table`）。
+///
+/// ⚠️ 转换只在**装结果时**跑一次，**绝不能**落在渲染路径上：每格的展示文本在这
+/// 里算好并共享（`Arc<str>`，渲染只 bump 引用计数），而 [`Value::render`] 内含整串
+/// 复制 —— 把它放进每帧的 `uniform_list` 闭包（可见行 × 列数 每帧重算一遍）正是
+/// 原先「行一多滚动就掉帧」的主源之一。
+///
+/// 列宽也一并交给组件（`TableModel::estimated_widths` 与原先
+/// `compute_column_widths` 同一套采样口径：前 200 行、按展示文本字符数估宽再夹
+/// 上下限），宿主不再自留一份宽度缓存。
+pub(super) fn build_table_model(result: &ResultSet) -> TableModel {
+    let columns = result
         .columns
         .iter()
-        .enumerate()
-        .map(|(index, column)| {
-            let mut longest = column.name.chars().count();
-            for row in result.rows.iter().take(sample) {
-                if let Some(cell) = row.get(index) {
-                    longest = longest.max(cell.render().chars().count());
-                }
-            }
-            // 中文按 2 倍宽近似：字符数 × 7px，上下限夹住。
-            (longest as f32 * 7.0 + 16.0).clamp(COLUMN_MIN_WIDTH, COLUMN_MAX_WIDTH)
-        })
-        .collect()
+        .map(|column| ColumnSpec::new(column.name.clone(), column.type_name.clone()))
+        .collect();
+    let rows = result
+        .rows
+        .iter()
+        .map(|row| RowData::new(row.iter().map(table_cell).collect()))
+        .collect();
+    TableModel::new(columns, rows)
+}
+
+/// 单元格的**粗分类**（与展示文本分开：NULL 压灰、将来数值右对齐 / JSON 单独阅览
+/// 都靠类型判，不靠「猜字符串像不像数字」）。
+///
+/// `Decimal` / `Date` / `Time` / `DateTime` 都归 `Text`：它们渲染出来就是文本
+/// （内核刻意不让数值经 `f64` 有损中转，保精度的字符串就是最终展示形态）。
+fn table_cell(value: &Value) -> CellValue {
+    let kind = match value {
+        Value::Null => CellKind::Null,
+        Value::Bool(_) => CellKind::Bool,
+        Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Decimal(_) => CellKind::Number,
+        Value::Json(_) => CellKind::Json,
+        Value::Bytes(_) => CellKind::Bytes,
+        Value::Text(_) | Value::Date(_) | Value::Time(_) | Value::DateTime(_) => CellKind::Text,
+    };
+    CellValue::new(kind, value.render())
 }
 
 /// 结果里**可见**的列：`(原始下标, 列)`，被「字段筛选」藏掉的按列名剔除。

@@ -12,7 +12,7 @@
 //! `docs/projects-design.md` §9 差异表第 7 条），所以「今天」必须在这里由
 //! [`local_today`] 加上平台层给的时区偏移算出，内核不知道时区。
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use duck_project::{
     ArchiveCounts, ArchivedProject, ArchivedTask, BoardColumn, BoardStats, CalendarDate,
@@ -22,7 +22,7 @@ use duck_project::{
 };
 use gpui::App;
 
-use super::prefs::{self, ViewMode};
+use super::prefs::{self, GroupMode, ViewMode};
 
 /// 左栏选中的范围。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -140,6 +140,36 @@ pub(crate) enum UndoAction {
     RestoreTask(i64),
     /// 撤销「归档项目」→ 把它（连同连带归档的任务）恢复回来。
     RestoreProject(i64),
+    /// 撤销「改状态」→ 改回原来那一档。
+    ///
+    /// 只有**弹回执**的那条路径（卡片菜单「状态…」与右栏下拉）才压它：拖拽落列走
+    /// [`ProjectsState::move_task`]，那条路径不弹回执（见 `mod.rs` 的写动作收口说明），
+    /// 拿不到提示条也就没有「撤销」按钮可挂。
+    RevertStatus {
+        /// 任务。
+        id: i64,
+        /// 改之前的状态。
+        status: TaskStatus,
+    },
+    /// 撤销「建了一条」→ 把刚建出来的那条删掉（复制任务）。
+    ///
+    /// 内核里这是一次硬删（不是归档），但删的是**本次刚建**的那条：它除了这次创建之外
+    /// 没有任何来路，删掉就是精确地退回上一步。
+    RemoveCreated(i64),
+}
+
+impl UndoAction {
+    /// 这条动作指向的那条**任务**；不指向任务时 `None`。
+    ///
+    /// 用来在任务被删掉时把没用的撤销槽放下。`RestoreProject` **不**参与：项目与任务
+    /// 的 id 来自两张表，同一个数字不是同一样东西，按数字模糊匹配会误伤。
+    pub(crate) const fn task_id(self) -> Option<i64> {
+        match self {
+            Self::RestoreTask(id) | Self::RemoveCreated(id) => Some(id),
+            Self::RevertStatus { id, .. } => Some(id),
+            Self::RestoreProject(_) => None,
+        }
+    }
 }
 
 /// 最近一次**可撤销**的变更（设计文档 §5.6 的撤销通道）。
@@ -193,9 +223,21 @@ pub(crate) struct ProjectsState {
     /// 全局统计（状态栏那条）。
     stats: BoardStats,
     /// 计算「逾期 / 今天到期」用的今天。
+    ///
+    /// 由 [`Self::clock`] 在每次 `reload()` 时刷新，别处不要单独改它。
     today: CalendarDate,
+    /// 「今天」怎么来。
+    ///
+    /// 生产里就是 [`local_today`]；单测注入一个固定日期。做成一格而不是让测试
+    /// 「读完再把 `today` 改回来」：`reload()` 有近三十个调用点（每个写操作收尾都
+    /// 重读一遍），事后改字段撑不过下一次写操作 —— 而 `stats` 又是内核按传进去的
+    /// 那一天算的，两半一旦取到不同的日期，逾期 / 今天到期 / 未排期三格就对不上。
+    clock: fn() -> CalendarDate,
     /// 排序口径。
     sort: TaskSort,
+    /// 列表视图的分组轴（见 [`GroupMode`]；与排序是**两条独立的轴** ——
+    /// 排序决定组**内**的顺序，分组决定任务被摆成几摞）。
+    group: GroupMode,
     /// 左栏「智能列表」的选中档；`None` = 不限。
     smart: Option<SmartFilter>,
     /// 左栏点标签后的筛选；`None` = 不限。多选留给后续增量 —— 内核
@@ -240,6 +282,14 @@ pub(crate) struct ProjectsState {
     undo: Option<UndoSlot>,
     /// 撤销槽的序号源。
     undo_seq: u64,
+    /// 列表视图里被勾选的任务（原型 `S.checked`）。
+    ///
+    /// **只在内存里活着、不落盘**：勾选表达的是「我现在要对这几条下手」这个临时意图，
+    /// 重启后还留着一批勾选只会让人误以为它们是某种持久状态。
+    ///
+    /// 用 `BTreeSet` 而不是 `HashSet`：批量动作要按确定顺序写库（回执里报的条数、
+    /// 出错时停在哪一条都得以同一顺序复现），`BTreeSet` 的遍历顺序天然稳定。
+    checked: BTreeSet<i64>,
 }
 
 impl ProjectsState {
@@ -262,7 +312,9 @@ impl ProjectsState {
             selected: None,
             stats: BoardStats::default(),
             today: local_today(),
+            clock: local_today,
             sort: prefs.task_sort(),
+            group: prefs.group_mode(),
             smart: None,
             tag: None,
             tags: Vec::new(),
@@ -282,6 +334,7 @@ impl ProjectsState {
             archive_selected: None,
             undo: None,
             undo_seq: 0,
+            checked: BTreeSet::new(),
         };
         state.reload();
         state
@@ -308,11 +361,15 @@ impl ProjectsState {
     }
 
     /// 读一遍库（左栏 + 看板 + 统计）。全部读写失败都收敛到 [`Self::error`]。
+    ///
+    /// 「今天」在**读之前**先定下来（取 [`Self::clock`]）：`stats` 是内核按这一天算的
+    /// —— 逾期 / 今天到期 / 未排期三格都吃它，左栏的「本周」也跟着走。先按一个日期读、
+    /// 再改字段，只会让统计与其余几格的口径互相打架。
     pub(crate) fn reload(&mut self) {
         let Some(store) = &self.store else {
             return;
         };
-        self.today = local_today();
+        self.today = (self.clock)();
         match store.project_tree() {
             Ok(tree) => {
                 self.groups = tree.groups;
@@ -435,6 +492,11 @@ impl ProjectsState {
                 {
                     self.selected = None;
                 }
+                // 勾选同理：列表里已经没有的行不能再算进「已选中 N 项」——
+                // 否则切个范围回来，批量条会报着一个屏幕上看不到的数字。
+                let visible: std::collections::HashSet<i64> =
+                    self.tasks.iter().map(|task| task.id).collect();
+                self.checked.retain(|id| visible.contains(id));
             }
             Err(err) => self.fail(err),
         }
@@ -508,6 +570,19 @@ impl ProjectsState {
         &self.tasks
     }
 
+    /// 库里**全部**顶层任务（绕过范围 / 筛选 / 分档），导出的「全部任务」那一档用。
+    ///
+    /// 现查而不是常驻缓存：它只在导出弹窗打开时被读一次，而常驻一份「全量」等于每次
+    /// 刷新都多跑一趟查询、多占一份内存 —— 为一年用两次的功能不划算。
+    ///
+    /// 错误原样交回调用方（不在这一层吞掉）：调用方是弹窗的开门动作，有地方弹回执。
+    pub(crate) fn all_tasks(&self) -> duck_project::Result<Vec<Task>> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.list_tasks(&TaskQuery::new().top_level_only())
+    }
+
     pub(crate) fn scope(&self) -> BoardScope {
         self.scope
     }
@@ -527,6 +602,11 @@ impl ProjectsState {
     /// 当前排序口径。
     pub(crate) const fn sort(&self) -> TaskSort {
         self.sort
+    }
+
+    /// 当前列表分组轴。
+    pub(crate) const fn group(&self) -> GroupMode {
+        self.group
     }
 
     /// 当前智能列表档位（`None` = 不限）。
@@ -652,6 +732,14 @@ impl ProjectsState {
         }
         self.sort = sort;
         self.reload_tasks();
+    }
+
+    /// 改列表分组轴。
+    ///
+    /// **不重读任务**：分组只是把已经查出来的那一批换一种摆法，筛选与排序都没动，
+    /// 重读一趟数据库纯属白付（[`Self::set_show_done`] 要重读，是因为它真在筛）。
+    pub(crate) fn set_group(&mut self, group: GroupMode) {
+        self.group = group;
     }
 
     /// 改智能列表档位（`None` = 清掉筛选）。
@@ -892,7 +980,7 @@ impl ProjectsState {
             return Err(store_not_open());
         };
         store.delete_archived_task(id)?;
-        self.forget_undo(UndoAction::RestoreTask(id));
+        self.forget_undo_for_tasks(&[id]);
         self.reload();
         Ok(())
     }
@@ -931,8 +1019,9 @@ impl ProjectsState {
             return Err(store_not_open());
         };
         store.delete_task(id)?;
-        // 删掉的任务若正是撤销槽指的那条（先归档、撤销回来、再删），槽跟着作废。
-        self.forget_undo(UndoAction::RestoreTask(id));
+        // 删掉的任务若正是撤销槽指的那条（先归档、撤销回来、再删），槽跟着作废 ——
+        // 判据按 `task_id()` 而不是单个变体：改状态 / 复制任务留下的槽同样指向一条任务。
+        self.forget_undo_for_tasks(&[id]);
         self.reload();
         Ok(())
     }
@@ -967,12 +1056,132 @@ impl ProjectsState {
         self.patch_task(id, patch)
     }
 
-    /// 改一条任务的状态（卡片菜单），错误**原样交给调用方**。
+    // ------------------------------------------------------------------
+    // 列表批量勾选（原型 `S.checked`）
+    // ------------------------------------------------------------------
+
+    /// 勾选 / 取消勾选一条（列表行最左边的勾）。
+    pub(crate) fn toggle_checked(&mut self, id: i64) {
+        if !self.checked.remove(&id) {
+            self.checked.insert(id);
+        }
+    }
+
+    /// 表头那个勾：这一屏已经全勾上了就整批取消，否则把这一屏全勾上。
+    ///
+    /// 用的是「当前 `tasks`」而不是「库里所有任务」：勾选是给**看得见的行**用的，
+    /// 把屏幕外的任务也勾上，批量条报的数字就对不上了。
+    pub(crate) fn toggle_check_all(&mut self) {
+        if self.all_checked() {
+            self.checked.clear();
+            return;
+        }
+        self.checked.extend(self.tasks.iter().map(|task| task.id));
+    }
+
+    /// 批量条上的「取消选择」。
+    pub(crate) fn clear_checked(&mut self) {
+        self.checked.clear();
+    }
+
+    /// 已勾选的条数（批量条上的「N 项已选中」）。
+    pub(crate) fn checked_count(&self) -> usize {
+        self.checked.len()
+    }
+
+    /// 这一条勾了没有（列表行画勾用）。
+    pub(crate) fn is_checked(&self, id: i64) -> bool {
+        self.checked.contains(&id)
+    }
+
+    /// 当前这一屏是不是已经全部勾上（表头勾的选中态）。
+    ///
+    /// 空列表一律 `false`：一屏什么都没有时表头勾不该是「已全选」的样子。
+    pub(crate) fn all_checked(&self) -> bool {
+        !self.tasks.is_empty()
+            && self
+                .tasks
+                .iter()
+                .all(|task| self.checked.contains(&task.id))
+    }
+
+    /// 已勾选的 id（升序 —— 批量动作的写库顺序必须可复现，出错时才知道停在哪）。
+    pub(crate) fn checked_ids(&self) -> Vec<i64> {
+        self.checked.iter().copied().collect()
+    }
+
+    // ------------------------------------------------------------------
+    // 批量动作
+    // ------------------------------------------------------------------
+
+    /// 批量改状态（批量条上的「标记完成」就是 `Done` 这一档的特例）。
+    ///
+    /// 走与单条同一个内核入口（`store.move_task`）：状态迁移的联动（`completed_at`、
+    /// 进度）只在内核里有一份，批量另写一条迟早分叉。逐条写、一条失败就停，并把
+    /// **已经改掉的条数**如实交回调用方 —— 中途失败不能把前面成功的当成没发生。
+    pub(crate) fn bulk_set_status(
+        &mut self,
+        ids: &[i64],
+        status: TaskStatus,
+    ) -> duck_project::Result<usize> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        let mut done = 0;
+        for id in ids {
+            store.move_task(*id, status, 0)?;
+            done += 1;
+        }
+        self.reload();
+        Ok(done)
+    }
+
+    /// 批量改字段（优先级 / 移入项目）。
+    ///
+    /// 收成一个方法而不是每条各开一个：内核那边都是同一个 `update_task`，
+    /// 区别只在 `patch` 怎么组，而 `patch` 是调用方最清楚的事。
+    pub(crate) fn bulk_patch(
+        &mut self,
+        ids: &[i64],
+        patch: &TaskPatch,
+    ) -> duck_project::Result<usize> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        let mut done = 0;
+        for id in ids {
+            store.update_task(*id, patch.clone())?;
+            done += 1;
+        }
+        self.reload_tasks();
+        Ok(done)
+    }
+
+    /// 批量删除（**物理删除**，调用方必须先弹二次确认 —— 与单条删除同一条纪律）。
+    pub(crate) fn bulk_delete(&mut self, ids: &[i64]) -> duck_project::Result<usize> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        let mut done = 0;
+        for id in ids {
+            store.delete_task(*id)?;
+            done += 1;
+        }
+        self.forget_undo_for_tasks(ids);
+        self.reload();
+        Ok(done)
+    }
+
+    /// 改一条任务的状态（卡片菜单 / 右栏下拉），错误**原样交给调用方**。
     ///
     /// 与拖拽走的 [`Self::move_task`] 分开：拖拽的落点是自己人（列头就摆在那儿），
     /// 失败在状态里记一笔就够；菜单要弹一条即时回执说明「为什么没改成」——比如从
     /// 「已取消」出发去别的列，内核的状态机会拒（`cancelled` 只许回 `todo`），
     /// 这时候必须把原因说出来，而不是静默什么都不发生。
+    ///
+    /// 成功时压一条撤销槽（原型的「已移动到「X」」提示条带「撤销」）：改状态是可逆的
+    /// —— 再写一次原状态就回去了。**改之前那一档必须先读**，`move_task` 之后再读就只剩
+    /// 新值了。
     pub(crate) fn set_task_status(
         &mut self,
         id: i64,
@@ -981,18 +1190,32 @@ impl ProjectsState {
         let Some(store) = &self.store else {
             return Err(store_not_open());
         };
+        let previous = self
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .map(|task| task.status);
         store.move_task(id, status, 0)?;
+        if let Some(previous) = previous {
+            self.push_undo(
+                UndoAction::RevertStatus {
+                    id,
+                    status: previous,
+                },
+                0,
+            );
+        }
         self.reload();
         Ok(())
     }
 
-    /// 撤销最近一次归档（§5.6 的撤销通道）。
+    /// 撤销最近一次可撤销的变更（§5.6 的撤销通道）。
     ///
     /// - 没有可撤的 → `Ok(None)`（按 `⌘Z` 是空操作，不算错）；
     /// - 槽位指向的对象已经不在归档里（被别处恢复了 / 被彻底删了）→ `Err`，同时把
     ///   这条没用的槽放下 —— 留着一个按下去必然失败的按钮比没有按钮更糟。
     ///
-    /// 撤销**本身不再压新槽**：撤销就是「把归档退回去」，再按一次不该又归档一次。
+    /// 撤销**本身不再压新槽**：撤销就是「把上一步退回去」，再按一次不该又走一遍。
     pub(crate) fn undo(&mut self) -> duck_project::Result<Option<UndoAction>> {
         let Some(action) = self.undo.as_ref().map(|slot| slot.action) else {
             return Ok(None);
@@ -1003,6 +1226,9 @@ impl ProjectsState {
         let outcome: duck_project::Result<u32> = match action {
             UndoAction::RestoreTask(id) => store.restore_task(id).map(|()| 0),
             UndoAction::RestoreProject(id) => store.restore_project(id),
+            // 落点写 0 = 列首：与 `move_task` 那条路径同口径，位置由内核重排，这里不猜。
+            UndoAction::RevertStatus { id, status } => store.move_task(id, status, 0).map(|()| 0),
+            UndoAction::RemoveCreated(id) => store.delete_task(id).map(|()| 0),
         };
         self.undo = None;
         match outcome {
@@ -1031,6 +1257,21 @@ impl ProjectsState {
     /// 判据只认「同一个动作」：恢复任务 3 不该顺手把「撤销归档项目 7」也清掉。
     fn forget_undo(&mut self, action: UndoAction) {
         if self.undo.as_ref().is_some_and(|slot| slot.action == action) {
+            self.undo = None;
+        }
+    }
+
+    /// 刚删掉一批任务 ⇒ 指向其中任何一条的撤销槽都作废（见 [`UndoAction::task_id`]）。
+    ///
+    /// 收口成一批而不是逐条：`bulk_delete` 要在**循环里**删（`store` 的借用出不了循环），
+    /// 而借还没还完就动 `self.undo` 会被借用检查拦下。
+    fn forget_undo_for_tasks(&mut self, ids: &[i64]) {
+        let stale = self
+            .undo
+            .as_ref()
+            .and_then(|slot| slot.action.task_id())
+            .is_some_and(|id| ids.contains(&id));
+        if stale {
             self.undo = None;
         }
     }
@@ -1204,10 +1445,76 @@ impl ProjectsState {
         }
     }
 
-    /// 置顶 / 取消置顶（卡片星标与右栏头动作共用）。
-    pub(crate) fn set_starred(&mut self, id: i64, starred: bool) {
-        self.patch_task(id, TaskPatch::new().starred(starred))
-            .unwrap_or_else(|err| self.fail(err));
+    /// 「从文本导入」：把解析好的每一行落成任务，返回**真正建成**的条数。
+    ///
+    /// `fallback_project` 是「没写 `@项目`」时的落点（调用方给当前范围）—— 与快速新建
+    /// 同一条口径（见 `ProjectsPage::submit_spotlight`），比原型更贴手：在某个项目下
+    /// 粘一串任务，八成就是想把它们放进这个项目。
+    ///
+    /// 勾选态直接落成状态：`- [x]` 建出来就是「已完成」（进度同步给 100，否则卡片上
+    /// 会出现「已完成但 0%」这种自相矛盾的读数）。
+    ///
+    /// ⚠️ 一条失败就**整体停下**并把错误原样交回调用方：半截导入比没导入更糟
+    /// （用户不知道从第几行重来）。已经建成的那些**不回滚** —— 内核的 `create_task`
+    /// 每条一个事务，删掉它们会连用户自己刚建的条目一起误伤。
+    pub(crate) fn import_lines(
+        &mut self,
+        lines: &[super::quickparse::ImportLine],
+        fallback_project: Option<i64>,
+    ) -> duck_project::Result<usize> {
+        // 收成一个闭包：`store` 是对 `self` 的不可变借用，而收尾的 `self.reload()`
+        // 要可变借用 —— 借用不能跨过终点，先把整段写入跑完再落收尾。
+        let outcome = (|| -> duck_project::Result<usize> {
+            if lines.is_empty() {
+                return Ok(0);
+            }
+            let store = self.store.as_ref().ok_or_else(store_not_open)?;
+            let mut created = 0;
+            for line in lines {
+                let project_id = line
+                    .parsed
+                    .project
+                    .as_ref()
+                    .and_then(|name| {
+                        self.projects
+                            .iter()
+                            .find(|project| project.name.eq_ignore_ascii_case(name))
+                            .map(|project| project.id)
+                    })
+                    .or(fallback_project);
+                let mut tag_ids = Vec::new();
+                for name in &line.parsed.tags {
+                    tag_ids.push(store.ensure_tag(name, duck_project::DEFAULT_PROJECT_COLOR)?);
+                }
+                let status = if line.done {
+                    TaskStatus::Done
+                } else {
+                    TaskStatus::Todo
+                };
+                let mut new = duck_project::NewTask::new(line.parsed.title.clone())
+                    .status(status)
+                    .progress(if line.done { 100 } else { 0 })
+                    .tags(tag_ids);
+                if let Some(project_id) = project_id {
+                    new = new.project(project_id);
+                }
+                if let Some(priority) = line.parsed.priority {
+                    new = new.priority(priority);
+                }
+                if line.parsed.due.is_some() {
+                    new = new.dates(None, line.parsed.due);
+                }
+                if let Some(time) = &line.parsed.due_time {
+                    new = new.due_time(time.clone());
+                }
+                store.create_task(new)?;
+                created += 1;
+            }
+            Ok(created)
+        })();
+        // 成败都重读：失败前可能已经建成前几条，界面得反映真实库存。
+        self.reload();
+        outcome
     }
 
     /// 复制任务：新建一条字段相同（含标签 / 优先级 / 四象限 / 日期 / 工时 / 进度）
@@ -1238,6 +1545,8 @@ impl ProjectsState {
             new = new.due_time(source.due_time.clone().unwrap_or_default());
         }
         let created = store.create_task(new)?;
+        // 撤销槽指向刚建出来的那一条（原型「已复制为「X」」带「撤销」）。
+        self.push_undo(UndoAction::RemoveCreated(created), 0);
         self.reload_tasks();
         Ok(Some(created))
     }
@@ -1372,11 +1681,6 @@ impl ProjectsState {
         self.calendar_month = anchor;
     }
 
-    /// 工作日志视图最近一段的日志（三种档位都在里面，按档筛是界面的事）。
-    pub(crate) fn logs(&self) -> &[WorkLog] {
-        &self.logs
-    }
-
     /// 工作日志视图当前档位。
     pub(crate) const fn log_kind(&self) -> LogKind {
         self.log_kind
@@ -1488,18 +1792,10 @@ mod tests {
         CalendarDate::new(2026, 10, 14).expect("合法日期")
     }
 
-    /// 重读库，并把「今天」钉回 [`fixture_today`]。
-    ///
-    /// `reload()` 会把「今天」刷成**真实**今天，而左栏计数与日期分档断言都建立在固定
-    /// 日期上 —— 不钉住的话，换一天跑测试就红。钉完再重算一次左栏计数（那一份依赖
-    /// `today`，见 [`ProjectsState::reload_sidebar_counts`]）。
-    fn reload_and_pin(state: &mut ProjectsState) {
-        state.reload();
-        state.today = fixture_today();
-        state.reload_sidebar_counts();
-    }
-
     /// 用内存库造一个脱离了页面的状态：正是「状态层不碰 gpui」的用处。
+    ///
+    /// 「今天」钉在 [`fixture_today`] 上（`clock` 一格）：左栏计数、逾期判定、日期
+    /// 分档都带「今天」口径，不钉住的话换一天跑测试就红。
     ///
     /// 这里**不走** `ProjectsState::new(cx)`：那条路要读 `kv`（偏好），而单测里没有
     /// `App`、也不该有 —— 默认值在 [`prefs`] 的测试里钉，这里只要一个干净的起点。
@@ -1517,7 +1813,9 @@ mod tests {
             selected: None,
             stats: BoardStats::default(),
             today: fixture_today(),
+            clock: fixture_today,
             sort: TaskSort::Manual,
+            group: GroupMode::Priority,
             smart: None,
             tag: None,
             tags: Vec::new(),
@@ -1537,8 +1835,9 @@ mod tests {
             archive_selected: None,
             undo: None,
             undo_seq: 0,
+            checked: BTreeSet::new(),
         };
-        reload_and_pin(&mut state);
+        state.reload();
         state
     }
 
@@ -1550,7 +1849,7 @@ mod tests {
             .unwrap()
             .create_task(NewTask::new(title))
             .unwrap();
-        reload_and_pin(state);
+        state.reload();
         id
     }
 
@@ -1564,7 +1863,7 @@ mod tests {
                 .unwrap();
             (project, task)
         };
-        reload_and_pin(state);
+        state.reload();
         (project, task)
     }
 
@@ -1685,6 +1984,60 @@ mod tests {
         assert_eq!(state.undo().unwrap(), Some(UndoAction::RestoreTask(id)));
         assert_eq!(state.task_total(), 1, "撤销后任务回到看板");
         assert_eq!(state.undo_slot(), None, "撤销槽用完即清");
+    }
+
+    #[test]
+    fn changing_the_status_leaves_an_undo_that_puts_it_back() {
+        let mut state = memory_state();
+        let id = add_task(&mut state, "t");
+
+        state.set_task_status(id, TaskStatus::Doing).unwrap();
+        assert_eq!(state.tasks_in_status(TaskStatus::Doing).len(), 1);
+        assert_eq!(
+            state.undo_slot().map(|slot| slot.action),
+            Some(UndoAction::RevertStatus {
+                id,
+                status: TaskStatus::Todo,
+            }),
+            "改状态要压一条「改回**原来那一档**」的槽 —— 存的是改之前的值，不是新值"
+        );
+
+        state.undo().unwrap();
+        assert_eq!(
+            state.tasks_in_status(TaskStatus::Todo).len(),
+            1,
+            "撤销后回到待办"
+        );
+        assert_eq!(state.tasks_in_status(TaskStatus::Doing).len(), 0);
+        assert_eq!(state.undo_slot(), None, "撤销槽用完即清");
+    }
+
+    #[test]
+    fn duplicating_leaves_an_undo_that_deletes_the_copy() {
+        let mut state = memory_state();
+        let id = add_task(&mut state, "t");
+        let copy = state.duplicate_task(id).unwrap().unwrap();
+        assert_eq!(state.task_total(), 2, "复制出来就是两条");
+
+        assert_eq!(
+            state.undo_slot().map(|slot| slot.action),
+            Some(UndoAction::RemoveCreated(copy)),
+            "复制要压一条「把刚建的那条删掉」的槽，且指向**副本**而不是原件"
+        );
+
+        state.undo().unwrap();
+        assert_eq!(state.task_total(), 1, "撤销后只剩原件");
+    }
+
+    #[test]
+    fn deleting_the_task_the_undo_points_at_drops_the_slot() {
+        let mut state = memory_state();
+        let id = add_task(&mut state, "t");
+        state.set_task_status(id, TaskStatus::Doing).unwrap();
+        assert!(state.undo_slot().is_some());
+
+        state.delete_task(id).unwrap();
+        assert_eq!(state.undo_slot(), None, "槽指向的任务没了 ⇒ 槽跟着作废");
     }
 
     #[test]
@@ -2041,7 +2394,7 @@ mod tests {
             .unwrap()
             .create_task(NewTask::new(title).dates(None, Some(due)))
             .unwrap();
-        reload_and_pin(state);
+        state.reload();
         id
     }
 
@@ -2053,7 +2406,7 @@ mod tests {
             .unwrap()
             .create_task(NewTask::new(title).description(note))
             .unwrap();
-        reload_and_pin(state);
+        state.reload();
         id
     }
 
@@ -2233,7 +2586,7 @@ mod tests {
         assert_eq!(state.task_total(), 1);
 
         state.store.as_ref().unwrap().delete_tag(tag).unwrap();
-        reload_and_pin(&mut state);
+        state.reload();
         assert_eq!(state.tag(), None, "标签没了，筛选也跟着放下");
         assert_eq!(state.task_total(), 1, "任务本身还在（只是没标签了）");
     }

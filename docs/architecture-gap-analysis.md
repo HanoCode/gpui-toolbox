@@ -1394,6 +1394,13 @@ clippy 对 `duck-plugin` / `duck-plugin-js` **零告警**。
 日期时间统一走格式化层，禁止手拼字符串。
 **涉及**：`duck-theme/src/i18n.rs`、全仓 `tr/trf` 调用点。**估工 3.0 人日。**
 
+> 📌 **2026-10-15 迁移**：英译数据源已从 `i18n.rs` 的 `static EN`（按 UTF-8 字节序
+> 插入、二分查找）迁到 `duck-theme/locales/en.toml`（**顺序无关**，由 rust-i18n
+> 编译期装载，见 `src/i18n_backend.rs`）。`table_is_sorted` 守卫删除；
+> `EN_PLURAL` 与 `plural_table_is_sorted` / `plural_entries_are_well_formed` 保留
+> （rust-i18n 无复数 API）。下文与全仓其它文档里「按字节序插入 EN 表」的写法
+> 均为迁移前口径，新增文案一律改 TOML 并跑 `scripts/i18n_en_toml.py`。
+
 #### 第一批（**2026-10-13 已实施**）：复数机制 + 相对时间收敛
 
 **做了什么**（全在 `duck-theme`，纯函数 + 单测）：

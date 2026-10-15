@@ -45,6 +45,25 @@ use crate::pages::settings::{CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT};
 use crate::plugins;
 use crate::settings::{self, AuxWindow};
 
+/// 市场条目文案取词：名与说明都**跨到插件自己的 `locales/`**。
+///
+/// 条目文案来自远端索引或本地清单副本（`MarketEntry` 持有 `String`），所以先收成
+/// `&'static str` 再走「插件表 → 宿主表 → 源串」三档——与工具箱里的工具名同一套规则。
+///
+/// 没有 id 的条目（本地清单无效）**原文直出**：连「它是哪个插件」都还没定，
+/// 没有插件表可查。
+fn entry_text(cx: &App, entry: &MarketEntry, source: &str) -> SharedString {
+    match entry.id.as_deref() {
+        Some(id) => SharedString::from(plugins::plugin_text_owned(
+            cx,
+            active_theme(cx).lang(),
+            id,
+            source,
+        )),
+        None => SharedString::from(source.to_owned()),
+    }
+}
+
 /// 插件中心窗口初始尺寸：单列卡片列表用不到设置窗口那么宽。
 const PLUGIN_CENTER_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(880.), px(640.));
 /// 最小尺寸：搜索 + 下拉 + 刷新一行放下，卡片仍有一行正文的宽度。
@@ -750,7 +769,7 @@ impl PluginCenterView {
                                         .line_height(tokens.typography.sm.line_height)
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(tokens.colors.foreground)
-                                        .child(entry.name.clone()),
+                                        .child(entry_text(cx, &entry, &entry.name)),
                                 )
                                 .children(version_label.map(|label| meta_text(label, cx)))
                                 .child(status_tag),
@@ -759,7 +778,7 @@ impl PluginCenterView {
                             if let Some(note) = &invalid_note {
                                 meta_text(note.clone(), cx).into_any_element()
                             } else {
-                                body_text(entry.description.clone(), cx)
+                                body_text(entry_text(cx, &entry, &entry.description), cx)
                                     .text_color(tokens.colors.muted_foreground)
                                     .into_any_element()
                             },
@@ -899,7 +918,7 @@ impl PluginCenterView {
                 })),
             )
             .child(
-                detail_title_text(entry.name.clone(), cx)
+                detail_title_text(entry_text(cx, &entry, &entry.name), cx)
                     .min_w_0()
                     .truncate(),
             )
@@ -1162,7 +1181,7 @@ impl PluginCenterView {
                             .gap(tokens.spacing.md)
                             .when(!entry.description.is_empty(), |this| {
                                 this.child(
-                                    body_text(entry.description.clone(), cx)
+                                    body_text(entry_text(cx, &entry, &entry.description), cx)
                                         .text_color(tokens.colors.muted_foreground),
                                 )
                             })

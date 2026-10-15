@@ -13,6 +13,44 @@
 //! [`Self::spawn_db`] 丢进 `background_executor`，结果在 `cx.spawn` 里回投主线程
 //! （范式同 `plugins.rs` / `pages/logs.rs`）；渲染路径上不做任何数据库调用，
 //! 展示用的列宽与文本都在任务收尾时算好存起来。
+//!
+//! # 文件划分
+//!
+//! 本页原本是**单文件**（`pages/db.rs`，24,100 行 / 497 个函数）。按 AGENTS.md §4.1
+//! 的「三件套」范式拆成目录模块（对齐 `pages::terminal` / `pages::redis`）：**本文件只留
+//! 类型定义、常量、键位与模块装配**，行为按领域切片进子模块。拆解口径是「**纯搬移**」：
+//! 除下文标注的 4 处路径修正外，每个函数的函数体逐字节不变（校验方式见
+//! `docs/database-design.md` §3.1）。
+//!
+//! | 文件 | 行数 | 承担 |
+//! |---|---|---|
+//! | `mod.rs` | 2,329 | 全部类型定义（60 个结构 / 枚举）、常量、[`bind_keys`]、模块装配 |
+//! | `helpers.rs` | 451 | 跨领域自由函数：kv 档案读取、偏好取值、格式化、结果集纯计算 |
+//! | `objects.rs` | 115 | 模式对象的图标 / 标签与 DDL 骨架（建表 / 改表 / 删表模板） |
+//! | `tunnel.rs` | 314 | 传输四档：解析 / 展开 / 打开 / 探活，以及失败分层与文案 |
+//! | `hooks.rs` | 297 | 连接钩子四相位 + 并发闸门 [`DbOpGate`] / [`DbOpPermit`] |
+//! | `completion.rs` | 202 | SQL 编辑器补全（`CompletionProvider` 实现，不碰会话） |
+//! | `profiles.rs` | 709 | 连接档案 CRUD / 分组 / 隧道档案 / 导入导出 / 新建·编辑弹窗 |
+//! | `connect.rs` | 1,910 | 连接表单 [`EditFormView`] 与引擎选择器 [`DriverPickerView`] |
+//! | `session.rs` | 865 | 会话与标签生命周期、当前标签 / 当前会话的取值 |
+//! | `browse.rs` | 3,149 | 表浏览：分页 / 排序 / 过滤条、单元格详情、左栏对象树 |
+//! | `query.rs` | 2,932 | SQL 执行：排队 / 取消 / 超时、编辑器状态、单元格与行编辑、暂存区、导出 |
+//! | `grid.rs` | 3,569 | 结果区：格式分发、tab 栏、列宽 / 列序、摘要·消息·计划三档、批量条 |
+//! | `charts.rs` | 2,152 | 图表与用户仪表板（12 栏网格） |
+//! | `instance.rs` | 904 | 实例监控四档：总览 / 指标 / 检查器 / 仪表板 |
+//! | `ai.rs` | 499 | AI 助手（text-to-SQL）：动作入口、产出落点、助手条与解释面板 |
+//! | `render_editor.rs` | 609 | 编辑器工具条 + 诊断条 |
+//! | `render_tabs.rs` | 596 | 标签条 + 「历史」抽屉 |
+//! | `render_sidebar.rs` | 271 | 右栏（shell 级 dock 的数据库分段） |
+//! | `shell.rs` | 1,049 | 页面骨架：`new` / `impl Render` / 主区拼装 / 状态栏 / 浮层提示 |
+//! | `tests.rs` | 1,537 | 模块单测（51 个 `#[test]`，全是纯函数口径；守卫扫描会跳过它） |
+//!
+//! **仅有的语义改动：6 处路径修正，全在同一个成因上**。这几个函数原本用
+//! `super::module_settings::…` 指兄弟页 `pages::module_settings`；进了 `pages::db`
+//! 的子模块后 `super` 变成 `pages::db`，故补一层 → `super::super::module_settings::…`。
+//! 落在 `helpers.rs::db_prefs`、`browse.rs::set_browse_page_size`，以及 `query.rs` 的
+//! `toggle_keyword_case` / `toggle_editor_word_wrap` / `toggle_semantic_diagnostics` /
+//! `apply_query_page_size`。其余 491 个函数逐字节未动。
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
@@ -29,6 +67,13 @@ use duck_components::{
     field_label, form_gap, icon_button, icon_button_tip, icon_text_button, meta_text, modal_drag,
     modal_drag_area, modal_offset, modal_title_row, notify, sidebar_navigation_button, title_text,
     toolbar_action_button, toolbar_dropdown_button, toolbar_text_dropdown_button,
+};
+// 结果网格的行模式：公共数据表组件（行虚拟化 + 固定列头 + 列宽拖拽 + 就地编辑槽）。
+// 列宽 / 藏列 / 展示行序 / 滚动句柄归组件；选中 / 勾选 / 排序 / 编辑器实体留在页面
+// （见 `duck_components::data_table` 模块文档的「归属边界」）。
+use duck_components::data_table::{
+    CellKind, CellPos, CellValue, ColumnSpec, DataTableEvent, DataTableHooks, DataTableLabels,
+    DataTableState, DataTableView, HeaderMenuHook, RowData, TableModel, data_table,
 };
 use duck_db::ai::{AiAction, build_action_prompt};
 use duck_db::config::{
@@ -62,9 +107,9 @@ use duck_theme::{UnderMinute, active_theme, tr, tr_relative_time, trf, trn};
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClickEvent, Context, CursorStyle, Empty, Entity,
     FocusHandle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton,
-    ParentElement, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled, Subscription, Task, Toggled, UniformListScrollHandle, WeakEntity, Window, actions, div,
-    point, prelude::FluentBuilder as _, px, relative, uniform_list,
+    ParentElement, Render, Role, SharedString, StatefulInteractiveElement as _, Styled,
+    Subscription, Task, Toggled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
+    relative, uniform_list,
 };
 use gpui_component::{
     Icon, ResizableState, Sizable as _, Size, WindowExt as _,
@@ -74,7 +119,6 @@ use gpui_component::{
     input::{CompletionProvider, Editor, EditorState, Input, InputEvent, InputState, Rope},
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     resizable_panel,
-    scroll::{Scrollbar, ScrollbarMode},
     tooltip::Tooltip,
     v_flex, v_resizable,
 };
@@ -147,9 +191,11 @@ const SQL_EDITOR_HEIGHT_RANGE: std::ops::RangeInclusive<f32> = 72.0..=520.0;
 const GRID_ROW_HEIGHT: f32 = 24.;
 /// 网格**列头**行高：两行（列名 + 类型），对齐设计稿的 `colhead`。
 const GRID_HEADER_HEIGHT: f32 = 38.;
-/// 网格列宽的上下限（初始值按内容一次性估宽，夹在这一档里）。
+/// 网格列宽的下限（列模式（转置视图）三列仍用这一档夹宽）。
+///
+/// 行模式网格的估宽上下限（含「一屏塞得下」的 260 上限）已随网格一起搬进公共数据表
+/// 组件（`duck_components::data_table::{MIN_COLUMN_WIDTH, MAX_AUTO_WIDTH}`）。
 const COLUMN_MIN_WIDTH: f32 = 72.;
-const COLUMN_MAX_WIDTH: f32 = 260.;
 /// **手动拖拽**能拉到的最大宽度：估宽夹在 260 是为了「一屏塞得下」，
 /// 但手动拖的人明确要放宽看长文本，就不该被 260 顶住。
 const COLUMN_RESIZE_MAX: f32 = 1200.;
@@ -161,10 +207,6 @@ const COLUMN_RESIZE_HANDLE: f32 = 4.;
 const COLUMNS_MODE_DEFAULT_WIDTHS: [f32; 3] = [160., 360., 120.];
 /// 「消息」tab 执行流水的保留条数（新条目在尾、裁头部）。
 const EXEC_LOG_CAP: usize = 200;
-/// 结果网格行首「行号」列的宽度（设计稿 rownum，不计入 `column_widths`）。
-const ROWNUM_WIDTH: f32 = 44.;
-/// 结果网格行首「多选」列的宽度（不计入 `column_widths`）。
-const SELECT_COLUMN_WIDTH: f32 = 34.;
 /// SQL 编辑器**首行文本**距编辑器元素顶边的内边距。
 ///
 /// gpui-component 的 `Input` 渲染多行编辑器时会把 `editor_paddings.top` 设成
@@ -1271,23 +1313,9 @@ struct ExecLogEntry {
     elapsed_ms: u128,
 }
 
-/// 列宽拖拽的载荷（照 gpui-component 表格的做法：拖动时由框架托管一份
-/// 载荷实体，`on_drag_move` 只认这个类型，别的拖拽不会误触列宽）。
-///
-/// 只带**列下标**：起拖的指针位置与起始列宽另存在 [`DatabasePage::col_resize`]，
-/// 因为那两样在 `on_drag` 的构造回调里拿不到稳定值（它给的是元素内偏移，
-/// 列宽一变就跟着变，用来算宽度会自激）。
-#[derive(Clone)]
-struct ColResizeDrag {
-    col: usize,
-}
-
-impl Render for ColResizeDrag {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // 拖动期间跟手的是光标形状（`CursorStyle::ResizeColumn`），不需要拖影。
-        Empty
-    }
-}
+// 列宽拖拽的载荷（原先的 `ColResizeDrag`）已随行模式网格一起搬进公共数据表组件
+//（`duck_components::data_table::table`）——列宽与它的拖拽态现在都是组件的内部状态，
+// 页面不再需要这个类型，也不再需要 `col_resize` 字段。
 
 /// 右栏 dock 的分段（设计稿 `docs/db-ui-mockup.html` 的 `docktabs`）。
 ///
@@ -1406,8 +1434,6 @@ struct SessionView {
     active_result_tab: usize,
     /// 执行计划态（结果区改显示计划树）；`None` = 不是在看计划。
     plan_view: Option<PlanView>,
-    /// 当前结果的列宽。
-    column_widths: Vec<f32>,
     /// 选中行。
     selected_row: Option<usize>,
     /// 勾选的行。
@@ -2079,19 +2105,23 @@ pub struct DatabasePage {
     /// 上一次结果是 EXPLAIN，但结构**没解析出来**（状态栏要如实说一句；
     /// 输出仍在网格里，只是没被整理成树）。
     plan_flat: bool,
-    /// 当前结果的列宽（任务收尾时算好；拖拽后再由用户改）。
-    column_widths: Vec<f32>,
-    /// 正在拖的列宽：`(列下标, 起拖时指针 x, 起拖时列宽)`。
+    /// 结果网格的**组件状态**：表模型（`Arc<TableModel>`）、列宽 + 前缀和、藏列、
+    /// 展示行序（搜索命中 + 客户端分页）、两个滚动句柄、列宽拖拽态。
     ///
-    /// 只记位移、不记绝对坐标：`新宽 = 起宽 + (当前 x - 起拖 x)`，与网格在窗口里
-    /// 的位置、横向滚动偏移都无关，滚动条拖到一半也不会跳。
-    col_resize: Option<(usize, f32, f32)>,
+    /// 原先这些是页面拿 `column_widths` / `col_resize` / `result_x_scroll` /
+    /// `result_v_scroll` 四个字段自己手搓的，现在整体归公共数据表组件
+    /// （`duck_components::data_table`）。页面只在**结果 / 搜索 / 分页 / 藏列**变化时
+    /// 调 [`Self::sync_data_table`] 推一次，交互经 [`DataTableEvent`] 订阅回来。
+    ///
+    /// 页面级而非按标签存：换标签时用 `set_model` 推新模型，**列名序列**没变就沿用
+    /// 现有列宽（同结构的两个标签切来切去不会把宽度重置），变了才重新估宽。
+    data_table: Entity<DataTableState>,
     /// 列模式（转置视图）三列的宽度：名称 / 值 / 类型。
     ///
     /// 页面级（不进标签快照）：转置视图的列宽是「这一屏我想怎么看」的临时调整，
     /// 与结果集无关，不值得跟着标签切来切去。
     columns_mode_widths: [f32; 3],
-    /// 列模式正在拖的列宽：`(列下标, 起拖时指针 x, 起拖时列宽)`，语义同 [`Self::col_resize`]。
+    /// 列模式正在拖的列宽：`(列下标, 起拖时指针 x, 起拖时列宽)`。
     columns_mode_resize: Option<(usize, f32, f32)>,
     /// 结果区是否展开（工具条 `panel-bottom` 开关；`false` = 编辑器独占主区）。
     ///
@@ -2099,14 +2129,8 @@ pub struct DatabasePage {
     /// 切标签回来还照旧展开，不让用户每个标签都要再点一次。
     results_visible: bool,
     /// 结果网格里被隐藏的列名（见 [`SessionView::hidden_columns`]：按标签存，
-    /// 只影响显示）。
+    /// 只影响显示）。渲染时推进 [`Self::data_table`] 的 `set_hidden_names`。
     hidden_columns: BTreeSet<String>,
-    /// 结果网格的**横向**滚动句柄（跨帧持久：滚轮 / 拖滚动条都读写同一份偏移；
-    /// 常驻滚动条 [`ScrollbarMode::Always`] 也从它读位置）。
-    result_x_scroll: ScrollHandle,
-    /// 结果网格的**纵向**滚动句柄（`uniform_list` 的虚拟列表句柄；纵向滚动条
-    /// [`ScrollbarMode::Scrolling`] 从它读位置 —— 滚动时现身，停下淡出）。
-    result_v_scroll: Arc<UniformListScrollHandle>,
     /// SQL 语义诊断结果（编辑器内容变化时重算；见 [`duck_db::sqldiag`]）。
     sql_diagnostics: Vec<duck_db::SqlDiagnostic>,
     /// 选中行（两种模式共用一份索引）。

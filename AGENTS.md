@@ -31,6 +31,13 @@ cargo fmt --all                                             # 格式化（提交
 cargo clippy --workspace --all-targets                      # 静态检查（提交前必跑）
 ```
 
+⚠️ **判「卡不卡」必须先看编译档**：根 `Cargo.toml` 的 `[profile.dev]` 是**本仓 1 / 依赖 3**
+（zed 同款）—— 因为帧时间由 taffy 排版 / 文本整形 / gpui 这些**依赖**决定，dev 档默认
+全不优化时界面会「看起来很卡」。同一帧（1000 行 × 20 列数据网格）实测 **dev 68 ms vs
+release 7 ms**，而两者分配次数完全相同（28,090）⇒ **别拿 opt-level 0 的观感当产品结论**，
+最接近发版的数字仍以 `sbin/run.sh --release` 为准。首次改这节会触发依赖全量重编。
+量帧的现成探针：`crates/duck-components/tests/data_table_cost.rs`（`--nocapture` 看表）。
+
 ## 3. 硬性约束（Non-negotiables）
 
 ### 3.1 变更前必须确认
@@ -44,16 +51,59 @@ GPUI / gpui-component 的 API 以**当前源码为准**，不凭记忆或类比 
 "看起来合理但不存在的方法"是本项目最常见的失败来源。
 查阅优先级：`temp/gpui-kit/` 源码 → `.skills/gpui-kit/` 指南 → `https://gpui-kit.com`。
 
-### 3.3 国际化：源串即键，必须补 EN
+### 3.3 国际化：源串即键，翻译改 TOML
 - 文案在代码里**直接写中文**，取词用 `tr(cx, "外观")` / `trf(cx, "剩余 {}", &[..])`。
-- 新增任何中文文案，**必须**同步在 `crates/duck-theme/src/i18n.rs` 的 `EN` 表中补英译
-  （表按 key 字节序排序，二分查找），否则 `cargo test -p duck-theme` 的覆盖率守卫会失败。
-- 缺表项回落源串，**不得**翻成空串。
+- 新增任何中文文案，**必须**同步在 `crates/duck-theme/locales/en.toml` 里补英译：
+  加一行 `"中文源串" = "English"`（key **务必带引号**，**顺序无关**），否则
+  `cargo test -p duck-theme` 的覆盖率守卫会失败。改完跑一次
+  `python3 scripts/i18n_en_toml.py` 同步 `tests/data/en_keys.txt`（key 清单）。
+- 该 TOML 由 `crates/duck-theme/src/i18n_backend.rs` 在**编译期**装载并投影成静态表：
+  改 TOML 要**重新编译**才生效（不是运行时读盘）。它**没有 `[section]`** —— 顶层必须
+  全是 `"key" = "字符串"`；套一层子表会让 rust-i18n 把 key 拼成 `section.键` 从而
+  **全表 miss**（表现为英文界面静默显示中文，编译与守卫都不报）。
+- 取词签名 `t()` 仍是 `-> &'static str`，缺表项回落源串，**不得**翻成空串。
+- **复数**（`{}` 站数量）rust-i18n 表达不了，继续留在 `i18n.rs` 的 `EN_PLURAL`
+  静态表里（按中文源串 UTF-8 字节序升序，二分查找）；新增复数文案要**同时**改两处：
+  `EN_PLURAL`（有序）与 `en.toml`（无序）。
+- ⚠️ **`rust-i18n` 全仓只许有一份版本**（现为 `4.2.4`，由 `gpui-component` 与本 crate
+  共同引入）。`i18n_backend.rs` 的 `only_one_rust_i18n_version_is_locked` 钉住它 ——
+  出现第二个版本就有两个 locale 全局，切语言会「本仓切了、上游组件没切」，且**没有
+  编译错误**。
 - `ShellRoute` / `ShellAction` / `AuxiliaryWindowView` 的文案是**闭包**
   （`with_label_fn` / `with_title_fn`），渲染时解析；切换语言走
   `update_appearance` → `install()` → 全窗口 `refresh()`。
 - `InputState` 占位只在构建时定型：语言变化需在 render 里 `set_placeholder` 同步
   （见两处 `sync_*_placeholder`）。
+
+#### 插件文案（与宿主是两套表）
+
+- **插件自带翻译**，放在**插件目录**里：`<plugin_dir>/locales/<tag>.toml`，
+  键同样是中文源串（清单的 `[i18n] source` 可改源串语言）。宿主**运行期**读它
+  （`duck-plugin::i18n::PluginLocales`），与宿主的编译期装载互不相干。
+- 插件清单里的 `name` / `description` / `[[tools]].name` 就是这些文件的 **key**；
+  渲染时走 `crate::plugins::plugin_text_of_tool` / `plugin_text_of_plugin` /
+  `plugin_text_owned`，**三档降级：插件表 → 宿主表 → 源串**。
+  ⚠️ 不得在渲染点直接 `t(lang, name)`/`tr(cx, name)`——那会绕过插件自己的译文。
+- ⚠️ **必须渲染期取词**，不能把译好的串烘进 `ToolMeta`（它的字段是 `&'static str`，
+  命中结果经 `leak_str` 去重缓存收起）。烘进去就得重建整个注册表才能切语言。
+- JS 插件在**执行时**拿到当前语言：`duck.locale`（tag）、`duck.t(source, ...args)`
+  （用插件自己的表查，miss 返回源串，`args` 按顺序填 `{}`）。两者都**不加能力闸门**
+  （只在插件包内数据上做纯查表），但必须由宿主显式传入 tag ——
+  `duck_plugin_js::run_tool` 的第 7 个参数就是它。
+- 校验：`python3 scripts/plugin_locales.py [<dir>…] [--strict] [--all]`（默认扫仓库 `plugins/`）。
+  Rust loader **刻意宽容**（坏 TOML / 超限只记 warn、跳过该语言，绝不让插件加载失败），
+  「宽容运行 + 脚本严查」是分工，不是疏漏。⚠️ 脚本**只读**，`--check` 只是等价别名；
+  **未知 flag 一律报错**（笔误被静默忽略＝门禁悄悄降级成非 strict）。
+- 原生轨（wasm / process）共用**同一份 `locales/*.toml` 与同一条降级链**，只差取词传输层。
+  process 的环境变量名已是常量：`duck_plugin::ENV_LOCALE`（`DUCK_LOCALE`）/
+  `duck_plugin::ENV_LOCALES_DIR`（`DUCK_LOCALES_DIR`），由
+  `duck_plugin::locale_env(plugin_dir, tag)` 组装成能直接喂 `Command::envs` 的二元组；
+  `PluginLocales::text(tag, source)` 是三轨共用的最后一跳（miss 折进源串）。
+  ⚠️ 这两个名字是**跨进程的对外协议**——插件在别的进程、由别人写，改名**没有编译错误**，
+  只由单测 `env_names_are_pinned` 拦；运行时尚未接入，宿主侧届时只需在 `Process` 分支调 `locale_env`。
+- ⚠️ `every_chinese_literal_is_translated` 守卫**只管宿主源码**——插件文案是运行期
+  数据，不在其覆盖范围，别以为它兜住了。
+- 完整方案（含 wasm / process 轨与环境变量约定）：`docs/plugin-i18n-design.md`。
 
 ### 3.4 Shell 脚本（sbin/）兼容 bash 3.2
 - **变量展开一律写 `${VAR}`，禁止裸 `$VAR`**。根因：macOS 自带 bash 3.2 在 UTF-8 locale 下，

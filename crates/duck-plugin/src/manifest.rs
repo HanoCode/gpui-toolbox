@@ -115,6 +115,57 @@ impl Capabilities {
     }
 }
 
+/// 插件的国际化声明（`[i18n]` 段，可选）。
+///
+/// 译文本身放在 `<plugin_dir>/locales/<tag>.toml`（装载与降级链见
+/// [`crate::i18n`]）；这一段只声明**元信息**，让宿主知道「源串是什么语言」
+/// 与「随包分发了哪些语言文件」。
+///
+/// 字段全可选 ⇒ 老清单零改动即可解析，且**没有 `[i18n]` 段 = 插件不带翻译**
+/// （渲染结果与迁移前逐字节相同，靠宿主做兜底）。
+///
+/// 派生 `PartialEq` / `Eq` 是给远端索引与用户记录比对用的，与 [`Capabilities`] 同理。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct I18nConfig {
+    /// 插件源串使用的语言 tag（如 `"zh-Hans"` / `"en"`）。
+    ///
+    /// 决定「所有语言都 miss 时回落到哪一份」，也让**英文优先**的插件能自然写作：
+    /// 用英文写 `name` 等字段 + `source = "en"` + 一份 `locales/zh-Hans.toml`。
+    ///
+    /// 缺省走 [`crate::DEFAULT_SOURCE_TAG`]（中文，与宿主的源串约定一致）。
+    #[serde(default)]
+    pub source: Option<String>,
+
+    /// 随包分发的语言文件（相对插件目录，必须在 `locales/` 下、以 `.toml` 结尾）。
+    ///
+    /// 缺省（`None`）= 自动发现 `locales/*.toml`。显式声明用于：
+    /// ① 打包白名单校验；② 让「本插件提供哪些语言」可被索引/市场展示；
+    /// ③ 阻止 `locales/` 里混进的无关 toml 被当成一种语言。
+    #[serde(default)]
+    pub locales: Option<Vec<String>>,
+}
+
+impl I18nConfig {
+    /// 源串语言 tag（缺省 [`crate::DEFAULT_SOURCE_TAG`]）。
+    ///
+    /// 空串按「没写」处理：清单里写 `source = ""` 是手滑，不该变成「源语言是空字符串」
+    /// 那种查不到任何东西的怪状态。
+    #[must_use]
+    pub fn source_tag(&self) -> &str {
+        match self.source.as_deref() {
+            Some(tag) if !tag.trim().is_empty() => tag,
+            _ => crate::DEFAULT_SOURCE_TAG,
+        }
+    }
+
+    /// 显式声明的语言文件列表；没声明返回 `None`（= 自动发现）。
+    #[must_use]
+    pub fn declared_locales(&self) -> Option<&[String]> {
+        self.locales.as_deref()
+    }
+}
+
 /// 工具贡献：插件要装进工具箱的一个工具。
 ///
 /// `category` 是 [`duck-tools::ToolCategory`] 的 `id()` 字符串；本 crate 不依赖
@@ -180,6 +231,10 @@ pub struct PluginManifest {
     /// 能力声明，可省略（缺省即不请求任何能力）。
     #[serde(default)]
     pub capabilities: Capabilities,
+    /// 国际化声明，可省略。译文数据在 `locales/`，这里只是元信息
+    /// （见 [`I18nConfig`] 与 `docs/plugin-i18n-design.md`）。
+    #[serde(default)]
+    pub i18n: Option<I18nConfig>,
     /// 工具贡献列表，可省略。
     #[serde(default)]
     pub tools: Vec<ToolContribution>,
@@ -331,6 +386,43 @@ mod tests {
         assert_eq!(manifest.tools.len(), 1);
         assert_eq!(manifest.tools[0].icon.as_deref(), Some("code"));
         assert_eq!(manifest.tools[0].keywords, ["sample", "哈希"]);
+    }
+
+    /// 没有 `[i18n]` 段（老插件）的两个缺省：源串语言走全局默认、文件自动发现。
+    #[test]
+    fn i18n_defaults_when_absent() {
+        let manifest = PluginManifest::parse(MINIMAL).expect("minimal manifest must parse");
+        assert!(manifest.i18n.is_none());
+    }
+
+    /// 有 `[i18n]` 段时两个字段都要能取到；`source` 写空串按「没写」处理。
+    #[test]
+    fn parses_i18n_section() {
+        let manifest = PluginManifest::parse(&format!(
+            "{MINIMAL}\n[i18n]\nsource = \"en\"\nlocales = [\"locales/zh-Hans.toml\"]\n"
+        ))
+        .expect("manifest with [i18n] must parse");
+        let i18n = manifest.i18n.expect("i18n section must be present");
+        assert_eq!(i18n.source_tag(), "en");
+        assert_eq!(
+            i18n.declared_locales(),
+            Some(["locales/zh-Hans.toml".to_string()].as_slice())
+        );
+
+        let blank = I18nConfig {
+            source: Some("  ".into()),
+            locales: None,
+        };
+        assert_eq!(blank.source_tag(), crate::DEFAULT_SOURCE_TAG);
+        assert!(blank.declared_locales().is_none());
+    }
+
+    /// `[i18n]` 段也 `deny_unknown_fields`：拼错字段名要当场报，不能静默忽略。
+    #[test]
+    fn rejects_unknown_i18n_field() {
+        let err = PluginManifest::parse(&format!("{MINIMAL}\n[i18n]\nsource_lang = \"en\"\n"))
+            .expect_err("unknown [i18n] field must be rejected");
+        assert!(matches!(err, PluginError::Parse(_)));
     }
 
     #[test]

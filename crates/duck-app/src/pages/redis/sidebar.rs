@@ -213,10 +213,14 @@ impl RedisPage {
     // 主区：键空间浏览器。
     // ------------------------------------------------------------------
 
+    /// shell 级右栏：**关于这个键**（属性 + 危险操作区）。
+    ///
+    /// ⚠️ 值**不在这里**——它在主区右栏的值编辑器里（`value::render_value_editor`）。
+    /// 这块面板回答「这个键是什么、能对它做什么」，值编辑器回答「它的值长什么样」；
+    /// 拆开之后两边各拿自己需要的宽度，值再宽也挤不到键详情。
     pub(crate) fn render_right_sidebar(&self, cx: &App) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
-        let extended = theme.extended();
         let view = self.view.clone();
 
         let Some(detail) = &self.detail else {
@@ -238,20 +242,25 @@ impl RedisPage {
         };
 
         let gate = self.gate();
-        let can_delete = gate
-            .as_ref()
-            .is_some_and(|gate| gate.can(Capability::DeleteKey));
         let can_write = gate
             .as_ref()
             .is_some_and(|gate| gate.can(Capability::WriteKey));
+        let can_delete = gate
+            .as_ref()
+            .is_some_and(|gate| gate.can(Capability::DeleteKey));
 
         let ttl_text: SharedString = match detail.ttl {
             -1 => SharedString::from(tr(cx, "永久")),
             -2 => SharedString::from(tr(cx, "键不存在")),
             seconds => trf(cx, "{} 秒", &[&seconds.to_string()]).into(),
         };
+        let size_text = if detail.truncated {
+            trf(cx, "{}（已截断）", &[&detail.size.to_string()])
+        } else {
+            detail.size.to_string()
+        };
 
-        let meta = description_list([
+        let mut rows = vec![
             description_row(
                 tr(cx, "键名"),
                 body_text(SharedString::from(detail.key.clone()), cx),
@@ -263,16 +272,23 @@ impl RedisPage {
             description_row(tr(cx, "过期时间"), body_text(ttl_text, cx)),
             description_row(
                 tr(cx, "元素数"),
-                body_text(
-                    SharedString::from(if detail.truncated {
-                        format!("{}（已截断）", detail.size)
-                    } else {
-                        detail.size.to_string()
-                    }),
-                    cx,
-                ),
+                body_text(SharedString::from(size_text), cx),
             ),
-        ]);
+        ];
+        // `OBJECT` 拿不到就**整行不画**：这两条本来就只是锦上添花，画一行「未知」
+        // 等于把「服务端没说」编成了一个值（见 `KeyObjectInfo`）。
+        if let Some(encoding) = &detail.encoding {
+            rows.push(description_row(
+                tr(cx, "内部编码"),
+                body_text(SharedString::from(encoding.clone()), cx),
+            ));
+        }
+        if let Some(secs) = detail.idletime_secs {
+            rows.push(description_row(
+                tr(cx, "空闲时间"),
+                body_text(trf(cx, "{} 秒", &[&secs.to_string()]), cx),
+            ));
+        }
 
         let mut panel = v_flex()
             .size_full()
@@ -280,168 +296,19 @@ impl RedisPage {
             .gap(tokens.spacing.sm)
             .p(tokens.spacing.sm)
             .child(caption_heading(tr(cx, "键详情"), cx))
-            .child(meta);
-
-        // 值区域：标题右侧放解码档位（只有字符串值有这三档）。
-        panel = panel.child(
-            h_flex()
-                .w_full()
-                .items_center()
-                .justify_between()
-                .child(caption_heading(tr(cx, "值"), cx))
-                .children(decode_chips(detail.key_type, self.decode, &view, cx)),
-        );
-        let value_body: AnyElement = match &detail.view {
-            ValueView::Text {
-                rendered,
-                notice,
-                bytes,
-            } => v_flex()
-                .w_full()
-                .gap(tokens.spacing.xxs)
-                .child(
-                    div()
-                        .w_full()
-                        // 滚动面板的**最大高度**是布局约束（撑住值面板的可视区），
-                        // 不属 spacing 阶梯，保留裸值。
-                        .max_h(px(240.))
-                        .id("redis-value-text")
-                        .overflow_y_scroll()
-                        .p(tokens.spacing.xs)
-                        .rounded(theme.components().input_radius)
-                        .border(extended.stroke.thin)
-                        .border_color(extended.colors.hairline)
-                        .bg(tokens.colors.background)
-                        .text_size(tokens.typography.mono_md.size)
-                        .line_height(tokens.typography.mono_md.line_height)
-                        .child(SharedString::from(rendered.clone())),
-                )
-                // 解码档位的说明行（GZIP 解压出多少字节、时间戳按哪个单位解读……）：
-                // 没有它，用户不知道 GZIP 档显示的这段字是从哪来的。
-                .children(
-                    notice
-                        .clone()
-                        .map(|text| meta_text(SharedString::from(text), cx)),
-                )
-                .child(meta_text(trf(cx, "{} 字节", &[&bytes.to_string()]), cx))
-                .into_any_element(),
-            ValueView::Binary { hex, bytes } => v_flex()
-                .w_full()
-                .gap(tokens.spacing.xxs)
-                .child(
-                    div()
-                        .w_full()
-                        // 同上：值面板的可视区上限，与 `redis-value-text` 取同一高度。
-                        .max_h(px(240.))
-                        .id("redis-value-hex")
-                        .overflow_y_scroll()
-                        .p(tokens.spacing.xs)
-                        .rounded(theme.components().input_radius)
-                        .border(extended.stroke.thin)
-                        .border_color(extended.colors.hairline)
-                        .bg(tokens.colors.background)
-                        .text_size(tokens.typography.mono_md.size)
-                        .line_height(tokens.typography.mono_md.line_height)
-                        .child(SharedString::from(hex.clone())),
-                )
-                .child(meta_text(
-                    trf(cx, "二进制内容，共 {} 字节", &[&bytes.to_string()]),
-                    cx,
-                ))
-                .into_any_element(),
-            ValueView::TooLarge { bytes } => meta_text(
-                trf(cx, "值过大（{} 字节），未自动加载。", &[&bytes.to_string()]),
+            .child(description_list(rows))
+            // 标注区排在「键详情」之后、危险操作区之前：它是**本地**动作
+            // （写 kv，不碰服务端），与下面的 TTL / 重命名 / 删除不是一类东西，
+            // 所以既不进灰显闸门，也不跟危险操作挨在一起。
+            .child(tag_editor(
+                &detail.key,
+                self.active_tags(),
+                &self.note_input,
+                &view,
                 cx,
-            )
-            .into_any_element(),
-            ValueView::JsonFailed { error, bytes } => v_flex()
-                .w_full()
-                .gap(tokens.spacing.xxs)
-                .child(
-                    div()
-                        .w_full()
-                        .p(tokens.spacing.xs)
-                        .rounded(theme.components().input_radius)
-                        .border(extended.stroke.thin)
-                        .border_color(extended.colors.hairline)
-                        .bg(tokens.colors.background)
-                        .text_size(tokens.typography.sm.size)
-                        .text_color(tokens.colors.foreground)
-                        .child(SharedString::from(trf(
-                            cx,
-                            "不是合法 JSON：{}",
-                            &[error.as_str()],
-                        ))),
-                )
-                .child(meta_text(
-                    trf(
-                        cx,
-                        "共 {} 字节，可切到「文本」或「Hex」档查看原文。",
-                        &[&bytes.to_string()],
-                    ),
-                    cx,
-                ))
-                .into_any_element(),
-            ValueView::Hash(pairs) => hash_rows(&detail.key, pairs, &view, cx),
-            ValueView::ZSet(pairs) => zset_rows(&detail.key, pairs, &view, cx),
-            ValueView::List(items) => list_rows(&detail.key, items, self.list_editing, &view, cx),
-            ValueView::Set(items) => set_rows(&detail.key, items, &view, cx),
-            ValueView::Stream(entries) => {
-                let mut list = v_flex().w_full().gap(tokens.spacing.xxs);
-                for (id, fields) in entries {
-                    list = list.child(
-                        v_flex()
-                            .w_full()
-                            .gap(tokens.spacing.xxs)
-                            .p(tokens.spacing.xs)
-                            .rounded(theme.components().input_radius)
-                            .border(extended.stroke.thin)
-                            .border_color(extended.colors.hairline)
-                            .child(
-                                div()
-                                    .text_size(tokens.typography.xs.size)
-                                    .text_color(tokens.colors.muted_foreground)
-                                    .child(SharedString::from(id.clone())),
-                            )
-                            .children(fields.iter().map(|(field, value)| {
-                                div()
-                                    .text_size(tokens.typography.sm.size)
-                                    .text_color(tokens.colors.foreground)
-                                    .child(SharedString::from(format!("{field}: {value}")))
-                            })),
-                    );
-                }
-                list.into_any_element()
-            }
-            ValueView::Missing => meta_text(
-                tr(cx, "键已不存在（可能在选中之后被其他客户端删掉了）。"),
-                cx,
-            )
-            .into_any_element(),
-            ValueView::Unsupported(key_type) => meta_text(
-                trf(
-                    cx,
-                    "「{}」类型的专用查看器尚未实现（计划在后续增量补上）。",
-                    &[key_type_label(*key_type, cx)],
-                ),
-                cx,
-            )
-            .into_any_element(),
-        };
-        panel = panel.child(
-            div()
-                .w_full()
-                // 整个值区（含标题、格式化切换）的滚动上限，布局约束、非间距。
-                .max_h(px(320.))
-                .id("redis-value-scroll")
-                .overflow_y_scroll()
-                .child(value_body),
-        );
+            ));
 
-        // 按类型给编辑入口（字符串 / 哈希 / 列表 / 集合 / 有序集合各一套字段）。
-        panel = panel.child(value_editor(self, detail.key_type, &view, can_write, cx));
-
-        if !can_write || !can_delete {
+        if !can_write {
             panel = panel.child(meta_text(
                 gate.as_ref()
                     .and_then(|gate| gate.check(Capability::WriteKey).err())
@@ -478,4 +345,138 @@ impl RedisPage {
     // ------------------------------------------------------------------
     // 状态栏。
     // ------------------------------------------------------------------
+}
+
+/// 右栏「标签与备注」区：色块行 + 收藏开关 + 备注框。
+///
+/// # 为什么这三样不受锁写闸门管
+///
+/// 它们改的是**本机**的一份备忘（落 kv），服务端收不到任何命令。只读连接、
+/// 生产库、ACL 未授权——都不影响「我给自己记一笔」。反过来，如果把它接到
+/// `Capability::WriteKey` 上，只读连接的右栏会整块灰掉，而这恰恰是标注最有用
+/// 的场合（读库时记「这条数据有问题」）。
+///
+/// # 交互取舍
+///
+/// - **色块行**：第一个是「无」（清掉标色），后面六档按内核 `TagColor::ALL` 的
+///   顺序。选中档用前景色描一圈粗边——比「加个对勾」省地方，也比只靠填充色
+///   更能在深色主题上分辨。
+/// - **备注框**：与上面那排输入框不同，**没有「保存」按钮**——输入即落盘
+///   （见 `mod.rs` 里那条订阅）。写了就存，是标注这种轻量数据该有的手感。
+/// - 收藏是**独立开关**，不和标色混成一个动作：一个键完全可以「收藏但不上色」。
+fn tag_editor(
+    key: &str,
+    tags: &KeyTags,
+    note_input: &Entity<InputState>,
+    view: &WeakEntity<RedisPage>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let dark = matches!(theme.mode(), duck_theme::ThemeMode::Dark);
+    let current = tags.tag_of(key);
+    let favorite = tags.is_favorite(key);
+
+    // 色块：`None` 是「无标签」那一个。
+    let swatch = |color: Option<TagColor>| -> AnyElement {
+        let selected = current == color;
+        let fill = color.map_or(tokens.colors.background, |color| tag_color(color, dark));
+        let label = match color {
+            Some(color) => tag_color_text(color, cx).to_owned(),
+            None => tr(cx, "无标签").to_owned(),
+        };
+        div()
+            .id(SharedString::from(format!(
+                "redis-tag-{}",
+                color.map_or("none", TagColor::as_str)
+            )))
+            .flex_none()
+            .w(px(TAG_SWATCH))
+            .h(px(TAG_SWATCH))
+            .rounded(tokens.radius.sm)
+            .bg(fill)
+            .border(px(if selected { 2. } else { 1. }))
+            .border_color(if selected {
+                tokens.colors.foreground
+            } else {
+                extended.colors.hairline
+            })
+            .cursor_pointer()
+            .role(Role::Button)
+            .aria_label(SharedString::from(label))
+            .on_click({
+                let view = view.clone();
+                let key = key.to_owned();
+                move |_, _window, cx| {
+                    let _ = view.update(cx, |this, cx| this.set_key_tag(&key, color, cx));
+                }
+            })
+            .into_any_element()
+    };
+
+    let mut swatches = h_flex()
+        .flex_none()
+        .gap(tokens.spacing.xs)
+        .child(swatch(None));
+    for color in TagColor::ALL {
+        swatches = swatches.child(swatch(Some(color)));
+    }
+
+    // 收藏：独立开关。收藏态用金星，未收藏用弱化色（**不是**灰掉——灰掉看起来
+    // 像「不能点」，而它随时可点）。
+    let star = icon_button(
+        "redis-toggle-favorite",
+        if favorite {
+            tr(cx, "取消收藏")
+        } else {
+            tr(cx, "收藏这个键")
+        },
+        Icon::new(DuckIcon::Star)
+            .size(extended.icon.sm)
+            .text_color(if favorite {
+                duck_theme::color_from_rgb(if dark { 0xd8b45c } else { 0xa8801a })
+            } else {
+                tokens.colors.muted_foreground
+            }),
+        ButtonVariant::Ghost,
+        cx,
+    )
+    .on_click({
+        let view = view.clone();
+        let key = key.to_owned();
+        move |_, _window, cx| {
+            let _ = view.update(cx, |this, cx| this.toggle_key_favorite(&key, cx));
+        }
+    });
+
+    v_flex()
+        .w_full()
+        .gap(tokens.spacing.xs)
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .child(caption_heading(tr(cx, "标签与备注"), cx))
+                .child(star),
+        )
+        .child(swatches)
+        .child(
+            h_flex()
+                .h(theme.density().control)
+                .w_full()
+                .px(tokens.spacing.sm)
+                .rounded(theme.components().input_radius)
+                .border(extended.stroke.thin)
+                .border_color(extended.colors.hairline)
+                .bg(tokens.colors.background)
+                .child(
+                    Input::new(note_input)
+                        .appearance(false)
+                        .bordered(false)
+                        .w_full(),
+                ),
+        )
+        .into_any_element()
 }

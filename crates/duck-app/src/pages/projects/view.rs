@@ -2,9 +2,10 @@
 //! `AnyElement` 出），不持有状态字段 —— 状态在 `state.rs`，装配在 `mod.rs`。
 
 use gpui::{
-    Anchor, AnyElement, App, Entity, Hsla, InteractiveElement as _, IntoElement, ParentElement,
-    Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled, WeakEntity, div,
-    prelude::FluentBuilder as _, px, relative,
+    Anchor, AnyElement, App, ClickEvent, Entity, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled, Toggled, WeakEntity, div, prelude::FluentBuilder as _,
+    px, relative,
 };
 use gpui_component::{
     Icon, h_flex,
@@ -16,33 +17,29 @@ use gpui_component::{
 use duck_components::{
     ButtonVariant, DuckIcon, SegmentItem, button, caption_heading,
     content::{alert_block, empty_state, neutral_tag},
-    icon_button, meta_text, nav_icon_color,
+    icon_button, icon_text_button, meta_text, nav_icon_color,
     notify::Tone,
     segmented_tabs_with_icons, sidebar_navigation_button, tabular_numbers,
     toolbar_text_dropdown_button,
 };
 use duck_project::{
-    CalendarDate, LogKind, Project, ProjectStatus, Tag, Task, TaskSort, TaskStatus, Weekday,
+    CalendarDate, LogKind, Priority, Project, ProjectStatus, Tag, Task, TaskSort, TaskStatus,
+    Weekday,
 };
 use duck_theme::{active_theme, color_from_hex, tr, trf};
 
 use super::ProjectsPage;
 use super::archive::render_archive_center;
-use super::prefs::ViewMode;
+use super::prefs::{GroupMode, ViewMode};
 use super::state::{BoardScope, ProjectsState, SidebarCounts, SmartFilter, local_date};
 use super::widgets::kanban_column::kanban_column;
-use super::widgets::priority_dot::priority_dot;
+use super::widgets::priority_dot::{priority_color, priority_dot, priority_label};
 use super::widgets::progress_bar::task_progress;
 use super::widgets::status_label;
 use super::widgets::tag_chip::tag_chip;
 use super::widgets::task_detail_panel::task_detail_panel;
 use super::widgets::task_menu::task_menu;
-
-/// 快速新建输入框的宽度。
-///
-/// 布局几何量（不属间距阶梯，也不是字号），故留裸值并写明来由：与看板列宽同源，
-/// 240 让「范围标题 + 输入框」在左栏展开时也排得下。
-const QUICK_INPUT_WIDTH: f32 = 240.;
+use super::widgets::{due_label, is_double_click};
 
 /// 左栏里项目 / 「未归入项目」相对智能列表右缩进的距离。
 const SIDEBAR_INDENT: f32 = 18.;
@@ -54,6 +51,13 @@ const LIST_STATUS_WIDTH: f32 = 88.;
 const LIST_DUE_WIDTH: f32 = 120.;
 const LIST_PROGRESS_WIDTH: f32 = 120.;
 const LIST_TAGS_WIDTH: f32 = 150.;
+/// 勾选列：只放一个 15px 的方框，宽度给到 18 让它在表头与行里都居中。
+///
+/// 裸值（不是间距阶梯里的一档）：勾选框的**直径**是原型 `.lcheck` 定死的 15px，
+/// 这一格只是它的外框，跟着阶梯走反而会让框与行高对不上。
+const LIST_CHECK_WIDTH: f32 = 18.;
+/// 勾选框直径（原型 `.lcheck{width:15px;height:15px}`）。
+const CHECK_BOX_SIZE: f32 = 15.;
 
 /// 左栏：智能列表 + 工作（项目树）+ 标签 + 底部计数。
 ///
@@ -218,6 +222,27 @@ pub(crate) fn render_sidebar(
         }
         nav = nav.child(tag_row(tag, state, view, cx));
     }
+    // 「管理标签…」压在标签段末尾（原型 `data-side="tags"`）。它是个**动作**、不是
+    // 又一个筛选档，所以不参与 `state.tag()` 的选中态、也不带计数徽标 —— 摆一个
+    // 会亮起来却没有对应范围的导航项，比不摆更让人困惑。
+    nav = nav.child(
+        sidebar_navigation_button(
+            "projects-manage-tags",
+            tr(cx, "管理标签…"),
+            Icon::new(DuckIcon::Tag)
+                .size(extended.icon.md)
+                .text_color(tokens.colors.muted_foreground),
+            h_flex().flex_none().items_center(),
+            false,
+            cx,
+        )
+        .on_click({
+            let view = view.clone();
+            move |_, window, cx| {
+                let _ = view.update(cx, |page, cx| page.open_tag_manager(window, cx));
+            }
+        }),
+    );
 
     v_flex()
         .size_full()
@@ -567,13 +592,76 @@ fn project_row(
         .context_menu({
             let view = view.clone();
             let id = project.id;
+            let name = SharedString::from(project.name.clone());
             move |menu, _, cx| {
-                menu.item(PopupMenuItem::new(tr(cx, "归档项目")).on_click({
-                    let view = view.clone();
-                    move |_, _, cx| {
-                        let _ = view.update(cx, |page, cx| page.archive_project(id, cx));
-                    }
-                }))
+                menu
+                    // 标题行（原型 `{ title: '项目「X」' }`）：右键弹出来的菜单不自带
+                    // 方向 —— 不写明点的是哪一个，项目一多就很容易改错。
+                    .item(PopupMenuItem::label(trf(cx, "项目「{}」", &[&name])))
+                    .item(
+                        PopupMenuItem::new(tr(cx, "只看这个项目"))
+                            .icon(Icon::new(DuckIcon::ListFilter))
+                            .on_click({
+                                let view = view.clone();
+                                move |_, _, cx| {
+                                    let _ = view.update(cx, |page, cx| {
+                                        page.set_scope(BoardScope::Project(id), cx);
+                                    });
+                                }
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(tr(cx, "新建任务并归入"))
+                            .icon(Icon::new(DuckIcon::Plus))
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    let _ = view.update(cx, |page, cx| {
+                                        page.open_spotlight_in(Some(id), window, cx);
+                                    });
+                                }
+                            }),
+                    )
+                    .separator()
+                    .item(
+                        PopupMenuItem::new(tr(cx, "项目设置…"))
+                            .icon(Icon::new(DuckIcon::Settings))
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    let _ = view.update(cx, |page, cx| {
+                                        page.open_project_editor(Some(id), window, cx);
+                                    });
+                                }
+                            }),
+                    )
+                    // 与「归档项目」分开：归档可恢复，删除不可逆，中间那根分隔线就是
+                    // 这两档之间唯一的视觉边界（「归档项目」是本仓特有的一档，原型
+                    // 的软删除在这里换成了归档中心，见 `docs/projects-design.md`）。
+                    .separator()
+                    .item(
+                        PopupMenuItem::new(tr(cx, "归档项目"))
+                            .icon(Icon::new(DuckIcon::Archive))
+                            .on_click({
+                                let view = view.clone();
+                                move |_, _, cx| {
+                                    let _ =
+                                        view.update(cx, |page, cx| page.archive_project(id, cx));
+                                }
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(tr(cx, "删除项目"))
+                            .icon(Icon::new(DuckIcon::Trash2))
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    let _ = view.update(cx, |page, cx| {
+                                        page.confirm_delete_project(id, window, cx);
+                                    });
+                                }
+                            }),
+                    )
             }
         })
         .child(
@@ -649,11 +737,10 @@ fn matches_filter(name: &str, query: &str) -> bool {
 /// 「看板 / 列表」这两个 tab 对归档区没有意义。
 ///
 /// 搜索框不在这里：它挪到了左栏（原型同款，一个框同时筛任务与项目名），所以主区
-/// 工具条只剩「视图 + 范围 + 排序 + 显示已完成 + 快速新建」。
+/// 工具条只剩「视图 + 范围 + 排序 + 分组 + 显示已完成 + 导入导出 + 两个新建入口」。
 pub(crate) fn render_main(
     state: &ProjectsState,
     view: &WeakEntity<ProjectsPage>,
-    quick: &Entity<InputState>,
     archive_search: &Entity<InputState>,
     cx: &App,
 ) -> AnyElement {
@@ -675,7 +762,7 @@ pub(crate) fn render_main(
         .size_full()
         .min_h_0()
         .min_w_0()
-        .child(render_toolbar(state, view, quick, cx))
+        .child(render_toolbar(state, view, cx))
         // 错误横幅：内核打不开时把**原始**英文错误显示出来，不翻译也不吞掉。
         .children(state.error().map(|message| {
             alert_block(
@@ -690,21 +777,19 @@ pub(crate) fn render_main(
         .into_any_element()
 }
 
-/// 工具条第一行：视图切换 + 排序 + 搜索 + 快速新建。
+/// 工具条：视图切换 + 范围 chips +（排序 / 分组 / 显示已完成）+ 导入导出 + 两个新建按钮。
 ///
-/// 与下面那条「筛选条」分成两行是**刻意的**：一行塞不下（5 个 chip + 6 档排序 +
-/// 两个输入框），而按宽度硬挤会让窄窗口下的控件互相截断。两行各司其职 ——
-/// 这一行管「怎么看」，下一行管「看哪些」。
-fn render_toolbar(
-    state: &ProjectsState,
-    view: &WeakEntity<ProjectsPage>,
-    quick: &Entity<InputState>,
-    cx: &App,
-) -> AnyElement {
+/// 与下面那条「筛选条」分成两行是**刻意的**：一行塞不下（5 个 chip + 6 档视图 +
+/// 6 档排序 + 4 档分组 + 4 个动作），而按宽度硬挤会让窄窗口下的控件互相截断。
+/// 两行各司其职 —— 这一行管「怎么看」，下一行管「看哪些」。
+///
+/// 排法与原型 `renderToolbar`（`docs/projects-mock.html:1131`）逐段对应：
+/// 左侧 seg + 范围 chips，右侧一条 `.right` 段放排序 / 分组 / 显示已完成 / 分隔 /
+/// 导入 / 导出 / 快速新建 / 新建任务。
+fn render_toolbar(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let extended = theme.extended();
-    let control = theme.density().control;
 
     h_flex()
         .flex_none()
@@ -723,22 +808,85 @@ fn render_toolbar(
         .child(scope_chips(state, view, cx))
         .child(div().flex_1().min_w_0())
         .child(sort_switcher(state, view, cx))
+        .child(group_switcher(state, view, cx))
         .child(show_done_toggle(state, view, cx))
         .child(toolbar_separator(cx))
-        .child(
-            div().w(px(QUICK_INPUT_WIDTH)).flex_none().child(
-                h_flex()
-                    .h(control)
-                    .w_full()
-                    .px(tokens.spacing.sm)
-                    .rounded(theme.components().input_radius)
-                    .border(extended.stroke.thin)
-                    .border_color(extended.colors.hairline)
-                    .bg(tokens.colors.background)
-                    .child(Input::new(quick).appearance(false).bordered(false).w_full()),
-            ),
-        )
+        .child(toolbar_import(view, cx))
+        .child(toolbar_export(view, cx))
+        .child(quick_create_button(view, cx))
+        .child(new_task_button(view, cx))
         .into_any_element()
+}
+
+/// 工具条上的「快速新建」（原型 `data-open="quick"`）：开 Spotlight 语义输入。
+fn quick_create_button(view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let icon = Icon::new(DuckIcon::Sparkles).size(active_theme(cx).extended().icon.sm);
+    let view = view.clone();
+    icon_text_button(
+        "projects-quick-create",
+        tr(cx, "快速新建"),
+        icon,
+        ButtonVariant::Secondary,
+        cx,
+    )
+    .on_click(move |_, window, cx| {
+        let _ = view.update(cx, |page, cx| page.open_spotlight(window, cx));
+    })
+    .into_any_element()
+}
+
+/// 工具条上的「新建任务」（原型 `data-open="task"`）：开任务编辑大表单。
+fn new_task_button(view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let icon = Icon::new(DuckIcon::Plus).size(active_theme(cx).extended().icon.sm);
+    let view = view.clone();
+    icon_text_button(
+        "projects-new-task",
+        tr(cx, "新建任务"),
+        icon,
+        ButtonVariant::Primary,
+        cx,
+    )
+    .on_click(move |_, window, cx| {
+        let _ = view.update(cx, |page, cx| page.new_task_in_scope(window, cx));
+    })
+    .into_any_element()
+}
+
+/// 工具条上的「从文本导入」（原型 `data-side="import"`）。
+///
+/// 只给图标：工具条右段已经有六个控件，再摆两个文字按钮会把范围 chips 挤成一团。
+/// 悬停提示由 [`icon_button`] 自己挂（**调用方不要重复挂**，二次 `.tooltip()` 会 panic）。
+fn toolbar_import(view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let icon = Icon::new(DuckIcon::Upload).size(active_theme(cx).extended().icon.sm);
+    let view = view.clone();
+    icon_button(
+        "projects-import",
+        tr(cx, "从文本导入"),
+        icon,
+        ButtonVariant::Ghost,
+        cx,
+    )
+    .on_click(move |_, window, cx| {
+        let _ = view.update(cx, |page, cx| page.open_import(window, cx));
+    })
+    .into_any_element()
+}
+
+/// 工具条上的「导出」（原型 `data-side="export"`）。
+fn toolbar_export(view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let icon = Icon::new(DuckIcon::Download).size(active_theme(cx).extended().icon.sm);
+    let view = view.clone();
+    icon_button(
+        "projects-export",
+        tr(cx, "导出"),
+        icon,
+        ButtonVariant::Ghost,
+        cx,
+    )
+    .on_click(move |_, window, cx| {
+        let _ = view.update(cx, |page, cx| page.open_export(window, cx));
+    })
+    .into_any_element()
 }
 
 /// 工具条上的竖线分隔（原型 `.tbsep`）。
@@ -979,6 +1127,54 @@ fn sort_label(sort: TaskSort, cx: &App) -> &'static str {
     }
 }
 
+/// 分组轴下拉（原型 `data-menu="group"`）。
+///
+/// 只在列表视图里真的改变画面（其余视图各有自己的骨架），但**照原型一样常驻**：
+/// 按钮忽隐忽现比一个暂时没效果的按钮更让人迷惑，而且切回列表时还能看到上次选的是哪档。
+fn group_switcher(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let extended = theme.extended();
+    let current = state.group();
+    // 理由同 `sort_switcher`：`build` 闭包要求 `'static`，先把引用克隆成拥有所有权的实体。
+    let view = view.clone();
+    let items: Vec<(GroupMode, SharedString)> = GroupMode::ALL
+        .iter()
+        .map(|mode| (*mode, SharedString::from(group_label(*mode, cx))))
+        .collect();
+    toolbar_text_dropdown_button(
+        "projects-group",
+        SharedString::from(group_label(current, cx)),
+        Icon::new(DuckIcon::Layers).size(extended.icon.sm),
+        Anchor::TopRight,
+        move |menu, _, _| {
+            items.iter().fold(menu, |menu, (mode, label)| {
+                menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .checked(*mode == current)
+                        .on_click({
+                            let view = view.clone();
+                            let mode = *mode;
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |page, cx| page.set_group(mode, cx));
+                            }
+                        }),
+                )
+            })
+        },
+        cx,
+    )
+}
+
+/// 分组档位的中文名。与 [`GroupMode::ALL`] 一一对应（真源只有那一个数组）。
+fn group_label(mode: GroupMode, cx: &App) -> &'static str {
+    match mode {
+        GroupMode::Priority => tr(cx, "按优先级分组"),
+        GroupMode::Project => tr(cx, "按项目分组"),
+        GroupMode::Status => tr(cx, "按状态分组"),
+        GroupMode::None => tr(cx, "不分组"),
+    }
+}
+
 /// 工具条 chip（原型 `.chip`）：选中 = 强调色薄底 + 强调色描边与文字。
 ///
 /// `leading` 是文字**之前**的小挂件（色点 / 图标）；用参数而不是让调用方 `.child()`
@@ -1090,7 +1286,7 @@ fn main_empty_state(state: &ProjectsState, cx: &App) -> AnyElement {
         tr(cx, "这里还没有任务"),
         Some(SharedString::from(tr(
             cx,
-            "在右上角的输入框里写个标题、按回车，就能建第一条任务。",
+            "点工具条的「新建任务」，或按 N 用一句话快速新建一条。",
         ))),
         None,
         cx,
@@ -1098,26 +1294,42 @@ fn main_empty_state(state: &ProjectsState, cx: &App) -> AnyElement {
     .into_any_element()
 }
 
-/// 列表视图：表头 + 若干行。
+/// 列表视图：表头 + 若干行（按当前分组轴摆成几摞）。
 ///
 /// 与看板读的是**同一份** `state.tasks()`（口径在 `ProjectsState::query`），所以两个
 /// 视图下「范围 + 筛选 + 搜索 + 排序」的结果逐条一致 —— 切视图不该改变看到的东西。
+/// 分组只改变**摆法**（同样的那些行换个分堆方式），一条都不增不减。
 fn render_list(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let extended = theme.extended();
 
-    let tasks = state.tasks();
-    if tasks.is_empty() {
+    if state.tasks().is_empty() {
         return main_empty_state(state, cx);
     }
 
     let today = state.today();
     let selected = state.selected();
-    let rows: Vec<AnyElement> = tasks
-        .iter()
-        .map(|task| list_row(task, state, today, selected, view, cx))
-        .collect();
+    let mut body = v_flex().w_full();
+    // 批量条压在表格上方（原型同款）：它讲的是「这一屏选了几条」，离被选中的行越近越好。
+    if state.checked_count() > 0 {
+        body = body.child(bulk_bar(state, view, cx));
+    }
+    body = body.child(list_header(state, view, cx));
+    for group in grouped_tasks(state) {
+        if let Some(head) = group_header(&group, state, cx) {
+            body = body.child(head);
+        }
+        // 状态分组下空组也保留（它顺带把看板列当成了分组表头），得给个占位行，
+        // 否则表头下面直接接下一个表头，看着像漏渲染了。
+        if group.tasks.is_empty() {
+            body = body.child(group_empty_row(group.key, cx));
+            continue;
+        }
+        for &task in &group.tasks {
+            body = body.child(list_row(task, state, today, selected, view, cx));
+        }
+    }
 
     div()
         .id("projects-list")
@@ -1135,33 +1347,340 @@ fn render_list(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App)
                 .border_color(extended.colors.hairline)
                 .bg(tokens.colors.surface)
                 .overflow_hidden()
-                .child(list_header(cx))
-                .children(rows),
+                .child(body),
         )
         .into_any_element()
 }
 
-/// 列表表头。
-fn list_header(cx: &App) -> AnyElement {
+/// 列表分组的一档（原型 `vList` 里 `groups` 的构造，一一对应）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupKey {
+    /// 不分组：一整张表，只有表头。
+    All,
+    /// 按优先级。
+    Priority(Priority),
+    /// 按项目；`None` = 未归入项目。
+    Project(Option<i64>),
+    /// 按状态（看板列序）。
+    Status(TaskStatus),
+}
+
+/// 列表里的一摞。
+struct TaskGroup<'a> {
+    key: GroupKey,
+    tasks: Vec<&'a Task>,
+}
+
+/// 按当前分组轴把任务摆成几摞。
+///
+/// 组**内**顺序就是 `state.tasks()` 自己的顺序（已经是排序口径出来的）；组**间**顺序
+/// 由分组轴决定：
+///
+/// - 优先级：P0 → P3（[`Priority::ALL`] 的顺序）；
+/// - 项目：左栏项目表的顺序，「未归入项目」放**最后**（原型同款）；
+/// - 状态：看板列序 —— **用户自定义过的列序也算**，照抄 `state.columns()`；
+/// - 不分组：只有一摞、也不画组头。
+///
+/// 除「状态」外空组一律丢掉（原型 `groups.filter(...)`）：一个「P3 低 · 0 项」的表头
+/// 占位置又没内容。状态是例外 —— 四列都摆出来，用户才知道「搁置的现在一条都没有」。
+fn grouped_tasks(state: &ProjectsState) -> Vec<TaskGroup<'_>> {
+    let tasks = state.tasks();
+    match state.group() {
+        GroupMode::None => vec![TaskGroup {
+            key: GroupKey::All,
+            tasks: tasks.iter().collect(),
+        }],
+        GroupMode::Priority => Priority::ALL
+            .iter()
+            .map(|priority| TaskGroup {
+                key: GroupKey::Priority(*priority),
+                tasks: tasks
+                    .iter()
+                    .filter(|task| task.priority == *priority)
+                    .collect(),
+            })
+            .filter(|group| !group.tasks.is_empty())
+            .collect(),
+        GroupMode::Project => {
+            let mut groups: Vec<TaskGroup<'_>> = state
+                .projects()
+                .iter()
+                .map(|project| TaskGroup {
+                    key: GroupKey::Project(Some(project.id)),
+                    tasks: tasks
+                        .iter()
+                        .filter(|task| task.project_id == Some(project.id))
+                        .collect(),
+                })
+                .filter(|group| !group.tasks.is_empty())
+                .collect();
+            let inbox: Vec<&Task> = tasks
+                .iter()
+                .filter(|task| task.project_id.is_none())
+                .collect();
+            if !inbox.is_empty() {
+                groups.push(TaskGroup {
+                    key: GroupKey::Project(None),
+                    tasks: inbox,
+                });
+            }
+            groups
+        }
+        GroupMode::Status => state
+            .columns()
+            .iter()
+            .map(|column| TaskGroup {
+                key: GroupKey::Status(column.status_key),
+                tasks: tasks
+                    .iter()
+                    .filter(|task| task.status == column.status_key)
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+/// 一摞的组头（原型 `.lgroup`）：色点 + 名字 + 「n 项」。
+///
+/// 「不分组」没有组头（[`GroupKey::All`]）—— 只有一张表的时候，一个「全部 · n 项」
+/// 的表头纯属多一行。
+fn group_header(group: &TaskGroup<'_>, state: &ProjectsState, cx: &App) -> Option<AnyElement> {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let extended = theme.extended();
-    let xs = tokens.typography.xs;
 
-    let cell = |width: Option<f32>, label: &'static str, cx: &App| {
-        let mut cell = div()
-            .flex_none()
-            .text_size(xs.size)
-            .line_height(xs.line_height)
-            .text_color(tokens.colors.muted_foreground)
-            .child(SharedString::from(tr(cx, label)));
-        if let Some(width) = width {
-            cell = cell.w(px(width));
-        } else {
-            cell = cell.flex_1().min_w_0().truncate();
-        }
-        cell
+    let (dot, label) = match group.key {
+        GroupKey::All => return None,
+        GroupKey::Priority(priority) => (
+            priority_color(priority, cx),
+            SharedString::from(priority_label(priority, cx)),
+        ),
+        GroupKey::Project(Some(id)) => (
+            state
+                .projects()
+                .iter()
+                .find(|project| project.id == id)
+                .map_or(tokens.colors.muted_foreground, |project| {
+                    color_from_hex(&project.color).unwrap_or(tokens.colors.muted_foreground)
+                }),
+            project_name(state, id, cx),
+        ),
+        GroupKey::Project(None) => (
+            extended.colors.text_tertiary,
+            SharedString::from(tr(cx, "未归入项目")),
+        ),
+        GroupKey::Status(status) => (
+            status_color(status, cx),
+            SharedString::from(status_label(status, cx)),
+        ),
     };
+
+    Some(
+        h_flex()
+            .w_full()
+            .flex_none()
+            .gap(tokens.spacing.xs)
+            .px(tokens.spacing.sm)
+            .py(tokens.spacing.xs)
+            .bg(tokens.colors.background)
+            .border_b(extended.stroke.thin)
+            .border_color(extended.colors.hairline)
+            .child(div().flex_none().size(px(8.)).rounded_full().bg(dot))
+            .child(
+                div()
+                    .text_size(tokens.typography.xs.size)
+                    .line_height(tokens.typography.xs.line_height)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(tokens.colors.foreground)
+                    .child(label),
+            )
+            .child(count_badge(group.tasks.len() as u32, cx))
+            .into_any_element(),
+    )
+}
+
+/// 空分组的占位行（只有「按状态分组」会出现，见 [`grouped_tasks`]）。
+fn group_empty_row(key: GroupKey, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    div()
+        .w_full()
+        .flex_none()
+        .px(tokens.spacing.sm)
+        .py(tokens.spacing.xs)
+        .border_b(theme.extended().stroke.thin)
+        .border_color(theme.extended().colors.hairline)
+        .text_size(tokens.typography.xs.size)
+        .line_height(tokens.typography.xs.line_height)
+        .text_color(theme.extended().colors.text_tertiary)
+        .child(SharedString::from(match key {
+            GroupKey::Status(_) => tr(cx, "这一列下暂无任务"),
+            _ => tr(cx, "此分组暂无任务"),
+        }))
+        .into_any_element()
+}
+
+/// 状态色点：与时间线条带同一套语义（已完成 → 成功、受阻 → 警告、进行中 → 强调、
+/// 待办 → 弱化）。
+/// 状态 → 颜色（原型 `.cdot.todo/.doing/.blocked/.done`）。
+///
+/// 列表分组头与看板列头共用：同一个状态在两处必须是同一个颜色，各写一份迟早对不上。
+pub(super) fn status_color(status: TaskStatus, cx: &App) -> Hsla {
+    let theme = active_theme(cx);
+    match status {
+        TaskStatus::Done => theme.extended().colors.success,
+        TaskStatus::Blocked => theme.extended().colors.warning,
+        TaskStatus::Doing => theme.tokens().colors.primary,
+        TaskStatus::Todo => theme.tokens().colors.muted_foreground,
+        TaskStatus::Deferred | TaskStatus::Cancelled => theme.extended().colors.text_tertiary,
+    }
+}
+
+/// 列表最左边那个勾（原型 `.lcheck`）。
+///
+/// 15px 的圆角方块，勾上时整块转强调色底 + 勾号。勾选必须是**独立的手势**：
+/// 整行点下去是「选中 → 右栏看详情」，顺手把勾也翻过来会让人不敢点行。
+/// 所以它在 `on_mouse_down` 上 `stop_propagation`，把这次点击从行的处理器那里截住。
+fn check_box(
+    id: SharedString,
+    checked: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut App) + 'static,
+    cx: &App,
+) -> Stateful<gpui::Div> {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let accent = tokens.colors.primary;
+
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(CHECK_BOX_SIZE))
+        // 4px 圆角取自原型 `.lcheck`，阶梯里没有这一档。
+        .rounded(px(4.))
+        .border(extended.stroke.thin)
+        .border_color(if checked {
+            accent
+        } else {
+            tokens.colors.border
+        })
+        .bg(if checked {
+            accent
+        } else {
+            tokens.colors.surface
+        })
+        .cursor_pointer()
+        .role(Role::CheckBox)
+        .aria_toggled(if checked {
+            Toggled::True
+        } else {
+            Toggled::False
+        })
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(on_click)
+        .children(checked.then(|| {
+            Icon::new(DuckIcon::Check)
+                .size(px(11.))
+                .text_color(tokens.colors.primary_foreground)
+        }))
+}
+
+/// 表头格子的骨架：字阶 / 颜色 / 宽度（`None` = 撑满剩余）。
+fn header_cell_frame(width: Option<f32>, cx: &App) -> gpui::Div {
+    let tokens = active_theme(cx).tokens();
+    let mut cell = div()
+        .flex_none()
+        .text_size(tokens.typography.xs.size)
+        .line_height(tokens.typography.xs.line_height)
+        .text_color(tokens.colors.muted_foreground);
+    if let Some(width) = width {
+        cell = cell.w(px(width));
+    } else {
+        cell = cell.flex_1().min_w_0().truncate();
+    }
+    cell
+}
+
+/// 不可排序的表头格（「项目 / 状态 / 标签」—— 内核的 [`TaskSort`] 里没有这三档）。
+fn plain_cell(width: Option<f32>, label: &'static str, cx: &App) -> AnyElement {
+    header_cell_frame(width, cx)
+        .child(SharedString::from(tr(cx, label)))
+        .into_any_element()
+}
+
+/// 可排序的表头格（原型 `.lsort`）：点一下按这一列排，再点一下换方向。
+///
+/// `sorts` 是这一列的档位链：单档（标题 / 优先级 / 进度）点了就停在它上面，
+/// 双档（截止）在升 / 降之间来回 —— 链的长度就是「有几个方向」。
+/// 当前档落在这条链上时才画箭头，免得每一列表头都挂一个不生效的箭头。
+///
+/// `id_key` 用显式 ASCII 键而不是列名：列名是中文源串（会被翻译），元素 id 一旦
+/// 跟着语言变，gpui 就当成另一个元素，焦点与悬停态都会丢。
+fn sort_cell(
+    id_key: &'static str,
+    width: Option<f32>,
+    label: &'static str,
+    sorts: &'static [TaskSort],
+    current: TaskSort,
+    view: &WeakEntity<ProjectsPage>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    // 颜色是 `Copy` 的，先取出来再 move 进 `'static` 闭包（闭包借不到 `cx`）。
+    let accent = tokens.colors.primary;
+    let foreground = tokens.colors.foreground;
+    let active = sorts.iter().position(|sort| *sort == current);
+
+    let mut cell = header_cell_frame(width, cx)
+        .id(SharedString::from(format!("projects-sort-{id_key}")))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens.spacing.xxs)
+        .cursor_pointer()
+        // 自绘的可点元素对读屏不存在，角色与名字都得显式给。
+        .role(Role::Button)
+        .aria_label(SharedString::from(tr(cx, label)))
+        .hover(move |style| style.text_color(foreground))
+        .on_click({
+            let view = view.clone();
+            move |_, _, cx| {
+                // 当前档在链上就往后挪一格（到头绕回），否则进入这条链的第一档。
+                let next = match sorts.iter().position(|sort| *sort == current) {
+                    Some(index) => sorts[(index + 1) % sorts.len()],
+                    None => sorts[0],
+                };
+                let _ = view.update(cx, |page, cx| page.set_sort(next, cx));
+            }
+        })
+        .child(SharedString::from(tr(cx, label)));
+    if let Some(index) = active {
+        // 方向箭头用 `ArrowUp/Down` 而不是 `Chevron*`：图标集里**没有** `ChevronUp`
+        // （只有 Down / Left / Right），而排序的方向语义本来就该是箭头。
+        cell = cell.child(
+            Icon::new(if index == 0 {
+                DuckIcon::ArrowUp
+            } else {
+                DuckIcon::ArrowDown
+            })
+            .size(extended.icon.sm)
+            .text_color(accent),
+        );
+    }
+    cell.into_any_element()
+}
+
+/// 列表表头：全选勾 + 七列（其中四列可点排序）。
+fn list_header(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let current = state.sort();
 
     h_flex()
         .w_full()
@@ -1172,13 +1691,240 @@ fn list_header(cx: &App) -> AnyElement {
         .border_b(extended.stroke.thin)
         .border_color(extended.colors.hairline)
         .bg(tokens.colors.background)
-        .child(cell(None, "任务", cx))
-        .child(cell(Some(LIST_PROJECT_WIDTH), "项目", cx))
-        .child(cell(Some(LIST_PRIORITY_WIDTH), "优先级", cx))
-        .child(cell(Some(LIST_STATUS_WIDTH), "状态", cx))
-        .child(cell(Some(LIST_DUE_WIDTH), "截止", cx))
-        .child(cell(Some(LIST_PROGRESS_WIDTH), "进度", cx))
-        .child(cell(Some(LIST_TAGS_WIDTH), "标签", cx))
+        .child(
+            div()
+                .flex_none()
+                .w(px(LIST_CHECK_WIDTH))
+                .flex()
+                .justify_center()
+                .child(
+                    check_box(
+                        SharedString::from("projects-list-check-all"),
+                        state.all_checked(),
+                        {
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |page, cx| page.toggle_check_all(cx));
+                            }
+                        },
+                        cx,
+                    )
+                    .aria_label(tr(cx, "全选")),
+                ),
+        )
+        .child(sort_cell(
+            "title",
+            None,
+            "任务",
+            &[TaskSort::TitleAsc],
+            current,
+            view,
+            cx,
+        ))
+        .child(plain_cell(Some(LIST_PROJECT_WIDTH), "项目", cx))
+        .child(sort_cell(
+            "priority",
+            Some(LIST_PRIORITY_WIDTH),
+            "优先级",
+            &[TaskSort::PriorityFirst],
+            current,
+            view,
+            cx,
+        ))
+        .child(plain_cell(Some(LIST_STATUS_WIDTH), "状态", cx))
+        .child(sort_cell(
+            "due",
+            Some(LIST_DUE_WIDTH),
+            "截止",
+            &[TaskSort::DueAsc, TaskSort::DueDesc],
+            current,
+            view,
+            cx,
+        ))
+        .child(sort_cell(
+            "progress",
+            Some(LIST_PROGRESS_WIDTH),
+            "进度",
+            &[TaskSort::ProgressDesc],
+            current,
+            view,
+            cx,
+        ))
+        .child(plain_cell(Some(LIST_TAGS_WIDTH), "标签", cx))
+        .into_any_element()
+}
+
+/// 批量条（原型 `.bulkbar`）：`N 项已选中` + 六个动作。
+///
+/// 只在有勾选时出现，压在表格**上方**：它讲的是「这一屏选了几条」，离被选中的行越近越好。
+fn bulk_bar(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let count = state.checked_count();
+
+    // 三个「选一个值」的动作走下拉（与工具条的排序 / 分组同一套），
+    // 两个直接生效，一个不可逆的走二次确认。
+    let status_menu = {
+        let view = view.clone();
+        let items: Vec<(TaskStatus, SharedString)> = TaskStatus::ALL
+            .iter()
+            .map(|status| (*status, SharedString::from(status_label(*status, cx))))
+            .collect();
+        toolbar_text_dropdown_button(
+            "projects-bulk-status",
+            SharedString::from(tr(cx, "改状态")),
+            Icon::new(DuckIcon::SlidersHorizontal).size(extended.icon.sm),
+            Anchor::TopLeft,
+            move |menu, _, _cx| {
+                items.iter().fold(menu, |menu, (status, label)| {
+                    let status = *status;
+                    menu.item(PopupMenuItem::new(label.clone()).on_click({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |page, cx| page.bulk_status(status, cx));
+                        }
+                    }))
+                })
+            },
+            cx,
+        )
+    };
+
+    let priority_menu = {
+        let view = view.clone();
+        let items: Vec<(Priority, SharedString)> = Priority::ALL
+            .iter()
+            .map(|priority| {
+                (
+                    *priority,
+                    SharedString::from(format!(
+                        "P{} {}",
+                        priority.as_i64(),
+                        priority_label(*priority, cx)
+                    )),
+                )
+            })
+            .collect();
+        toolbar_text_dropdown_button(
+            "projects-bulk-priority",
+            SharedString::from(tr(cx, "改优先级")),
+            Icon::new(DuckIcon::Flag).size(extended.icon.sm),
+            Anchor::TopLeft,
+            move |menu, _, _cx| {
+                items.iter().fold(menu, |menu, (priority, label)| {
+                    let priority = *priority;
+                    menu.item(PopupMenuItem::new(label.clone()).on_click({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |page, cx| page.bulk_priority(priority, cx));
+                        }
+                    }))
+                })
+            },
+            cx,
+        )
+    };
+
+    let project_menu =
+        {
+            let view = view.clone();
+            let items: Vec<(Option<i64>, SharedString)> =
+                std::iter::once((None, SharedString::from(tr(cx, "未归入项目"))))
+                    .chain(state.projects().iter().map(|project| {
+                        (Some(project.id), SharedString::from(project.name.clone()))
+                    }))
+                    .collect();
+            toolbar_text_dropdown_button(
+                "projects-bulk-project",
+                SharedString::from(tr(cx, "移入项目")),
+                Icon::new(DuckIcon::FolderOpen).size(extended.icon.sm),
+                Anchor::TopLeft,
+                move |menu, _, _cx| {
+                    items.iter().fold(menu, |menu, (target, label)| {
+                        let target = *target;
+                        menu.item(PopupMenuItem::new(label.clone()).on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |page, cx| page.bulk_project(target, cx));
+                            }
+                        }))
+                    })
+                },
+                cx,
+            )
+        };
+
+    h_flex()
+        .w_full()
+        .flex_none()
+        .gap(tokens.spacing.xs)
+        .px(tokens.spacing.sm)
+        .py(tokens.spacing.xs)
+        .mb(tokens.spacing.sm)
+        .rounded(theme.components().card_radius)
+        .border(extended.stroke.thin)
+        .border_color(tokens.colors.primary)
+        .bg(tokens.colors.primary.opacity(extended.opacity.tint))
+        .text_size(tokens.typography.sm.size)
+        .line_height(tokens.typography.sm.line_height)
+        .text_color(tokens.colors.primary)
+        .child(SharedString::from(trf(
+            cx,
+            "{} 项已选中",
+            &[&count.to_string()],
+        )))
+        .child(div().flex_1())
+        .child(
+            icon_text_button(
+                "projects-bulk-done",
+                tr(cx, "标记完成"),
+                Icon::new(DuckIcon::Check).size(extended.icon.sm),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .on_click({
+                let view = view.clone();
+                move |_, _, cx| {
+                    let _ = view.update(cx, |page, cx| {
+                        page.bulk_status(duck_project::TaskStatus::Done, cx);
+                    });
+                }
+            }),
+        )
+        .child(status_menu)
+        .child(priority_menu)
+        .child(project_menu)
+        .child(
+            icon_text_button(
+                "projects-bulk-delete",
+                tr(cx, "删除"),
+                Icon::new(DuckIcon::Trash2).size(extended.icon.sm),
+                ButtonVariant::Ghost,
+                cx,
+            )
+            .on_click({
+                let view = view.clone();
+                move |_, window, cx| {
+                    let _ = view.update(cx, |page, cx| page.confirm_delete_checked(window, cx));
+                }
+            }),
+        )
+        .child(
+            icon_text_button(
+                "projects-bulk-clear",
+                tr(cx, "取消选择"),
+                Icon::new(DuckIcon::X).size(extended.icon.sm),
+                ButtonVariant::Ghost,
+                cx,
+            )
+            .on_click({
+                let view = view.clone();
+                move |_, _, cx| {
+                    let _ = view.update(cx, |page, cx| page.clear_checked(cx));
+                }
+            }),
+        )
         .into_any_element()
 }
 
@@ -1195,8 +1941,8 @@ fn list_row(
     let tokens = theme.tokens();
     let extended = theme.extended();
     let is_selected = selected == Some(task.id);
+    let checked = state.is_checked(task.id);
     let done = task.status == duck_project::TaskStatus::Done;
-    let overdue = task.is_overdue(today);
 
     let project = task
         .project_id
@@ -1226,7 +1972,16 @@ fn list_row(
         .on_click({
             let view = view.clone();
             let id = task.id;
-            move |_, _window, cx| {
+            let status = task.status;
+            move |event: &ClickEvent, window, cx| {
+                // 双击开完整编辑器（原型全局 `dblclick` → `openTaskEditor`）：与看板
+                // 卡片同一个手势，判据见 `widgets::is_double_click`。
+                if is_double_click(event) {
+                    let _ = view.update(cx, |page, cx| {
+                        super::dialogs::open_task_editor(page, Some(id), None, status, window, cx)
+                    });
+                    return;
+                }
                 let _ = view.update(cx, |page, cx| page.select_task(Some(id), cx));
             }
         })
@@ -1246,6 +2001,30 @@ fn list_row(
                 task_menu(menu, &task, &projects, &columns, &view, window, cx)
             }
         })
+        // 勾选列（原型 `.lcell.ck`）：整行点击已经是「选中 → 右栏」，
+        // 勾选是另一个手势，所以在 `on_mouse_down` 上截住冒泡。
+        .child(
+            div()
+                .flex_none()
+                .w(px(LIST_CHECK_WIDTH))
+                .flex()
+                .justify_center()
+                .child(
+                    check_box(
+                        SharedString::from(format!("projects-list-check-{}", task.id)),
+                        checked,
+                        {
+                            let view = view.clone();
+                            let id = task.id;
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |page, cx| page.toggle_checked(id, cx));
+                            }
+                        },
+                        cx,
+                    )
+                    .aria_label(SharedString::from(task.title.clone())),
+                ),
+        )
         // 任务：项目色点 + 标题（已完成加删除线）。
         .child(
             h_flex()
@@ -1303,17 +2082,16 @@ fn list_row(
                 .child(SharedString::from(status_label(task.status, cx))),
         )
         // 截止。
-        .child(
+        .child({
+            // 与看板卡片 `.pmeta` 共用一份口径（原型 `dueLabel`）：同一张卡在两种视图里
+            // 对同一个日期给两种说法，是最容易被当成 bug 的那种不一致。
+            let (text, color) = due_label(task, today, cx);
             cell(LIST_DUE_WIDTH)
                 .text_size(tokens.typography.xs.size)
                 .line_height(tokens.typography.xs.line_height)
-                .text_color(if overdue {
-                    tokens.colors.destructive
-                } else {
-                    extended.colors.text_tertiary
-                })
-                .child(list_due_text(task, cx)),
-        )
+                .text_color(color)
+                .child(text)
+        })
         // 进度。
         .child(
             cell(LIST_PROGRESS_WIDTH)
@@ -1339,18 +2117,6 @@ fn list_row(
         .into_any_element()
 }
 
-/// 列表「截止」列文案：没排期写「未排期」，有时刻带上时刻。
-fn list_due_text(task: &Task, cx: &App) -> SharedString {
-    let Some(due) = task.due_date else {
-        return SharedString::from(tr(cx, "未排期"));
-    };
-    let iso = due.to_iso();
-    match task.due_time.as_deref() {
-        Some(time) => SharedString::from(trf(cx, "{} {}", &[&iso, time])),
-        None => SharedString::from(iso),
-    }
-}
-
 /// 看板本体。
 fn render_board(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
     let tokens = active_theme(cx).tokens();
@@ -1361,12 +2127,14 @@ fn render_board(state: &ProjectsState, view: &WeakEntity<ProjectsPage>, cx: &App
 
     let today = state.today();
     let selected = state.selected();
+    // 卡片上的项目色点要项目表：这一层是取数的地方（同右栏），组件自己不碰状态。
+    let projects = state.projects();
     let columns: Vec<AnyElement> = state
         .columns()
         .iter()
         .map(|column| {
             let tasks = state.tasks_in_status(column.status_key);
-            kanban_column(column, &tasks, today, selected, view, cx)
+            kanban_column(column, &tasks, projects, today, selected, view, cx)
         })
         .collect();
 
@@ -1452,7 +2220,7 @@ fn render_status_bar(state: &ProjectsState, cx: &App) -> AnyElement {
                 .text_color(extended.colors.text_tertiary)
                 .child(SharedString::from(tr(
                     cx,
-                    "N 快速新建 · ⌘K 命令面板 · 右键卡片有菜单",
+                    "N 快速新建 · ⌘N 新建任务 · ⌘K 命令面板 · 右键卡片有菜单",
                 ))),
         )
         .into_any_element()
@@ -2822,5 +3590,8 @@ pub(crate) fn render_right_sidebar(
             .child(meta_text(tr(cx, "选中一张卡片查看详情。"), cx))
             .into_any_element();
     };
-    task_detail_panel(task, state.today(), view, cx)
+    // 右栏要用「项目表」与「这条任务的里程碑」：两样都在状态层之外查不到（项目表在
+    // `state` 里、里程碑要走库），所以在这里取好交给组件，组件自己不碰状态。
+    let milestones = state.task_milestones(task.id);
+    task_detail_panel(task, state.projects(), &milestones, state.today(), view, cx)
 }

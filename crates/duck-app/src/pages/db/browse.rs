@@ -118,11 +118,8 @@ impl DatabasePage {
                         );
                     }
                     // 列宽没变就保留横向位置：翻页 / 排序不该把人拽回最左列。
-                    let widths = compute_column_widths(&result);
-                    if widths != this.column_widths {
-                        this.result_x_scroll.set_offset(point(px(0.), px(0.)));
-                    }
-                    this.column_widths = widths;
+                    // 判据交给数据表组件（`set_model` 比**列名序列**）：这比原先
+                    // 「估宽向量不等」更贴近本意 —— 同一列集换了数据时不该回零。
                     this.table_rows = Some(result);
                     this.table_pk = pk;
                     this.table_ddl = ddl;
@@ -154,6 +151,9 @@ impl DatabasePage {
                         )
                     }
                     .into();
+                    // 新一页装好了：把结果推给数据表组件（表模型 / 行序 / 藏列）。
+                    // 表浏览是**服务器侧分页**，整页即一页，所以展示行序就是全量行。
+                    this.sync_data_table(cx);
                 }
                 Err(error) => {
                     if matches!(error, DbError::Cancelled(_)) {
@@ -264,6 +264,7 @@ impl DatabasePage {
         match self.mode {
             Mode::Query => {
                 self.query_page = target;
+                self.sync_data_table_rows(cx);
                 cx.notify();
             }
             Mode::Table => {

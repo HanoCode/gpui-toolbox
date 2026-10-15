@@ -48,6 +48,7 @@ duck_icons! {
     Bell => "bell",
     Bot => "bot",
     Box => "box",
+    Calendar => "calendar",
     CaseLower => "case-lower",
     Check => "check",
     CheckboxCheck => "checkbox-check",

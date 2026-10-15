@@ -1,0 +1,6 @@
+# 老插件（fixture）：只有清单、没有 locales/ 目录。行为必须与迁移前逐字节相同。
+id = "dev.duck.nolocales"
+name = "无翻译插件"
+version = "0.1.0"
+api_version = 1
+execution_model = "js"

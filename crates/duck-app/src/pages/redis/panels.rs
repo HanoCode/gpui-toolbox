@@ -1315,7 +1315,7 @@ impl RedisPage {
             .gap(tokens.spacing.xs)
             .p(tokens.spacing.sm)
             .child(output_box)
-            .children((!self.cli_history.is_empty()).then(|| history_row))
+            .children((!self.cli_history.is_empty()).then_some(history_row))
             .child(input_row)
             .into_any_element()
     }
