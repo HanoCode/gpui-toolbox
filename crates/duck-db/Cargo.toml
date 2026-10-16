@@ -47,6 +47,9 @@ ureq.workspace = true
 # Elasticsearch 的 Basic 认证头要 base64。**零新增包**：0.22.1 早就在本 crate 的依赖
 # 图里（`bson → base64`，随 mongodb 进来的），这里只是把传递依赖提成直接依赖。
 base64.workspace = true
+# 执行 SQL 文件（sqlfile.rs）的编码探测与流式解码。同样是「提成直接依赖」：
+# 0.8.35 早就在本 crate 的依赖图里（`tiberius → encoding_rs`）。
+encoding_rs.workspace = true
 
 [lints]
 workspace = true

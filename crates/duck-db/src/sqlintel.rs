@@ -40,98 +40,16 @@ pub enum SqlRisk {
 /// 按引号 / 注释感知的方式把一段 SQL 拆成单条语句（不含尾分号）。
 ///
 /// 自己写拆分而不是用解析器重建文本：拆分的输入常常**不是合法 SQL**
-/// （用户写一半就来执行），解析器这条路会整段失败。这里只需要认识
-/// `'…'` / `"…"` / `` `…` `` 三种引号与 `--` / `/* */` 两类注释。
+/// （用户写一半就来执行），解析器这条路会整段失败。
+///
+/// 认识的语法见 [`Splitter`]：三种引号、两类注释、PostgreSQL dollar-quote、
+/// MySQL 的 `DELIMITER` 行指令与例程体、SQL Server 的 `GO` 批分隔。
 #[must_use]
 pub fn split_statements(sql: &str) -> Vec<String> {
-    let mut statements = Vec::new();
-    let mut current = String::new();
-    let mut chars = sql.chars().peekable();
-    #[derive(PartialEq)]
-    enum In {
-        None,
-        Single,
-        Double,
-        Backtick,
-        BracketComment,
-    }
-    let mut state = In::None;
-
-    while let Some(c) = chars.next() {
-        match state {
-            In::None => match c {
-                '\'' => {
-                    state = In::Single;
-                    current.push(c);
-                }
-                '"' => {
-                    state = In::Double;
-                    current.push(c);
-                }
-                '`' => {
-                    state = In::Backtick;
-                    current.push(c);
-                }
-                '-' if chars.peek() == Some(&'-') => {
-                    // 行注释：吃掉直到换行（换行本身保留，让错误定位的行号不漂移）。
-                    current.push(c);
-                    while let Some(&n) = chars.peek() {
-                        chars.next();
-                        current.push(n);
-                        if n == '\n' {
-                            break;
-                        }
-                    }
-                }
-                '/' if chars.peek() == Some(&'*') => {
-                    state = In::BracketComment;
-                    current.push(c);
-                }
-                ';' => {
-                    if !current.trim().is_empty() {
-                        statements.push(current.trim().to_owned());
-                    }
-                    current.clear();
-                }
-                _ => current.push(c),
-            },
-            In::Single | In::Double | In::Backtick => {
-                current.push(c);
-                if c == '\\' && state == In::Single {
-                    // MySQL 风格的反斜杠转义：原样带过下一个字符。
-                    if let Some(&n) = chars.peek() {
-                        chars.next();
-                        current.push(n);
-                    }
-                    continue;
-                }
-                let closing = match state {
-                    In::Single => '\'',
-                    In::Double => '"',
-                    _ => '`',
-                };
-                if c == closing {
-                    // 双写引号（'' / ""）是转义，继续留在引号里。
-                    if chars.peek() == Some(&closing) {
-                        current.push(chars.next().expect("peeked char must exist"));
-                    } else {
-                        state = In::None;
-                    }
-                }
-            }
-            In::BracketComment => {
-                current.push(c);
-                if c == '*' && chars.peek() == Some(&'/') {
-                    current.push(chars.next().expect("peeked char must exist"));
-                    state = In::None;
-                }
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        statements.push(current.trim().to_owned());
-    }
-    statements
+    split_statement_spans(sql)
+        .into_iter()
+        .map(|span| span.text)
+        .collect()
 }
 
 /// 一条完整语句及其在原文中的起始字节偏移。
@@ -148,114 +66,544 @@ pub struct StatementSpan {
 
 /// [`split_statements`] 的带位置版本：除了语句文本，还回每条语句的起始偏移。
 ///
-/// 扫描逻辑与 [`split_statements`] **逐字对应**（引号 / 两类注释 / 分号切分）——
-/// 两份实现必须同改：界面上「第几行有 ▶」与「执行的是哪段文本」必须来自同一次切分，
-/// 漂了就是图标指到别的语句上。
+/// 扫描逻辑与 [`split_statements`] **同源**（同一个 [`Splitter`]）：界面上「第几行
+/// 有 ▶」与「执行的是哪段文本」必须来自同一次切分，漂了就是图标指到别的语句上。
 #[must_use]
 pub fn split_statement_spans(sql: &str) -> Vec<StatementSpan> {
-    let mut statements = Vec::new();
-    let mut current = String::new();
-    // `Some(偏移)` = 当前语句的第一个非空白字符位置；`None` = 还没吃到任何字符。
-    let mut current_start: Option<usize> = None;
-    let mut chars = sql.char_indices().peekable();
-    #[derive(PartialEq)]
-    enum In {
-        None,
-        Single,
-        Double,
-        Backtick,
-        BracketComment,
+    Splitter::new(sql).run().0
+}
+
+/// 这段文本除空白与注释外**没有任何内容**（`-- x` / `/* x */` / 空串）。
+///
+/// 给执行文件那条路用的：`GO` 断批时切分器会把待flush的缓冲交出来，而那个缓冲
+/// 可能只装着一条注释（`-- 头注` 独占一行后紧跟 `GO`）——它不是语句，不该送去执行。
+/// 判定直接复用词法器（[`tokenize`] 本来就跳过注释与字面量），不另写一套扫描。
+#[must_use]
+pub(crate) fn is_blank_or_comment(text: &str) -> bool {
+    tokenize(text).is_empty()
+}
+
+/// **流式**语句扫描器：分块喂入，跨块保住切分状态。
+///
+/// 为什么需要它：`Splitter` 的 `DELIMITER` 档位是**跨语句**的状态，而它一次只吃
+/// 一整段文本（`split_statement_spans` 是纯函数）。执行 100MB 的 dump 时不能把
+/// 整份文本端在内存里等着，于是这里做一件事——**每次重扫只从「上一条已交出的
+/// 语句之后」开始**：
+///
+/// 1. 缓冲区里最后一条 span **永远留着不交**（它可能被这一块截断，是半句话），
+///    于是尾巴最多只装「一条语句」；
+/// 2. 下一块接在它后面，重扫从它的首字符开始——引号 / 注释 / 例程体的状态都在
+///    这一条语句内部自洽，重扫结果与「整段一次扫」逐字相同；
+/// 3. 两样**跨语句**的东西显式端过去：`DELIMITER` 档位（[`Splitter::run`] 的第二个
+///    返回值），以及尾巴偏移 0 处算不算行首（[`Splitter::at_offset`]）。后者不靠
+///    「往尾巴前面补一个空格 / 换行」去凑——`SELECT 1; GO` 这种写法里 `GO` 不在
+///    行首（整段扫时它是普通词），补字符只会把这件事弄反。
+///
+/// 等价性由 `streaming_scanner_matches_whole_text_split` 钉死（同一份 dump 按
+/// 1 / 2 / 3 / 5 / 7 / 16 / 64 字节切块喂进来，产出必须与整段切分逐条相同）。
+#[derive(Debug, Clone)]
+pub struct StatementScanner {
+    /// 还没交出去的尾巴（含最后一条未竟语句）。
+    tail: String,
+    /// 尾巴当前生效的语句分隔符（`DELIMITER` 改过就是它，默认 `;`）。
+    delimiter: String,
+    /// 尾巴 offset 0 处算不算行首（只有文件开头那一块算）。
+    starts_at_line_start: bool,
+}
+
+impl Default for StatementScanner {
+    fn default() -> Self {
+        Self::new()
     }
-    let mut state = In::None;
+}
 
-    let mut flush = |current: &mut String, current_start: &mut Option<usize>| {
-        if !current.trim().is_empty() {
-            let start = current_start.unwrap_or(0);
-            let text = current.trim().to_owned();
-            statements.push(StatementSpan { text, start });
+impl StatementScanner {
+    /// 新建（空尾巴、默认分隔符 `;`、开头算行首）。
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tail: String::new(),
+            delimiter: ";".to_owned(),
+            starts_at_line_start: true,
         }
-        current.clear();
-        *current_start = None;
-    };
+    }
 
-    while let Some((offset, c)) = chars.next() {
-        match state {
-            In::None => {
-                if c.is_whitespace() && current_start.is_none() {
-                    continue;
-                }
-                if current_start.is_none() {
-                    current_start = Some(offset);
-                }
-                match c {
-                    '\'' => {
-                        state = In::Single;
-                        current.push(c);
+    /// 尾巴（还没交出去的那部分）的字节数——调用方据此知道单条超大语句的驻留量。
+    #[must_use]
+    pub fn tail_len(&self) -> usize {
+        self.tail.len()
+    }
+
+    /// 喂一块文本，返回这一块里**能确定已经写完**的语句。
+    ///
+    /// 块尾那条语句会被留着（不知道后面还有没有内容），下一块或 [`Self::finish`]
+    /// 才交出来——所以**语句顺序不变、总数不变**，只是每条晚一步交付。
+    pub fn push(&mut self, chunk: &str) -> Vec<String> {
+        self.tail.push_str(chunk);
+        self.drain(false)
+    }
+
+    /// 文本到头：把尾巴里剩下的那条语句交出来（尾巴里没有语句就返回空）。
+    ///
+    /// 收口用，之后不该再 [`Self::push`]。
+    pub fn finish(&mut self) -> Vec<String> {
+        self.drain(true)
+    }
+
+    /// 扫描尾巴，交出前 N-1 条（`eof` 时全交）。
+    fn drain(&mut self, eof: bool) -> Vec<String> {
+        // ⚠️ 两样状态都要传：上一块结束时的分隔符档位、尾巴开头是不是行首。
+        let (mut spans, delimiter) =
+            Splitter::with_delimiter(&self.tail, &self.delimiter, self.starts_at_line_start).run();
+        // 行指令只在语句缓冲为空时认，所以「留着的这条语句首字符」之后不可能再改
+        // 档位——扫描结束时的档位就是下次该用的档位。
+        self.delimiter = delimiter;
+        if eof {
+            let out = spans.into_iter().map(|span| span.text).collect();
+            self.tail.clear();
+            return out;
+        }
+        // 最后一条留着 —— 它可能是被这一块截断的半句话。
+        let Some(last) = spans.pop() else {
+            // 整块都在「不成句」的区域（空白 / 注释 / 行指令）：尾巴原样留着。
+            // 行指令必须留着，否则 `DELIMITER $$` 会随着「这块没语句」被丢掉。
+            return Vec::new();
+        };
+        // 尾巴 = 从这条语句首字符起的原文（它后面只可能是空白 / 注释 / 分隔符）。
+        let keep = self.tail[last.start..].to_owned();
+        // 新尾巴的 offset 0 就是原文里的 `last.start`：它是不是行首按原文如实定。
+        self.starts_at_line_start = if last.start == 0 {
+            self.starts_at_line_start
+        } else {
+            at_line_start(&self.tail, last.start)
+        };
+        self.tail = keep;
+        spans.into_iter().map(|span| span.text).collect()
+    }
+}
+
+/// 头部词只看前几个：`CREATE [DEFINER = …] PROCEDURE` 最多四五个词就到关键字。
+const HEAD_WORD_CAP: usize = 6;
+
+/// `END` 后面跟这些词时是**块**尾（`END IF;` / `END WHILE;`），不是例程尾。
+///
+/// 少了这一条，`BEGIN IF … THEN …; END IF; … END;` 会在 `END IF;` 上把层数清零，
+/// 后面那句 `;` 就把例程从中间切开——MySQL 的例程体里 `IF` / 循环块是常态，不是特例。
+const BLOCK_END_WORDS: [&str; 5] = ["IF", "WHILE", "LOOP", "CASE", "REPEAT"];
+
+/// 扫描状态。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    None,
+    Single,
+    Double,
+    Backtick,
+    Block,
+    /// dollar-quote 体内（收尾定界符在 [`Splitter::run`] 的 `dollar_close` 里）。
+    Dollar,
+}
+
+/// 单趟字符扫描的语句切分器：文本与起始偏移一起产出。
+///
+/// 认的语法分三类，每类都只影响「用户真的这么写」的输入——普通 SQL 的切分结果与
+/// 「只认引号 + 注释 + `;`」的老实现逐字相同：
+///
+/// 1. **遮蔽**：`'…'`（`\` 与 `''` 两种转义）、`"…"`、`` `…` ``、`-- …` 行注释、
+///    `/* … */` 块注释（**不嵌套**：MySQL 不嵌套，PG 里嵌套注释少见到不值得为它
+///    冒「注释吃不掉、后面全被吞」的险）；
+/// 2. **PostgreSQL dollar-quote**：`$tag$ … $tag$`（`$$` 也是合法 tag）。`$1` 这类
+///    参数占位符不会被误认——见 [`dollar_tag`] 的「tag 首字符必须是字母 / 下划线」门；
+/// 3. **批 / 客户端分隔**：`DELIMITER $$` 行指令（MySQL dump 的例程体全靠它，指令行
+///    本身不是语句，丢弃）、`CREATE … PROCEDURE|FUNCTION|TRIGGER|EVENT … BEGIN … END`
+///    整体不切（体内 `;` 不切）、独占一行的 `GO`（SQL Server 批分隔，丢弃——它结束
+///    上一批，正是切分点）。
+struct Splitter<'a> {
+    /// 原文。
+    sql: &'a str,
+    /// 已切出的语句。
+    out: Vec<StatementSpan>,
+    /// 当前语句缓冲。
+    current: String,
+    /// 当前语句**第一个实义字符**的字节偏移（`None` = 还没吃到）。
+    current_start: Option<usize>,
+    /// 当前生效的语句分隔符（`DELIMITER` 行指令可改，默认 `;`）。
+    delimiter: String,
+    /// 正在成形的词（`[A-Za-z0-9_]` 串，已大写），用来认 `BEGIN` / `END` 与头部词。
+    word: String,
+    /// 当前语句的头部词（大写，最多 [`HEAD_WORD_CAP`] 个）。
+    head_words: Vec<String>,
+    /// 当前语句是不是例程定义（头部 `CREATE … PROCEDURE|FUNCTION|TRIGGER|EVENT`）。
+    routine_head: bool,
+    /// 例程体里的 `BEGIN` 层数。
+    routine_depth: usize,
+    /// 刚吃到一个 `END`：等下一个词决定它是块尾（`END IF`）还是例程尾。
+    routine_end_pending: bool,
+    /// 偏移 0 处算不算**行首**（默认算；流式扫描器续扫尾巴时按原文如实传）。
+    ///
+    /// 只有行指令（`GO` / `DELIMITER`）看这个——续扫的尾巴里，偏移 0 未必真是行首
+    /// （`SELECT 1; GO` 里的 `GO` 就不在行首，整段扫时它是普通词，续扫也得是）。
+    starts_at_line_start: bool,
+}
+
+impl<'a> Splitter<'a> {
+    fn new(sql: &'a str) -> Self {
+        Self::with_delimiter(sql, ";", true)
+    }
+
+    /// 带**初始分隔符**与**行首属性**的构造：流式扫描器续扫上一块的尾巴时，
+    /// 要把 `DELIMITER` 档位端过来（见 [`StatementScanner`]）。
+    fn with_delimiter(sql: &'a str, delimiter: &str, starts_at_line_start: bool) -> Self {
+        Self {
+            sql,
+            out: Vec::new(),
+            current: String::new(),
+            current_start: None,
+            delimiter: delimiter.to_owned(),
+            word: String::new(),
+            head_words: Vec::new(),
+            routine_head: false,
+            routine_depth: 0,
+            routine_end_pending: false,
+            starts_at_line_start,
+        }
+    }
+
+    /// [`at_line_start`] 的成员版：偏移 0 的答案不由文本决定（见字段注释）。
+    fn at_offset(&self, offset: usize) -> bool {
+        if offset == 0 {
+            self.starts_at_line_start
+        } else {
+            at_line_start(self.sql, offset)
+        }
+    }
+
+    /// 扫描全文，产出语句清单与**结束时的分隔符档位**。
+    fn run(mut self) -> (Vec<StatementSpan>, String) {
+        let mut chars = self.sql.char_indices().peekable();
+        let mut state = Scan::None;
+        let mut dollar_close = String::new();
+        while let Some((offset, c)) = chars.next() {
+            match state {
+                Scan::None => {
+                    // 行级指令只在**行首**认（`GO` / `DELIMITER` 都是整行的东西）。
+                    if self.at_offset(offset) && self.line_directive(offset, &mut chars) {
+                        continue;
                     }
-                    '"' => {
-                        state = In::Double;
-                        current.push(c);
-                    }
-                    '`' => {
-                        state = In::Backtick;
-                        current.push(c);
-                    }
-                    '-' if chars.peek() == Some(&(offset + 1, '-')) => {
-                        // 行注释：吃掉直到换行（换行本身保留，让错误定位的行号不漂移）。
-                        current.push(c);
-                        while let Some(&(_, n)) = chars.peek() {
-                            chars.next();
-                            current.push(n);
-                            if n == '\n' {
-                                break;
+                    // 分隔符命中（默认 `;`）：例程体内部不切。
+                    if self.sql[offset..].starts_with(self.delimiter.as_str()) {
+                        self.word_boundary();
+                        self.resolve_pending_end();
+                        let delimiter = self.delimiter.clone();
+                        let width = delimiter.chars().count();
+                        if self.routine_depth == 0 {
+                            for _ in 1..width {
+                                chars.next();
+                            }
+                            self.flush();
+                        } else {
+                            // 体内的分隔符是**正文**（`SELECT 1; SELECT 2;` 都在体里）。
+                            self.current.push_str(&delimiter);
+                            for _ in 1..width {
+                                chars.next();
                             }
                         }
+                        continue;
                     }
-                    '/' if chars.peek() == Some(&(offset + 1, '*')) => {
-                        state = In::BracketComment;
-                        current.push(c);
+                    match c {
+                        '\'' => {
+                            self.word_boundary();
+                            self.start(offset);
+                            self.current.push(c);
+                            state = Scan::Single;
+                        }
+                        '"' => {
+                            self.word_boundary();
+                            self.start(offset);
+                            self.current.push(c);
+                            state = Scan::Double;
+                        }
+                        '`' => {
+                            self.word_boundary();
+                            self.start(offset);
+                            self.current.push(c);
+                            state = Scan::Backtick;
+                        }
+                        '$' => {
+                            self.word_boundary();
+                            self.start(offset);
+                            match dollar_tag(self.sql, offset) {
+                                Some(tag) => {
+                                    self.current.push_str(&tag);
+                                    for _ in 1..tag.chars().count() {
+                                        chars.next();
+                                    }
+                                    dollar_close = tag;
+                                    state = Scan::Dollar;
+                                }
+                                None => self.current.push(c),
+                            }
+                        }
+                        '-' if self.sql.as_bytes().get(offset + 1) == Some(&b'-') => {
+                            // 行注释：吃掉直到换行（换行本身保留，让错误定位的行号不漂移）。
+                            self.word_boundary();
+                            self.start(offset);
+                            self.current.push(c);
+                            for (_, n) in chars.by_ref() {
+                                self.current.push(n);
+                                if n == '\n' {
+                                    break;
+                                }
+                            }
+                        }
+                        '/' if self.sql.as_bytes().get(offset + 1) == Some(&b'*') => {
+                            self.word_boundary();
+                            self.start(offset);
+                            self.current.push(c);
+                            state = Scan::Block;
+                        }
+                        c if is_word_char(c) => {
+                            self.start(offset);
+                            self.word.push(c.to_ascii_uppercase());
+                            self.current.push(c);
+                        }
+                        c if c.is_whitespace() => {
+                            self.word_boundary();
+                            // 语句**前导**空白不进缓冲（偏移要落在第一个实义字符上）。
+                            if self.current_start.is_some() {
+                                self.current.push(c);
+                            }
+                        }
+                        c => {
+                            self.word_boundary();
+                            self.start(offset);
+                            self.current.push(c);
+                        }
                     }
-                    ';' => {
-                        flush(&mut current, &mut current_start);
-                    }
-                    _ => current.push(c),
                 }
-            }
-            In::Single | In::Double | In::Backtick => {
-                current.push(c);
-                if c == '\\' && state == In::Single {
-                    // MySQL 风格的反斜杠转义：原样带过下一个字符。
-                    if let Some(&(_, n)) = chars.peek() {
-                        chars.next();
-                        current.push(n);
+                Scan::Single | Scan::Double | Scan::Backtick => {
+                    self.current.push(c);
+                    if c == '\\' && state == Scan::Single {
+                        // MySQL 风格的反斜杠转义：原样带过下一个字符。
+                        if let Some((_, n)) = chars.next() {
+                            self.current.push(n);
+                        }
+                        continue;
                     }
-                    continue;
+                    let closing = match state {
+                        Scan::Double => '"',
+                        Scan::Backtick => '`',
+                        _ => '\'',
+                    };
+                    if c == closing {
+                        // 双写引号（`''` / `""`）是转义，继续留在引号里。
+                        if chars.peek().is_some_and(|(_, n)| *n == closing) {
+                            let (_, n) = chars.next().expect("peeked char must exist");
+                            self.current.push(n);
+                        } else {
+                            state = Scan::None;
+                        }
+                    }
                 }
-                let closing = match state {
-                    In::Single => '\'',
-                    In::Double => '"',
-                    _ => '`',
-                };
-                if c == closing {
-                    // 双写引号（'' / ""）是转义，继续留在引号里。
-                    if chars.peek() == Some(&(offset + 1, closing)) {
-                        current.push(chars.next().expect("peeked char must exist").1);
+                Scan::Block => {
+                    self.current.push(c);
+                    if c == '*' && chars.peek().is_some_and(|(_, n)| *n == '/') {
+                        let (_, n) = chars.next().expect("peeked char must exist");
+                        self.current.push(n);
+                        state = Scan::None;
+                    }
+                }
+                Scan::Dollar => {
+                    // 收尾定界符与开定界符逐字相同（PG 的规则）。
+                    if !dollar_close.is_empty()
+                        && self.sql[offset..].starts_with(dollar_close.as_str())
+                    {
+                        self.current.push_str(&dollar_close);
+                        for _ in 1..dollar_close.chars().count() {
+                            chars.next();
+                        }
+                        dollar_close.clear();
+                        state = Scan::None;
                     } else {
-                        state = In::None;
+                        self.current.push(c);
                     }
-                }
-            }
-            In::BracketComment => {
-                current.push(c);
-                if c == '*' && chars.peek() == Some(&(offset + 1, '/')) {
-                    current.push(chars.next().expect("peeked char must exist").1);
-                    state = In::None;
                 }
             }
         }
+        self.word_boundary();
+        self.flush();
+        (self.out, self.delimiter)
     }
-    flush(&mut current, &mut current_start);
-    statements
+
+    /// 行首指令：`GO`（断批）与 `DELIMITER x`（改分隔符）。
+    ///
+    /// 返回 `true` 表示这一行已被吃掉（调用方进下一轮）。两条判定都要求**行首**；
+    /// `DELIMITER` 还要求当前语句缓冲是空的——它本身就是语句级指令，夹在语句中间
+    /// 只可能是数据（那种情况按普通文本处理，不动分隔符）。
+    fn line_directive(
+        &mut self,
+        offset: usize,
+        chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+    ) -> bool {
+        let line = self.sql[offset..].split('\n').next().unwrap_or_default();
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("GO") {
+            // `GO` 是断批点：它**之前**的语句到此收尾（T-SQL 里没有分号也照样断）。
+            self.flush();
+            eat_line(chars);
+            return true;
+        }
+        if self.current.trim().is_empty() {
+            let upper = trimmed.to_ascii_uppercase();
+            if upper.starts_with("DELIMITER")
+                && upper
+                    .as_bytes()
+                    .get("DELIMITER".len())
+                    .is_some_and(u8::is_ascii_whitespace)
+            {
+                // 分隔符原样取（不能拿大写副本的切片：`$$` 无所谓，但 `//` 之类也不行）。
+                let token = trimmed["DELIMITER".len()..].trim();
+                if !token.is_empty() {
+                    self.delimiter = token.to_owned();
+                    eat_line(chars);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// 记下当前语句的第一个实义字符位置（只在首次生效）。
+    fn start(&mut self, offset: usize) {
+        if self.current_start.is_none() {
+            self.current_start = Some(offset);
+        }
+    }
+
+    /// 词收尾：记账头部词、例程判据与 `BEGIN` / `END` 层数。
+    fn word_boundary(&mut self) {
+        if self.word.is_empty() {
+            return;
+        }
+        let word = std::mem::take(&mut self.word);
+        if self.head_words.len() < HEAD_WORD_CAP {
+            self.head_words.push(word.clone());
+            self.refresh_routine_head();
+        }
+        if self.routine_end_pending {
+            self.routine_end_pending = false;
+            // `END` 后面跟的是块名（`IF` / `WHILE` …）= 块尾，层数不动。
+            if !BLOCK_END_WORDS.contains(&word.as_str()) {
+                self.routine_depth = self.routine_depth.saturating_sub(1);
+            }
+        }
+        if self.routine_head {
+            match word.as_str() {
+                "BEGIN" => self.routine_depth += 1,
+                "END" => self.routine_end_pending = true,
+                _ => {}
+            }
+        }
+    }
+
+    /// 语句在 `END` 上收尾（后面没有词了）：把待决的 `END` 兑现成层数减一。
+    fn resolve_pending_end(&mut self) {
+        if self.routine_end_pending {
+            self.routine_end_pending = false;
+            self.routine_depth = self.routine_depth.saturating_sub(1);
+        }
+    }
+
+    /// 头部词够不够认例程：`CREATE|ALTER … PROCEDURE|FUNCTION|TRIGGER|EVENT`。
+    fn refresh_routine_head(&mut self) {
+        if self.routine_head {
+            return;
+        }
+        match self.head_words.first().map(String::as_str) {
+            Some("CREATE" | "ALTER") => {}
+            _ => return,
+        }
+        if self.head_words[1..].iter().any(|word| {
+            matches!(
+                word.as_str(),
+                "PROCEDURE" | "FUNCTION" | "TRIGGER" | "EVENT"
+            )
+        }) {
+            self.routine_head = true;
+        }
+    }
+
+    /// 收尾当前语句：文本为空（或只有空白 / 注释外的空白）就丢弃。
+    ///
+    /// 每条语句的**语法记账**（头部词 / 层数）一并归零——它们是「这条语句」的属性。
+    fn flush(&mut self) {
+        let text = self.current.trim();
+        if !text.is_empty() {
+            self.out.push(StatementSpan {
+                text: text.to_owned(),
+                start: self.current_start.unwrap_or(0),
+            });
+        }
+        self.current.clear();
+        self.current_start = None;
+        self.word.clear();
+        self.head_words.clear();
+        self.routine_head = false;
+        self.routine_depth = 0;
+        self.routine_end_pending = false;
+    }
+}
+
+/// 当前字符是否处于行首（`offset == 0` 或前一个字节是换行）。
+///
+/// 直接看字节而不是维护一个「上一轮是不是换行」的标志：引号里跨行时标志会失准，
+/// 而 `\n` 是 ASCII，与 UTF-8 的续字节（≥ 0x80）永不混淆。
+fn at_line_start(sql: &str, offset: usize) -> bool {
+    offset == 0 || sql.as_bytes().get(offset - 1) == Some(&b'\n')
+}
+
+/// 吃掉当前行剩下部分（含换行）。行指令（`GO` / `DELIMITER`）整行丢弃。
+fn eat_line(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) {
+    for (_, c) in chars.by_ref() {
+        if c == '\n' {
+            break;
+        }
+    }
+}
+
+/// 词字符：ASCII 字母 / 数字 / 下划线。用来认 `BEGIN` / `END` 与头部词。
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// 试图把 `offset` 处的 `$` 认成 dollar-quote 的开定界符，成功返回完整定界符
+/// （`$$` / `$tag$`）。
+///
+/// tag 的规则照抄 PostgreSQL：空串合法；非空时首字符必须是字母或下划线，其余是
+/// 字母 / 数字 / 下划线。**这道门把 `$1` 这类参数占位符挡在外面**——它后面没有收尾
+/// 的 `$`，认成定界符会把后面整段文本吞掉。
+fn dollar_tag(sql: &str, offset: usize) -> Option<String> {
+    let bytes = sql.as_bytes();
+    if bytes.get(offset) != Some(&b'$') {
+        return None;
+    }
+    let mut index = offset + 1;
+    let mut first = true;
+    while let Some(&byte) = bytes.get(index) {
+        if byte == b'$' {
+            return Some(sql[offset..=index].to_owned());
+        }
+        let allowed = if first {
+            byte.is_ascii_alphabetic() || byte == b'_'
+        } else {
+            byte.is_ascii_alphanumeric() || byte == b'_'
+        };
+        if !allowed {
+            return None;
+        }
+        first = false;
+        index += 1;
+    }
+    None
 }
 
 /// 解析一条语句；解析失败按 `Other` 处理（调用方走保守路径）。
@@ -1176,13 +1524,76 @@ pub fn format_sql_with(sql: &str, options: &SqlFormatOptions) -> FormattedSql {
     }
 }
 
-/// 把一段 SQL 压成单行：去掉 `-- 行注释` 与 `/* 块注释 */`，连续空白折叠成一个空格。
+/// 把一段 SQL 压成单行：**保留语句上方的注释块**，语句内部的 `-- 行注释` 与
+/// `/* 块注释 */` 压掉，连续空白折叠成一个空格。
+///
+/// 为什么头部注释要留：那一块通常是「这段 SQL 是干什么的 / 谁写的 / 什么时候改的」，
+/// 是作者写给下一个人看的东西。压缩的本意是省版面，不是替用户清理正文——把它一起
+/// 吃掉，用户看到的就是「我写的说明被一个按钮删了」，而且撤销栈里翻回来还得靠手。
+/// 语句**内部**的注释不同：它们夹在词法记号之间，压掉之后语义一字不变。
 ///
 /// **字符串字面量与带引号的标识符原样保留**——`'a  b'` 里的双空格、`"col"` 的内容
 /// 都是数据的一部分，压掉就是改语义。这里不需要理解语句本身：注释与空白是仅有的
 /// 两类「怎么动都不改变语义」的成分，其余一律照抄。
 #[must_use]
 pub fn minify_sql(sql: &str) -> String {
+    let (head, body) = split_leading_comments(sql);
+    let minified = fold_sql_whitespace(body);
+    match (head.is_empty(), minified.is_empty()) {
+        // 没有头部注释（或只有前导缩进）：压缩结果就是正文的压缩结果。
+        (true, _) => minified,
+        // 整段都是注释：一个字都压不掉，原样（裁掉两端空白）返回。
+        (false, true) => head,
+        (false, false) => format!("{head}\n{minified}"),
+    }
+}
+
+/// 切出 SQL **最前面**那段「只有空白与注释」的前导块：返回 `(头部, 余下正文)`。
+///
+/// 头部按**原文**保留（只裁两端空白）——里面的换行与缩进是作者排过的版，折叠掉反而
+/// 难读；`-- 一` / `-- 二` 这种多行说明压成一行就失去了它作为「抬头」的样子。
+///
+/// 判据是「在遇到第一个真正的语句记号之前，至少吃到过一条注释」：只跳过空白**不算**
+/// 头部注释块（`   SELECT …` 前面的缩进不值得单独占一行），所以 `head_end` 只在真的
+/// 吃完一条注释之后才推进。
+fn split_leading_comments(sql: &str) -> (String, &str) {
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut head_end = 0;
+    while i < len {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        // `-- …` 行注释：吃到行尾（换行留给下一轮当空白跳过，头部因此保住换行）。
+        if bytes[i] == b'-' && bytes.get(i + 1) == Some(&b'-') {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            head_end = i;
+            continue;
+        }
+        // `/* … */` 块注释：没有闭合就吃到结尾（与正文压缩同口径）。
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i < len && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                i += 1;
+            }
+            i = (i + 2).min(len);
+            head_end = i;
+            continue;
+        }
+        break;
+    }
+    // `head_end` 永远落在 ASCII 边界上（行尾的 `\n` 之前、或 `*/` 之后、或 0），
+    // 切分不会切开多字节字符。
+    (sql[..head_end].trim().to_owned(), &sql[head_end..])
+}
+
+/// 正文压缩：去掉 `--` / `/* */` 注释、折叠连续空白（[`minify_sql`] 的实际干活那半）。
+fn fold_sql_whitespace(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
     // 引号态：`'…'` / `"…"` / `` `…` `` 三种成对出现，内部不折叠空白、不理会注释记号。
@@ -1751,6 +2162,136 @@ mod tests {
         assert_eq!(plain, from_spans);
     }
 
+    /// 切分器升级（A1）：dollar-quote / `DELIMITER` / 例程体 / `GO` —— 四类
+    /// 「dump 与真实脚本里的常态」，老实现全都在这些地方切错。
+    #[test]
+    fn split_understands_dumps() {
+        // PG dollar-quote：体内的 `;` 不是分隔符（`$$` 与 `$tag$` 两种写法）。
+        assert_eq!(
+            split_statements("SELECT $$a;b$$; SELECT 2"),
+            vec!["SELECT $$a;b$$", "SELECT 2"]
+        );
+        let parts = split_statements(
+            "CREATE FUNCTION f() RETURNS int AS $body$ BEGIN SELECT 1; END $body$ LANGUAGE plpgsql; SELECT 3",
+        );
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(parts[0].contains("SELECT 1;"), "{}", parts[0]);
+        assert_eq!(parts[1], "SELECT 3");
+        // 参数占位符不是 dollar-quote（`$1` 没有收尾的 `$`，认了就吞掉后面整段）。
+        assert_eq!(
+            split_statements("SELECT $1; SELECT $2"),
+            vec!["SELECT $1", "SELECT $2"]
+        );
+
+        // MySQL dump：`DELIMITER` 改分隔符后例程体内的 `;` 不切；指令行本身不是语句。
+        let dump = "DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND$$\nDELIMITER ;\nSELECT 3;";
+        let parts = split_statements(dump);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(
+            parts[0].contains("BEGIN\n  SELECT 1;\n  SELECT 2;\nEND"),
+            "{}",
+            parts[0]
+        );
+        assert_eq!(parts[1], "SELECT 3");
+
+        // 没写 `DELIMITER` 的例程体照样整体不切（靠 `BEGIN…END` 层数）。
+        let parts = split_statements(
+            "CREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW BEGIN INSERT INTO y VALUES (1); INSERT INTO y VALUES (2); END; SELECT 9",
+        );
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(parts[0].ends_with("END"), "{}", parts[0]);
+        assert_eq!(parts[1], "SELECT 9");
+
+        // `END IF` / `END WHILE` 是**块**尾：不能把例程层数提前清零（否则从中间切开）。
+        let parts = split_statements(
+            "CREATE PROCEDURE p() BEGIN IF 1 THEN SELECT 1; END IF; SELECT 2; END; SELECT 9",
+        );
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(parts[0].contains("SELECT 2;"), "{}", parts[0]);
+        assert_eq!(parts[1], "SELECT 9");
+
+        // SQL Server 的 `GO`：断批，本身不是语句；行首空白也认。
+        assert_eq!(
+            split_statements("SELECT 1\nGO\nSELECT 2\nGO\n"),
+            vec!["SELECT 1", "SELECT 2"]
+        );
+        assert_eq!(
+            split_statements("SELECT 1\n  GO  \nSELECT 2"),
+            vec!["SELECT 1", "SELECT 2"]
+        );
+        // 不在行首 / 只是名字里的 `go` 不是分隔符。
+        assert_eq!(
+            split_statements("SELECT go FROM t"),
+            vec!["SELECT go FROM t"]
+        );
+    }
+
+    /// 流式扫描器与整段切分**逐条相同**——按各种块宽喂进去，产出必须一致。
+    ///
+    /// 这是「执行 SQL 文件」那条路的正确性底座：文件按 256KB 读进来、块边界落在
+    /// 任何位置（哪怕落在一个多字节字符或一句话中间），都不许把语句切歪。
+    #[test]
+    fn streaming_scanner_matches_whole_text_split() {
+        let samples = [
+            "SELECT 1; SELECT 2;",
+            "SELECT 1",
+            "",
+            "   \n  ",
+            "-- 只有注释\n/* 块注释 */\n",
+            "SELECT 'a;b'; SELECT $$c;d$$;",
+            "SELECT 'it''s'; SELECT \"a;b\"; SELECT `c;d`;",
+            "SELECT $1; SELECT $2;",
+            "SELECT 1;\nGO\nSELECT 2\nGO\n",
+            "SELECT 1; GO",
+            "SELECT 1\n  GO  \nSELECT 2",
+            "SELECT go FROM t",
+            "DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND$$\nDELIMITER ;\nSELECT 3;",
+            "DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 'a;b';\nEND$$\nSELECT 3;",
+            "CREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW BEGIN INSERT INTO y VALUES (1); INSERT INTO y VALUES (2); END; SELECT 9",
+            "CREATE PROCEDURE p() BEGIN IF 1 THEN SELECT 1; END IF; SELECT 2; END; SELECT 9",
+            "INSERT INTO t VALUES (1);\n-- 抬头\nGO\nSELECT 2;",
+            "SELECT 1 -- 行内注释\nFROM t;\nSELECT 2;",
+            "SELECT '未收尾; SELECT 2;",
+        ];
+        for sql in samples {
+            let expected = split_statements(sql);
+            for width in [1usize, 2, 3, 5, 7, 16, 64, 4096] {
+                let got = scan_in_chunks(sql, width);
+                assert_eq!(got, expected, "块宽 {width}，原文 {sql:?}");
+            }
+        }
+    }
+
+    /// 按**字符**切块（不能按字节切：那会切碎多字节字符，反而不是「文件读进来」的情形）。
+    fn scan_in_chunks(sql: &str, width: usize) -> Vec<String> {
+        let mut scanner = StatementScanner::new();
+        let mut out = Vec::new();
+        let mut buffer = String::new();
+        for c in sql.chars() {
+            buffer.push(c);
+            if buffer.chars().count() >= width {
+                out.extend(scanner.push(&buffer));
+                buffer.clear();
+            }
+        }
+        if !buffer.is_empty() {
+            out.extend(scanner.push(&buffer));
+        }
+        out.extend(scanner.finish());
+        out
+    }
+
+    /// 只有注释 / 空白的文本不是语句（执行文件时会被丢掉的正是这类）。
+    #[test]
+    fn blank_and_comment_only_text_is_not_a_statement() {
+        assert!(is_blank_or_comment(""));
+        assert!(is_blank_or_comment("   \n\t "));
+        assert!(is_blank_or_comment("-- 抬头"));
+        assert!(is_blank_or_comment("/* 块注释 */"));
+        assert!(!is_blank_or_comment("SELECT 1"));
+        assert!(!is_blank_or_comment("-- 注释\nSELECT 1"));
+    }
+
     /// 分类：读 / 写 / DDL / 无法判定。
     #[test]
     fn classify_kinds() {
@@ -2235,13 +2776,13 @@ mod tests {
     }
 
     #[test]
-    fn minify_sql_folds_whitespace_and_strips_comments() {
+    fn minify_sql_folds_whitespace_and_strips_inner_comments() {
         assert_eq!(
             minify_sql("SELECT a , b\n-- 备注\nFROM t ;"),
             "SELECT a, b FROM t;"
         );
-        // 块注释整段吃掉（含未闭合的）。
-        assert_eq!(minify_sql("/* 头部 */ SELECT 1 /* 尾"), "SELECT 1");
+        // 语句内部的块注释整段吃掉（含未闭合的）。
+        assert_eq!(minify_sql("SELECT 1 /* 尾"), "SELECT 1");
         // 字符串字面量内部原样：双空格、注释记号、引号都不动；逗号后照常保一个空格。
         assert_eq!(
             minify_sql("SELECT 'a  -- b' , \"c /* d\" FROM t"),
@@ -2250,6 +2791,28 @@ mod tests {
         // 括号内侧不留空格（`f(` 直接连住）；逗号后照常保一个空格。
         assert_eq!(minify_sql("f( a , b ) ;"), "f(a, b);");
         assert_eq!(minify_sql("   "), "");
+    }
+
+    /// 压缩**保留语句上方的注释块**：那一块是作者写给下一个人看的说明，
+    /// 压掉它等于替用户删内容（压缩的目的是省版面，不是清理正文）。
+    #[test]
+    fn minify_sql_keeps_leading_comments() {
+        // 行注释抬头：整块按原文留下（换行与相对缩进不折叠），尾随空行裁掉。
+        assert_eq!(
+            minify_sql("-- 日活统计\n-- 2026-10\n\nSELECT  a ,\n  b FROM t ;\n"),
+            "-- 日活统计\n-- 2026-10\nSELECT a, b FROM t;"
+        );
+        // 块注释抬头同样保留（未闭合的也保留 —— 用户可能正打着字）。
+        assert_eq!(minify_sql("/* 头部 */ SELECT 1"), "/* 头部 */\nSELECT 1");
+        // **只跳过空白不算抬头**：前面只是缩进时不额外占一行。
+        assert_eq!(minify_sql("   \n  SELECT 1"), "SELECT 1");
+        // 整段都是注释：一个字都压不掉，原样（裁两端空白）返回。
+        assert_eq!(minify_sql("\n-- 只有注释\n"), "-- 只有注释");
+        // 抬头与语句内部各按各的规则：前者留、后者压。
+        assert_eq!(
+            minify_sql("-- 抬头\nSELECT 1 -- 行内\nFROM t"),
+            "-- 抬头\nSELECT 1 FROM t"
+        );
     }
 
     #[test]

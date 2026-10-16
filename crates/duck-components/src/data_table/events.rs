@@ -71,6 +71,9 @@ pub type RowDoubleClickHook = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub struct DataTableHooks {
     pub cell_menu: Option<CellMenuHook>,
     pub header_menu: Option<HeaderMenuHook>,
+    /// 列头**下拉按钮**的菜单（左键点 ∶ 弹出，锚在按钮下方）。与右键菜单是两条入口：
+    /// 下拉是「这一列怎么显示」的操作台（格式化 / 筛选 / 清除），右键是全量操作。
+    pub header_dropdown: Option<HeaderMenuHook>,
     pub on_cell_double_click: Option<CellDoubleClickHook>,
     pub on_row_double_click: Option<RowDoubleClickHook>,
 }
@@ -80,6 +83,7 @@ impl DataTableHooks {
     pub fn is_empty(&self) -> bool {
         self.cell_menu.is_none()
             && self.header_menu.is_none()
+            && self.header_dropdown.is_none()
             && self.on_cell_double_click.is_none()
             && self.on_row_double_click.is_none()
     }
@@ -104,16 +108,30 @@ pub struct DataTableLabels {
     pub cell_detail: SharedString,
     /// 「搜了个词却一行没中」的提示（宿主按当前搜索词拼好；没有搜索时给 `None`）。
     pub empty_hint: Option<SharedString>,
+    /// 列头下拉按钮的可访问名模板，形如「{} 的操作」。
+    pub column_menu: SharedString,
+    /// 悬停详情卡的三行标签：列名 / 类型 / 注释（没有注释时第三行不画）。
+    pub detail_name: SharedString,
+    pub detail_type: SharedString,
+    pub detail_comment: SharedString,
+    /// 详情卡上的复制按钮（复制的是列名）。
+    pub detail_copy: SharedString,
 }
 
 impl DataTableLabels {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         select_all: impl Into<SharedString>,
         row_name: impl Into<SharedString>,
         sort_by: impl Into<SharedString>,
         submit_edit: impl Into<SharedString>,
         cell_detail: impl Into<SharedString>,
+        column_menu: impl Into<SharedString>,
+        detail_name: impl Into<SharedString>,
+        detail_type: impl Into<SharedString>,
+        detail_comment: impl Into<SharedString>,
+        detail_copy: impl Into<SharedString>,
     ) -> Self {
         Self {
             select_all: select_all.into(),
@@ -122,6 +140,11 @@ impl DataTableLabels {
             submit_edit: submit_edit.into(),
             cell_detail: cell_detail.into(),
             empty_hint: None,
+            column_menu: column_menu.into(),
+            detail_name: detail_name.into(),
+            detail_type: detail_type.into(),
+            detail_comment: detail_comment.into(),
+            detail_copy: detail_copy.into(),
         }
     }
 

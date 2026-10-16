@@ -131,11 +131,17 @@ fn production_hooks() -> DataTableHooks {
             menu.item(PopupMenuItem::new("sort"))
         },
     );
+    let header_dropdown = Rc::new(
+        |menu: PopupMenu, _: usize, _: &mut Window, _: &mut Context<PopupMenu>| {
+            menu.item(PopupMenuItem::new("format"))
+        },
+    );
     let cell_dbl = Rc::new(|_: _, _: &mut Window, _: &mut gpui::App| {});
     let row_dbl = Rc::new(|_: usize, _: &mut Window, _: &mut gpui::App| {});
     DataTableHooks {
         cell_menu: Some(cell_menu),
         header_menu: Some(header_menu),
+        header_dropdown: Some(header_dropdown),
         on_cell_double_click: Some(cell_dbl),
         on_row_double_click: Some(row_dbl),
     }
@@ -300,7 +306,10 @@ fn open_grid(
     } else {
         DataTableHooks::default()
     };
-    let labels = DataTableLabels::new("all", "row {}", "sort {}", "submit", "detail");
+    let labels = DataTableLabels::new(
+        "all", "row {}", "sort {}", "submit", "detail", "{} menu", "name", "type", "comment",
+        "copy",
+    );
     let host_state = state.clone();
     let (host, ctx) = cx.add_window_view(move |_, _| Host {
         state: host_state,

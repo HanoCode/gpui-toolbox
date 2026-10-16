@@ -15,15 +15,17 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, CursorStyle, ElementId, Entity,
-    InteractiveElement, IntoElement, ParentElement, Render, Role, SharedString,
+    Anchor, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, CursorStyle,
+    ElementId, Entity, InteractiveElement, IntoElement, ParentElement, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled, Toggled, Window, div, prelude::FluentBuilder as _, px,
     uniform_list,
 };
 use gpui_component::{
-    Icon, Sizable as _, h_flex,
+    Icon, Sizable as _, Size,
+    button::{Button, ButtonVariants as _},
+    h_flex,
     input::{Input, InputState},
-    menu::ContextMenuExt as _,
+    menu::{ContextMenuExt as _, DropdownMenu as _},
     scroll::{Scrollbar, ScrollbarMode},
     tooltip::Tooltip,
     v_flex,
@@ -68,6 +70,12 @@ const ID_CELL_SUBMIT: u64 = 4 << 60;
 const ID_ROW_CHECK: u64 = 5 << 60;
 const ID_HEAD: u64 = 6 << 60;
 const ID_HANDLE: u64 = 7 << 60;
+/// 列头排序图标（点击 = 切换该列排序）。
+const ID_HEAD_SORT: u64 = 8 << 60;
+/// 列头下拉按钮（点击弹「列格式化 / 筛选 / 清除」操作台）。
+const ID_HEAD_MENU: u64 = 9 << 60;
+/// 列头第一行的列名（点击 = 排序；与整格分离是为了下拉按钮不被算进排序）。
+const ID_HEAD_NAME: u64 = 10 << 60;
 
 /// 悬停 ⓘ 底片的边长（正方形，居中在行高里）。
 const INFO_BADGE: f32 = 18.;
@@ -75,6 +83,12 @@ const INFO_BADGE: f32 = 18.;
 /// 横向裁剪时窗口两侧各多留的像素（约两列宽）：偏移与视口宽度差一帧，
 /// 留一屏外缓冲区，滚动时不会露出「还没建出来」的空白格。
 const COL_OVERSCAN: f32 = 320.;
+
+/// 列头快照的一列：`(模型下标, 列名, 类型名, 注释, 列宽)`。
+type HeaderColumn = (usize, Arc<str>, Arc<str>, Arc<str>, f32);
+
+/// 列头排序点击（`Rc<dyn Fn>`：两处 `on_click` 共用，见列头循环里的说明）。
+type HeaderSortClick = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// 一行里要处理的一「槽」：真的建元素的列，或被横向裁掉的一段空白。
 ///
@@ -127,6 +141,9 @@ pub fn data_table(
     let hover_tint = extended.colors.hover_tint;
     let surface_bg = tokens.colors.surface;
     let rownum_bg = extended.colors.chrome;
+    // 斑马纹隔行底色（dbflux 同款观感）：奇数**展示行**上色，偶数行沿用页面底色。
+    // 按展示序号而不是模型行号 —— 按后者的话，排序 / 过滤后条纹会跟着行到处跑。
+    let row_alt = extended.colors.row_alt;
     let selected_bg = extended.colors.nav_selected;
     let tertiary = extended.colors.text_tertiary;
     let muted = tokens.colors.muted_foreground;
@@ -141,17 +158,21 @@ pub fn data_table(
     let selection_bg = tokens.colors.selection;
     let accent_text = extended.colors.accent_text;
     let success = extended.colors.success;
+    let foreground = tokens.colors.foreground;
+    let primary = tokens.colors.primary;
+    let name_text = tokens.typography.sm.size;
 
     // 本帧要用的数据 + 几何快照（都是小向量；行数据只 `Arc::clone`）。
     let (model, view_rows, row_offset, visible) = {
         let s = state.read(cx);
-        let visible: Vec<(usize, Arc<str>, Arc<str>, f32)> = s
+        let visible: Vec<HeaderColumn> = s
             .visible_columns()
             .map(|(index, column)| {
                 (
                     index,
                     column.name.clone(),
                     column.type_name.clone(),
+                    column.comment.clone(),
                     s.column_width(index),
                 )
             })
@@ -192,14 +213,17 @@ pub fn data_table(
     let submit_edit_label = labels.submit_edit.clone();
     let cell_menu = hooks.cell_menu.clone();
     let header_menu = hooks.header_menu.clone();
+    let header_dropdown = hooks.header_dropdown.clone();
     let on_cell_double_click = hooks.on_cell_double_click.clone();
     let on_row_double_click = hooks.on_row_double_click.clone();
+    // 悬停详情卡的文案（组件不含 i18n：标签由宿主注入，见 `DataTableLabels`）。
+    let detail_labels = labels.clone();
 
     // ── 列头 ─────────────────────────────────────────────────────────────
     // 把手绝对定位在**列头行**上（列头格自己有 `overflow_x_hidden`，嵌进去会被裁掉
     // 一半而够不着）；最后追加 = 绘制顺序靠后 = 优先接到拖拽。
     let mut resize_offset = ROWNUM_WIDTH + SELECT_COLUMN_WIDTH;
-    let resize_handles = visible.iter().map(|(index, _, _, width)| {
+    let resize_handles = visible.iter().map(|(index, _, _, _, width)| {
         let col = *index;
         let left = resize_offset + width - RESIZE_HANDLE_WIDTH / 2.;
         resize_offset += width;
@@ -285,28 +309,79 @@ pub fn data_table(
                     cx,
                 )),
         );
-    for (index, name, type_name, width) in &visible {
+    for (index, name, type_name, comment, width) in &visible {
         let col = *index;
-        let arrow = if sortable {
+        // ── 排序（dbx 同款三态）───────────────────────────────────────────
+        // 无序画双向箭头（灰），激活画单向箭头（强调色）。点击目标从「整格」
+        // 收窄到**列名与箭头本身**：右侧的下拉按钮是独立的点击目标，挂在整格上
+        // 会把「点菜单」也计成「点排序」。
+        let sort_label: SharedString =
+            SharedString::from(fill_template(labels.sort_by.as_ref(), &[name.as_ref()]));
+        // ⚠️ 显式 `Rc<dyn Fn>`：两处 `on_click`（列名与箭头）共用同一份点击行为，
+        // 裸闭包做中间变量时推断器给不出 HRTB（implementation of Fn is not general enough）。
+        let sort_click: HeaderSortClick = {
+            let state = state.clone();
+            let column = name.clone();
+            std::rc::Rc::new(move |_, _, cx| {
+                state.update(cx, |_, cx| {
+                    cx.emit(DataTableEvent::SortRequested {
+                        column: column.clone(),
+                    });
+                });
+            })
+        };
+        let (sort_icon, sort_tint) = if !sortable {
+            (None, muted)
+        } else {
             match sort_column.as_deref() {
                 Some(active) if active == name.as_ref() => {
                     if sort_descending {
-                        Some(" ↓")
+                        (Some(DuckIcon::ArrowDown), accent_text)
                     } else {
-                        Some(" ↑")
+                        (Some(DuckIcon::ArrowUp), accent_text)
                     }
                 }
-                _ => None,
+                _ => (Some(DuckIcon::ArrowUpDown), muted),
             }
-        } else {
-            None
         };
-        let label: SharedString = match arrow {
-            Some(arrow) => SharedString::from(format!("{}{arrow}", name.as_ref())),
-            // 无箭头时直接借 `Arc<str>`（`From<&Arc<str>>` 只 bump 引用计数）；
-            // 原先走 `name.to_string()`，等于每帧把每个列名整串复制一遍。
-            None => SharedString::from(name),
-        };
+        let sort_indicator = sort_icon.map(|icon| {
+            div()
+                .id(ElementId::Integer(index_key(ID_HEAD_SORT, 0, col)))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.))
+                .h(px(16.))
+                .rounded(radius_sm)
+                .cursor_pointer()
+                .role(Role::Button)
+                .aria_label(sort_label.clone())
+                .hover(move |style| style.bg(hover_tint))
+                .on_click({
+                    let sort_click = sort_click.clone();
+                    move |event, window, cx| sort_click(event, window, cx)
+                })
+                .child(Icon::new(icon).size(icon_sm).text_color(sort_tint))
+        });
+        // ── 下拉操作台（列格式化 / 筛选 / 清除）───────────────────────────
+        // 左键弹出、锚在按钮下方（列头贴着结果区上缘，只能向下）。文案与动作
+        // 全在宿主的 hook 里（组件不含 i18n / 不懂业务），这里只负责把按钮画出来。
+        let dropdown = header_dropdown.as_ref().map(|hook| {
+            let hook = hook.clone();
+            let menu_label: SharedString =
+                SharedString::from(fill_template(labels.column_menu.as_ref(), &[name.as_ref()]));
+            Button::new(ElementId::Integer(index_key(ID_HEAD_MENU, 0, col)))
+                .ghost()
+                .compact()
+                .with_size(Size::XSmall)
+                .accessibility_label(menu_label)
+                .child(Icon::new(DuckIcon::ChevronDown).size(icon_sm))
+                .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, window, cx| {
+                    hook(menu, col, window, cx)
+                })
+        });
+        // ── 三段列头 ──────────────────────────────────────────────────────
         let mut cell = div()
             .id(ElementId::Integer(index_key(ID_HEAD, 0, col)))
             .w(px(*width))
@@ -318,41 +393,79 @@ pub fn data_table(
             .overflow_x_hidden()
             .border_r(thin)
             .border_color(hairline)
-            .text_size(head_text)
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(muted)
-            .child(div().flex_none().truncate().child(label))
-            // 类型行：引擎报什么画什么；拿不到类型就只画一行，别摆空档。
-            .when(!type_name.is_empty(), |cell| {
-                cell.child(
+            .hover(move |style| style.bg(hover_tint));
+        // 行 1：列名（粗体、正色）+ 排序箭头 + 下拉按钮。
+        cell = cell.child(
+            h_flex()
+                .flex_none()
+                .items_center()
+                .gap(cell_gap)
+                .child(
                     div()
-                        .flex_none()
+                        .id(ElementId::Integer(index_key(ID_HEAD_NAME, 0, col)))
+                        .min_w_0()
+                        .flex_1()
                         .truncate()
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(tertiary)
-                        // 同上：类型名也是 `Arc<str>`，零拷贝借出去。
-                        .child(SharedString::from(type_name)),
+                        .text_size(name_text)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(foreground)
+                        .when(sortable, |name| {
+                            name.cursor_pointer()
+                                .role(Role::Button)
+                                .aria_label(sort_label.clone())
+                                .on_click({
+                                    let sort_click = sort_click.clone();
+                                    move |event, window, cx| sort_click(event, window, cx)
+                                })
+                        })
+                        .child(SharedString::from(name)),
                 )
-            });
-        if sortable {
-            let sort_label = fill_template(labels.sort_by.as_ref(), &[name.as_ref()]);
-            cell = cell
-                .cursor_pointer()
-                .role(Role::Button)
-                .aria_label(SharedString::from(sort_label))
-                .hover(move |style| style.bg(hover_tint))
-                .on_click({
-                    let state = state.clone();
-                    let column = name.clone();
-                    move |_, _, cx| {
-                        state.update(cx, |_, cx| {
-                            cx.emit(DataTableEvent::SortRequested {
-                                column: column.clone(),
-                            });
-                        });
-                    }
-                });
+                .children(sort_indicator)
+                .children(dropdown),
+        );
+        // 行 2：类型 + 长度（引擎报的类型原文自带长度修饰），按语义着色。
+        // 拿不到类型就只画一行，别摆空档。
+        if !type_name.is_empty() {
+            let tint = type_tint(type_name, primary, success, accent_text, tertiary);
+            cell = cell.child(
+                div()
+                    .flex_none()
+                    .truncate()
+                    .text_size(head_text)
+                    .font_weight(gpui::FontWeight::NORMAL)
+                    .text_color(tint)
+                    // `Arc<str>` 零拷贝借出去。
+                    .child(SharedString::from(type_name)),
+            );
         }
+        // 行 3：列注释（中文说明），更小一号的灰字；没有注释就不画，空档不摆。
+        if !comment.is_empty() {
+            cell = cell.child(
+                div()
+                    .flex_none()
+                    .truncate()
+                    .text_size(head_text)
+                    .text_color(tertiary)
+                    .child(SharedString::from(comment)),
+            );
+        }
+        // 悬停详情卡：富内容（列名 / 类型 / 注释 + 复制）只有 view 承载得了，
+        // 纯文本 `Tooltip` 不够。视图在悬停延迟到点才建，不在每帧路径上。
+        cell = cell.tooltip({
+            let name = name.clone();
+            let type_name = type_name.clone();
+            let comment = comment.clone();
+            let labels = detail_labels.clone();
+            move |_, cx| {
+                cx.new(|_| ColumnHeaderDetail {
+                    name: name.clone(),
+                    type_name: type_name.clone(),
+                    comment: comment.clone(),
+                    labels: labels.clone(),
+                })
+                .into()
+            }
+        });
         let cell = match header_menu.as_ref() {
             Some(hook) => {
                 let hook = hook.clone();
@@ -387,7 +500,7 @@ pub fn data_table(
     let mut slots: Vec<RowSlot> = Vec::with_capacity(visible.len() + 1);
     let mut slot_x = ROWNUM_WIDTH + SELECT_COLUMN_WIDTH;
     let mut skipped = 0.0_f32;
-    for (col, _, _, width) in &visible {
+    for (col, _, _, _, width) in &visible {
         let keep = col_window.is_none_or(|(left, right)| {
             // 落进窗口；或者正是**就地编辑**的那一格（编辑框绝不能因为横向裁剪消失）。
             (slot_x + width > left && slot_x < right) || editing.is_some_and(|pos| pos.col == *col)
@@ -417,6 +530,9 @@ pub fn data_table(
                 let index = *view_rows.get(vis_index)?;
                 let row = model.row(index)?;
                 let selected = selected_row == Some(index);
+                // 斑马纹：奇数展示行铺一层隔行底色（选中行由选中底覆盖，两者都真时
+                // 以选中为准 —— 选中是更强的语义）。
+                let striped = vis_index % 2 == 1;
                 let is_checked = checked.contains(&index);
                 let editing_row = editing.map(|pos| pos.row) == Some(index);
                 // 行勾选框的可访问名：模板 + 行号（文案留在宿主，组件只填参）。
@@ -431,6 +547,7 @@ pub fn data_table(
                     // 行框线（dbx 同款：每行一条底线，格与行不再糊成一片）。
                     .border_b(thin)
                     .border_color(hairline)
+                    .when(!selected && striped, |line| line.bg(row_alt))
                     .when(selected, |line| line.bg(selected_bg))
                     .hover(move |style| style.bg(hover_tint))
                     .on_click({
@@ -808,4 +925,176 @@ fn checkbox(
         .on_click(on_click)
         .child(check_mark(state, cx))
         .into_any_element()
+}
+
+/// 类型名着色的三组前缀（dbx 同款分档，匹配**小写后**的开头）。
+///
+/// 时间档最先判（`datetime` / `timestamp` 同时含别的关键词）；数字档不用单字母
+/// 前缀（`u`/`i` 会把 `image`、`info` 这类文本类型误染成蓝）。
+const TYPE_NUMBER_PREFIXES: &[&str] = &[
+    "int", "decimal", "numeric", "float", "double", "real", "money", "serial", "number", "bit",
+    "bool", "tiny", "small", "medium", "big",
+];
+const TYPE_TEXT_PREFIXES: &[&str] = &[
+    "char", "text", "string", "clob", "enum", "json", "uuid", "blob", "binary", "bytea", "xml",
+];
+const TYPE_TIME_PREFIXES: &[&str] = &["date", "time", "year", "interval"];
+
+/// 类型名的语义着色：数字主色 / 文本绿 / 时间强调，认不出退灰。
+fn type_tint(
+    type_name: &str,
+    number: gpui::Hsla,
+    text: gpui::Hsla,
+    time: gpui::Hsla,
+    fallback: gpui::Hsla,
+) -> gpui::Hsla {
+    let t = type_name.to_ascii_lowercase();
+    if TYPE_TIME_PREFIXES.iter().any(|p| t.starts_with(p)) {
+        time
+    } else if TYPE_NUMBER_PREFIXES.iter().any(|p| t.starts_with(p)) {
+        number
+    } else if TYPE_TEXT_PREFIXES.iter().any(|p| t.starts_with(p)) {
+        text
+    } else {
+        fallback
+    }
+}
+
+/// 列头悬停详情卡（dbx 同款）：列名 / 类型 / 注释三行 + 复制列名。
+///
+/// 走 gpui 的 **view tooltip**（`.tooltip(fn -> AnyView)`）：带按钮的富内容只有
+/// view 承载得了，纯文本 `Tooltip` 不够。视图在悬停延迟到点才建（见
+/// `gpui_base::tooltip` 的 `SHOW_DELAY`），不在每帧渲染路径上。
+struct ColumnHeaderDetail {
+    name: Arc<str>,
+    type_name: Arc<str>,
+    comment: Arc<str>,
+    labels: DataTableLabels,
+}
+
+impl Render for ColumnHeaderDetail {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        let surface = tokens.colors.surface;
+        let border = tokens.colors.border;
+        let foreground = tokens.colors.foreground;
+        let muted = tokens.colors.muted_foreground;
+        let primary = tokens.colors.primary;
+        let hover = extended.colors.hover_tint;
+        let success = extended.colors.success;
+        let accent_text = extended.colors.accent_text;
+        let tertiary = extended.colors.text_tertiary;
+        let radius = tokens.radius.md;
+        let gap = tokens.spacing.xs;
+        let label_w = px(40.);
+        let icon_sm = extended.icon.sm;
+        let label_size = tokens.typography.xs.size;
+        let value_size = tokens.typography.sm.size;
+        let tint = type_tint(&self.type_name, primary, success, accent_text, tertiary);
+
+        let copy_button = div()
+            .id("column-detail-copy")
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(20.))
+            .h(px(20.))
+            .rounded(tokens.radius.sm)
+            .cursor_pointer()
+            .role(Role::Button)
+            .aria_label(self.labels.detail_copy.clone())
+            .hover(move |style| style.bg(hover))
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(this.name.to_string()));
+            }))
+            .child(Icon::new(DuckIcon::Copy).size(icon_sm).text_color(muted));
+
+        v_flex()
+            .w(px(280.))
+            .p(px(12.))
+            .gap(gap)
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .rounded(radius)
+            .shadow_md()
+            // 列名行：标签 + 值（粗体正色）+ 复制按钮。
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap(gap)
+                    .child(
+                        div()
+                            .w(label_w)
+                            .flex_none()
+                            .text_size(label_size)
+                            .text_color(muted)
+                            .child(self.labels.detail_name.clone()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .text_size(value_size)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(foreground)
+                            .child(SharedString::from(self.name.clone())),
+                    )
+                    .child(copy_button),
+            )
+            // 类型行：类型原文（自带长度修饰），与表头同一套语义着色。
+            .when(!self.type_name.is_empty(), |card| {
+                card.child(
+                    h_flex()
+                        .items_center()
+                        .gap(gap)
+                        .child(
+                            div()
+                                .w(label_w)
+                                .flex_none()
+                                .text_size(label_size)
+                                .text_color(muted)
+                                .child(self.labels.detail_type.clone()),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .text_size(value_size)
+                                .text_color(tint)
+                                .child(SharedString::from(self.type_name.clone())),
+                        ),
+                )
+            })
+            // 注释行：没有注释就不画，别摆空档。
+            .when(!self.comment.is_empty(), |card| {
+                card.child(
+                    h_flex()
+                        .items_center()
+                        .gap(gap)
+                        .child(
+                            div()
+                                .w(label_w)
+                                .flex_none()
+                                .text_size(label_size)
+                                .text_color(muted)
+                                .child(self.labels.detail_comment.clone()),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .text_size(value_size)
+                                .text_color(foreground)
+                                .child(SharedString::from(self.comment.clone())),
+                        ),
+                )
+            })
+    }
 }

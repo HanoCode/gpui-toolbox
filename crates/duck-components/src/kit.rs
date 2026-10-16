@@ -973,6 +973,9 @@ pub fn dropdown_select(
         .find(|(value, _)| *value == current)
         .map_or_else(|| current.clone(), |(_, label)| label.clone());
     let on_select: Rc<dyn Fn(SharedString, &mut Window, &mut App)> = Rc::new(on_select);
+    // 选项多（字段名清单等动辄几十上百）时限高滚动 —— gpui-component 的 PopupMenu
+    // 只在 `scrollable` 时才套 `max_h`（默认 min(半窗高, 450px)），不滚动就是无限长。
+    let long_list = options.len() > 12;
     Button::new(id)
         .outline()
         .control(cx)
@@ -980,6 +983,7 @@ pub fn dropdown_select(
         .dropdown_caret(true)
         .min_w(px(DROPDOWN_MIN_WIDTH))
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            let menu = menu.scrollable(long_list);
             options.iter().fold(menu, |menu, (value, label)| {
                 let checked = *value == current;
                 let value = value.clone();

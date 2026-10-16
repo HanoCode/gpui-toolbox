@@ -27,9 +27,9 @@ use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
     CatalogTable, DatabaseObject, FilterOp, InstanceFact, InstanceOverview, InstanceTable,
-    InstanceView, OrderBy, PkValues, PlaceholderStyle, RowCount, TableFilter, TableForeignKey,
-    TableIndex, TableKind, TableRef, TableTrigger, filter_conditions, human_duration_secs,
-    order_by_clause, quote_identifier, quote_qualified,
+    InstanceView, OrderBy, PkValues, PlaceholderStyle, RowCount, TableColumnMeta, TableFilter,
+    TableForeignKey, TableIndex, TableKind, TableRef, TableTrigger, filter_conditions,
+    human_duration_secs, order_by_clause, quote_identifier, quote_qualified,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -282,6 +282,7 @@ impl PostgresConnection {
                     .map(|col| Column {
                         name: col.name().to_owned(),
                         type_name: String::new(),
+                        comment: String::new(),
                     })
                     .collect();
             }
@@ -436,12 +437,21 @@ impl PostgresConnection {
     /// 一张表的列（参数化查询，表名不走文本拼接）。
     pub fn table_columns(&mut self, table: &TableRef) -> Result<Vec<Column>, DbError> {
         let schema = table.schema.as_deref();
+        // 不走 information_schema.columns：`data_type` 不带长度修饰（`character varying`
+        // 丢掉 `(50)`），而 `format_type` 是写路径同款口径（见 [`Self::column_sql_types`]），
+        // 类型原文可直接写进 SQL。注释走 `col_description`（`COMMENT ON COLUMN` 写入的
+        // 那一份；没写就是 NULL → 空串）。
         let rows = self
             .client
             .query(
-                "SELECT column_name, data_type FROM information_schema.columns \
-                 WHERE table_schema = COALESCE($2, current_schema()) AND table_name = $1 \
-                 ORDER BY ordinal_position",
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), \
+                        col_description(c.oid, a.attnum) \
+                 FROM pg_attribute a \
+                 JOIN pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE c.relname = $1 AND n.nspname = COALESCE($2, current_schema()) \
+                   AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum",
                 &[&table.name, &schema],
             )
             .map_err(DbError::from)?;
@@ -450,6 +460,41 @@ impl PostgresConnection {
             .map(|row| Column {
                 name: row.get::<_, String>(0),
                 type_name: row.get::<_, String>(1),
+                comment: row.get::<_, Option<String>>(2).unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    /// 一张表的列级元数据（`pg_attribute` / `pg_attrdef` / `pg_description` 口径，
+    /// 与 [`Self::table_columns`] 同一套系统表；字符集没有——PG 按库统一）。
+    pub fn table_column_meta(&mut self, table: &TableRef) -> Result<Vec<TableColumnMeta>, DbError> {
+        let schema = table.schema.as_deref();
+        let rows = self
+            .client
+            .query(
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), \
+                        col_description(c.oid, a.attnum), NOT a.attnotnull, \
+                        pg_get_expr(ad.adbin, ad.adrelid), attcollation::regcollation::text \
+                 FROM pg_attribute a \
+                 JOIN pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+                 WHERE c.relname = $1 AND n.nspname = COALESCE($2, current_schema()) \
+                   AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum",
+                &[&table.name, &schema],
+            )
+            .map_err(DbError::from)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| TableColumnMeta {
+                name: row.get::<_, String>(0),
+                type_name: row.get::<_, String>(1),
+                comment: row.get::<_, Option<String>>(2).unwrap_or_default(),
+                nullable: Some(row.get::<_, bool>(3)),
+                default: row.get::<_, Option<String>>(4),
+                character_set: None,
+                collation: row.get::<_, Option<String>>(5),
             })
             .collect())
     }
@@ -914,6 +959,32 @@ impl PostgresConnection {
                  WHERE NOT t.tgisinternal \
                    AND n.nspname = COALESCE($1, current_schema()) \
                  ORDER BY t.tgname",
+                &[&schema],
+            )
+            .map_err(DbError::from)?;
+        Ok(rows
+            .iter()
+            .map(|row| DatabaseObject {
+                name: row.get(0),
+                detail: Some(row.get(1)),
+            })
+            .collect())
+    }
+
+    /// 一个命名空间里的**索引**清单（名字 + 建在哪张表上）。
+    ///
+    /// 与 [`Self::table_indexes`] 同一套目录表，只把「一张表」换成「一个 schema」：
+    /// 主键 / 唯一约束隐式建的索引也在里面（它们是真实存在的索引对象）。
+    pub fn list_indexes(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT i.relname, t.relname FROM pg_index ix \
+                 JOIN pg_class i ON i.oid = ix.indexrelid \
+                 JOIN pg_class t ON t.oid = ix.indrelid \
+                 JOIN pg_namespace n ON n.oid = t.relnamespace \
+                 WHERE n.nspname = COALESCE($1, current_schema()) \
+                 ORDER BY lower(t.relname), lower(i.relname)",
                 &[&schema],
             )
             .map_err(DbError::from)?;

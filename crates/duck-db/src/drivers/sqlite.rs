@@ -9,9 +9,9 @@ use crate::cancel::CancelHandle;
 use crate::config::ConnectionConfig;
 use crate::drivers::{
     CatalogTable, DatabaseObject, InstanceFact, InstanceOverview, InstanceTable, InstanceView,
-    OrderBy, PlaceholderStyle, RowCount, TableFilter, TableForeignKey, TableIndex, TableKind,
-    TableRef, TableTrigger, human_bytes, order_by_clause, plain_filter_clause, quote_identifier,
-    quote_qualified,
+    OrderBy, PlaceholderStyle, RowCount, TableColumnMeta, TableFilter, TableForeignKey, TableIndex,
+    TableKind, TableRef, TableTrigger, human_bytes, order_by_clause, plain_filter_clause,
+    quote_identifier, quote_qualified,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -239,6 +239,7 @@ impl SqliteConnection {
             .map(|name| Column {
                 name,
                 type_name: String::new(),
+                comment: String::new(),
             })
             .collect();
 
@@ -510,7 +511,45 @@ impl SqliteConnection {
         let mut columns = Vec::new();
         for row in rows {
             let (name, type_name) = row.map_err(DbError::from)?;
-            columns.push(Column { name, type_name });
+            // pragma_table_info 没有列注释（SQLite 把注释藏在建表 SQL 文本里，不值得解析）。
+            columns.push(Column {
+                name,
+                type_name,
+                comment: String::new(),
+            });
+        }
+        Ok(columns)
+    }
+
+    /// 一张表的列级元数据（`pragma_table_info`：可空 / 默认值拿得到；注释 / 字符集没有）。
+    pub fn table_column_meta(&mut self, table: &TableRef) -> Result<Vec<TableColumnMeta>, DbError> {
+        let (name, schema) = pragma_target(table);
+        let mut prepared = self
+            .conn
+            .prepare("SELECT name, coalesce(type, ''), notnull, dflt_value FROM pragma_table_info(?1, ?2)")
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        let rows = prepared
+            .query_map(rusqlite::params![name, schema], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        let mut columns = Vec::new();
+        for row in rows {
+            let (name, type_name, notnull, default) = row.map_err(DbError::from)?;
+            columns.push(TableColumnMeta {
+                name,
+                type_name,
+                comment: String::new(),
+                nullable: Some(notnull == 0),
+                default,
+                character_set: None,
+                collation: None,
+            });
         }
         Ok(columns)
     }
@@ -826,6 +865,45 @@ impl SqliteConnection {
             .prepare(&format!(
                 "SELECT name, tbl_name FROM {master} \
                  WHERE type = 'trigger' ORDER BY name"
+            ))
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|err| DbError::Query(err.to_string()))?
+            .collect::<Result<_, _>>()
+            .map_err(DbError::from)?;
+        drop(stmt);
+        Ok(rows
+            .into_iter()
+            .map(|(name, table)| DatabaseObject {
+                name,
+                detail: Some(table),
+            })
+            .collect())
+    }
+
+    /// 一个命名空间里的**索引**清单（名字 + 建在哪张表上）。
+    ///
+    /// 走 `sqlite_master`（`type = 'index'`；它的 `tbl_name` 就是宿主表）而不是
+    /// `pragma_index_list`：后者要**逐表**问一遍（几百张表的库就是几百次 pragma）。
+    ///
+    /// `sqlite_autoindex_*` 是 `UNIQUE` / `PRIMARY KEY` 约束隐式建的，不是用户命名的
+    /// 对象，不列进树里（右栏「索引」卡照旧把它们算进那张表的口径 —— 那里是「这张表
+    /// 有哪些索引」，这里是「这个库有哪些索引对象」）。
+    pub(crate) fn list_indexes(
+        &mut self,
+        schema: Option<&str>,
+    ) -> Result<Vec<DatabaseObject>, DbError> {
+        let schema = schema
+            .filter(|schema| !schema.is_empty())
+            .unwrap_or(MAIN_SCHEMA);
+        let master = quote_qualified(&TableRef::in_schema(schema, "sqlite_master"), '"')?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT name, tbl_name FROM {master} \
+                 WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%' \
+                 ORDER BY lower(name)"
             ))
             .map_err(|err| DbError::Query(err.to_string()))?;
         let rows: Vec<(String, String)> = stmt

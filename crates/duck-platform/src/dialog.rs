@@ -2,6 +2,24 @@
 //!
 //! 都是模态阻塞调用——退出码由平台事件循环在对话框关闭后返回，因此**不要在 render 里调用**，
 //! 只在动作处理器（点击、菜单、快捷键）里调用。
+//!
+//! ⚠️ **文件选择（`open_file` / `open_files` / `pick_folder` / `save_file`）不要从
+//! gpui 的 `App::update` 里调**：macOS 上 rfd 用的是 `NSApp` 的**嵌套模态循环**
+//!（`run_modal`），循环一开 AppKit 就把 gpui 的事件派发重入进来，而此刻 App 的
+//! `RefCell` 还借在外面 —— `AsyncApp::update_entity` 的 `borrow_mut()` 直接撞成
+//! 「RefCell already borrowed」并 abort（`try_borrow_mut` 那一路则静默丢事件）。
+//!
+//! 界面上能触发的动作**全都**在 `App::update` 里，所以界面代码请走
+//! `duck-app` 的 `file_dialogs` 模块（gpui 自己的 `prompt_for_paths` /
+//! `prompt_for_new_path`，`beginWithCompletionHandler` 真异步，不重入事件循环）。
+//! 本模块这几个函数留给**没有 gpui 上下文**的调用方（启动期、后台线程、CLI）。
+//!
+//! 实证：`~/Library/Application Support/DuckToolbox/logs/crash-2026-10-15.log`
+//! 12:46 那条，调用链 `import_csv → duck_platform::dialog::open_file → rfd pick_file
+//! → run_modal`。
+//!
+//! 消息框（`alert` / `confirm`）用的是 `MessageDialog::show`（同样阻塞），但目前
+//! 没有界面调用点；将来要用也得照上面这条纪律办。
 
 use std::path::PathBuf;
 

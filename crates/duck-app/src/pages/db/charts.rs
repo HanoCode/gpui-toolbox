@@ -1,8 +1,23 @@
 use super::*;
 
+// 日期部分的解析**复用** `duck-project` 的 `CalendarDate`（本仓既有的严格 `YYYY-MM-DD`
+// 解析器，projects 页也在用）：自己再写一份「从 civil 日期算 epoch 天数」的算法，
+// 就是第二个真相源。时刻部分（`HH:MM:SS`）那边没有，所以在下面自己解析。
+use duck_project::CalendarDate;
+
 impl ChartKind {
-    /// 四档全量（菜单顺序）。
-    pub(super) const ALL: [Self; 4] = [Self::Line, Self::Bar, Self::Area, Self::Pie];
+    /// 六档全量（菜单顺序）。
+    ///
+    /// 顺序是「一列一张」那四档（折线 / 柱状 / 面积 / 饼）在前，后加的两档在后 ——
+    /// 下拉里既有的四项位置不动，习惯了的用户不必重新找。
+    pub(super) const ALL: [Self; 6] = [
+        Self::Line,
+        Self::Bar,
+        Self::Area,
+        Self::Pie,
+        Self::Scatter,
+        Self::StackedBar,
+    ];
 
     /// 展示文案。
     pub(super) fn heading(self, cx: &App) -> &'static str {
@@ -11,6 +26,8 @@ impl ChartKind {
             Self::Bar => tr(cx, "柱状图"),
             Self::Area => tr(cx, "面积图"),
             Self::Pie => tr(cx, "饼图"),
+            Self::Scatter => tr(cx, "散点图"),
+            Self::StackedBar => tr(cx, "堆叠柱状图"),
         }
     }
 
@@ -21,6 +38,8 @@ impl ChartKind {
             Self::Bar => "bar",
             Self::Area => "area",
             Self::Pie => "pie",
+            Self::Scatter => "scatter",
+            Self::StackedBar => "stacked_bar",
         }
     }
 
@@ -32,12 +51,17 @@ impl ChartKind {
     /// 同时能画几条数值序列。
     ///
     /// 饼图只吃**一列**：多列拼进一张饼是「苹果 + 橘子」的和，读不出任何东西，所以
-    /// 饼图档下选另一列 = 换掉这一条。其余三档封顶 [`CHART_SERIES_LIMIT`]：再多就
-    /// 是一屏碎图，剩下的列留在表里（不删）。
+    /// 饼图档下选另一列 = 换掉这一条。
+    ///
+    /// 其余五档封顶 [`CHART_SERIES_LIMIT`]，但**用法不同**：折线 / 柱状 / 面积 / 散点
+    /// 是一列一张小图（一屏碎图，剩下的列留在表里不删）；堆叠柱把这几列**叠进同一根柱**，
+    /// 所以这个上限对它是「一根柱最多堆几段」。
     pub(super) const fn series_limit(self) -> usize {
         match self {
             Self::Pie => 1,
-            Self::Line | Self::Bar | Self::Area => CHART_SERIES_LIMIT,
+            Self::Line | Self::Bar | Self::Area | Self::Scatter | Self::StackedBar => {
+                CHART_SERIES_LIMIT
+            }
         }
     }
 }
@@ -64,6 +88,19 @@ impl ChartConfig {
         let limit = self.kind.series_limit();
         let end = self.y.len().min(limit);
         &self.y[..end]
+    }
+
+    /// 当前横轴在给定结果集上的轴类型。
+    ///
+    /// 列已经不在结果里时给分类档（读数行照样写得出来，不必为「配置失效」再造一句文案）。
+    pub(super) fn axis_kind(&self, result: &ResultSet) -> ChartAxisKind {
+        result
+            .columns
+            .iter()
+            .position(|column| column.name == self.x)
+            .map_or(ChartAxisKind::Categorical, |index| {
+                chart_axis_kind(result, index)
+            })
     }
 }
 
@@ -200,20 +237,32 @@ pub(super) fn visible_dashboard_panels(
     visible
 }
 
-/// 从结果集挑默认的图表列：`x` 取**第一个非数值列**（全数值就退回第一列），
-/// `y` 取前 [`CHART_SERIES_LIMIT`] 个数值列。
+/// 从结果集挑默认的图表列：`x` 取**最左的时间列**，没有时间列就取第一个非数值列
+/// （全数值就退回第一列）；`y` 取前 [`CHART_SERIES_LIMIT`] 个数值列。
+///
+/// 「时间列优先」与 DBFlux 的 `detect_chart_columns` 同口径（它取最左的 `Timestamp` 列）：
+/// 结果里既有日期又有别的文本列时（`SELECT created_at, status, amount …`），
+/// 想看的走势几乎总是随**日期**变化的，拿 `status` 当轴画出来的图没人要。
 ///
 /// 没有任何数值列时返回 `None`——那说明这张表画不出图，界面该说清楚而不是画一张空图。
 pub(super) fn default_chart_columns(result: &ResultSet) -> Option<(String, Vec<String>)> {
     let numeric: Vec<bool> = (0..result.columns.len())
         .map(|index| column_is_numeric(result, index))
         .collect();
-    // X 优先文本列（分类轴）；全是数值时用第一列当轴。
     let x_index = result
         .columns
         .iter()
         .enumerate()
-        .find(|(index, _)| !numeric[*index])
+        .find(|(index, _)| chart_axis_kind(result, *index) == ChartAxisKind::Time)
+        // 退一步：第一个非数值列（分类轴）。
+        .or_else(|| {
+            result
+                .columns
+                .iter()
+                .enumerate()
+                .find(|(index, _)| !numeric[*index])
+        })
+        // 全是数值时用第一列当轴。
         .or_else(|| result.columns.iter().enumerate().next())
         .map(|(index, _)| index)?;
     let x = result.columns[x_index].name.clone();
@@ -256,30 +305,332 @@ pub(super) fn column_is_numeric(result: &ResultSet, index: usize) -> bool {
     saw_number
 }
 
-/// 把结果集的两列抽成「分类 → 数值」序列。
+/// 图表横轴的**类型** —— 决定「点怎么排」与「标签怎么写」两件事。
 ///
-/// 跳过两类行：分类为 `NULL` 的（分类轴上一个叫「NULL」的桶是噪声，真要看那几行去表格
+/// 判据只看**值**，不看引擎报的 `type_name`（与 [`column_is_numeric`] 同一条纪律：
+/// 各引擎口径不一，`Text` 里装的完全可能就是日期）。DBFlux 的同位概念是 `AxisKind::Time`
+/// / `AxisKind::Numeric`，区别是它读驱动填的 `ColumnKind`，而本仓驱动一律把日期**渲染成
+/// 字符串**（`duck-db/src/result.rs` 的模块注释写明这是刻意设计，且没有任何驱动构造
+/// `Value::Date/Time/DateTime`），所以这里按值的形状认。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChartAxisKind {
+    /// 时间轴：按时间升序排点，标签紧凑成 `MM-DD HH:MM`。
+    Time,
+    /// 数值轴：按数值升序排点。
+    Numeric,
+    /// 分类轴：**保持结果顺序**（分类的先后是 SQL 给的，排一下就是换了意思）。
+    Categorical,
+}
+
+impl ChartAxisKind {
+    /// 读数行里那三个字（稳定英文键见 [`Self::key`]）。
+    pub(super) fn heading(self, cx: &App) -> &'static str {
+        match self {
+            Self::Time => tr(cx, "时间"),
+            Self::Numeric => tr(cx, "数值"),
+            Self::Categorical => tr(cx, "分类"),
+        }
+    }
+}
+
+/// 一个可画的点。
+///
+/// 三件事合成一个载体、而不是三个并行 `Vec`：标签（给人看）、Y 值（画高度）、
+/// 横轴位置（排序与抽稀用）。排序与抽稀都必须按**同一个**横轴口径算，拆开就迟早错位。
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ChartPoint {
+    /// 展示用的标签（时间轴已按紧凑格式重写）。
+    pub(super) label: String,
+    /// Y 值。
+    pub(super) value: f64,
+    /// 横轴上的**可比较位置**：时间 = 自 epoch 秒，数值 = 数值本身，分类 = 行序。
+    pub(super) axis: f64,
+}
+
+/// 判一列适合当哪种横轴。
+///
+/// 只探开头 [`NUMERIC_PROBE_ROWS`] 行（与 [`column_is_numeric`] 同一个采样口径）：
+/// 表可能几十万行，定性用不着扫完。判定要求**这一列是齐的** —— 见到一个非时间的值就退回
+/// 分类轴，宁可少认一类，也不要把「大部分是日期、夹几条脏数据」的列当成时间轴排序
+/// （那会把脏行甩到图的两端，看起来像真的极值）。
+///
+/// 布尔 / 二进制 / JSON 一律分类：它们当横轴时读者看的是「哪一类」，不是「谁大谁小」。
+pub(super) fn chart_axis_kind(result: &ResultSet, index: usize) -> ChartAxisKind {
+    let mut seen = 0_usize;
+    let mut times = 0_usize;
+    for row in result.rows.iter().take(NUMERIC_PROBE_ROWS) {
+        match row.get(index) {
+            None | Some(Value::Null) => continue,
+            Some(Value::Int(_) | Value::UInt(_) | Value::Float(_)) => {
+                return ChartAxisKind::Numeric;
+            }
+            Some(Value::Bool(_) | Value::Bytes(_) | Value::Json(_)) => {
+                return ChartAxisKind::Categorical;
+            }
+            Some(Value::Date(_) | Value::Time(_) | Value::DateTime(_)) => {
+                seen += 1;
+                times += 1;
+            }
+            Some(Value::Decimal(text)) => {
+                if text.trim().parse::<f64>().is_ok() {
+                    return ChartAxisKind::Numeric;
+                }
+                seen += 1;
+                if time_seconds(text).is_some() {
+                    times += 1;
+                }
+            }
+            Some(Value::Text(text)) => {
+                seen += 1;
+                if time_seconds(text).is_some() {
+                    times += 1;
+                }
+            }
+        }
+    }
+    if seen > 0 && seen == times {
+        ChartAxisKind::Time
+    } else {
+        ChartAxisKind::Categorical
+    }
+}
+
+/// 把 `YYYY-MM-DD[ HH:MM[:SS]]` / `YYYY-MM-DDTHH:MM[:SS]` / `HH:MM[:SS]` 拆成（日期, 时刻）。
+///
+/// 「有没有日期」只按 `T` / 空格切一刀、再看剩下那段是不是 10 位带两个 `-` —— 不认的
+/// 就整串当日期，交给 [`CalendarDate::parse`] 去否掉。刻意**不**做宽松识别：宽宽松松地
+/// 把 `2026-1-8` 也认下来，等于让两种写法在同一个轴上表示两个不同时刻。
+fn split_datetime(text: &str) -> (&str, &str) {
+    if let Some(index) = text.find([' ', 'T']) {
+        return (&text[..index], &text[index + 1..]);
+    }
+    if text.len() == 10 && text.as_bytes().get(4) == Some(&b'-') {
+        (text, "")
+    } else {
+        ("", text)
+    }
+}
+
+/// 恰好两位数字（`HH` / `MM` / `SS` 共用）。位数不固定就不认（见 [`split_datetime`]）。
+fn two_digits(text: &str) -> Option<i64> {
+    if text.len() != 2 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// `HH:MM[:SS[.fff]]` → 当日秒数。
+fn time_of_day_seconds(text: &str) -> Option<i64> {
+    let mut parts = text.split(':');
+    let hour = two_digits(parts.next()?)?;
+    let minute = two_digits(parts.next()?)?;
+    let second = match parts.next() {
+        Some(part) => {
+            let (whole, fraction) = match part.split_once('.') {
+                Some((whole, fraction)) => (whole, Some(fraction)),
+                None => (part, None),
+            };
+            // 小数位要么没有，要么全是数字；空的小数点（`07.`）也不认。
+            if let Some(fraction) = fraction
+                && (fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()))
+            {
+                return None;
+            }
+            two_digits(whole)?
+        }
+        None => 0,
+    };
+    if parts.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some(hour * 3600 + minute * 60 + second)
+}
+
+/// 时间文本 → 自 epoch 秒（**UTC 口径**）。
+///
+/// 只用来**排序与抽稀**，不做任何时区换算 —— 轴的先后顺序在哪个时区都一样，而一旦
+/// 掺进本地偏移，「同一列里两行谁在前」就会随机器设置变，那种图没法比对。
+///
+/// 纯时刻（`HH:MM:SS`）以 epoch 当天为基准：同一列里只可能是同一种形状，差一个常数
+/// 不影响先后。
+///
+/// `pub(super)`：纯函数层的**可测面**（`db/tests.rs` 直接压它的严格性），与同文件其余
+/// 纯函数同档；拆出来的 [`split_datetime`] / [`time_of_day_seconds`] 是实现细节，保持私有。
+pub(super) fn time_seconds(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let (date_part, time_part) = split_datetime(text);
+    // ⚠️ 空串必须在这里挡掉：SQLite 常拿 `''` 代替 NULL，而下面两段都为空时
+    // `days * 86400 + seconds` 会算出**合法的 0**（= epoch 那一刻），于是每个空值
+    // 都变成一个落在轴最左端的点 —— 正是「把脏行甩到一端」那种错。
+    if date_part.is_empty() && time_part.is_empty() {
+        return None;
+    }
+    let days = if date_part.is_empty() {
+        0
+    } else {
+        CalendarDate::parse(date_part)?.days_since_epoch()
+    };
+    let seconds = if time_part.is_empty() {
+        0
+    } else {
+        time_of_day_seconds(time_part)?
+    };
+    Some(days * 86_400 + seconds)
+}
+
+/// 时间标签紧凑化：`2026-10-15 22:39:07` → `10-15 22:39`。
+///
+/// 只在**已判为时间轴**时用（见 [`chart_axis_kind`]）：轴标签的格子就几十像素宽，
+/// 带年份的完整时间戳必然被截成半截，反而读不出是几号。年份不进标签的理由是
+/// 「同一条轴上的点几乎总在同一年」——真跨年了，读数行里的横轴列名还在，去表格看得到。
+///
+/// 纯时刻列原样返回：那时候时间本身就是全部信息，砍掉时分就什么都不剩了。
+///
+/// `pub(super)`：同 [`time_seconds`]，是纯函数层的可测面。
+pub(super) fn compact_time_label(text: &str) -> String {
+    let text = text.trim();
+    let (date_part, time_part) = split_datetime(text);
+    if date_part.len() != 10 {
+        return text.to_owned();
+    }
+    let short_date = &date_part[5..];
+    let hour_minute: Vec<&str> = time_part.split(':').take(2).collect();
+    let hour_minute = hour_minute.join(":");
+    if hour_minute.is_empty() {
+        short_date.to_owned()
+    } else {
+        format!("{short_date} {hour_minute}")
+    }
+}
+
+/// 把结果集的两列抽成「横轴 → 数值」序列。
+///
+/// 跳过两类行：横轴为 `NULL` 的（分类轴上一个叫「NULL」的桶是噪声，真要看那几行去表格
 /// 视图）与数值非数的（画不进坐标系）。**不补 0**：补 0 会在图上画出一段实际不存在的
 /// 「跌到底」，比断开更难解释。
 ///
+/// ⚠️ **时间 / 数值轴会按轴值升序重排**。理由是「折线图看走势」的前提就是横轴单调：
+/// `SELECT *` 的行序并不保证按时间给（不写 `ORDER BY` 时引擎可以任意给），照原序连点
+/// 会画出一条来回折的锯齿，看上去像数据在剧烈震荡。分类轴**不排** —— 分类的先后是
+/// SQL 给的，动一下就是换了意思。
+///
 /// 选中列在当前结果集里不存在时返回空表——调用方据此显示「配置失效」而不是画空图。
-pub(super) fn chart_series(result: &ResultSet, x: &str, y: &str) -> Vec<(String, f64)> {
+pub(super) fn chart_series(result: &ResultSet, x: &str, y: &str) -> Vec<ChartPoint> {
     let column_index = |name: &str| result.columns.iter().position(|column| column.name == name);
     let (Some(xi), Some(yi)) = (column_index(x), column_index(y)) else {
         return Vec::new();
     };
-    result
+    let kind = chart_axis_kind(result, xi);
+    let mut points: Vec<ChartPoint> = result
         .rows
         .iter()
-        .filter_map(|row| {
-            if matches!(row.get(xi), None | Some(Value::Null)) {
+        .enumerate()
+        .filter_map(|(row_index, row)| {
+            let axis_cell = row.get(xi)?;
+            if axis_cell.is_null() {
                 return None;
             }
-            let label = row.get(xi)?.render();
+            let raw = axis_cell.render();
             let value = chart_number(row.get(yi)?)?;
-            Some((label, value))
+            let axis = match kind {
+                // 已经判为时间轴，可单行仍解析不出（超过采样窗口的那几行）就**丢弃**：
+                // 给它编一个「第 n 行」的位置会把它插到时间轴的中间，比不画更误导。
+                ChartAxisKind::Time => time_seconds(&raw)? as f64,
+                ChartAxisKind::Numeric => chart_number(axis_cell)?,
+                ChartAxisKind::Categorical => row_index as f64,
+            };
+            let label = match kind {
+                ChartAxisKind::Time => compact_time_label(&raw),
+                _ => raw,
+            };
+            Some(ChartPoint { label, value, axis })
         })
-        .collect()
+        .collect();
+    if kind != ChartAxisKind::Categorical {
+        points.sort_by(|left, right| {
+            left.axis
+                .partial_cmp(&right.axis)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    points
+}
+
+/// LTTB（Largest-Triangle-Three-Buckets）抽稀：把 `points` 降到至多 `limit` 个点。
+///
+/// 首尾**必留**（横轴两端是边界，抽掉就不是这张图了），中间按「与已选的上一块、和下一块
+/// 的均值构成的三角形面积最大」来选 —— 面积大 = 离直线远 = 是转折点。等距抽样做不到这
+/// 一点：它会把峰谷一起抹平，而峰谷恰恰是看图要找的东西。
+///
+/// 为什么必须抽：结果区一屏 ≈ 500 像素宽（见 [`CHART_MAX_POINTS`]），十万个点铺进去会
+/// 叠成一条实心带，还画得慢。DBFlux 的同位实现是 `chart/decimate.rs`。
+///
+/// 数据不足或 `limit < 3` 时退化：前者原样返回，后者只留首尾（少于三个点构不成三角形，
+/// 硬按算法走会除零）。
+pub(super) fn decimate_lttb(points: Vec<ChartPoint>, limit: usize) -> Vec<ChartPoint> {
+    if limit >= points.len() {
+        return points;
+    }
+    if limit < 3 {
+        // 少于三个点构不成三角形，硬走算法会除零。要一个给第一个，要两个给首尾。
+        return match limit {
+            0 => Vec::new(),
+            1 => vec![points[0].clone()],
+            _ => vec![points[0].clone(), points[points.len() - 1].clone()],
+        };
+    }
+    let last = points.len() - 1;
+    let every = (points.len() - 2) as f64 / (limit - 2) as f64;
+    let mut sampled: Vec<ChartPoint> = Vec::with_capacity(limit);
+    sampled.push(points[0].clone());
+    let mut anchor = 0_usize;
+    for bucket in 0..limit - 2 {
+        // 下一块的均值点：三角形面积里的第三个顶点。
+        let avg_start = ((bucket + 1) as f64 * every).floor() as usize + 1;
+        let avg_end = (((bucket + 2) as f64 * every).floor() as usize + 1).min(points.len());
+        let (mut avg_axis, mut avg_value, mut count) = (0.0_f64, 0.0_f64, 0_usize);
+        for point in points.iter().take(avg_end).skip(avg_start) {
+            avg_axis += point.axis;
+            avg_value += point.value;
+            count += 1;
+        }
+        if count == 0 {
+            avg_axis = points[last].axis;
+            avg_value = points[last].value;
+        } else {
+            avg_axis /= count as f64;
+            avg_value /= count as f64;
+        }
+        // 本块的候选范围；右端不越过 `last`，最后一个点要留给收尾。
+        let from = (bucket as f64 * every).floor() as usize + 1;
+        let to = (((bucket + 1) as f64 * every).floor() as usize + 1).min(last);
+        let previous = &points[anchor];
+        let mut best = from;
+        let mut best_area = -1.0_f64;
+        for index in from..to.max(from) {
+            let candidate = &points[index];
+            let area = ((previous.axis - avg_axis) * (candidate.value - previous.value)
+                - (previous.axis - candidate.axis) * (avg_value - previous.value))
+                .abs();
+            if area > best_area {
+                best_area = area;
+                best = index;
+            }
+        }
+        anchor = best;
+        sampled.push(points[best].clone());
+    }
+    sampled.push(points[last].clone());
+    sampled
+}
+
+/// X 轴最多标几个刻度：点越多标得越稀（`x_tick_count` / `band_tick_count` 都是
+/// 「均匀标 N 个」），否则几百个分类标签会糊成一条灰带。
+///
+/// 下限 2 是因为 1 个刻度等于没有坐标感（只有一条光轴）；上限 8 是窄栏能容下的
+/// 刻度标签数（结果区一张图约半屏宽，再密就互相盖住）。
+pub(super) fn axis_tick_count(points: usize) -> usize {
+    points.clamp(2, 8)
 }
 
 /// 一格的数值（能画进坐标系的才算）；非数返回 `None`。
@@ -311,58 +662,70 @@ pub(super) fn chart_palette(base: Hsla, count: usize) -> Vec<Hsla> {
         .collect()
 }
 
-/// 按类型造一张图（四种图的构造差异只集中在这一处）。
+/// 按类型造一张图（六档的构造差异只集中在这一处）。
 ///
-/// 数据一律 `Vec<(分类, 数值)>`；饼图另外带上下标（配色要按切片顺序取）。
+/// 数据一律 `Vec<ChartPoint>`；饼图另外带上下标（配色要按切片顺序取）。
 /// 返回 `None` = 这份数据画不出来（饼图全是非正值），调用方据此给一句说明。
+///
+/// 两条实现路：折线 / 柱状 / 面积 / 饼走 `gpui-component` 的现成组件（悬停提示、动画、
+/// 坐标轴都是白拿的）；**散点 / 堆叠柱走自绘**（见 `charts_plot`，那两档组件给不了）。
+/// 两路的入参口径完全一样，所以这里只是多两个 `match` 分支，调用方不必知道差别。
+///
+/// 刻度密度由点数算（[`axis_tick_count`]）：`x_tick_count` / `band_tick_count` 是
+/// 「均匀标 N 个」的杠杆，不管的话几百个分类标签会自己糊成一排。
 pub(super) fn chart_element(
     kind: ChartKind,
-    points: Vec<(String, f64)>,
+    points: Vec<ChartPoint>,
     key: &str,
-    accent: Hsla,
+    style: &PlotStyle,
 ) -> Option<AnyElement> {
+    let accent = style.accent;
     let id = SharedString::from(format!("db-chart-{key}"));
+    let ticks = axis_tick_count(points.len());
     let element = match kind {
         ChartKind::Line => LineChart::new(points)
             .id(id)
-            .x(|(label, _)| label.clone())
-            .y(|(_, value)| *value)
+            .x(|point| point.label.clone())
+            .y(|point| point.value)
             .stroke(accent)
             .grid(true)
+            .x_tick_count(ticks)
             .y_tick_format(compact_number)
-            .tooltip_title(|(label, _)| SharedString::from(label.clone()))
+            .tooltip_title(|point| SharedString::from(point.label.clone()))
             .tooltip_value(|_, value| SharedString::from(compact_number(value)))
             .into_any_element(),
         ChartKind::Bar => BarChart::new(points)
             .id(id)
-            .band(|(label, _)| label.clone())
-            .value(|(_, value)| *value)
+            .band(|point| point.label.clone())
+            .value(|point| point.value)
             .fill(move |_, _, _, _| accent)
             .grid(true)
+            .band_tick_count(ticks)
             // 柱状图的「带」就是分类，值轴要自己画刻度（否则只有柱高没有刻度）。
             .value_axis(true)
             .value_tick_format(compact_number)
-            .tooltip_title(|(label, _)| SharedString::from(label.clone()))
+            .tooltip_title(|point| SharedString::from(point.label.clone()))
             .tooltip_value(|_, value| SharedString::from(compact_number(value)))
             .into_any_element(),
         ChartKind::Area => AreaChart::new(points)
             .id(id)
-            .x(|(label, _)| label.clone())
-            .y(|(_, value)| *value)
+            .x(|point| point.label.clone())
+            .y(|point| point.value)
             .stroke(accent)
             .fill(accent.opacity(0.22))
             .grid(true)
+            .x_tick_count(ticks)
             .y_tick_format(compact_number)
-            .tooltip_title(|(label, _)| SharedString::from(label.clone()))
+            .tooltip_title(|point| SharedString::from(point.label.clone()))
             .tooltip_value(|_, _, value| SharedString::from(compact_number(value)))
             .into_any_element(),
         ChartKind::Pie => {
             // 饼图画的是占比：非正值（负数 / 零）在饼上没有位置，先滤掉。
             let slices: Vec<(String, f64, usize)> = points
                 .into_iter()
-                .filter(|(_, value)| *value > 0.0)
+                .filter(|point| point.value > 0.0)
                 .enumerate()
-                .map(|(index, (label, value))| (label, value, index))
+                .map(|(index, point)| (point.label, point.value, index))
                 .collect();
             if slices.is_empty() {
                 return None;
@@ -379,6 +742,12 @@ pub(super) fn chart_element(
                 .tooltip_value(|_, _, value| SharedString::from(compact_number(f64::from(value))))
                 .into_any_element()
         }
+        // ── 下面两档是自绘的（`charts_plot`）──
+        ChartKind::Scatter => scatter_element(points, style),
+        // 单列走到这儿时「堆叠」没有可叠的对象，结果就是一根占满格的柱 —— 这正是对的，
+        // 所以不必另给一句说明。多列的堆叠由 `stacked_panel` 把几列一起送给
+        // `stacked_element`，那条路才真的在叠。
+        ChartKind::StackedBar => stacked_element(vec![(String::new(), points)], style),
     };
     Some(element)
 }
@@ -1635,10 +2004,27 @@ impl DatabasePage {
                 }
             },
         };
+        let series = config.effective_y();
         let mut column = v_flex().w_full().min_w_0().gap(tokens.spacing.xs);
-        for series in config.effective_y() {
-            column =
-                column.child(self.chart_panel(result, &config, series, DASHBOARD_CHART_HEIGHT, cx));
+        if config.kind == ChartKind::StackedBar {
+            // 仪表板的面板本来就窄，几列同框才读得出「这一柱由谁构成」。
+            column = column.child(self.stacked_panel(
+                result,
+                &config,
+                series,
+                DASHBOARD_CHART_HEIGHT,
+                cx,
+            ));
+        } else {
+            for name in series {
+                column = column.child(self.chart_panel(
+                    result,
+                    &config,
+                    name,
+                    DASHBOARD_CHART_HEIGHT,
+                    cx,
+                ));
+            }
         }
         column.into_any_element()
     }
@@ -2065,9 +2451,27 @@ impl DatabasePage {
                         }),
                     ),
             )
-            .child(series_row);
+            .child(series_row)
+            // 读数行：这份图**画的是哪一列、按什么排、一共多少行**。
+            //
+            // 此前这块区域一句事实都没有 —— 用户看不出横轴是按时间还是按分类排的，
+            // 也看不出图里是不是只有前几百行。轴类型尤其要说：时间 / 数值轴会**重排**
+            // 行序，不讲明白，「和我 SQL 里的顺序不一样」就会像 bug。
+            .child(meta_text(
+                SharedString::from(trf(
+                    cx,
+                    "共 {} 行 · 横轴「{}」（{}轴）· {} 个数值列",
+                    &[
+                        &result.rows.len().to_string(),
+                        &config.x,
+                        config.axis_kind(result).heading(cx),
+                        &numeric_columns.to_string(),
+                    ],
+                )),
+                cx,
+            ));
 
-        // ── 图：每列一张，两列一行 ──
+        // ── 图：堆叠柱**一张**（几条列同框），其余每列一张、两列一行 ──
         let series: Vec<String> = config.effective_y().to_vec();
         let mut body = v_flex().w_full().gap(tokens.spacing.md);
         if series.is_empty() {
@@ -2075,17 +2479,31 @@ impl DatabasePage {
                 tr(cx, "还没选数值列；勾一个上面列出的数值列就会出图。"),
                 cx,
             ));
-        }
-        for chunk in series.chunks(2) {
+        } else if config.kind == ChartKind::StackedBar {
+            // 堆叠柱只有一张：多列的意义是「叠进同一根柱」，拆成两列一行就不是堆叠了。
+            // 宽度与「两列一行」的一张等宽，纵向节奏与其余各档一致。
             let mut row = h_flex().w_full().items_start().gap(tokens.spacing.md);
-            for column in chunk {
-                row = row.child(self.chart_panel(result, &config, column, CHART_PANEL_HEIGHT, cx));
-            }
-            // 奇数张时补一个空位，免得最后一张被拉成整行宽（两张一行的节奏）。
-            if chunk.len() == 1 {
-                row = row.child(div().flex_1());
-            }
+            row = row.child(self.stacked_panel(result, &config, &series, CHART_PANEL_HEIGHT, cx));
+            row = row.child(div().flex_1());
             body = body.child(row);
+        } else {
+            for chunk in series.chunks(2) {
+                let mut row = h_flex().w_full().items_start().gap(tokens.spacing.md);
+                for column in chunk {
+                    row = row.child(self.chart_panel(
+                        result,
+                        &config,
+                        column,
+                        CHART_PANEL_HEIGHT,
+                        cx,
+                    ));
+                }
+                // 奇数张时补一个空位，免得最后一张被拉成整行宽（两张一行的节奏）。
+                if chunk.len() == 1 {
+                    row = row.child(div().flex_1());
+                }
+                body = body.child(row);
+            }
         }
 
         v_flex()
@@ -2114,33 +2532,34 @@ impl DatabasePage {
         height: f32,
         cx: &App,
     ) -> AnyElement {
-        let theme = active_theme(cx);
-        let tokens = theme.tokens();
-        let extended = theme.extended();
         let points = chart_series(result, &config.x, column);
-        let panel = v_flex()
-            .flex_1()
-            .min_w_0()
-            .gap(tokens.spacing.xs)
-            .p(tokens.spacing.sm)
-            .rounded(tokens.radius.md)
-            .bg(tokens.colors.surface)
-            .border(extended.stroke.thin)
-            .border_color(extended.colors.hairline)
-            .child(
-                div()
-                    .text_size(tokens.typography.xs.size)
-                    .text_color(tokens.colors.muted_foreground)
-                    .truncate()
-                    .child(SharedString::from(format!("{column} · {}", config.x))),
-            );
+        let total = points.len();
+        // 饼图画的是**汇总占比**，抽稀会让每一片都变大变小、百分比失真 —— 不抽。
+        // 其余五档画的是「随横轴怎么变」，抽掉中间的点不改变形状，只是把像素分不开的
+        // 那部分点合并掉。堆叠柱的抽稀在 `stacked_panel` 里逐列做。
+        let points = match config.kind {
+            ChartKind::Pie => points,
+            _ => decimate_lttb(points, CHART_MAX_POINTS),
+        };
+        let drawn = points.len();
+        // 标题里的「已抽稀 M/N 点」是**事实读数**，不是装饰：用户看到一条平滑的折线时
+        // 有权知道它由多少原始行化简而来，否则会把抽稀后的形状当成逐行真相。
+        let mut title = format!("{column} · {}", config.x);
+        if drawn < total {
+            title.push_str(" · ");
+            title.push_str(&trf(
+                cx,
+                "已抽稀 {}/{} 点",
+                &[&drawn.to_string(), &total.to_string()],
+            ));
+        }
+        let panel = chart_frame(title, cx);
         if points.is_empty() {
             return panel
                 .child(meta_text(tr(cx, "这一列没有可画的数值。"), cx))
                 .into_any_element();
         }
-        let Some(chart) = chart_element(config.kind, points, column, extended.colors.accent_text)
-        else {
+        let Some(chart) = chart_element(config.kind, points, column, &plot_style(cx)) else {
             return panel
                 .child(meta_text(tr(cx, "饼图只吃正值，这一列全是 0 或负数。"), cx))
                 .into_any_element();
@@ -2148,5 +2567,94 @@ impl DatabasePage {
         panel
             .child(div().w_full().h(px(height)).child(chart))
             .into_any_element()
+    }
+
+    /// **多列同框**的堆叠柱：一屏一张，几条数值列叠进同一根柱。
+    ///
+    /// 与 [`Self::chart_panel`]（一列一张的小倍数）分成两条路，是因为堆叠的语义就在
+    /// 「同一根柱由谁构成」：拆成一列一张，要读的东西就被拆没了。`columns` 传
+    /// [`ChartConfig::effective_y`]，所以「一根柱最多几段」仍由 [`ChartKind::series_limit`]
+    /// 把关，不是在另一处再写一遍上限。
+    pub(super) fn stacked_panel(
+        &self,
+        result: &ResultSet,
+        config: &ChartConfig,
+        columns: &[String],
+        height: f32,
+        cx: &App,
+    ) -> AnyElement {
+        let mut raw = 0_usize;
+        let series: Vec<(String, Vec<ChartPoint>)> = columns
+            .iter()
+            .map(|column| {
+                let points = chart_series(result, &config.x, column);
+                raw += points.len();
+                (column.clone(), decimate_lttb(points, CHART_MAX_POINTS))
+            })
+            .collect();
+        let drawn: usize = series.iter().map(|(_, points)| points.len()).sum();
+        // 标题要写清**哪几列叠在一起**：堆叠图离开这一句，每一段是谁就读不出来。
+        let mut title = format!("{} · {}", columns.join(" + "), config.x);
+        if drawn < raw {
+            title.push_str(" · ");
+            title.push_str(&trf(
+                cx,
+                "已抽稀 {}/{} 点",
+                &[&drawn.to_string(), &raw.to_string()],
+            ));
+        }
+        let panel = chart_frame(title, cx);
+        if series.iter().all(|(_, points)| points.is_empty()) {
+            return panel
+                .child(meta_text(tr(cx, "这几列都没有可画的数值。"), cx))
+                .into_any_element();
+        }
+        panel
+            .child(
+                div()
+                    .w_full()
+                    .h(px(height))
+                    .child(stacked_element(series, &plot_style(cx))),
+            )
+            .into_any_element()
+    }
+}
+
+/// 图的外壳：标题 + 边框底色。结果区与仪表板两条路的图都套这一层，所以只有这一份定义。
+fn chart_frame(title: String, cx: &App) -> gpui::Div {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    v_flex()
+        .flex_1()
+        .min_w_0()
+        .gap(tokens.spacing.xs)
+        .p(tokens.spacing.sm)
+        .rounded(tokens.radius.md)
+        .bg(tokens.colors.surface)
+        .border(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .child(
+            div()
+                .text_size(tokens.typography.xs.size)
+                .text_color(tokens.colors.muted_foreground)
+                .truncate()
+                .child(SharedString::from(title)),
+        )
+}
+
+/// 自绘图要的主题色与字号。
+///
+/// 集中在这一处取：`charts_plot` 的绘制闭包活在 `'static` 里、拿不到 `cx`，颜色字号只能
+/// 在渲染期带进去；两处各取一遍迟早走岔。
+fn plot_style(cx: &App) -> PlotStyle {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    PlotStyle {
+        accent: extended.colors.accent_text,
+        grid: extended.colors.hairline,
+        tick: tokens.colors.muted_foreground,
+        text_size: tokens.typography.xs.size,
     }
 }

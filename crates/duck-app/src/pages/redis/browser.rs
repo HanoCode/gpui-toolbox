@@ -34,15 +34,6 @@ fn query_mode_label(mode: QueryMode, cx: &App) -> &'static str {
     }
 }
 
-/// 查询模式的图标（`*` 子串 / `^` 前缀 / `=` 精确，与 zedis 的符号同义）。
-fn query_mode_icon(mode: QueryMode) -> DuckIcon {
-    match mode {
-        QueryMode::All => DuckIcon::Search,
-        QueryMode::Prefix => DuckIcon::CornerLeftUp,
-        QueryMode::Exact => DuckIcon::Check,
-    }
-}
-
 /// 过期时间过滤档的中文名。
 fn ttl_filter_label(filter: TtlFilter, cx: &App) -> &'static str {
     match filter {
@@ -385,150 +376,241 @@ impl RedisPage {
                 .into_any_element();
         }
 
-        // 类型过滤条：全部 + 六个可被服务端过滤的类型。
+        // ── 工具条（单行 40px，对齐 zedis 的键树工具条）──────────────────────
         //
-        // `cx` 在这里收成 `&App`：本函数上文已经借走了 `theme`（`active_theme` 返回
-        // 全局引用），闭包再要 `&mut Context` 就会与它撞车。只读闭包一律用 `&App`。
-        let type_chip = |key_type: Option<KeyType>, cx: &App| {
-            let selected = self.type_filter == key_type;
-            let label = match key_type {
-                None => tr(cx, "全部"),
-                Some(key_type) => key_type_label(key_type, cx),
-            };
-            let id_suffix = key_type
-                .map(|key_type| key_type.server_name().unwrap_or("all").to_owned())
-                .unwrap_or_else(|| "all".to_owned());
-            button(
-                SharedString::from(format!("redis-type-{id_suffix}")),
-                label,
-                if selected {
-                    ButtonVariant::Primary
-                } else {
-                    ButtonVariant::Secondary
-                },
-                cx,
-            )
-            .on_click({
-                let view = view.clone();
-                move |_, _window, cx| {
-                    let _ = view.update(cx, |this, cx| {
-                        this.type_filter = key_type;
-                        this.refresh_keys(cx);
-                    });
-                }
-            })
-        };
-
-        // 键列表形态切换：平铺（一行一键）↔ 命名空间树（按分隔符分组）。
-        let layout_chip = |tree: bool, cx: &App| {
-            button(
-                if tree {
-                    "redis-layout-tree"
-                } else {
-                    "redis-layout-flat"
-                },
-                if tree {
-                    tr(cx, "树形")
-                } else {
-                    tr(cx, "平铺")
-                },
-                if self.tree_mode == tree {
-                    ButtonVariant::Primary
-                } else {
-                    ButtonVariant::Secondary
-                },
-                cx,
-            )
-            .on_click({
-                let view = view.clone();
-                move |_, _window, cx| {
-                    let _ = view.update(cx, |this, cx| {
-                        if this.tree_mode != tree {
-                            this.toggle_tree_mode(cx);
-                        }
-                    });
-                }
-            })
-        };
-
-        // 顶栏三个档位。查询模式改的是**服务端 `MATCH` 串**（换档即重扫）；
-        // 过期时间与排序是**纯本地**的（只读已缓存的 `key_meta`，不发任何往返）。
-        let query_options: Vec<(QueryMode, SharedString)> = QueryMode::ALL
-            .iter()
-            .map(|mode| (*mode, SharedString::from(query_mode_label(*mode, cx))))
-            .collect();
-        let query_switcher = toolbar_switcher(
+        // 查询模式下拉收拢了全部过滤 / 排序档位（zedis 同款收纳）：查询模式
+        // 三档 + 分隔线 + 类型七档 + 标签 + TTL + 排序。菜单长一点，但工具条
+        // 只剩「搜索框 + 更多」，键列表的可见宽度最大化。
+        //
+        // 档位语义不变：查询模式与类型改**服务端** `SCAN` 参数（换档即重扫）；
+        // 标签 / TTL / 排序是**纯本地**的（只读已缓存的 `key_meta`）。
+        //
+        // ⚠️ 菜单闭包要求 `'static`：`view` 与档位都是 Copy / 可克隆的 owned 值；
+        // 文案在闭包内用参数 `cx` 现算（闭包是 `Fn`，重开菜单会重跑，不得有副作用）。
+        let current_mode = self.query_mode;
+        let current_type = self.type_filter;
+        let current_tag = self.tag_filter;
+        let current_ttl = self.ttl_filter;
+        let current_sort = self.sort;
+        let current_tree_mode = self.tree_mode;
+        let current_trash_len = self.active_trash_len();
+        let current_main_view = self.main_view;
+        let query_switcher = toolbar_dropdown_button(
             "redis-query-mode",
+            tr(cx, "查询模式与过滤"),
+            // 分类图标**固定不变**（zedis 的过滤入口同款语义）：档位信息由菜单里的
+            // 勾选态表达，按钮不再随档位换图标——五组过滤都收在这里，图标跳动反而吵。
+            Icon::new(DuckIcon::SlidersHorizontal).size(extended.icon.sm),
             // 工具条最左端：菜单向右展开。
             Anchor::BottomLeft,
-            &query_options,
-            self.query_mode,
-            Icon::new(query_mode_icon(self.query_mode)).size(extended.icon.sm),
             {
                 let view = view.clone();
-                move |mode, _window, cx| {
-                    let _ = view.update(cx, |this, cx| this.set_query_mode(mode, cx));
-                }
-            },
-            cx,
-        );
-        let ttl_options: Vec<(TtlFilter, SharedString)> = TtlFilter::ALL
-            .iter()
-            .map(|filter| (*filter, SharedString::from(ttl_filter_label(*filter, cx))))
-            .collect();
-        let ttl_switcher = toolbar_switcher(
-            "redis-ttl-filter",
-            // 类型行右端：菜单向左展开，否则会顶出窗口右缘。
-            Anchor::BottomRight,
-            &ttl_options,
-            self.ttl_filter,
-            Icon::new(DuckIcon::Clock).size(extended.icon.sm),
-            {
-                let view = view.clone();
-                move |filter, _window, cx| {
-                    let _ = view.update(cx, |this, cx| this.set_ttl_filter(filter, cx));
-                }
-            },
-            cx,
-        );
-        let sort_options: Vec<(KeySort, SharedString)> = KeySort::ALL
-            .iter()
-            .map(|sort| (*sort, SharedString::from(key_sort_label(*sort, cx))))
-            .collect();
-        let sort_switcher = toolbar_switcher(
-            "redis-sort",
-            // 工具条最右端：菜单向左展开。
-            Anchor::BottomRight,
-            &sort_options,
-            self.sort,
-            Icon::new(DuckIcon::ListOrdered).size(extended.icon.sm),
-            {
-                let view = view.clone();
-                move |sort, _window, cx| {
-                    let _ = view.update(cx, |this, cx| this.set_sort(sort, cx));
+                move |menu, window, cx| {
+                    // 每组一个**二级子菜单**（zedis render.rs 同款）：32 条平铺一列
+                    // 太长，滚都滚不到底；收进子菜单后顶级只有五行。
+                    let sub_view = view.clone();
+                    let menu = menu.submenu_with_icon(
+                        Some(Icon::new(DuckIcon::Search)),
+                        tr(cx, "查询模式"),
+                        window,
+                        cx,
+                        move |submenu, _window, _cx| {
+                            QueryMode::ALL.iter().fold(submenu, |submenu, mode| {
+                                let sub_view = sub_view.clone();
+                                let mode = *mode;
+                                submenu.item(
+                                    PopupMenuItem::new(SharedString::from(query_mode_label(
+                                        mode, _cx,
+                                    )))
+                                    .checked(mode == current_mode)
+                                    .on_click(
+                                        move |_, _window, cx| {
+                                            let _ = sub_view.update(cx, |this, cx| {
+                                                this.set_query_mode(mode, cx)
+                                            });
+                                        },
+                                    ),
+                                )
+                            })
+                        },
+                    );
+                    let sub_view = view.clone();
+                    let menu = menu.submenu_with_icon(
+                        Some(Icon::new(DuckIcon::Layers)),
+                        tr(cx, "类型过滤"),
+                        window,
+                        cx,
+                        move |submenu, _window, _cx| {
+                            let items =
+                                std::iter::once((None, SharedString::from(tr(_cx, "全部类型"))))
+                                    .chain(KeyType::SCANNABLE.iter().map(|key_type| {
+                                        (
+                                            Some(*key_type),
+                                            SharedString::from(key_type_label(*key_type, _cx)),
+                                        )
+                                    }));
+                            items.fold(submenu, |submenu, (key_type, label)| {
+                                let sub_view = sub_view.clone();
+                                let key_type = key_type;
+                                submenu.item(
+                                    PopupMenuItem::new(label)
+                                        .checked(key_type == current_type)
+                                        .on_click(move |_, _window, cx| {
+                                            let _ = sub_view.update(cx, |this, cx| {
+                                                this.type_filter = key_type;
+                                                this.refresh_keys(cx);
+                                            });
+                                        }),
+                                )
+                            })
+                        },
+                    );
+                    let sub_view = view.clone();
+                    let menu = menu.submenu_with_icon(
+                        Some(Icon::new(DuckIcon::Tag)),
+                        tr(cx, "标签"),
+                        window,
+                        cx,
+                        move |submenu, _window, _cx| {
+                            TagFilter::ALL.iter().fold(submenu, |submenu, filter| {
+                                let sub_view = sub_view.clone();
+                                let filter = *filter;
+                                submenu.item(
+                                    PopupMenuItem::new(SharedString::from(tag_filter_text(
+                                        filter, _cx,
+                                    )))
+                                    .checked(filter == current_tag)
+                                    .on_click(
+                                        move |_, _window, cx| {
+                                            let _ = sub_view.update(cx, |this, cx| {
+                                                this.set_tag_filter(filter, cx)
+                                            });
+                                        },
+                                    ),
+                                )
+                            })
+                        },
+                    );
+                    let sub_view = view.clone();
+                    let menu = menu.submenu_with_icon(
+                        Some(Icon::new(DuckIcon::Clock)),
+                        tr(cx, "过期时间"),
+                        window,
+                        cx,
+                        move |submenu, _window, _cx| {
+                            TtlFilter::ALL.iter().fold(submenu, |submenu, filter| {
+                                let sub_view = sub_view.clone();
+                                let filter = *filter;
+                                submenu.item(
+                                    PopupMenuItem::new(SharedString::from(ttl_filter_label(
+                                        filter, _cx,
+                                    )))
+                                    .checked(filter == current_ttl)
+                                    .on_click(
+                                        move |_, _window, cx| {
+                                            let _ = sub_view.update(cx, |this, cx| {
+                                                this.set_ttl_filter(filter, cx)
+                                            });
+                                        },
+                                    ),
+                                )
+                            })
+                        },
+                    );
+                    let sub_view = view.clone();
+                    menu.submenu_with_icon(
+                        Some(Icon::new(DuckIcon::ListOrdered)),
+                        tr(cx, "排序"),
+                        window,
+                        cx,
+                        move |submenu, _window, _cx| {
+                            KeySort::ALL.iter().fold(submenu, |submenu, sort| {
+                                let sub_view = sub_view.clone();
+                                let sort = *sort;
+                                submenu.item(
+                                    PopupMenuItem::new(SharedString::from(key_sort_label(
+                                        sort, _cx,
+                                    )))
+                                    .checked(sort == current_sort)
+                                    .on_click(
+                                        move |_, _window, cx| {
+                                            let _ = sub_view
+                                                .update(cx, |this, cx| this.set_sort(sort, cx));
+                                        },
+                                    ),
+                                )
+                            })
+                        },
+                    )
                 }
             },
             cx,
         );
 
-        // 标签档过滤：与过期时间 / 排序同一层（**纯本地**，零往返）。
-        // 放在类型过滤旁边（对齐 zedis：标签过滤与类型 / TTL 排在同一行），
-        // 因为它回答的是同一类问题——「这一列里我只想看哪一部分」。
-        let tag_options: Vec<(TagFilter, SharedString)> = TagFilter::ALL
-            .iter()
-            .map(|filter| (*filter, SharedString::from(tag_filter_text(*filter, cx))))
-            .collect();
-        let tag_switcher = toolbar_switcher(
-            "redis-tag-filter",
-            // 类型行右段：菜单向左展开。
+        // 「更多」下拉：对着整个键空间的动作与主视图切换（数据 / 服务端面板族）。
+        // zedis 把这类低频动作收进 `…`；平铺 / 树形也在这里切（当前形态打勾）。
+        let tree_toggle_label = if current_tree_mode {
+            SharedString::from(tr(cx, "平铺视图"))
+        } else {
+            SharedString::from(tr(cx, "树形视图"))
+        };
+        let trash_label = if current_trash_len == 0 {
+            SharedString::from(tr(cx, "回收站"))
+        } else {
+            SharedString::from(trf(cx, "回收站（{}）", &[&current_trash_len.to_string()]))
+        };
+        let rescan_label = SharedString::from(tr(cx, "重新扫描"));
+        let data_view_label = SharedString::from(tr(cx, "数据"));
+        let server_view_label = SharedString::from(tr(cx, "服务端"));
+        let more_menu = toolbar_dropdown_button(
+            "redis-more",
+            tr(cx, "更多操作"),
+            Icon::new(DuckIcon::Ellipsis).size(extended.icon.sm),
             Anchor::BottomRight,
-            &tag_options,
-            self.tag_filter,
-            Icon::new(DuckIcon::Tag).size(extended.icon.sm),
             {
                 let view = view.clone();
-                move |filter, _window, cx| {
-                    let _ = view.update(cx, |this, cx| this.set_tag_filter(filter, cx));
+                move |menu, _, _| {
+                    let view_flat = view.clone();
+                    let menu = menu.item(PopupMenuItem::new(tree_toggle_label.clone()).on_click(
+                        move |_, _window, cx| {
+                            let _ = view_flat.update(cx, |this, cx| this.toggle_tree_mode(cx));
+                        },
+                    ));
+                    let view_trash = view.clone();
+                    let menu = menu.item(PopupMenuItem::new(trash_label.clone()).on_click(
+                        move |_, window, cx| {
+                            let _ = view_trash
+                                .update(cx, |this, cx| this.open_trash_dialog(window, cx));
+                        },
+                    ));
+                    let view_refresh = view.clone();
+                    let menu = menu
+                        .item(PopupMenuItem::new(rescan_label.clone()).on_click(
+                            move |_, _window, cx| {
+                                let _ = view_refresh.update(cx, |this, cx| this.refresh_keys(cx));
+                            },
+                        ))
+                        .separator();
+                    let view_data = view.clone();
+                    let menu = menu.item(
+                        PopupMenuItem::new(data_view_label.clone())
+                            .checked(current_main_view == MainView::Data)
+                            .on_click(move |_, window, cx| {
+                                let _ = view_data.update(cx, |this, cx| {
+                                    this.set_main_view(MainView::Data, window, cx)
+                                });
+                            }),
+                    );
+                    let view_server = view.clone();
+                    menu.item(
+                        PopupMenuItem::new(server_view_label.clone())
+                            .checked(current_main_view == MainView::Server)
+                            .on_click(move |_, window, cx| {
+                                let _ = view_server.update(cx, |this, cx| {
+                                    this.set_main_view(MainView::Server, window, cx)
+                                });
+                            }),
+                    )
                 }
             },
             cx,
@@ -537,102 +619,51 @@ impl RedisPage {
         let toolbar = h_flex()
             .flex_none()
             .w_full()
+            .h(px(VALUE_BAR_HEIGHT))
             .items_center()
-            .gap(tokens.spacing.sm)
+            .gap(tokens.spacing.xs)
             .px(tokens.spacing.sm)
-            .py(tokens.spacing.xs)
             .border_b(extended.stroke.thin)
             .border_color(extended.colors.hairline)
-            .child(query_switcher)
+            // 搜索框：查询模式下拉做**前缀**（zedis 同款），过滤按钮做后缀。
             .child(
-                div()
+                h_flex()
                     .flex_1()
                     .min_w_0()
                     .h(theme.density().control)
-                    .px(tokens.spacing.sm)
                     .rounded(theme.components().input_radius)
                     .border(extended.stroke.thin)
                     .border_color(extended.colors.hairline)
                     .bg(tokens.colors.background)
+                    .overflow_hidden()
+                    .child(query_switcher)
                     .child(
-                        Input::new(&self.pattern)
-                            .appearance(false)
-                            .bordered(false)
-                            .w_full(),
+                        div().flex_1().min_w_0().h_full().child(
+                            Input::new(&self.pattern)
+                                .appearance(false)
+                                .bordered(false)
+                                .w_full(),
+                        ),
+                    )
+                    .child(
+                        icon_button(
+                            "redis-filter-run",
+                            tr(cx, "按关键词过滤"),
+                            Icon::new(DuckIcon::Search)
+                                .size(extended.icon.sm)
+                                .text_color(tokens.colors.muted_foreground),
+                            ButtonVariant::Ghost,
+                            cx,
+                        )
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _window, cx| {
+                                let _ = view.update(cx, |this, cx| this.refresh_keys(cx));
+                            }
+                        }),
                     ),
             )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .gap(tokens.spacing.xxs)
-                    .child(layout_chip(false, cx))
-                    .child(layout_chip(true, cx)),
-            )
-            .child(
-                // 回收站入口：和「重新扫描」并列（都是对着整个键空间的动作）。
-                // 有条目时把条数缀进标题——否则用户无从知道里面攒没攒东西。
-                toolbar_action_button(
-                    "redis-trash",
-                    if self.active_trash_len() == 0 {
-                        SharedString::from(tr(cx, "回收站"))
-                    } else {
-                        SharedString::from(trf(
-                            cx,
-                            "回收站（{}）",
-                            &[&self.active_trash_len().to_string()],
-                        ))
-                    },
-                    Icon::new(DuckIcon::Trash2).size(extended.icon.md),
-                    false,
-                    self.busy || self.active.is_none(),
-                    cx,
-                )
-                .on_click({
-                    let view = view.clone();
-                    move |_, window, cx| {
-                        let _ = view.update(cx, |this, cx| this.open_trash_dialog(window, cx));
-                    }
-                }),
-            )
-            .child(
-                toolbar_action_button(
-                    "redis-refresh",
-                    tr(cx, "重新扫描"),
-                    // `toolbar_action_button` 的方形内边距按 `icon.md` 算（见其文档与
-                    // `toolbar_dropdown_button` 同款公式），传别的档位会让按钮不再是正方形、
-                    // 图标也比相邻 chrome 按钮小一档 —— 这里是普通工具栏动作，走 md。
-                    Icon::new(DuckIcon::RotateCw).size(extended.icon.md),
-                    false,
-                    self.busy,
-                    cx,
-                )
-                .on_click({
-                    let view = view.clone();
-                    move |_, _window, cx| {
-                        let _ = view.update(cx, |this, cx| this.refresh_keys(cx));
-                    }
-                }),
-            );
-
-        let mut type_row = h_flex()
-            .flex_none()
-            .w_full()
-            .flex_wrap()
-            .items_center()
-            .gap(tokens.spacing.xxs)
-            .px(tokens.spacing.sm)
-            .pt(tokens.spacing.xs);
-        type_row = type_row.child(type_chip(None, cx));
-        for key_type in KeyType::SCANNABLE {
-            type_row = type_row.child(type_chip(Some(key_type), cx));
-        }
-        // 本地两档靠右：与左边的**类型**过滤在语义上不同（类型会让服务端重扫，
-        // 这两个只在已加载的键上筛），拉开一点距离免得看起来是同一组。
-        type_row = type_row
-            .child(div().flex_1().min_w_0())
-            .child(tag_switcher)
-            .child(ttl_switcher)
-            .child(sort_switcher);
+            .child(more_menu);
 
         // 键列表（虚拟滚动）。
         //
@@ -709,6 +740,11 @@ impl RedisPage {
             // 行闭包要 `'static`：借自 `cx` 的 `extended` 不能带进去，
             // 这里先把它压成三个 `Copy` 的色值（见 `TtlChipPalette`）。
             let ttl_palette = TtlChipPalette::of(extended);
+            // 斑马纹（zedis `stripe_bg`）：用全站同一枚 `row_alt` token
+            // （db 页结果表同款），键树与表格的纹理密度一致。
+            let stripe = extended.colors.row_alt;
+            // 虚线缩进辅助线（zedis 同款）：每个祖先层一条，落在该层折叠三角的中心。
+            let guide_color = row_meta.opacity(0.4);
             uniform_list("redis-key-tree", rows.len(), move |range, _window, _cx| {
                 range
                     .filter_map(|index| {
@@ -772,8 +808,11 @@ impl RedisPage {
                             .map(|color| tag_color(color, dark))
                             .unwrap_or_else(|| row_fg.opacity(0.));
 
-                        // 左列：文件夹行是文件夹图标（开 / 合两态），
-                        // 键行留出与徽标列同宽的空白槽（对齐用，不画文件图标）。
+                        // 左列：只有**文件夹行**画文件夹图标（开 / 合两态）。
+                        // 键行**不留空槽**（2026-10-15 用户反馈「图标与文字间隔太宽」）：
+                        // 原先键行空占一个图标宽，文字离行首多出 20px；zedis 的叶子行
+                        // 也是徽标直接顶到前导位（delegate.rs 的 ml(8.) + 36px 列），
+                        // 没有第二层空槽。类型徽标列仍是固定宽，键名列照旧垂直对齐。
                         let lead = if is_folder {
                             Icon::new(if row.expanded {
                                 DuckIcon::FolderOpen
@@ -788,13 +827,16 @@ impl RedisPage {
                             })
                             .into_any_element()
                         } else {
-                            div().flex_none().w(row_icon).into_any_element()
+                            div().into_any_element()
                         };
 
                         // 类型徽标：固定宽列 + 去饱和类型色（zedis 的 plain 形态，
                         // 不是填充胶囊——键树里重复上千次，填充会变成噪音色带）。
-                        let badge = match row.key_type {
-                            Some(key_type) => div()
+                        // ⚠️ 只有**键行**有徽标；文件夹行**不占位**——原先空占一个
+                        // 36px 槽，图标和键名之间隔着 44px 空白（用户反馈「间距太大」）。
+                        // 键行之间的文字列对齐不受影响（徽标列宽对所有键行一致）。
+                        let badge = row.key_type.map(|key_type| {
+                            div()
                                 .flex_none()
                                 .w(badge_col)
                                 .child(
@@ -805,9 +847,8 @@ impl RedisPage {
                                         .text_color(key_type_color(key_type, dark))
                                         .child(SharedString::from(key_type.badge_code())),
                                 )
-                                .into_any_element(),
-                            None => div().flex_none().w(badge_col).into_any_element(),
-                        };
+                                .into_any_element()
+                        });
 
                         // 右列：**文件夹 → 键数；键 → TTL 芯片**。
                         //
@@ -885,14 +926,32 @@ impl RedisPage {
                                 .into_any_element()
                         };
 
+                        // 虚线缩进辅助线：每个祖先层一条，绝对定位在该层三角中心。
+                        // 有多少层画多少条（第 0 层是内容自己，不画线）。
+                        let guides: Vec<gpui::AnyElement> = (0..row.depth)
+                            .map(|level| {
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom(px(0.))
+                                    .left(row_gap * (level as f32 * 2.) + row_gap * 0.75)
+                                    .border_l(px(1.))
+                                    .border_dashed()
+                                    .border_color(guide_color)
+                                    .into_any_element()
+                            })
+                            .collect();
                         Some(
                             h_flex()
                                 .id(SharedString::from(format!("redis-tree-{index}")))
                                 .h(px(KEY_ROW_HEIGHT))
                                 .w_full()
                                 .flex_none()
+                                .relative()
                                 .items_center()
                                 .gap(row_gap)
+                                // 斑马纹：奇数行垫 3% 前景色（悬停 / 选中底色盖在其上）。
+                                .when(index % 2 == 1, |row| row.bg(stripe))
                                 // 左缘标签色条（对齐 zedis：标签是行左边那条竖色，
                                 // 不是键名旁边的圆点）。未标色的行**也占这个宽度**，
                                 // 用全透明——否则同一列键名会随有没有标签左右抖。
@@ -936,9 +995,10 @@ impl RedisPage {
                                         });
                                     }
                                 })
+                                .children(guides)
                                 .child(marker)
                                 .child(lead)
-                                .child(badge)
+                                .children(badge)
                                 .child(
                                     div()
                                         .flex_1()
@@ -1082,10 +1142,11 @@ impl RedisPage {
             div().into_any_element()
         };
 
-        // ── 主区两栏：左边键列表（+「继续加载」），右边值编辑器 ──────────────
+        // ── 主区两栏：左边键列表（工具条只盖住这一栏），右边值编辑器 ──────────
         //
-        // 对齐 zedis：值不是「另一个面板里的只读展示」，而是和键空间并排的
-        // **编辑区**。两栏之间可拖（`h_resizable`），宽度由 `value_pane`
+        // 对齐 zedis：**工具条属于键列表栏**（顶部 40px），值编辑器有自己的
+        // 键头部（同为 40px，两条线对齐）——不是「一条工具条横贯主区」。
+        // 两栏之间可拖（`h_resizable`），宽度由 `value_pane`
         // 这个实体自己记着，页面不另存一份。
         //
         // ⚠️ `uniform_list` 必须**直接挂在 flex 容器（`v_flex`）下**：包一层普通
@@ -1097,12 +1158,22 @@ impl RedisPage {
             .size_full()
             .min_w_0()
             .min_h_0()
+            .child(toolbar)
             .child(list)
             .child(footer);
 
         let split = h_resizable("redis-main-split")
             .with_state(&self.value_pane)
-            .child(resizable_panel().child(left))
+            .child(
+                resizable_panel()
+                    // 键列表**默认收在最窄档**（2026-10-15 用户反馈「太宽」）：zedis
+                    // 的键树也是 min=330 / max=800、初始值取 min（constants.rs 的
+                    // `KEY_TREE_MIN_WIDTH` / `KEY_TREE_MAX_WIDTH`）。`.size()` 只是
+                    // 创建时的初始宽度，拖动之后由 `value_pane` 记着。
+                    .size(px(KEY_LIST_MIN_WIDTH))
+                    .size_range(px(KEY_LIST_MIN_WIDTH)..px(KEY_LIST_MAX_WIDTH))
+                    .child(left),
+            )
             .child(
                 resizable_panel()
                     // ⚠️ `.size()` 只是**创建时的初始宽度**；拖动之后的宽度由
@@ -1118,9 +1189,6 @@ impl RedisPage {
             .size_full()
             .min_w_0()
             .min_h_0()
-            .child(self.render_view_switch(cx))
-            .child(toolbar)
-            .child(type_row)
             // ⚠️ 分栏组**没有** `flex_1`（它只实现 `RenderOnce` + `size`，而
             // `size` 按文档是「cross axis」，横向组上就是高度、不是弹性分配），
             // 所以套一层 `flex_1` 的壳把余量给它。组自己已经是 `size_full`，

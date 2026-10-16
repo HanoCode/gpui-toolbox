@@ -1,5 +1,38 @@
 use super::*;
 
+/// 危险语句闸门放行的**真正执行动作**（全文排队执行 / 单条执行）。
+///
+/// 用 `Rc<dyn Fn>` 而不是泛型 `FnOnce`：弹层构建闭包是 `Fn`（每一轮重排都重跑），
+/// 里面还要再克隆一份交给按钮回调，所有权拿不出来。抽成别名也让签名与局部变量
+/// 不必各写一遍那个复杂类型。
+///
+/// `pub(super)`：与 [`DatabasePage::guard_dangerous`] 同档可见（构建器也要过这道闸门），
+/// 别名比方法本身更私的话 `private_interfaces` 会报出来。
+pub(super) type GuardAction =
+    Rc<dyn Fn(&mut DatabasePage, &mut Window, &mut Context<DatabasePage>)>;
+
+/// 导出内容：文本档与原始字节档分开持有。
+///
+/// 为什么不做成「统一的 `Vec<u8>`」：文本档要的是 `write(&path, text)`（`String`
+/// 直接 `AsRef<[u8]>`），字节档才是裸写 —— 统一成字节就得给文本再整块拷一份
+///（大结果集几百 MB，这一份拷贝纯属多余）。两档共用一个「`FnOnce() -> Result`」
+/// 的作业签名，就只能靠一个枚举把它们装进同一个闭包。
+enum ExportPayload {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl ExportPayload {
+    /// 落盘。错误转成文案（`spawn_db` 的作业签名要求 `Result<_, String>`）。
+    fn write(self, path: &std::path::Path) -> Result<(), String> {
+        let written = match self {
+            ExportPayload::Text(text) => std::fs::write(path, text),
+            ExportPayload::Bytes(bytes) => std::fs::write(path, bytes),
+        };
+        written.map_err(|err| err.to_string())
+    }
+}
+
 impl DatabasePage {
     /// 生效的查询超时：**单次覆盖 → 连接默认 → 全局 [`QUERY_TIMEOUT`]** 三级回落。
     pub(super) fn effective_timeout(&self) -> Duration {
@@ -256,6 +289,11 @@ impl DatabasePage {
             return;
         };
         tracing::info!(session = %running.session_id, "db query cancel requested");
+        // 「执行 SQL 文件」比单条语句多一轴：那一枪只打断**手上这条**语句，谓词才决定
+        // **后面的还跑不跑**。两个都置才是完整的「停止」（见 [`SqlFileJob::stop`]）。
+        if let Some(job) = self.sql_file.as_ref() {
+            job.stop.store(true, AtomicOrdering::Relaxed);
+        }
         if let Err(error) = running.cancel.cancel() {
             self.status = trf(cx, "停止失败：{}", &[&error.to_string()]).into();
             cx.notify();
@@ -297,22 +335,130 @@ impl DatabasePage {
         }
     }
 
-    /// 把编辑器里的 SQL 存成一条已保存查询（打开命名弹窗）。
+    /// 把编辑器里的 SQL 存进「SQL 库」（对应 dbx 的「保存到 SQL 库」弹窗）。
+    ///
+    /// 与 dbx 对齐的三件事：
+    /// * **文件名默认 `<表名>.sql`**（有选中表时）—— dbx 用的是标签标题，而标签标题
+    ///   就是对象名；没有选中表时退回「首行前若干字符 + `.sql`」（与保存图表同口径：
+    ///   给一个能改的占位，而不是「未命名」这种等于没给的东西）。
+    /// * **文件夹默认留空 = 根「SQL 库」**（dbx `rootFolder` 同款）。
+    /// * **填一个没出现过的名字就是新建文件夹** —— dbx 那颗「新建文件夹」按钮的等价
+    ///   动作，这里做成同一个输入框 + 一排「已有」快选：少一层「弹层里再弹一层」。
     pub(super) fn open_save_query_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sql = self.sql.read(cx).value().trim().to_owned();
         if sql.is_empty() {
             notify::info(tr(cx, "编辑器里还没有 SQL。"), window, cx);
             return;
         }
-        // 默认名按内容给一个能改的占位（不是「未命名」这种空话）：取首行前若干字符。
-        let suggestion: String = sql
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .take(24)
-            .collect();
-        self.open_query_name_dialog(None, suggestion, sql, window, cx);
+        let default_name = default_sql_file_name(self.selected_table.as_ref(), &sql);
+        let name_input = text_input_with(window, cx, tr(cx, "文件名"), &default_name);
+        // 文件夹留空 = 根。**不预填「SQL 库」三个字**：那是根文件夹的显示名，
+        // 预填成值之后用户自建一个同名文件夹就会和根撞在一起（编码里分不开）。
+        let folder_input = text_input_with(window, cx, tr(cx, "SQL 库"), "");
+        let known_folders = saved_query_folders(&self.saved_queries);
+        let drag = modal_drag(cx);
+        let view = self.view.clone();
+        let name_handle = name_input.clone();
+        let confirm: ConfirmHandler = {
+            let name_input = name_input.clone();
+            let folder_input = folder_input.clone();
+            let view = view.clone();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                let raw = name_input.read(cx).value().trim().to_owned();
+                if raw.is_empty() {
+                    notify::warning(tr(cx, "请填写文件名。"), window, cx);
+                    return false;
+                }
+                // 后缀在这一层补，而不是塞进默认值里：用户手打 `orders` 也该落成
+                // `orders.sql`（dbx 的 `defaultSavedSqlName` 同口径）。
+                let file = ensure_sql_extension(&raw);
+                let folder = folder_input.read(cx).value().trim().to_owned();
+                let folder = (!folder.is_empty()).then_some(folder);
+                let sql = sql.clone();
+                let _ = view.update(cx, |this, cx| {
+                    let id = SavedQuery::next_id(&this.saved_queries);
+                    let target = folder.clone();
+                    this.saved_queries.push(SavedQuery {
+                        id,
+                        name: file.clone(),
+                        folder,
+                        sql,
+                    });
+                    this.persist_saved_queries(cx);
+                    this.status = match target {
+                        Some(folder) => trf(cx, "已保存到 SQL 库「{} › {}」。", &[&folder, &file]),
+                        None => trf(cx, "已保存到 SQL 库「{}」。", &[&file]),
+                    }
+                    .into();
+                    cx.notify();
+                });
+                true
+            })
+        };
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let offset = modal_offset(&drag, cx);
+            let drag_for_content = drag.clone();
+            let confirm = Rc::clone(&confirm);
+            let name_for_content = name_input.clone();
+            let folder_for_content = folder_input.clone();
+            let folders_for_content = known_folders.clone();
+            dialog
+                .w(px(SAVE_SQL_DIALOG_WIDTH))
+                .ml(offset.x)
+                .margin_top(dialog_top_offset(cx) + offset.y)
+                .opacity(offset.opacity)
+                .close_button(false)
+                .content(move |content, _, cx| {
+                    let theme = active_theme(cx);
+                    let tokens = theme.tokens();
+                    let mut body = v_flex()
+                        .w_full()
+                        .gap(form_gap(cx))
+                        .child(modal_title_row(
+                            "db-save-sql-title",
+                            &drag_for_content,
+                            tr(cx, "保存到 SQL 库"),
+                            cx,
+                        ))
+                        .child(field_row(cx, tr(cx, "文件名"), &name_for_content));
+                    let mut folder_block = v_flex()
+                        .w_full()
+                        .gap(tokens.spacing.xxs)
+                        .child(field_row(cx, tr(cx, "文件夹"), &folder_for_content));
+                    // 「已有」快选只在真有过文件夹时才画：一条挂着「已有」却空着的
+                    // 标签行，比没有这行更让人怀疑控件坏了。
+                    if !folders_for_content.is_empty() {
+                        let mut chips = h_flex()
+                            .w_full()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(tokens.spacing.xxs)
+                            .child(meta_text(tr(cx, "已有"), cx));
+                        for folder in &folders_for_content {
+                            chips = chips.child(folder_chip(folder, &folder_for_content, cx));
+                        }
+                        folder_block = folder_block.child(chips);
+                    }
+                    folder_block = folder_block.child(field_hint(
+                        tr(
+                            cx,
+                            "留空即存入根文件夹「SQL 库」；填一个没出现过的名字会自动新建文件夹。",
+                        ),
+                        cx,
+                    ));
+                    body = body.child(folder_block);
+                    content.child(modal_drag_area(&drag_for_content, body))
+                })
+                // 不带分号：闭包必须返回 `Dialog`。
+                .footer(dialog_footer(
+                    "db-save-sql",
+                    tr(cx, "保存"),
+                    ButtonVariant::Primary,
+                    confirm,
+                    cx,
+                ))
+        });
+        name_handle.update(cx, |input, cx| input.focus(window, cx));
     }
 
     /// 给一条已保存查询改名（左栏右键「重命名」）。
@@ -330,7 +476,7 @@ impl DatabasePage {
         self.open_query_name_dialog(Some(id.to_owned()), current.to_owned(), sql, window, cx);
     }
 
-    /// 「命名查询」弹窗（新建与重命名共用；`target` 为 `None` 即新建）。
+    /// 「重命名」弹窗：只改名，不动正文，也不动它所在的文件夹。
     pub(super) fn open_query_name_dialog(
         &mut self,
         target: Option<String>,
@@ -339,7 +485,7 @@ impl DatabasePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = text_input(window, cx, tr(cx, "查询名称"));
+        let input = text_input(window, cx, tr(cx, "文件名"));
         // 重命名时把原名填进去：清空重打一遍没有道理，改一个字符才是常态。
         if !initial.is_empty() {
             let seed = initial.clone();
@@ -352,17 +498,18 @@ impl DatabasePage {
             let input = input.clone();
             let view = view.clone();
             Rc::new(move |window: &mut Window, cx: &mut App| {
-                let name = input.read(cx).value().trim().to_owned();
-                if name.is_empty() {
-                    notify::warning(tr(cx, "请填写查询名称。"), window, cx);
+                let raw = input.read(cx).value().trim().to_owned();
+                if raw.is_empty() {
+                    notify::warning(tr(cx, "请填写文件名。"), window, cx);
                     return false;
                 }
+                let name = ensure_sql_extension(&raw);
                 let sql = sql.clone();
                 let target = target.clone();
                 let _ = view.update(cx, |this, cx| {
                     match target {
                         // 改名：只动名字，SQL 正文保持原样（用户可能已经改过编辑器里的内容，
-                        // 「重命名」的语义不该顺手覆盖正文）。
+                        // 「重命名」的语义不该顺手覆盖正文），文件夹也不动。
                         Some(id) => {
                             if let Some(saved) =
                                 this.saved_queries.iter_mut().find(|saved| saved.id == id)
@@ -372,7 +519,12 @@ impl DatabasePage {
                         }
                         None => {
                             let id = SavedQuery::next_id(&this.saved_queries);
-                            this.saved_queries.push(SavedQuery { id, name, sql });
+                            this.saved_queries.push(SavedQuery {
+                                id,
+                                name,
+                                folder: None,
+                                sql,
+                            });
                         }
                     }
                     this.persist_saved_queries(cx);
@@ -402,10 +554,10 @@ impl DatabasePage {
                             .child(modal_title_row(
                                 "db-saved-query-title",
                                 &drag_for_content,
-                                tr(cx, "保存查询"),
+                                tr(cx, "重命名"),
                                 cx,
                             ))
-                            .child(field_row(cx, tr(cx, "名称"), &input_for_content)),
+                            .child(field_row(cx, tr(cx, "文件名"), &input_for_content)),
                     ))
                 })
                 // 不带分号：闭包必须返回 `Dialog`。
@@ -449,6 +601,9 @@ impl DatabasePage {
     }
 
     /// 删除一条已保存查询（带二次确认：删了取不回来）。
+    ///
+    /// 确认走**主题弹窗**（[`open_confirm`]）而不是 `duck_platform::confirm` 的系统
+    /// 模态：真正的删除搬进回调 —— 弹窗是异步的，函数在用户点下「删除」之前就返回了。
     pub(super) fn delete_saved_query(
         &mut self,
         id: &str,
@@ -456,18 +611,24 @@ impl DatabasePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let confirmed = duck_platform::confirm(
+        let view = self.view.clone();
+        let id = id.to_owned();
+        open_confirm(
             tr(cx, "删除已保存查询"),
-            &trf(cx, "「{}」将被删除，确定继续吗？", &[name]),
+            trf(cx, "「{}」将被删除，确定继续吗？", &[name]),
+            tr(cx, "删除"),
+            Rc::new(move |window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.saved_queries.retain(|saved| saved.id != id);
+                    this.persist_saved_queries(cx);
+                    this.status = tr(cx, "已删除。").into();
+                    notify::success(tr(cx, "已删除该查询。"), window, cx);
+                    cx.notify();
+                });
+            }),
+            window,
+            cx,
         );
-        if !confirmed {
-            return;
-        }
-        self.saved_queries.retain(|saved| saved.id != id);
-        self.persist_saved_queries(cx);
-        self.status = tr(cx, "已删除。").into();
-        notify::success(tr(cx, "已删除该查询。"), window, cx);
-        cx.notify();
     }
 
     /// 把当前编辑区（编辑器文本 + 结果区）整体取出，交给调用方存进标签快照。
@@ -477,7 +638,7 @@ impl DatabasePage {
     pub(super) fn take_editor_state(&mut self, cx: &App) -> SessionEditorState {
         let text = self.sql.read(cx).value().to_string();
         let view = SessionView {
-            mode: self.mode,
+            mode: self.mode.clone(),
             instance_data: std::mem::take(&mut self.instance_data),
             focused_metric: self.focused_metric.take(),
             selected_table: self.selected_table.take(),
@@ -493,6 +654,10 @@ impl DatabasePage {
             table_foreign_keys: std::mem::take(&mut self.table_foreign_keys),
             table_triggers: std::mem::take(&mut self.table_triggers),
             table_meta_for: self.table_meta_for.take(),
+            structure: self.structure.take(),
+            er: self.er.take(),
+            compare: self.compare.take(),
+            transfer: self.transfer.take(),
             query_result: self.query_result.take(),
             query_target: self.query_target.take(),
             query_pk: std::mem::take(&mut self.query_pk),
@@ -501,6 +666,7 @@ impl DatabasePage {
             query_loaded: self.query_loaded,
             query_has_more: self.query_has_more,
             query_page: self.query_page,
+            query_sort: self.query_sort.take(),
             result_tabs: std::mem::take(&mut self.result_tabs),
             active_result_tab: self.active_result_tab,
             plan_view: self.plan_view.take(),
@@ -547,6 +713,10 @@ impl DatabasePage {
         self.table_foreign_keys = std::mem::take(&mut view.table_foreign_keys);
         self.table_triggers = std::mem::take(&mut view.table_triggers);
         self.table_meta_for = view.table_meta_for.take();
+        self.structure = view.structure.take();
+        self.er = view.er.take();
+        self.compare = view.compare.take();
+        self.transfer = view.transfer.take();
         self.query_result = view.query_result.take();
         self.query_target = view.query_target.take();
         self.query_pk = std::mem::take(&mut view.query_pk);
@@ -555,6 +725,7 @@ impl DatabasePage {
         self.query_loaded = view.query_loaded;
         self.query_has_more = view.query_has_more;
         self.query_page = view.query_page;
+        self.query_sort = view.query_sort.take();
         self.result_tabs = std::mem::take(&mut view.result_tabs);
         self.active_result_tab = view.active_result_tab;
         self.stmt_queue.clear();
@@ -574,9 +745,9 @@ impl DatabasePage {
         self.result_view = view.result_view;
         self.result_area_tab = view.result_area_tab;
         self.exec_log = std::mem::take(&mut view.exec_log);
-        // 跳页框是一次性输入：换标签不留旧页码。
-        self.page_jump
-            .update(cx, |state, cx| state.set_value("", window, cx));
+        // 页码框**不再在这里清**：它是受控显示（页码是状态），换标签后由
+        // 渲染入口的 `sync_page_jump` 按新标签的页码回写 —— 清成空再等下一帧
+        // 填回来，中间那一眼会看见一个空框。
         self.hidden_columns = std::mem::take(&mut view.hidden_columns);
         // 结果区整体换了一份：把新结果推给数据表组件（表模型 / 行序 / 藏列一次推齐）。
         self.sync_data_table(cx);
@@ -641,10 +812,15 @@ impl DatabasePage {
     /// 「只是选了一段」不是跳过确认的理由。
     pub(super) fn run_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(selected) = self.editor_selection(cx) {
-            if !self.confirm_dangerous(&selected, cx) {
-                return;
-            }
-            self.execute_sql(selected, None, window, cx);
+            let sql = selected.clone();
+            self.guard_dangerous(
+                &selected,
+                Rc::new(move |this, window, cx| {
+                    this.execute_sql(sql.clone(), None, window, cx);
+                }),
+                window,
+                cx,
+            );
             return;
         }
         let sql = self.sql.read(cx).value().trim().to_owned();
@@ -652,49 +828,67 @@ impl DatabasePage {
             notify::info(tr(cx, "请先输入 SQL。"), window, cx);
             return;
         }
-        // 危险语句（删库 / 全表清改）先确认；普通写语句由用户直接执行。
-        let risk = risk_of_statements(&split_statements(&sql));
-        if risk == SqlRisk::Dangerous
-            && !duck_platform::confirm(
-                tr(cx, "执行危险 SQL"),
-                tr(cx, "这段 SQL 包含删库 / 全表清改类语句，确定继续吗？"),
-            )
-        {
-            return;
-        }
-        // 全文执行是一批新开始：语句槽的状态标记整体作废（单条执行由
-        // `execute_sql` 自己点亮 Running → Ok / Failed）。
-        self.stmt_states.clear();
         // **一条语句一个结果标签**（dbx 同款）：逐条排队执行，每条回来各占一个
         // 标签。切分与语句槽（gutter ▶）同源（`split_statement_spans`，空语句已滤），
         // 下标严格对齐 —— 排队序号就是语句槽序号。
         //
-        // 危险确认在**批次级**做一次（上面），排队路径直呼 `execute_sql`，
-        // 不会逐条重复弹窗。
-        let statements: Vec<(usize, String)> = split_statement_spans(&sql)
-            .into_iter()
-            .enumerate()
-            .map(|(index, span)| (index, span.text))
-            .collect();
-        self.result_tabs.clear();
-        self.active_result_tab = 0;
-        let mut queue: VecDeque<(usize, String)> = statements.into_iter().collect();
-        if let Some((index, first)) = queue.pop_front() {
-            self.stmt_queue = queue;
-            self.execute_sql(first, Some(index), window, cx);
-        } else {
-            self.stmt_queue.clear();
-        }
+        // 危险确认在**批次级**做一次（`guard_dangerous` 里），排队路径直呼
+        // `execute_sql`，不会逐条重复弹窗。清单先切好装进 `Rc`：确认框的
+        // 回调是 `Fn`（可能反复重跑），不能把 `Vec` 移进去只消费一次。
+        let statements: Rc<Vec<(usize, String)>> = Rc::new(
+            split_statement_spans(&sql)
+                .into_iter()
+                .enumerate()
+                .map(|(index, span)| (index, span.text))
+                .collect(),
+        );
+        let run: GuardAction = Rc::new(move |this, window, cx| {
+            // 全文执行是一批新开始：语句槽的状态标记整体作废（单条执行由
+            // `execute_sql` 自己点亮 Running → Ok / Failed）。
+            this.stmt_states.clear();
+            this.result_tabs.clear();
+            this.active_result_tab = 0;
+            let mut queue: VecDeque<(usize, String)> = statements.iter().cloned().collect();
+            if let Some((index, first)) = queue.pop_front() {
+                this.stmt_queue = queue;
+                this.execute_sql(first, Some(index), window, cx);
+            } else {
+                this.stmt_queue.clear();
+            }
+        });
+        self.guard_dangerous(&sql, run, window, cx);
     }
 
-    /// 危险语句闸门（删库 / 全表清改类先弹系统确认）；`false` = 用户取消。
-    pub(super) fn confirm_dangerous(&self, sql: &str, cx: &App) -> bool {
-        let risk = risk_of_statements(&split_statements(sql));
-        risk != SqlRisk::Dangerous
-            || duck_platform::confirm(
-                tr(cx, "执行危险 SQL"),
-                tr(cx, "这段 SQL 包含删库 / 全表清改类语句，确定继续吗？"),
-            )
+    /// 危险语句闸门：不危险**直接放行**，危险则先弹主题确认框、确认后才跑 `proceed`。
+    ///
+    /// `proceed` 是「这条语句真正的执行动作」（全文排队执行 / 单条执行），闸门只管
+    /// 「要不要问一句」，不碰执行细节 —— 两条路径共用同一句问话与同一个危险判据
+    /// （`risk_of_statements`），不会一处严一处松。
+    ///
+    /// `pub(super)`：构建器（`db::builder`）执行自拼的语句时也走这里 —— 构建器拼出的
+    /// `DELETE` / `UPDATE` 同样是「删库 / 全表清改」，不该因为「语句是界面拼的」少问一次。
+    pub(super) fn guard_dangerous(
+        &mut self,
+        sql: &str,
+        proceed: GuardAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if risk_of_statements(&split_statements(sql)) != SqlRisk::Dangerous {
+            proceed(self, window, cx);
+            return;
+        }
+        let view = self.view.clone();
+        open_confirm(
+            tr(cx, "执行危险 SQL"),
+            tr(cx, "这段 SQL 包含删库 / 全表清改类语句，确定继续吗？"),
+            tr(cx, "继续执行"),
+            Rc::new(move |window, cx| {
+                let _ = view.update(cx, |this, cx| proceed(this, window, cx));
+            }),
+            window,
+            cx,
+        );
     }
 
     /// 执行**单条**语句（编辑器左栏的逐条 ▶）：与全文执行同一条危险确认 / 执行路径。
@@ -709,10 +903,19 @@ impl DatabasePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if sql.trim().is_empty() || !self.confirm_dangerous(&sql, cx) {
+        if sql.trim().is_empty() {
             return;
         }
-        self.execute_sql(sql, Some(stmt_index), window, cx);
+        // 单条执行与全文执行走**同一个**危险闸门（同一句问话、同一个判据）。
+        let for_run = sql.clone();
+        self.guard_dangerous(
+            &sql,
+            Rc::new(move |this, window, cx| {
+                this.execute_sql(for_run.clone(), Some(stmt_index), window, cx);
+            }),
+            window,
+            cx,
+        );
     }
 
     /// 真正执行一段 SQL：**可取消 + 超时**，收尾时顺带更新事务状态与可编辑目标。
@@ -795,6 +998,54 @@ impl DatabasePage {
             Some(rows) => trf(cx, "已复制所选 {} 行。", &[&rows.len().to_string()]).into(),
             None => tr(cx, "已复制全部结果。").into(),
         };
+        self.put_on_clipboard(text, note, cx);
+    }
+
+    /// 把**右键指向的那一行**复制成一段 SQL（dbx「SQL INSERT / UPDATE / WHERE」对位）。
+    ///
+    /// 与 [`Self::copy_result_as`] 的区别在作用域：那边跟着**选区**走，这边永远是
+    /// 用户右键的那一行 —— 在一格上右键时，用户想拿走的是这条记录，不是整页结果。
+    /// `Update` / `Where` 需要主键定位（[`Self::edit_source`]，主键列必须在结果里），
+    /// `Insert` 只要有表引用就行（[`Self::insert_context`]）。文本全部在**只读借用
+    /// 界内**算完，`put_on_clipboard` 的可变借用放在块外 —— 一处借用两用必撞 E0502。
+    pub(super) fn copy_row_as_sql(&mut self, kind: RowSqlKind, row: usize, cx: &mut Context<Self>) {
+        let text = {
+            let Some(result) = self.current_result() else {
+                return;
+            };
+            let Some((table, quote)) = self.insert_context() else {
+                return;
+            };
+            match kind {
+                RowSqlKind::Insert => {
+                    // 单行子集走 INSERT 的整集渲染原路：列集原样，行只取这一条。
+                    let one = ResultSet {
+                        columns: result.columns.clone(),
+                        rows: result.rows.get(row).cloned().into_iter().collect(),
+                        truncated: false,
+                    };
+                    Some(one.to_insert_sql(&table, quote))
+                }
+                // 主键定位的两档：拿不到可编辑来源（无主键 / 主键列不在结果里）就
+                // 在这里回绝 —— 菜单项虽已禁用，走到这里只可能是弹开后引擎被换掉。
+                RowSqlKind::Update | RowSqlKind::Where => {
+                    let Some(source) = self.edit_source() else {
+                        return;
+                    };
+                    let pk: Vec<String> = source.pk.to_vec();
+                    match kind {
+                        RowSqlKind::Update => result.to_update_sql(&table, quote, &pk, row),
+                        _ => result.to_where_sql(&table, quote, &pk, row),
+                    }
+                }
+            }
+        };
+        let Some(text) = text else {
+            self.status = tr(cx, "这一行定位不了（需要主键且主键列在结果里）。").into();
+            cx.notify();
+            return;
+        };
+        let note = kind.done_note(cx);
         self.put_on_clipboard(text, note, cx);
     }
 
@@ -1362,7 +1613,8 @@ impl DatabasePage {
     }
 
     /// footer 上的「N 行/页」下拉（dbx grid-foot 同款）：预设**仅本次**生效，
-    /// 「自定义…」开弹窗（仅本次 / 设为默认两条路，dbx 同款）。
+    /// 「自定义行数」内联在弹层里 —— 输入框 + ✓（快捷「仅本次」），底部
+    /// 「仅本次 / 设为默认」两枚按钮分别走两条路。
     ///
     /// 预设不动落盘的默认值——改默认是「设为默认」那条路的语义，藏在预设里
     /// 会让一次顺手点击悄悄改掉表浏览的页大小（两个模式共用同一个键）。
@@ -1371,34 +1623,70 @@ impl DatabasePage {
         let extended = theme.extended();
         let view = self.view.clone();
         let current = self.query_page_size(cx) as u32;
-        let custom_label = tr(cx, "自定义…");
+        let default = browse_page_size(cx) as u32;
         let presets = [50u32, 100, 500, 1000];
-        toolbar_dropdown_button(
+        toolbar_text_dropdown_button(
             "db-query-page-size",
             SharedString::from(trf(cx, "{} 行/页", &[&current.to_string()])),
             Icon::new(DuckIcon::ListOrdered).size(extended.icon.sm),
             Anchor::TopRight,
-            move |menu, _, _| {
+            move |menu, window, cx| {
+                // 弹层要装下内联的「自定义行数」表单，比普通菜单宽一档。
+                let menu = menu.min_w(px(260.));
+                let menu_entity = cx.entity();
+                // 输入框在**弹层构建时**建一次（builder 每次打开才跑，
+                // 弹层存活着就复用同一份 —— 输入中的值不会丢）。
+                let input = text_input(window, cx, tr(cx, "行数"));
+                input.update(cx, |state, cx| {
+                    state.set_value(current.to_string(), window, cx)
+                });
+                let on_apply: PageSizeApply = {
+                    let view = view.clone();
+                    Rc::new(move |size, persist, _window, cx| {
+                        let _ = view
+                            .update(cx, |this, cx| this.apply_query_page_size(size, persist, cx));
+                    })
+                };
+                let close: Rc<dyn Fn(&mut App)> = {
+                    let menu_entity = menu_entity.clone();
+                    Rc::new(move |cx| {
+                        menu_entity.update(cx, |_, cx| cx.emit(DismissEvent));
+                    })
+                };
+                let session_label = tr(cx, "仅本次");
+                // 「当前 / 默认」两栏在这里才**分得开**：查询侧有「仅本次」覆盖，
+                // 当前值可能不等于落盘的默认值。表浏览两栏恒等，那一档不出这行。
+                let readout = SharedString::from(trf(
+                    cx,
+                    "当前：{} · 默认：{}",
+                    &[&current.to_string(), &default.to_string()],
+                ));
                 let menu = presets.into_iter().fold(menu, |menu, size| {
                     let view = view.clone();
-                    menu.item(
-                        PopupMenuItem::new(SharedString::from(size.to_string()))
-                            .checked(size == current)
-                            .on_click(move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    this.apply_query_page_size(size, false, cx);
-                                });
-                            }),
-                    )
+                    let label = SharedString::from(trf(cx, "{} 行/页", &[&size.to_string()]));
+                    menu.item(PopupMenuItem::new(label).checked(size == current).on_click(
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.apply_query_page_size(size, false, cx);
+                            });
+                        },
+                    ))
                 });
-                let custom_view = view.clone();
-                menu.item(
-                    PopupMenuItem::new(custom_label).on_click(move |_, window, cx| {
-                        let _ = custom_view.update(cx, |this, cx| {
-                            this.open_page_size_dialog(window, cx);
-                        });
-                    }),
-                )
+                menu.separator().item(PopupMenuItem::element({
+                    // `ElementItem` 的 builder 是 `Fn`（会反复调用），读数行
+                    // 不能直接 move 进去 —— 每次渲染现 clone 一份。
+                    let readout = readout.clone();
+                    move |_, cx| {
+                        page_size_custom_section(
+                            &input,
+                            Some(readout.clone()),
+                            Some(SharedString::from(session_label)),
+                            on_apply.clone(),
+                            close.clone(),
+                            cx,
+                        )
+                    }
+                }))
             },
             cx,
         )
@@ -1423,97 +1711,6 @@ impl DatabasePage {
             self.status = trf(cx, "本次按每页 {} 行展示。", &[&size.to_string()]).into();
         }
         self.query_page = 0;
-        cx.notify();
-    }
-
-    /// 「自定义行数」弹窗（dbx 同款：输入框 + 仅本次 / 设为默认两条路）。
-    pub(super) fn open_page_size_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let input = text_input(window, cx, tr(cx, "行数"));
-        let seed = self.query_page_size(cx).to_string();
-        input.update(cx, |state, cx| state.set_value(seed, window, cx));
-        let drag = modal_drag(cx);
-        let view = self.view.clone();
-        // 「仅本次」：只覆盖当前会话（确认键，关窗）。
-        let confirm: ConfirmHandler = {
-            let input = input.clone();
-            let view = view.clone();
-            Rc::new(move |window: &mut Window, cx: &mut App| {
-                let Ok(size) = input.read(cx).value().trim().parse::<u32>() else {
-                    notify::warning(tr(cx, "请输入一个行数（正整数）。"), window, cx);
-                    return false;
-                };
-                if size == 0 {
-                    notify::warning(tr(cx, "每页行数至少是 1。"), window, cx);
-                    return false;
-                }
-                let _ = view.update(cx, |this, cx| {
-                    this.apply_query_page_size(size, false, cx);
-                });
-                true
-            })
-        };
-        // 「设为默认」：写盘 + 清覆盖 + 关窗（旁路动作本身不关窗，这里手动关）。
-        let default_action: ActionHandler = {
-            let input = input.clone();
-            let view = view.clone();
-            Rc::new(move |window: &mut Window, cx: &mut App| {
-                let Ok(size) = input.read(cx).value().trim().parse::<u32>() else {
-                    notify::warning(tr(cx, "请输入一个行数（正整数）。"), window, cx);
-                    return;
-                };
-                if size == 0 {
-                    notify::warning(tr(cx, "每页行数至少是 1。"), window, cx);
-                    return;
-                }
-                let _ = view.update(cx, |this, cx| {
-                    this.apply_query_page_size(size, true, cx);
-                });
-                window.close_dialog(cx);
-            })
-        };
-        // 弹窗闭包把 `input` 搬走；页面级留一份句柄给「关窗时清理」用。
-        let dialog_input = input.clone();
-        window.open_dialog(cx, move |dialog, _window, cx| {
-            let offset = modal_offset(&drag, cx);
-            let drag_for_content = drag.clone();
-            let confirm = Rc::clone(&confirm);
-            let default_action = Rc::clone(&default_action);
-            let input_for_content = input.clone();
-            dialog
-                .w(px(GROUP_DIALOG_WIDTH))
-                .ml(offset.x)
-                .margin_top(dialog_top_offset(cx) + offset.y)
-                .opacity(offset.opacity)
-                .close_button(false)
-                .content(move |content, _, cx| {
-                    content.child(modal_drag_area(
-                        &drag_for_content,
-                        v_flex()
-                            .w_full()
-                            .gap(form_gap(cx))
-                            .child(modal_title_row(
-                                "db-page-size-title",
-                                &drag_for_content,
-                                tr(cx, "自定义行数"),
-                                cx,
-                            ))
-                            .child(field_row(cx, tr(cx, "每页行数"), &input_for_content)),
-                    ))
-                })
-                .footer(dialog_footer_with_action(
-                    "db-page-size",
-                    FooterAction {
-                        id: SharedString::from("db-page-size-default"),
-                        text: tr(cx, "设为默认").into(),
-                        on_click: default_action,
-                    },
-                    tr(cx, "仅本次"),
-                    ButtonVariant::Primary,
-                    confirm,
-                    cx,
-                ))
-        });
-        self.page_size_dialog = Some(dialog_input);
         cx.notify();
     }
 
@@ -1618,9 +1815,9 @@ impl DatabasePage {
             self.active_result_tab = self.result_tabs.len() - 1;
         }
         self.query_result = Some(view);
-        // 这次执行成功了：上一次的错误上下文与解释面板都作废。
+        // 这次执行成功了：上一次的错误上下文作废。
+        // （AI 解释不再跟着结果作废 —— 它现在是右栏对话里的一条消息，用户回头还要看。）
         self.last_error = None;
-        self.ai_explain = None;
         self.selected_row = None;
         self.row_editor = None;
         // 结果集换了：旧格子的详情指向与就地编辑器一起作废。
@@ -1631,6 +1828,10 @@ impl DatabasePage {
         // （它们按旧行号定位，重跑后行号可能指向别的行）。
         self.checked_rows.clear();
         self.clear_pending();
+        // 列头的本地筛选与格式化跟着旧列名走已经没有意义，一并清掉（列级状态
+        // 只对「看着的这份结果」负责）。
+        self.local_filters.clear();
+        self.column_formats.clear();
         // 计划视图跟**这一次**的结果绑定：这一步是 EXPLAIN 就解析一份，否则清掉
         // （普通查询不能在结果区留下上一次的计划）。
         let planned = std::mem::take(&mut self.plan_next);
@@ -1725,7 +1926,10 @@ impl DatabasePage {
         self.plan_flat = false;
         self.chart_view = None;
         self.last_error = None;
-        self.ai_explain = None;
+        // 换标签 = 换结果集：列头的本地筛选与格式化跟着旧列名已经没有意义，清掉
+        // （列级状态只对「看着的这份结果」负责）。
+        self.local_filters.clear();
+        self.column_formats.clear();
         // 换标签 = 换结果集：把这一条标签的结果推给数据表组件。列宽**不随标签存**
         // ——`set_model` 只在列名序列变化时重估，所以与本标签同结构时宽度自然沿用。
         self.sync_data_table(cx);
@@ -1780,7 +1984,6 @@ impl DatabasePage {
         self.plan_flat = false;
         self.chart_view = None;
         self.last_error = None;
-        self.ai_explain = None;
         // 结果区清空：给组件推一份空表（行序也清掉）；下一次装结果时会重新推。
         self.sync_data_table(cx);
         cx.notify();
@@ -1942,7 +2145,13 @@ impl DatabasePage {
             }),
             // 实例信息页没有可编辑的单元格（它不是结果集，是服务器事实）。
             // 仪表板同理：面板里那些行是**读出来给人看的**，不是可改的暂存区。
-            Mode::Instance(_) | Mode::Dashboard(_) => None,
+            // 结构编辑器改的是定义，不是行数据，同理。
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => None,
         }
     }
 
@@ -1964,7 +2173,13 @@ impl DatabasePage {
                 }
             }
             // 实例信息页不可编辑，也就没有「重载来源」这回事；仪表板面板同理。
-            Mode::Instance(_) | Mode::Dashboard(_) => {}
+            // 结构标签改完列的落库动作走自己的「应用变更」，不进这条重载。
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => {}
         }
     }
 
@@ -2023,22 +2238,59 @@ impl DatabasePage {
 
     /// 把行编辑器的改动**暂存**起来（不落库）。
     ///
-    /// 这是 `pending_edits` 模型：编辑只进暂存区，点「提交」时成一个事务写下去。
-    /// 每列一次判定：`null` 开关打开 → 写 `NULL`；否则只在文本**真的变了**时暂存。
+    /// 收下之后编辑卡就关掉（`row_editor = None`）：改动已经在暂存区，卡里再留着
+    /// 一份输入框只会让人以为「还没生效」。
     pub(super) fn stage_row_edits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = self.row_editor.as_ref() else {
+        let Some(editor) = self.row_editor.take() else {
             return;
         };
+        if !self.stage_editor_edits(editor.row_index, &editor.cells, window, cx) {
+            // 没收下（不可编辑 / 没有改动）：表单留在原地，别让用户白填一遍。
+            self.row_editor = Some(editor);
+        }
+        cx.notify();
+    }
+
+    /// 把 JSON 档字段表单的改动**暂存**起来（同一套 `pending_edits` 模型）。
+    ///
+    /// 收下之后把表单清掉：下一轮渲染会按**当前行**的指纹重建 —— 值回到库里现在
+    /// 的样子，而「有几处待提交」由工具条上的暂存计数说（与网格格子的口径一致：
+    /// 暂存的改动不直接改结果集）。
+    pub(super) fn stage_json_edits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.json_editor.take() else {
+            return;
+        };
+        if !self.stage_editor_edits(Some(form.row), &form.cells, window, cx) {
+            self.json_editor = Some(form);
+        }
+        cx.notify();
+    }
+
+    /// 暂存的**共用内核**：一份编辑表单（行号 + 每列输入框）的改动进暂存区。
+    ///
+    /// 两个宿主共用：右栏行编辑卡（`row_index: None` = 新增行）与 JSON 档字段表单
+    /// （恒 `Some(行号)`）。`true` = 收下了；`false` 一律是「什么都没发生」（结果集
+    /// 不可编辑 / 没改动 / 新增行一列没填）—— 调用方据此决定表单留不留。
+    ///
+    /// 这是 `pending_edits` 模型：编辑只进暂存区，点「提交」时成一个事务写下去。
+    /// 每列一次判定：`null` 开关打开 → 写 `NULL`；否则只在文本**真的变了**时暂存。
+    fn stage_editor_edits(
+        &mut self,
+        row_index: Option<usize>,
+        cells: &[RowCell],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         // 兜一道「结果集可编辑」：无表 / 无主键 / 主键列不在结果里时，暂存毫无意义
         // （点了提交也定位不到行）。正常路径上提交按钮已置灰，这里是防漏。
         if self.edit_source().is_none() {
-            return;
+            return false;
         }
         // 新增行：把填过的列攒成一条 INSERT（空且未勾 NULL 的列不提交，让 DEFAULT 生效）。
-        if editor.row_index.is_none() {
+        let Some(row_index) = row_index else {
             let mut columns = Vec::new();
             let mut values = Vec::new();
-            for cell in &editor.cells {
+            for cell in cells {
                 let is_null = cell.null.get();
                 let text = cell.input.read(cx).value().to_string();
                 if is_null {
@@ -2055,7 +2307,7 @@ impl DatabasePage {
                     window,
                     cx,
                 );
-                return;
+                return false;
             }
             self.record_pending();
             self.pending_inserts.push(InsertRow { columns, values });
@@ -2065,17 +2317,14 @@ impl DatabasePage {
                 &[&self.pending_total().to_string()],
             )
             .into();
-            self.row_editor = None;
-            cx.notify();
-            return;
-        }
-        let row_index = editor.row_index.expect("new-row branch returns above");
+            return true;
+        };
         let Some(pk_values) = self.pk_values_for_row(row_index) else {
             notify::error(tr(cx, "该表没有主键，无法定位行。"), window, cx);
-            return;
+            return false;
         };
         let mut staged = Vec::new();
-        for cell in &editor.cells {
+        for cell in cells {
             let is_null = cell.null.get();
             let text = cell.input.read(cx).value().to_string();
             let value = if is_null { None } else { Some(text) };
@@ -2103,7 +2352,7 @@ impl DatabasePage {
         }
         if staged.is_empty() {
             notify::info(tr(cx, "没有改动。"), window, cx);
-            return;
+            return false;
         }
         let count = staged.len();
         // 这一步（无论改了几格、是否覆盖了同格的旧改动）在撤销栈里**只算一步**：
@@ -2121,8 +2370,7 @@ impl DatabasePage {
             &[&count.to_string(), &self.pending_total().to_string()],
         )
         .into();
-        self.row_editor = None;
-        cx.notify();
+        true
     }
 
     /// 暂存区里一共有多少条待提交（改动 + 新增行）。
@@ -2492,6 +2740,10 @@ impl DatabasePage {
     }
 
     /// 批量删除勾选的行（**单事务**）。
+    ///
+    /// 只负责「守卫 + 问一句」：确认走主题弹窗（[`open_confirm`]，不是 rfd 系统
+    /// 模态），真正的删除在 [`Self::apply_batch_delete_confirmed`] —— 弹窗是异步的，
+    /// 本函数在用户点下「删除」之前就返回了。
     pub(super) fn apply_batch_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(keys) = self.checked_pk_values() else {
             notify::info(tr(cx, "请先勾选要处理的行，或该表没有主键。"), window, cx);
@@ -2505,14 +2757,40 @@ impl DatabasePage {
             );
             return;
         };
-        let question = trf(
+        // ⚠️ 删除范围在**点按钮那一刻**冻结（表 + 主键值），确认期间不回读页面状态：
+        // 弹窗开着时用户翻页 / 切标签 / 换表，回读会删掉另一批行 —— 而问句里写的是
+        // 他刚才看到的那个数（与 redis 页 `PendingAction` 同一条纪律）。
+        let view = self.view.clone();
+        let frozen = Rc::new((table, keys));
+        open_confirm(
+            tr(cx, "批量删除行"),
+            trf(
+                cx,
+                "将从数据库中删除 {} 行，确定继续吗？",
+                &[&frozen.1.len().to_string()],
+            ),
+            tr(cx, "删除"),
+            Rc::new(move |window, cx| {
+                let (table, keys) = (*frozen).clone();
+                let _ = view.update(cx, |this, cx| {
+                    this.apply_batch_delete_confirmed(table, keys, window, cx);
+                });
+            }),
+            window,
             cx,
-            "将从数据库中删除 {} 行，确定继续吗？",
-            &[&keys.len().to_string()],
         );
-        if !duck_platform::confirm(tr(cx, "批量删除行"), &question) {
-            return;
-        }
+    }
+
+    /// 批量删除的执行段（确认之后）：一个事务删掉**冻结下来的**那批行，并落审计流水。
+    fn apply_batch_delete_confirmed(
+        &mut self,
+        table: TableRef,
+        keys: Vec<PkValues>,
+        // 收尾提示都走 `spawn_db` 的回调（那里的 `window` 是另一份），本函数自己
+        // 用不到窗口 —— 留着参数是为了与 `open_confirm` 的回调同形，调用处不分叉。
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let planned = u64::try_from(keys.len()).unwrap_or(u64::MAX);
         let audit_target = table.display();
         let Some(session) = self.active_session() else {
@@ -2581,6 +2859,9 @@ impl DatabasePage {
     }
 
     /// 删除编辑中的行（确认后按主键删）。
+    ///
+    /// 只负责「守卫 + 问一句」：确认走主题弹窗（[`open_confirm`]，不是 rfd 系统模态），
+    /// 真正的删除在 [`Self::delete_current_row_confirmed`]。
     pub(super) fn delete_current_row(
         &mut self,
         row_index: usize,
@@ -2599,12 +2880,36 @@ impl DatabasePage {
             );
             return;
         };
-        if !duck_platform::confirm(
+        // ⚠️ 定位值在**点按钮那一刻**冻结：弹窗开着时用户翻页 / 切标签会让
+        // `row_index` 指向另一行，回读就会删错行（与 redis 页 `PendingAction`
+        // 同一条纪律：确认期间不重读动作参数）。
+        let view = self.view.clone();
+        let frozen = Rc::new((table, pk_values));
+        open_confirm(
             tr(cx, "删除行"),
             tr(cx, "这一行将从数据库中删除，确定继续吗？"),
-        ) {
-            return;
-        }
+            tr(cx, "删除"),
+            Rc::new(move |window, cx| {
+                let (table, pk_values) = (*frozen).clone();
+                let _ = view.update(cx, |this, cx| {
+                    this.delete_current_row_confirmed(table, pk_values, window, cx);
+                });
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// 单行删除的执行段（确认之后）：按**冻结下来的**主键值删，并落审计流水。
+    fn delete_current_row_confirmed(
+        &mut self,
+        table: TableRef,
+        pk_values: PkValues,
+        // 收尾路径的提示都走 `spawn_db` 的回调（那里的 `window` 是另一份），本函数
+        // 自己用不到窗口 —— 但签名与 `open_confirm` 的回调对齐，调用处不必分叉。
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.active_session() else {
             return;
         };
@@ -2661,33 +2966,65 @@ impl DatabasePage {
     ///
     /// 导出文本由**内核的中性层**生成（见 [`ResultFormat::render`]），这里只管选格式、
     /// 拼表名与落盘——格式逻辑不进 UI，也不属于任何一条驱动。
+    ///
+    /// ⚠️ 落点走 [`crate::file_dialogs`]（gpui 自己的**异步**面板），不是
+    /// `duck_platform::save_file`：后者在 macOS 上是嵌套模态循环，从这里调会把 gpui
+    /// 的事件派发重入进来，撞成「RefCell already borrowed」并 abort（实证见
+    /// `crash-2026-10-15.log` 12:46 那条）。异步随之带来一条约束 —— 内容必须在
+    /// **打开面板之前**渲染完：用户挑路径的这段时间里页面可能已经翻页 / 换标签 /
+    /// 换了连接，回调里再读 `current_result()` 导出的就不是他点下拉那一刻看着的那份。
     pub(super) fn export_result(
         &mut self,
         format: ResultFormat,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(result) = self.current_result() else {
-            notify::info(tr(cx, "当前没有可导出的结果。"), window, cx);
-            return;
-        };
-        // 原始字节档走字节路径：它不是文本，不能过 `write(&path, text)` 那道口子。
-        if format.is_binary() {
-            let Some(bytes) = format.render_bytes(result) else {
-                notify::info(
-                    tr(cx, "原始字节导出要求结果只有一列且全是二进制值。"),
-                    window,
-                    cx,
+        // 渲染与「借 `result`」都收在这个块里，块一结束借用就还回去 —— 后面那次
+        // 异步的保存面板才拿得到 `&mut self`。
+        let payload = {
+            let Some(result) = self.current_result() else {
+                notify::info(tr(cx, "当前没有可导出的结果。"), window, cx);
+                return;
+            };
+            if format.is_binary() {
+                // 原始字节档走字节路径：它不是文本，不能过 `write(&path, text)` 那道口子。
+                match format.render_bytes(result) {
+                    Some(bytes) => ExportPayload::Bytes(bytes),
+                    None => {
+                        notify::info(
+                            tr(cx, "原始字节导出要求结果只有一列且全是二进制值。"),
+                            window,
+                            cx,
+                        );
+                        return;
+                    }
+                }
+            } else {
+                // INSERT 是 SQL 草稿：表名与列名都要按引擎的引号规则拼。MongoDB /
+                // Elasticsearch 没有 SQL 标识符概念（菜单里已对它们禁用这一档），
+                // 这里再挡一次，避免别处调进来产出坏 SQL。
+                let insert = self.insert_context();
+                let rendered = format.render(
+                    result,
+                    insert
+                        .as_ref()
+                        .map(|(table, quote)| (table.as_str(), *quote)),
                 );
-                return;
-            };
-            let Some(path) = duck_platform::save_file(format.file_name()) else {
-                return;
-            };
-            let note = format.done_note(cx);
-            self.spawn_db(
+                match rendered {
+                    Some(text) => ExportPayload::Text(text),
+                    None => {
+                        notify::info(tr(cx, "当前引擎不支持导出 INSERT 语句。"), window, cx);
+                        return;
+                    }
+                }
+            }
+        };
+        let file_name = format.file_name();
+        let note = format.done_note(cx);
+        crate::file_dialogs::save_file(cx, file_name, move |path, this, cx| {
+            this.spawn_db(
                 cx,
-                move || std::fs::write(&path, bytes).map_err(|err| err.to_string()),
+                move || payload.write(&path),
                 move |this, result, window, cx| match result {
                     Ok(()) => {
                         notify::success(note, window, cx);
@@ -2698,39 +3035,7 @@ impl DatabasePage {
                     }
                 },
             );
-            return;
-        }
-        // INSERT 是 SQL 草稿：表名与列名都要按引擎的引号规则拼。MongoDB /
-        // Elasticsearch 没有 SQL 标识符概念（菜单里已对它们禁用这一档），
-        // 这里再挡一次，避免别处调进来产出坏 SQL。
-        let insert = self.insert_context();
-        let rendered = format.render(
-            result,
-            insert
-                .as_ref()
-                .map(|(table, quote)| (table.as_str(), *quote)),
-        );
-        let Some(text) = rendered else {
-            notify::info(tr(cx, "当前引擎不支持导出 INSERT 语句。"), window, cx);
-            return;
-        };
-        let Some(path) = duck_platform::save_file(format.file_name()) else {
-            return;
-        };
-        let note = format.done_note(cx);
-        self.spawn_db(
-            cx,
-            move || std::fs::write(&path, text).map_err(|err| err.to_string()),
-            move |this, result, window, cx| match result {
-                Ok(()) => {
-                    notify::success(note, window, cx);
-                    this.status = tr(cx, "导出完成").into();
-                }
-                Err(error) => {
-                    notify::error(trf(cx, "导出失败：{}", &[&error]), window, cx);
-                }
-            },
-        );
+        });
     }
 
     /// 渲染 INSERT 草稿需要的额外入参：表引用文本 + 引擎的引号字符。
@@ -2753,7 +3058,12 @@ impl DatabasePage {
         let table = match self.mode {
             Mode::Table => self.selected_table.as_ref(),
             Mode::Query => self.query_target.as_ref(),
-            Mode::Instance(_) | Mode::Dashboard(_) => None,
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => None,
         };
         table
             .and_then(|table| quote_qualified(table, quote).ok())
@@ -2761,6 +3071,13 @@ impl DatabasePage {
     }
 
     /// 从 CSV 文件导入数据到当前浏览的表（首行为列名，按列名对位）。
+    ///
+    /// ⚠️ 选文件走 [`crate::file_dialogs`]（gpui 自己的**异步**面板）。原来那句
+    /// `duck_platform::open_file()` 正是这条闪退的直接原因 ——
+    /// `crash-2026-10-15.log` 12:46 那条的调用链就是
+    /// `import_csv → duck_platform::dialog::open_file → rfd pick_file → run_modal`，
+    /// 原理见该模块注释。异步之后「去哪张表导入」也要在**开面板之前**定下来
+    ///（用户挑文件的这段时间里换表 / 切标签都会变），所以表引用与连接都先冻住。
     pub(super) fn import_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             notify::info(tr(cx, "有数据库操作正在进行，请稍候。"), window, cx);
@@ -2778,44 +3095,296 @@ impl DatabasePage {
             );
             return;
         };
-        let Some(path) = duck_platform::open_file() else {
+        let conn = session.conn.clone();
+        crate::file_dialogs::open_file(
+            cx,
+            tr(cx, "选择要导入的 CSV 文件"),
+            move |path, this, cx| {
+                this.status = tr(cx, "正在导入 CSV…").into();
+                cx.notify();
+                this.spawn_db(
+                    cx,
+                    move || -> Result<u64, String> {
+                        let text = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
+                        let mut rows = parse_csv(&text);
+                        if rows.is_empty() {
+                            return Err("file is empty".into());
+                        }
+                        let header = rows.remove(0);
+                        let columns: Vec<String> = header
+                            .into_iter()
+                            .map(|cell| cell.unwrap_or_default())
+                            .collect();
+                        if columns.iter().any(String::is_empty) {
+                            return Err("header contains an empty column name".into());
+                        }
+                        let mut guard = conn.lock().expect("连接锁不应中毒");
+                        guard
+                            .insert_rows(&table, &columns, &rows)
+                            .map_err(|error| error.to_string())
+                    },
+                    |this, inserted, window, cx| match inserted {
+                        Ok(count) => {
+                            notify::success(
+                                trf(cx, "已导入 {} 行。", &[&count.to_string()]),
+                                window,
+                                cx,
+                            );
+                            // 行数变了：表级元信息（行数）也跟着重取。
+                            this.table_meta_for = None;
+                            this.reload_edit_source(window, cx);
+                        }
+                        Err(error) => {
+                            this.status = trf(cx, "导入失败：{}", &[&error]).into();
+                            notify::error(trf(cx, "导入失败：{}", &[&error]), window, cx);
+                        }
+                    },
+                );
+            },
+        );
+    }
+
+    /// 「执行 SQL 文件」：选一个 `.sql` 脚本，**流式**读进来分批判跑。
+    ///
+    /// 与 [`Self::run_query`] 正好是两条路：那条把编辑器的内容按「一条语句一个结果
+    /// 标签」排队跑（每条一次加锁、一个标签）；这条走 [`execute_sql_file`] 的批处理路径
+    /// ——**一次加锁 + 条数/字节双阈值刷批 + 字节级进度**，且整份脚本**不进结果标签**：
+    /// 一个几百条 INSERT 的 dump 不该在结果区堆出几百个标签。
+    ///
+    /// ⚠️ 选文件走 [`crate::file_dialogs`]（gpui 自己的**异步**面板）：面板可能开着很久，
+    /// 用户在这期间会切标签 / 换连接，所以**目标连接、结果上限全在开面板之前冻住**
+    /// （与 [`Self::import_csv`] 同口径）。
+    ///
+    /// ⚠️ 这里**不做事前的危险确认**：判据（`risk_of_statements`）要先读一遍全文的语句
+    /// 清单，而这条路的前提就是「不把整份文本端在内存里等着」。替代的三道闸是：默认
+    /// **遇错即停**、随时可「停止」（谓词逐条生效 + 打断在途语句）、结束后把失败逐条
+    /// 摆进执行流水与提示。
+    pub(super) fn run_sql_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.active_session() else {
+            notify::info(tr(cx, "请先连接一个数据库。"), window, cx);
             return;
         };
+        // 一条连接上同时压两份脚本没有意义（另一份已经在往外写，表结构还在变）。
+        if self.running.is_some() {
+            notify::info(tr(cx, "有数据库操作正在进行，请稍候。"), window, cx);
+            return;
+        }
+        let session_id = self.active.clone().unwrap_or_default();
         let conn = session.conn.clone();
-        self.status = tr(cx, "正在导入 CSV…").into();
+        // 结果上限在**发起时**读一次（同 `execute_sql`）：脚本跑多久都不影响它。
+        let row_cap = query_row_cap(cx);
+        crate::file_dialogs::open_file(
+            cx,
+            tr(cx, "选择要执行的 SQL 文件"),
+            move |path, this, cx| this.start_sql_file(path, session_id, conn, row_cap, cx),
+        );
+    }
+
+    /// 把选好的脚本跑起来（[`Self::run_sql_file`] 的后半段，文件已经定了）。
+    ///
+    /// 三样共享量（停止标志 / 进度快照 / 收工标志）走 `Arc`：后台线程拿不到
+    /// `Context`，跟主线程通信只能靠它们（与 SFTP 传输那条路同一口径）。
+    fn start_sql_file(
+        &mut self,
+        path: std::path::PathBuf,
+        session_id: String,
+        conn: Arc<Mutex<Connection>>,
+        row_cap: usize,
+        cx: &mut Context<Self>,
+    ) {
+        // 取消句柄必须在开工前抓：跑起来之后连接锁在后台线程手里（`execute_sql` 同）。
+        let cancel = conn.lock().expect("连接锁不应中毒").cancel_handle();
+        let name: SharedString = path
+            .file_name()
+            .map_or_else(
+                || path.display().to_string(),
+                |file| file.to_string_lossy().into_owned(),
+            )
+            .into();
+        let stop = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(Mutex::new(FileProgress::default()));
+        let done = Arc::new(AtomicBool::new(false));
+        self.sql_file = Some(SqlFileJob {
+            name: name.clone(),
+            stop: Arc::clone(&stop),
+            now: FileProgress::default(),
+        });
+        self.status = trf(cx, "正在执行 {}…", &[&name]).into();
         cx.notify();
+
+        self.poll_sql_file_progress(Arc::clone(&progress), Arc::clone(&done), cx);
+        let work_conn = Arc::clone(&conn);
+        let work_path = path;
+        let worker_name = name.clone();
+        let finish_conn = Arc::clone(&conn);
+        self.spawn_db_guarded(
+            cx,
+            session_id.clone(),
+            cancel,
+            SQL_FILE_GUARD_TIMEOUT,
+            move || -> Result<FileReport, SqlFileError> {
+                let options = SqlFileOptions::new(row_cap);
+                let mut guard = work_conn.lock().expect("连接锁不应中毒");
+                let should_stop = || stop.load(AtomicOrdering::Relaxed);
+                let mut report_progress = |snapshot: &FileProgress| {
+                    if let Ok(mut slot) = progress.lock() {
+                        *slot = *snapshot;
+                    }
+                };
+                let result = execute_sql_file(
+                    &mut guard,
+                    &work_path,
+                    &options,
+                    &should_stop,
+                    // 逐条回执不往界面上摆：几百上千条会把结果区与流水一起淹掉，
+                    // 失败明细已经归总在 `FileReport::errors`（最多 32 条）。
+                    &mut |_| {},
+                    &mut report_progress,
+                );
+                // 收工标志要在返回**之前**置上：轮询任务靠它退出。
+                done.store(true, AtomicOrdering::Relaxed);
+                result
+            },
+            move |this, result, window, cx| {
+                this.finish_sql_file(result, worker_name, session_id, finish_conn, window, cx);
+            },
+        );
+    }
+
+    /// 进度轮询：把后台的进度快照搬回主线程（后台拿不到 `Context`，推不进来）。
+    ///
+    /// 与 SFTP 传输同一条路：后台执行器的定时器 + `WeakEntity::update`。任务在下一次
+    /// 心跳看到收工标志后退出，不会漏读最后一次快照。
+    fn poll_sql_file_progress(
+        &mut self,
+        progress: Arc<Mutex<FileProgress>>,
+        done: Arc<AtomicBool>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(SQL_FILE_PROGRESS_POLL).await;
+                let snapshot = progress
+                    .lock()
+                    .map_or_else(|_| FileProgress::default(), |slot| *slot);
+                let finished = done.load(AtomicOrdering::Relaxed);
+                let updated = this.update(cx, |this, cx| {
+                    if let Some(job) = this.sql_file.as_mut() {
+                        job.now = snapshot;
+                    }
+                    cx.notify();
+                });
+                // 页面已经没了（切走 / 关窗）：没什么可刷的，收工。
+                if updated.is_err() || finished {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 文件执行收尾：清任务 → 报读数 → 落流水 → 刷新左栏对象树。
+    ///
+    /// 「刷新对象树」不是附赠的礼节：一份 dump 最常见的后果就是**多了几张表 / 几个索引**，
+    /// 不刷新的话用户执行完看到的还是那张旧树，第一反应是「没执行成功」。
+    fn finish_sql_file(
+        &mut self,
+        result: Result<FileReport, SqlFileError>,
+        name: SharedString,
+        session_id: String,
+        conn: Arc<Mutex<Connection>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sql_file = None;
+        cx.notify();
+        // 文案里的数字先都落成 `String`：`trf` 要的是同一个类型的实参切片，
+        // 混着 `&str` / `&String` / `&SharedString` 会推不出共同类型。
+        let name_text = name.to_string();
+        match result {
+            Ok(report) => {
+                let label = vec![name_text.clone()];
+                let encoding = report.encoding.label().to_owned();
+                let elapsed = report.elapsed_ms.to_string();
+                let mut detail = trf(cx, "编码 {} · 耗时 {} ms", &[&encoding, &elapsed]);
+                if let Some(first) = report.errors.first() {
+                    let index = first.index.to_string();
+                    detail.push_str(" · ");
+                    detail.push_str(&trf(cx, "第 {} 条语句失败：{}", &[&index, &first.message]));
+                }
+                self.push_exec_log(report.all_ok(), &label, &detail, report.elapsed_ms, cx);
+                let executed = report.executed.to_string();
+                let failed = report.failed.to_string();
+                let affected = report.affected.to_string();
+                // 停止优先于失败：被停下来的那次里，「手上这条语句被中止」也会记成一条
+                // 失败，但用户要的答案是「我停了它」，不是一个红叉。
+                let message = if report.stopped || report.cancelled {
+                    trf(
+                        cx,
+                        "{} 已停止：成功 {} 条 · 失败 {} 条",
+                        &[&name_text, &executed, &failed],
+                    )
+                } else if report.failed > 0 {
+                    trf(
+                        cx,
+                        "{} 执行完成：成功 {} 条 · 失败 {} 条",
+                        &[&name_text, &executed, &failed],
+                    )
+                } else {
+                    trf(
+                        cx,
+                        "{} 执行完成：成功 {} 条 · 影响 {} 行",
+                        &[&name_text, &executed, &affected],
+                    )
+                };
+                self.status = message.clone().into();
+                if report.failed > 0 {
+                    notify::error(message, window, cx);
+                } else {
+                    notify::success(message, window, cx);
+                }
+                // 建表 / 建索引一类的脚本跑完，左栏那份内省已经过期了。
+                if report.executed > 0 {
+                    self.reload_introspection(session_id, conn, cx);
+                }
+            }
+            Err(error) => {
+                let message = trf(cx, "{} 执行失败：{}", &[&name_text, &error.to_string()]);
+                self.status = message.clone().into();
+                notify::error(message, window, cx);
+            }
+        }
+    }
+
+    /// 重取当前命名空间的内省（文件执行收尾用）。
+    ///
+    /// 只记警告不报错：脚本已经把数据写进去了，这时因为「列触发器时引擎不认」而弹一个
+    /// 失败，是把好消息说成坏事（口径与 [`Introspection::load`] 一致 —— 只有取目录失败
+    /// 才算整次内省失败，而失败与否不影响脚本本身的结果）。
+    fn reload_introspection(
+        &mut self,
+        session_id: String,
+        conn: Arc<Mutex<Connection>>,
+        cx: &mut Context<Self>,
+    ) {
+        let schema = self
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.schema.clone());
         self.spawn_db(
             cx,
-            move || -> Result<u64, String> {
-                let text = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
-                let mut rows = parse_csv(&text);
-                if rows.is_empty() {
-                    return Err("file is empty".into());
-                }
-                let header = rows.remove(0);
-                let columns: Vec<String> = header
-                    .into_iter()
-                    .map(|cell| cell.unwrap_or_default())
-                    .collect();
-                if columns.iter().any(String::is_empty) {
-                    return Err("header contains an empty column name".into());
-                }
+            move || -> Result<Introspection, DbError> {
                 let mut guard = conn.lock().expect("连接锁不应中毒");
-                guard
-                    .insert_rows(&table, &columns, &rows)
-                    .map_err(|error| error.to_string())
+                Introspection::load(&mut guard, schema.as_deref())
             },
-            |this, inserted, window, cx| match inserted {
-                Ok(count) => {
-                    notify::success(trf(cx, "已导入 {} 行。", &[&count.to_string()]), window, cx);
-                    // 行数变了：表级元信息（行数）也跟着重取。
-                    this.table_meta_for = None;
-                    this.reload_edit_source(window, cx);
+            move |this, result, _window, cx| match result {
+                Ok(introspection) => {
+                    if let Some(session) = this.sessions.get_mut(&session_id) {
+                        introspection.install(session);
+                    }
+                    cx.notify();
                 }
-                Err(error) => {
-                    this.status = trf(cx, "导入失败：{}", &[&error]).into();
-                    notify::error(trf(cx, "导入失败：{}", &[&error]), window, cx);
-                }
+                Err(error) => tracing::warn!(%error, "sql file reload introspection failed"),
             },
         );
     }

@@ -10,8 +10,8 @@ use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
     CatalogTable, DatabaseObject, InstanceFact, InstanceOverview, InstanceTable, InstanceView,
-    OrderBy, PlaceholderStyle, RowCount, TableFilter, TableForeignKey, TableIndex, TableKind,
-    TableRef, TableTrigger, human_duration_secs, order_by_clause, plain_filter_clause,
+    OrderBy, PlaceholderStyle, RowCount, TableColumnMeta, TableFilter, TableForeignKey, TableIndex,
+    TableKind, TableRef, TableTrigger, human_duration_secs, order_by_clause, plain_filter_clause,
     quote_identifier, quote_qualified,
 };
 use crate::error::DbError;
@@ -171,6 +171,7 @@ fn map_query_result<T: mysql::prelude::Protocol>(
         .map(|col| Column {
             name: col.name_str().into_owned(),
             type_name: column_type_name(col.column_type()).to_owned(),
+            comment: String::new(),
         })
         .collect();
     // 定点数绝不进 `f64`：这两类列的值按字符串承载（`Value::Decimal`）。
@@ -457,6 +458,32 @@ impl MysqlConnection {
         Ok(objects)
     }
 
+    /// 一个命名空间里的**索引**清单（名字 + 建在哪张表上）。
+    ///
+    /// `information_schema.STATISTICS` 是「一个索引的**一列**一行」（复合索引占多行），
+    /// 所以 `DISTINCT` 收成一条；排序键也用它，才能在库里按表分组看。
+    pub fn list_indexes(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        let schema = self.resolve_schema(schema)?;
+        let mut objects = Vec::new();
+        let result = self.conn.exec_iter(
+            "SELECT DISTINCT index_name, table_name FROM information_schema.statistics \
+             WHERE table_schema = ? ORDER BY lower(table_name), lower(index_name)",
+            (&schema,),
+        )?;
+        for row in result {
+            let row = row.map_err(DbError::from)?;
+            let name = Self::text_at(&row, 0);
+            if name.is_empty() {
+                continue;
+            }
+            objects.push(DatabaseObject {
+                name,
+                detail: Some(Self::text_at(&row, 1)),
+            });
+        }
+        Ok(objects)
+    }
+
     /// 事件清单：`information_schema.EVENTS`，说明列 = 调度状态（ENABLED / DISABLED…）。
     pub fn list_events(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
         let schema = self.resolve_schema(schema)?;
@@ -627,11 +654,14 @@ impl MysqlConnection {
     }
 
     /// 一张表的列（参数化查询）。
+    ///
+    /// `column_type` 自带长度修饰（`varchar(50)`），表头「类型 + 长度」直接显示它；
+    /// `column_comment` 是建表时写的列注释，查询结果的列没有可信来源，只在表内省给。
     pub fn table_columns(&mut self, table: &TableRef) -> Result<Vec<Column>, DbError> {
         let schema = table.schema.as_deref();
         let mut columns = Vec::new();
         let result = self.conn.exec_iter(
-            "SELECT column_name, column_type FROM information_schema.columns \
+            "SELECT column_name, column_type, column_comment FROM information_schema.columns \
              WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? \
              ORDER BY ordinal_position",
             (schema, table.name.as_str()),
@@ -650,7 +680,55 @@ impl MysqlConnection {
                 }
                 _ => String::new(),
             };
-            columns.push(Column { name, type_name });
+            let comment = match row.as_ref(2) {
+                Some(mysql::Value::Bytes(bytes)) => {
+                    String::from_utf8_lossy(bytes.as_slice()).into_owned()
+                }
+                _ => String::new(),
+            };
+            columns.push(Column {
+                name,
+                type_name,
+                comment,
+            });
+        }
+        Ok(columns)
+    }
+
+    /// 一张表的列级元数据（`information_schema.columns`：可空 / 默认值 / 注释 /
+    /// 字符集 / 排序规则全套拿得到）。
+    pub fn table_column_meta(&mut self, table: &TableRef) -> Result<Vec<TableColumnMeta>, DbError> {
+        let schema = table.schema.as_deref();
+        let mut columns = Vec::new();
+        let result = self.conn.exec_iter(
+            "SELECT column_name, column_type, column_comment, is_nullable, column_default, \
+                    character_set_name, collation_name FROM information_schema.columns \
+             WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? \
+             ORDER BY ordinal_position",
+            (schema, table.name.as_str()),
+        )?;
+        for row in result {
+            let row = row.map_err(DbError::from)?;
+            // 文本列统一按 Bytes 转 String；名字取不到的行整个跳过（同 table_columns）。
+            let text = |index: usize| match row.as_ref(index) {
+                Some(mysql::Value::Bytes(bytes)) => {
+                    Some(String::from_utf8_lossy(bytes.as_slice()).into_owned())
+                }
+                _ => None,
+            };
+            let Some(name) = text(0) else {
+                continue;
+            };
+            let is_nullable = text(3).is_some_and(|flag| flag.eq_ignore_ascii_case("YES"));
+            columns.push(TableColumnMeta {
+                type_name: text(1).unwrap_or_default(),
+                comment: text(2).unwrap_or_default(),
+                nullable: Some(is_nullable),
+                default: text(4),
+                character_set: text(5),
+                collation: text(6),
+                name,
+            });
         }
         Ok(columns)
     }

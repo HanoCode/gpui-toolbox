@@ -72,7 +72,7 @@ use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
     BatchOutcome, CatalogTable, CellEdit, FilterOp, InsertRow, OrderBy, PkValues, RowCount,
-    TableFilter, TableIndex, TableKind, TableRef,
+    TableColumnMeta, TableFilter, TableIndex, TableKind, TableRef,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -336,6 +336,16 @@ impl MongoConnection {
     pub fn table_columns(&mut self, table: &TableRef) -> Result<Vec<Column>, DbError> {
         let docs = self.sample(table, SCHEMA_SAMPLE)?;
         Ok(columns_of_documents(&docs))
+    }
+
+    /// 一张集合的列级元数据：列只是**采样出来的字段名**，没有可空 / 默认值 / 注释
+    /// 概念（文档库每条文档可以长不一样），五个属性槽位全空——调用方有啥画啥。
+    pub fn table_column_meta(&mut self, table: &TableRef) -> Result<Vec<TableColumnMeta>, DbError> {
+        Ok(self
+            .table_columns(table)?
+            .into_iter()
+            .map(TableColumnMeta::from_column)
+            .collect())
     }
 
     /// 一页文档。
@@ -1529,6 +1539,7 @@ fn columns_of_documents(docs: &[Document]) -> Vec<Column> {
         .into_iter()
         .map(|name| Column {
             type_name: types.get(&name).copied().unwrap_or_default().to_owned(),
+            comment: String::new(),
             name,
         })
         .collect()
@@ -1545,6 +1556,7 @@ fn documents_to_result_set(docs: &[Document]) -> ResultSet {
         .map(|name| Column {
             name: name.clone(),
             type_name: String::new(),
+            comment: String::new(),
         })
         .collect::<Vec<_>>();
     let mut rows = Vec::with_capacity(docs.len());

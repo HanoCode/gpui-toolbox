@@ -195,6 +195,259 @@ impl DatabasePage {
         );
     }
 
+    /// 右键「新建数据库」（dbx 同款）：弹窗输入库名 → 真执行 `CREATE DATABASE` →
+    /// 重取这条连接的目录（库列表跟着刷新）。SQLite 是「一个文件一个库」、
+    /// Mongo / Elasticsearch 没有带引号的库名概念 —— 这些引擎不画这个入口。
+    pub(super) fn open_create_database_dialog(
+        &mut self,
+        conn_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get(conn_id) else {
+            return;
+        };
+        if session.kind == DatabaseKind::Sqlite || session.kind.identifier_quote().is_none() {
+            return;
+        }
+        let input = text_input(window, cx, tr(cx, "数据库名"));
+        let drag = modal_drag(cx);
+        let view = self.view.clone();
+        let input_handle = input.clone();
+        let confirm: ConfirmHandler = {
+            let input = input.clone();
+            let view = view.clone();
+            let id = conn_id.to_owned();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                let name = input.read(cx).value().trim().to_owned();
+                if name.is_empty() {
+                    notify::warning(tr(cx, "请填写数据库名。"), window, cx);
+                    return false;
+                }
+                let _ = view.update(cx, |this, cx| {
+                    this.create_database(&id, name, window, cx);
+                });
+                true
+            })
+        };
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let offset = modal_offset(&drag, cx);
+            let drag_for_content = drag.clone();
+            let confirm = Rc::clone(&confirm);
+            let input_for_content = input.clone();
+            dialog
+                .w(px(CREATE_DB_DIALOG_WIDTH))
+                .ml(offset.x)
+                .margin_top(dialog_top_offset(cx) + offset.y)
+                .opacity(offset.opacity)
+                .close_button(false)
+                .content(move |content, _, cx| {
+                    content.child(modal_drag_area(
+                        &drag_for_content,
+                        v_flex()
+                            .w_full()
+                            .gap(form_gap(cx))
+                            .child(modal_title_row(
+                                "db-create-db-title",
+                                &drag_for_content,
+                                tr(cx, "新建数据库"),
+                                cx,
+                            ))
+                            .child(field_row(cx, tr(cx, "数据库名"), &input_for_content)),
+                    ))
+                })
+                .footer(dialog_footer(
+                    "db-create-db",
+                    tr(cx, "创建"),
+                    ButtonVariant::Primary,
+                    confirm,
+                    cx,
+                ))
+        });
+        input_handle.update(cx, |state, cx| state.focus(window, cx));
+    }
+
+    /// `CREATE DATABASE` 的**真执行**：按引擎标识符引号拼语句，建完重取这条连接的
+    /// 目录（当前命名空间不变，库列表会多出新库）。
+    pub(super) fn create_database(
+        &mut self,
+        conn_id: &str,
+        name: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let conn_id = conn_id.to_owned();
+        let Some(session) = self.sessions.get(&conn_id) else {
+            return;
+        };
+        let Some(quote) = session.kind.identifier_quote() else {
+            return;
+        };
+        let sql = match duck_db::drivers::quote_identifier(&name, quote) {
+            Ok(quoted) => format!("CREATE DATABASE {quoted}"),
+            // 名字里带引号字符：拼不出合法语句，直接拒绝（弹窗侧也应预校验）。
+            Err(_) => {
+                self.status = tr(cx, "数据库名不合法。").into();
+                cx.notify();
+                return;
+            }
+        };
+        let conn = session.conn.clone();
+        let namespace = session.schema.clone();
+        let done_name = name.clone();
+        let failed_name = name.clone();
+        self.status = trf(cx, "正在创建数据库 {}…", &[&name]).into();
+        cx.notify();
+        self.spawn_db(
+            cx,
+            move || -> Result<Introspection, DbError> {
+                let mut guard = conn.lock().expect("连接锁不应中毒");
+                guard.execute(&sql, 1)?;
+                Introspection::load(&mut guard, namespace.as_deref())
+            },
+            move |this, result, window, cx| match result {
+                Ok(introspection) => {
+                    if let Some(session) = this.sessions.get_mut(&conn_id) {
+                        introspection.install(session);
+                    }
+                    this.status = trf(cx, "已创建数据库 {}。", &[&done_name]).into();
+                    notify::success(trf(cx, "已创建数据库 {}。", &[&done_name]), window, cx);
+                    cx.notify();
+                }
+                Err(error) => {
+                    let reason = error.to_string();
+                    this.status =
+                        trf(cx, "创建数据库 {} 失败：{}", &[&failed_name, &reason]).into();
+                    notify::error(
+                        trf(cx, "创建数据库 {} 失败：{}", &[&failed_name, &reason]),
+                        window,
+                        cx,
+                    );
+                }
+            },
+        );
+    }
+
+    /// 右键「导入数据」（表分类，dbx 同款）：选一个 CSV 文件 → 以文件名建表
+    /// （首行做列名，全部 `TEXT` 列 —— 不猜类型，猜错比全文本更害人）→
+    /// **整批一个事务**插入（`BatchTransaction::Single`），失败整体回滚。
+    ///
+    /// 表落在分类所在的命名空间：schema 层引擎（PG / MSSQL）进那个 schema，
+    /// 库层引擎（MySQL / ClickHouse）进那个库，SQLite 落在文件本身。
+    pub(super) fn import_csv_new_table(
+        &mut self,
+        conn_id: &str,
+        namespace: &str,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get(conn_id) else {
+            return;
+        };
+        let Some(quote) = session.kind.identifier_quote() else {
+            return;
+        };
+        let kind = session.kind;
+        let conn = session.conn.clone();
+        let namespace = namespace.to_owned();
+        let conn_id = conn_id.to_owned();
+        let status_path = path.display().to_string();
+        self.status = trf(cx, "正在导入 {}…", &[&status_path]).into();
+        cx.notify();
+        self.spawn_db(
+            cx,
+            move || -> Result<(Introspection, String, usize), DbError> {
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|error| DbError::Config(format!("read csv failed: {error}")))?;
+                let rows = duck_db::parse_csv(&text);
+                let header = rows
+                    .first()
+                    .ok_or_else(|| DbError::Config("csv file is empty".into()))?;
+                if header.is_empty() {
+                    return Err(DbError::Config("csv header row is empty".into()));
+                }
+                let table_name = path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "imported".to_owned());
+                // SQLite 没有命名空间；其余引擎把表挂进分类所在的库 / schema。
+                let schema = (kind != DatabaseKind::Sqlite && !namespace.is_empty())
+                    .then(|| namespace.clone());
+                let reference = TableRef {
+                    schema,
+                    name: table_name.clone(),
+                };
+                let qualified = duck_db::drivers::quote_qualified(&reference, quote)?;
+                let column_list = header
+                    .iter()
+                    .map(|name| {
+                        let name = name.as_deref().unwrap_or("col").trim();
+                        duck_db::drivers::quote_identifier(
+                            if name.is_empty() { "col" } else { name },
+                            quote,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                let mut statements = vec![format!(
+                    "CREATE TABLE {qualified} ({})",
+                    column_list
+                        .split(", ")
+                        .map(|column| format!("{column} TEXT"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )];
+                for row in rows.iter().skip(1) {
+                    let values = header
+                        .iter()
+                        .enumerate()
+                        .map(|(index, _)| {
+                            row.get(index)
+                                .and_then(|value| value.as_deref())
+                                .map_or_else(
+                                    || "NULL".to_owned(),
+                                    |value| format!("'{}'", value.replace('\'', "''")),
+                                )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    statements.push(format!(
+                        "INSERT INTO {qualified} ({column_list}) VALUES ({values})"
+                    ));
+                }
+                let row_count = statements.len().saturating_sub(1);
+                let mut guard = conn.lock().expect("连接锁不应中毒");
+                let options = duck_db::SqlBatchOptions {
+                    transaction: duck_db::BatchTransaction::Single,
+                    ..duck_db::SqlBatchOptions::new(1)
+                };
+                duck_db::execute_batch(&mut guard, &statements, &options, &|| false, &mut |_| {})?;
+                let introspection = Introspection::load(&mut guard, Some(namespace.as_str()))?;
+                Ok((introspection, table_name, row_count))
+            },
+            move |this, result, window, cx| match result {
+                Ok((introspection, table_name, row_count)) => {
+                    if let Some(session) = this.sessions.get_mut(&conn_id) {
+                        introspection.install(session);
+                    }
+                    let detail = trf(
+                        cx,
+                        "已导入 {} 行到表 {}。",
+                        &[&row_count.to_string(), &table_name],
+                    );
+                    this.status = detail.clone().into();
+                    notify::success(detail, window, cx);
+                    cx.notify();
+                }
+                Err(error) => {
+                    let reason = error.to_string();
+                    this.status = trf(cx, "导入失败：{}", &[&reason]).into();
+                    notify::error(trf(cx, "导入失败：{}", &[&reason]), window, cx);
+                }
+            },
+        );
+    }
+
     /// 连接一条档案（后台建连 + 版本 + 目录）。
     ///
     /// 带上 `database` 时按那个库建连（覆盖档案里的值，且不写档案）——
@@ -502,6 +755,47 @@ impl DatabasePage {
         self.open_table(table, window, cx);
     }
 
+    /// 打开（或复用）某张表的**结构标签**（dbx 的表结构编辑器对位）。
+    ///
+    /// 复用策略与数据标签同款：同连接 + 同表已开着结构标签就只激活（草稿原样
+    /// 装回来）；⌥ 点击强制新开。新标签装好后由 [`Self::open_structure`] 取列清单。
+    pub(super) fn open_structure_tab(
+        &mut self,
+        conn_id: &str,
+        table: TableRef,
+        force_new: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.sessions.contains_key(conn_id) {
+            return;
+        }
+        if !force_new {
+            let existing = find_reusable_tab(
+                &self.tabs,
+                &self.tab_kind,
+                &self.tab_conn,
+                conn_id,
+                &TabKind::Structure {
+                    object: table.clone(),
+                },
+            );
+            if let Some(tab) = existing {
+                self.activate(&tab, window, cx);
+                return;
+            }
+        }
+        self.spawn_tab_for(
+            conn_id,
+            TabKind::Structure {
+                object: table.clone(),
+            },
+            window,
+            cx,
+        );
+        self.open_structure(table, cx);
+    }
+
     /// 打开（或复用）某个库 / schema 的**库标签**：点左栏数据库节点的伴随动作。
     ///
     /// 同连接同名复用；新标签是空白查询态，标题带库名。复用已有标签时**不重置**
@@ -607,7 +901,29 @@ impl DatabasePage {
                 Some(namespace) => format!("{}@{}", object.name, namespace),
                 None => object.name.clone(),
             },
+            // 结构标签：名字前缀「结构 」与同表的数据标签可辨（同表两枚标签经常并存）。
+            Some(TabKind::Structure { object }) => match &object.schema {
+                Some(namespace) => format!("结构 {}@{}", object.name, namespace),
+                None => format!("结构 {}", object.name),
+            },
             Some(TabKind::Database { name }) => name.clone(),
+            // 三张工具页：标题直说这是谁的 ER / 从哪比到哪 / 从哪传到哪
+            //（连接名带库，同一标签条上不同连接的同名库可辨）。
+            Some(TabKind::Er { namespace }) => format!("ER {namespace}"),
+            Some(TabKind::Compare(spec)) => format!(
+                "比较 {}:{} → {}:{}",
+                self.connection_display(&spec.source_conn),
+                spec.source_ns,
+                self.connection_display(&spec.target_conn),
+                spec.target_ns
+            ),
+            Some(TabKind::Transfer(spec)) => format!(
+                "传输 {}:{} → {}:{}",
+                self.connection_display(&spec.source_conn),
+                spec.source_ns,
+                self.connection_display(&spec.target_conn),
+                spec.target_ns
+            ),
             Some(TabKind::Instance(tab)) => tab.heading(cx).to_owned(),
             Some(TabKind::Dashboard(id)) => self
                 .dashboards
@@ -619,8 +935,16 @@ impl DatabasePage {
         })
     }
 
-    /// 关闭除 `keep` 外的全部标签（连接语义同 [`Self::close_tab`]）。
-    ///
+    /// 连接的显示名（标签标题 / 比较与传输的规格条共用）；档案不在了退回 id。
+    fn connection_display(&self, conn_id: &str) -> String {
+        self.connections
+            .iter()
+            .find(|cfg| cfg.id == conn_id)
+            .map(|cfg| cfg.display_name())
+            .unwrap_or_else(|| conn_id.to_owned())
+    }
+
+    /// 关闭除 `keep` 外的全部标签（连接语义同 [`Self::close_tab`]）。    ///
     /// 先收齐被害人再逐个关：`close_tab` 会改 `self.tabs`（`retain`），边遍历边关会漏。
     pub(super) fn close_other_tabs(
         &mut self,
@@ -864,7 +1188,13 @@ impl DatabasePage {
             Mode::Table => self.table_rows.as_ref(),
             // 实例页不是结果集：没有可导出的行。仪表板也不是——它一屏有**好几份**结果集，
             // 导出 / 复制的「当前结果集」在这页没有单一定义（要导出就点开对应图表）。
-            Mode::Instance(_) | Mode::Dashboard(_) => None,
+            // 结构编辑器同理：它编辑的是**定义**，不是行数据。
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => None,
         }
     }
 }

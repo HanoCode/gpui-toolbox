@@ -46,6 +46,22 @@ pub fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
+/// 原生文件对话框的**起始目录**。
+///
+/// 优先「下载」→「文档」→ home → 当前工作目录：导出这类动作的落点九成在这两个
+/// 用户目录里，每次从 `/` 开始找是白费事。逐级回退而不是返回 `Option`，是因为
+/// gpui 的 `prompt_for_new_path` 要一个**真实存在**的目录（它把路径转成 `NSURL`，
+/// 转不出来的话面板会退回系统默认位置 —— 能用，但不可控）。四处都拿不到时给空
+/// 路径，同样退回系统默认。
+#[must_use]
+pub fn default_dialog_dir() -> PathBuf {
+    dirs::download_dir()
+        .or_else(dirs::document_dir)
+        .or_else(dirs::home_dir)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
+}
+
 /// 在平台标准目录下拼出应用目录；平台目录缺失时退到系统临时目录。
 fn base(root: Option<PathBuf>) -> PathBuf {
     root.unwrap_or_else(std::env::temp_dir).join(APP_DIR)

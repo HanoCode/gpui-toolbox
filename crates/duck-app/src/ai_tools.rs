@@ -1040,6 +1040,7 @@ mod tests {
                     .map(|name| Column {
                         name: (*name).to_owned(),
                         type_name: String::new(),
+                        comment: String::new(),
                     })
                     .collect(),
                 rows,

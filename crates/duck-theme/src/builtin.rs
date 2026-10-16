@@ -32,6 +32,10 @@ const MIN_PRIMARY_CONTRAST: f32 = 4.5;
 const MIN_FOCUS_RING_CONTRAST: f32 = 3.0;
 /// 文本选区底色相对强调色的透明度。
 const TEXT_SELECTION_ALPHA: f32 = 0.3;
+/// 数据表斑马纹隔行底色的混合比例（`background` 朝 `foreground` 偏几成）。
+///
+/// 4% ≈ 1.06:1 的对比度：分行的边界看得见，又弱于一切交互态（悬停薄层、选中块）。
+const ZEBRA_BAND: f32 = 0.04;
 
 /// 内置主题 id；wire 名称即 Dart enum `.name`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -985,6 +989,10 @@ pub fn extended_tokens(base: &SemanticThemeTokens, mode: ThemeMode) -> ExtendedT
         ThemeMode::Dark => c.primary.alpha(0.26),
         ThemeMode::Light => c.primary.alpha(0.18),
     };
+    // 斑马纹隔行底色：往正文色方向混一档 —— 深色下变亮、浅色下变暗，**一份规则**
+    // 同时服务两套外观（不写第二份色值）。幅度刻意压在 4%（对比度 ≈ 1.06）：
+    // 看得见分行的边界，又不至于与悬停 / 选中态抢注意力。
+    let row_alt = mix(c.background, c.foreground, ZEBRA_BAND);
     // 成功绿提成局部量：`success` 字段与「已连接 / 已完成」状态点取同一个绿，
     // 免得两处各写一份色值、改一处漏一处。
     let success = match mode {
@@ -1007,6 +1015,7 @@ pub fn extended_tokens(base: &SemanticThemeTokens, mode: ThemeMode) -> ExtendedT
             nav_hover: mix(chrome, nav_selected, 0.55),
             hover_tint,
             hover_tint_press,
+            row_alt,
             nav_selected,
             nav_selected_foreground: c.foreground,
             nav_selected_icon: with_min_contrast(c.primary, nav_selected, 3.),
@@ -1344,6 +1353,35 @@ mod tests {
             assert!(
                 extended.colors.hover_tint.a < extended.colors.hover_tint_press.a,
                 "{mode:?} 按下档应比悬停档更浓"
+            );
+        }
+    }
+
+    /// 斑马纹隔行底色必须是**看得见但不抢戏**的一档，且深浅两个模式都朝各自
+    /// 「更看得见」的方向偏。
+    ///
+    /// 钉两件事：① 与页面底色的对比度落在 (1.01, 1.15) —— 归零等于没有斑马纹（只在
+    /// 人眼里），过大则与悬停 / 选中态抢注意力；② 亮度确实偏离 `background`（派生
+    /// 规则写反时 `row_alt` 会等于底色，这条能立刻抓住）。
+    #[test]
+    fn row_alt_is_a_visible_but_quiet_band() {
+        use gpui_component::ThemeMode;
+
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let builtin = BuiltinThemeId::default_for(mode);
+            let base = base_tokens(builtin, builtin.preview().primary);
+            let extended = extended_tokens(&base, mode);
+            let background = base.colors.background;
+            let row_alt = extended.colors.row_alt;
+
+            let ratio = contrast_ratio(relative_luminance(row_alt), relative_luminance(background));
+            assert!(
+                ratio > 1.01 && ratio < 1.15,
+                "{mode:?} 的 row_alt 与 background 对比度应在 (1.01, 1.15)：{ratio}"
+            );
+            assert!(
+                (relative_luminance(row_alt) - relative_luminance(background)).abs() > 1e-4,
+                "{mode:?} 的 row_alt 必须真的偏离 background（否则斑马纹不存在）"
             );
         }
     }

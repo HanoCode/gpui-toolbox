@@ -98,6 +98,17 @@ impl DatabasePage {
             notify::info(tr(cx, "请先输入问题。"), window, cx);
             return;
         }
+        // 记下**用户这一侧**的话头（对话里那一列右对齐的气泡）：
+        //   · `generate` 就是他敲的原句；
+        //   · `fix` / `explain` 没有输入框，用一句等价的说明代替 —— 不记的话对话里
+        //     只剩助手那半边，用户回头看不知道自己为什么问。
+        // 放在所有前置校验**之后**：问题没发出去就先把话记上，等于在对话里留了一条
+        // 永远不会有回应的提问（「请先连接一个数据库」之后那条问题就悬在那儿了）。
+        let user_line: String = match action {
+            AiAction::Generate => question.clone(),
+            AiAction::Fix => tr(cx, "修正上一条执行错误").to_owned(),
+            AiAction::Explain => tr(cx, "解释上一条执行错误").to_owned(),
+        };
         // 2. 厂商 + key：配置不齐直接提示，不静默失败。
         let provider = match self.ai_setup(cx) {
             Ok(provider) => provider,
@@ -132,6 +143,11 @@ impl DatabasePage {
                 .any(|entry| entry.table_ref() == *table)
         });
         let conn = session.conn.clone();
+        // 用户那句话落进对话 —— 放在**借 `session` 那段之后**：`session` 是 `&self`
+        // 借出来的，期间不能可变借 `self` 去 push。
+        // 位置仍然在所有前置校验之后：问题没发出去就先记上，等于在对话里留一条
+        // 永远不会有回应的提问。
+        self.push_ai_message(AiRole::User, user_line, None);
         self.status = tr(cx, "正在请求 AI…").into();
         cx.notify();
         self.spawn_db(
@@ -180,7 +196,11 @@ impl DatabasePage {
     /// 处理一次 AI 调用的产出：按动作决定「自动执行 / 填编辑器 / 只展示」。
     ///
     /// - `generate` / `fix`：单条只读 → 走可取消执行路径；其余 → 只填编辑器（人工审阅）；
-    /// - `explain`：正文是**解释文本**，只放进 [`Self::ai_explain`] 展示，永不执行。
+    /// - `explain`：正文是**解释文本**，只作为一条助手消息展示，永不执行。
+    ///
+    /// 三条路径**都会往对话里记一笔**（产出的 SQL 原文 + 一行「落到哪儿了」）：
+    /// 助手面板的价值就在「能回看这一轮给了什么、当时是自动跑了还是等我审阅」，
+    /// 只在状态栏写一句「已填入编辑器」的话，用户回头再也找不到刚才那条 SQL。
     pub(super) fn install_ai_result(
         &mut self,
         action: AiAction,
@@ -189,6 +209,7 @@ impl DatabasePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let tokens_text = tokens.to_string();
         match action {
             AiAction::Explain => {
                 let explanation = text.trim().to_owned();
@@ -196,8 +217,9 @@ impl DatabasePage {
                     notify::info(tr(cx, "AI 没有返回解释内容。"), window, cx);
                     return;
                 }
-                self.ai_explain = Some(explanation);
-                self.status = trf(cx, "AI 已给出解释 · {} tokens", &[&tokens.to_string()]).into();
+                let note = trf(cx, "解释了上一条错误 · {} tokens", &[&tokens_text]);
+                self.push_ai_message(AiRole::Assistant, explanation, Some(note.into()));
+                self.status = trf(cx, "AI 已给出解释 · {} tokens", &[&tokens_text]).into();
                 cx.notify();
             }
             AiAction::Generate | AiAction::Fix => {
@@ -206,16 +228,28 @@ impl DatabasePage {
                 // INTO`、`EXPLAIN ANALYZE <写>`、赋值型 PRAGMA）一律只填编辑器。
                 if allow_auto_execute(&text) {
                     // 单条只读：立刻执行（可取消 + 查询超时），与手敲执行同一条路径。
+                    let note = trf(cx, "{} tokens · 单条只读，已自动执行", &[&tokens_text]);
+                    self.push_ai_message(
+                        AiRole::Assistant,
+                        text.trim().to_owned(),
+                        Some(note.into()),
+                    );
                     self.execute_ai_sql(text, tokens, window, cx);
                 } else {
                     // 写 / 多条 / 混合：只填编辑器，人工审阅后自己跑——**不自动执行写**。
                     self.sql.update(cx, |state, cx| {
-                        state.set_value(text, window, cx);
+                        state.set_value(text.clone(), window, cx);
                     });
+                    let note = trf(
+                        cx,
+                        "{} tokens · 含写 / 多条语句，已填入编辑器待审阅",
+                        &[&tokens_text],
+                    );
+                    self.push_ai_message(AiRole::Assistant, text, Some(note.into()));
                     self.status = trf(
                         cx,
                         "AI 产出的写 / 多条语句已填入编辑器（{} tokens），请审阅后执行",
-                        &[&tokens.to_string()],
+                        &[&tokens_text],
                     )
                     .into();
                     notify::info(
@@ -226,6 +260,20 @@ impl DatabasePage {
                 }
             }
         }
+    }
+
+    /// 往对话里追加一条消息，并把消息区滚到底。
+    ///
+    /// 滚动由 [`ScrollHandle::scroll_to_bottom`] 在**下一次布局**里生效（它是「标记」，
+    /// 不是立即写偏移），所以新增的那条消息也会被算进新的底部 —— 不必等一帧再补一次。
+    pub(super) fn push_ai_message(
+        &mut self,
+        role: AiRole,
+        text: String,
+        note: Option<SharedString>,
+    ) {
+        self.ai_messages.push(AiMessage { role, text, note });
+        self.ai_scroll.scroll_to_bottom();
     }
 
     /// 执行 AI 产出的**单条只读** SQL —— 与手敲执行共用「可取消 + 查询超时」路径。
@@ -339,6 +387,10 @@ impl DatabasePage {
                         sql: sql_for_log.clone(),
                         message: error.to_string(),
                     });
+                    // 失败也记进对话：用户回头看这一轮时，能看到「它给的 SQL 跑挂了」，
+                    // 而不是只看到一条产出、以为一切顺利。
+                    let failure = trf(cx, "AI 生成的 SQL 执行失败：{}", &[&error.to_string()]);
+                    this.push_ai_message(AiRole::Assistant, failure, None);
                     this.status = trf(cx, "AI 执行失败：{}", &[&error.to_string()]).into();
                     notify::error(
                         trf(cx, "AI 生成的 SQL 执行失败：{}", &[&error.to_string()]),
@@ -350,14 +402,19 @@ impl DatabasePage {
         );
     }
 
-    /// AI 助手条：厂商选择 + 提问输入 + 生成按钮。
+    /// AI 助手面板（右栏 dock 的 `Ai` 分段）。
     ///
-    /// 厂商档案与 API key **不再在 db 页单独维护**：这里只从助手页那份档案列表里
-    /// 选一条（[`crate::ai::load_providers`]），key 走**同一条** vault 密文通道
-    /// （[`crate::ai::load_api_key`]）。没配过任何厂商时给出去「AI 助手」页配置的提示。
-    pub(super) fn render_ai_bar(&self, cx: &App) -> AnyElement {
+    /// 布局对齐 dbx 的 `AiAssistant`：**头部（厂商 / 清空）/ 对话区（可滚）/ 输入区（钉底）**
+    /// 三段。空对话给一处带示例问题的欢迎空态 —— 第一次打开时既没有历史也没有提示的话，
+    /// 面板就是一个空框，用户不知道能问什么。
+    ///
+    /// 厂商档案与 API key **不在 db 页单独维护**：这里只从助手页那份档案列表里选一条
+    /// （[`crate::ai::load_providers`]），key 走**同一条** vault 密文通道
+    /// （[`crate::ai::load_api_key`]）。
+    pub(super) fn render_ai_dock(&self, cx: &App) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
+        let extended = theme.extended();
         let view = self.view.clone();
         let providers = crate::ai::load_providers(cx);
         let active = self.active_ai_provider(cx);
@@ -365,17 +422,24 @@ impl DatabasePage {
             .into_iter()
             .map(|(id, label)| (SharedString::from(id), SharedString::from(label)))
             .collect();
-        let mut bar = v_flex().w_full().gap(tokens.spacing.xs);
 
-        // 厂商行：有档案给下拉，没有就给一句「去助手页配置」的提示。
+        // ── 头部：厂商（身份）+ 清空（动作）──
+        //
+        // 厂商的详细提示（去助手页配置）不放这儿：右栏只有两三百像素宽，一句话塞进去要
+        // 折三四行，把头部撑成一大块。那句说明落在空态里，空间充裕、也正好是用户找不到
+        // 北的时候会看的地方。
+        let mut header = h_flex()
+            .w_full()
+            .flex_none()
+            .items_center()
+            .gap(tokens.spacing.xs);
         if options.is_empty() {
-            bar = bar.child(h_flex().w_full().items_center().child(meta_text(
-                tr(
-                    cx,
-                    "尚未配置 AI 厂商，请到「AI 助手」页添加厂商档案与 API key。",
-                ),
-                cx,
-            )));
+            header = header.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(meta_text(tr(cx, "未配置 AI 厂商"), cx)),
+            );
         } else {
             let current = SharedString::from(
                 active
@@ -383,36 +447,72 @@ impl DatabasePage {
                     .map(|profile| profile.id.clone())
                     .unwrap_or_default(),
             );
-            bar = bar.child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap(tokens.spacing.xs)
-                    .child(dropdown_select(
-                        "db-ai-provider",
-                        options,
-                        current,
-                        {
-                            let view = view.clone();
-                            move |value: SharedString, _window, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    this.ai_provider = Some(value.to_string());
-                                    cx.notify();
-                                });
-                            }
-                        },
-                        cx,
-                    )),
-            );
+            header = header.child(div().flex_1().min_w_0().child(dropdown_select(
+                "db-ai-provider",
+                options,
+                current,
+                {
+                    let view = view.clone();
+                    move |value: SharedString, _window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.ai_provider = Some(value.to_string());
+                            cx.notify();
+                        });
+                    }
+                },
+                cx,
+            )));
+        }
+        header = header.child(
+            icon_button_tip(
+                "db-ai-clear",
+                tr(cx, "清空对话"),
+                Icon::new(DuckIcon::Trash2).size(extended.icon.sm),
+                tr(cx, "清空对话"),
+                ButtonVariant::Ghost,
+                cx,
+            )
+            .disabled(self.ai_messages.is_empty())
+            .on_click({
+                let view = view.clone();
+                move |_, _, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.ai_messages.clear();
+                        cx.notify();
+                    });
+                }
+            }),
+        );
+
+        // ── 对话区：自己滚（`ai_scroll` 让新消息一定可见）──
+        //
+        // 空 / 非空共用一个容器与一个 id：切换时 ElementId 不变，滚动状态不会被重建打断。
+        let mut conversation = v_flex()
+            .id("db-ai-messages")
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .gap(tokens.spacing.sm)
+            .overflow_y_scroll()
+            .track_scroll(&self.ai_scroll);
+        if self.ai_messages.is_empty() {
+            conversation = conversation
+                .items_center()
+                .justify_center()
+                .child(self.render_ai_welcome(cx));
+        } else {
+            for message in &self.ai_messages {
+                conversation = conversation.child(ai_message_bubble(message, cx));
+            }
         }
 
-        bar = bar.child(
-            h_flex()
+        // ── 输入区：钉在底部（对话滚，它不滚）──
+        let composer = card(cx).w_full().flex_none().p(tokens.spacing.sm).child(
+            v_flex()
                 .w_full()
-                .items_center()
                 .gap(tokens.spacing.xs)
                 .child(
-                    div().flex_1().min_w_0().child(
+                    div().w_full().child(
                         Input::new(&self.ai_question)
                             .h(theme.density().control)
                             .text_size(tokens.typography.sm.size)
@@ -420,80 +520,159 @@ impl DatabasePage {
                     ),
                 )
                 .child(
-                    button("db-ai-run", tr(cx, "生成"), ButtonVariant::Primary, cx)
-                        .disabled(self.busy)
-                        .on_click({
-                            let view = view.clone();
-                            move |_, window, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    this.run_ai_action(AiAction::Generate, window, cx);
-                                });
-                            }
-                        }),
+                    h_flex().w_full().items_center().justify_end().child(
+                        button("db-ai-run", tr(cx, "生成"), ButtonVariant::Primary, cx)
+                            .disabled(self.busy)
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.run_ai_action(AiAction::Generate, window, cx);
+                                    });
+                                }
+                            }),
+                    ),
                 ),
         );
-        card(cx)
-            .id("db-ai-bar")
-            .w_full()
-            .flex_none()
-            .p(tokens.spacing.lg)
-            .child(bar)
+
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .gap(tokens.spacing.sm)
+            .child(header)
+            .child(conversation)
+            .child(composer)
             .into_any_element()
     }
 
-    /// AI 解释面板：展示 `explain` 动作的正文；**只展示，绝不执行**。
-    pub(super) fn render_explain_panel(&self, cx: &Context<Self>) -> AnyElement {
+    /// AI 对话空态：图标 + 一句「这里能做什么」+ 几个可以直接填进输入框的示例问题。
+    ///
+    /// 示例问题点一下只**填进输入框**，不直接发：发一次要花一次额度（也可能被限流），
+    /// 让用户先看清要问的是什么、再自己按「生成」更合适。
+    fn render_ai_welcome(&self, cx: &App) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
-        let extended = theme.extended();
         let view = self.view.clone();
-        let Some(text) = self.ai_explain.clone() else {
-            return div().into_any_element();
+        let configured = self.active_ai_provider(cx).is_some();
+        let description: SharedString = if configured {
+            tr(
+                cx,
+                "用一句自然语言提问，我把它翻成 SQL：只读语句直接执行，写语句填进编辑器等你审阅。",
+            )
+            .into()
+        } else {
+            tr(
+                cx,
+                "尚未配置 AI 厂商，请到「AI 助手」页添加厂商档案与 API key。",
+            )
+            .into()
         };
+        // 只给三条：空态里的示例是「告诉用户这东西能问什么」，不是一份用例清单。
+        let samples = [
+            tr(cx, "这几张表各有多少行？"),
+            tr(cx, "最近 7 天每天的记录数"),
+            tr(cx, "找出没有主键的表"),
+        ];
+        let mut chips = h_flex()
+            .w_full()
+            .flex_wrap()
+            .items_center()
+            .justify_center()
+            .gap(tokens.spacing.xs);
+        for (index, sample) in samples.into_iter().enumerate() {
+            chips = chips.child(
+                button(
+                    SharedString::from(format!("db-ai-sample-{index}")),
+                    sample,
+                    ButtonVariant::Secondary,
+                    cx,
+                )
+                .disabled(!configured)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let Some(entity) = view.upgrade() else {
+                            return;
+                        };
+                        let text = sample.to_owned();
+                        entity.update(cx, |this, cx| {
+                            let question = this.ai_question.clone();
+                            question.update(cx, |state, cx| {
+                                state.set_value(text, window, cx);
+                                // 填完直接给焦点：接着改两个字或直接按「生成」都顺手。
+                                state.focus(window, cx);
+                            });
+                            cx.notify();
+                        });
+                    }
+                }),
+            );
+        }
         v_flex()
             .w_full()
-            .flex_none()
-            .gap(tokens.spacing.xs)
-            .px(tokens.spacing.sm)
-            .py(tokens.spacing.xs)
-            .bg(tokens.colors.surface)
-            .border_b(extended.stroke.thin)
-            .border_color(extended.colors.hairline)
+            .gap(tokens.spacing.md)
             .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .child(caption_heading(tr(cx, "AI 解释"), cx))
-                    .child(
-                        button(
-                            "db-ai-explain-close",
-                            tr(cx, "关闭"),
-                            ButtonVariant::Ghost,
-                            cx,
-                        )
-                        .on_click({
-                            let view = view.clone();
-                            move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    this.ai_explain = None;
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                    ),
+                empty_state(
+                    DuckIcon::Bot,
+                    tr(cx, "AI 助手"),
+                    Some(description),
+                    None,
+                    cx,
+                )
+                // 空态默认带虚线描边、吃满剩余高度；嵌在面板中间时两样都要收掉。
+                .border_0()
+                .flex_none(),
             )
-            // 解释可能很长：面板有高度上限，超出自己滚，不把结果区挤没。
-            .child(
-                div()
-                    .id("db-ai-explain-body")
-                    .w_full()
-                    .max_h(px(AI_EXPLAIN_MAX_HEIGHT))
-                    .overflow_y_scroll()
-                    .text_size(tokens.typography.sm.size)
-                    .text_color(tokens.colors.foreground)
-                    .child(SharedString::from(text)),
-            )
+            .child(chips)
             .into_any_element()
     }
+}
+
+/// 对话里的一条消息气泡：用户右对齐（强调薄底），助手左对齐（卡片底 + 细描边）。
+///
+/// 宽度上限取**相对值**（85%）而不是固定像素：右栏宽度是用户自己拖出来的
+/// （260–400），固定上限在大宽度下显空、小宽度下又顶到边。
+fn ai_message_bubble(message: &AiMessage, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let body = tokens.typography.sm;
+    let meta = tokens.typography.xs;
+    let mut bubble = v_flex()
+        .max_w(relative(0.85))
+        .gap(tokens.spacing.xxs)
+        .rounded(tokens.radius.md)
+        .px(tokens.spacing.sm)
+        .py(tokens.spacing.xs)
+        .text_size(body.size)
+        .line_height(body.line_height)
+        .text_color(tokens.colors.foreground)
+        .child(
+            div()
+                .w_full()
+                .child(SharedString::from(message.text.clone())),
+        );
+    if let Some(note) = message.note.clone() {
+        bubble = bubble.child(
+            div()
+                .w_full()
+                .text_size(meta.size)
+                .line_height(meta.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(note),
+        );
+    }
+    match message.role {
+        AiRole::User => h_flex()
+            .w_full()
+            .justify_end()
+            .child(bubble.bg(extended.colors.nav_selected)),
+        AiRole::Assistant => h_flex().w_full().justify_start().child(
+            bubble
+                .bg(tokens.colors.surface)
+                .border_1()
+                .border_color(extended.colors.hairline),
+        ),
+    }
+    .into_any_element()
 }

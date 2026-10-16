@@ -340,6 +340,25 @@ impl DatabasePage {
                     }
                 }),
             )
+            // 「执行文件」：跑一份 `.sql` 脚本（批处理路径，不走结果标签）。
+            // 摆在运行组末尾 —— 它和「运行」是同一件事的两种输入（编辑器内容 / 磁盘上的
+            // 文件），中间不该插进改 SQL 的动作；分隔线右侧仍是「管 SQL 的动作」。
+            .child(
+                tb(
+                    "db-run-sql-file",
+                    tr(cx, "执行文件"),
+                    DuckIcon::FileText,
+                    ButtonVariant::Ghost,
+                    tr(cx, "选择 .sql 文件并执行"),
+                )
+                .disabled(self.busy)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| this.run_sql_file(window, cx));
+                    }
+                }),
+            )
             .child(sep())
             // 「保存查询」：把编辑器里的 SQL 存进左栏「已保存查询」。
             // 编辑器为空时禁用——存一条空语句没有任何意义。
@@ -444,6 +463,35 @@ impl DatabasePage {
                     });
                 })
             })
+            // 输入框开合：与「结果区开合」配成一对，但**是另一条轴** —— 结果占满主区
+            // 看数据（收起输入框）与让 SQL 占满主区（收起结果）是两种不同的需要。
+            // 按钮语义写「要做的那件事」：开着时是「隐藏查询输入框」，收起后变「显示…」。
+            .child({
+                let editor_view = view.clone();
+                let tip = if self.editor_visible {
+                    tr(cx, "隐藏查询输入框")
+                } else {
+                    tr(cx, "显示查询输入框")
+                };
+                icon_button_tip(
+                    "db-toggle-editor",
+                    tr(cx, "查询输入框"),
+                    Icon::new(DuckIcon::Rows3).size(extended.icon.md),
+                    tip,
+                    if self.editor_visible {
+                        ButtonVariant::Ghost
+                    } else {
+                        ButtonVariant::Primary
+                    },
+                    cx,
+                )
+                .on_click(move |_, _, cx| {
+                    let _ = editor_view.update(cx, |this, cx| {
+                        this.editor_visible = !this.editor_visible;
+                        cx.notify();
+                    });
+                })
+            })
             // 表浏览才有「重取当前页」这一说：SQL 结果的刷新就是重新执行。
             .when(
                 self.mode == Mode::Table && self.selected_table.is_some(),
@@ -485,8 +533,12 @@ impl DatabasePage {
         }
         // Tx 控件（dbx 同款三件套）：**档位徽标**（Tx:A = 自动提交、Tx:M = 手动事务，
         // 橙底高亮）+ **提交 ✓** + **回滚 ↺**。徽标可点：无事务时 = BEGIN、事务中 =
-        // COMMIT（最常用的两个动作）；提交 / 回滚图标只在事务中可用 —— 与 dbx 的
-        // 提交 / 回滚按钮行为一致（自动提交档位下两个出口都置灰）。
+        // COMMIT（最常用的两个动作）。
+        //
+        // ⚠️ 提交 / 回滚图标**只在事务中渲染**（`if in_tx`），不是「渲染出来再置灰」：
+        // 自动提交档位下没有可提交 / 可回滚的东西 —— 徽标自己写着「点一下开事务」，
+        // 旁边再摆两个永远点不动的出口纯粹是噪音（用户实测反馈）。置灰态本来也骗人：
+        // 「能不能点」要用户去猜为什么。
         //
         // 语句按**引擎**造（[`TxControl::statement`]）：MySQL 用 `START TRANSACTION`，
         // 其余用 `BEGIN`。造出来的语句仍由执行路径按 `tx_effect` 认状态，两者闭环 ——
@@ -541,49 +593,52 @@ impl DatabasePage {
                         });
                     }),
             );
-            let tx_view = view.clone();
-            meta = meta.child(
-                icon_button_tip(
-                    "db-tx-commit",
-                    tr(cx, "提交事务"),
-                    Icon::new(DuckIcon::Check)
-                        .size(extended.icon.md)
-                        .text_color(extended.colors.success),
-                    tr(cx, "提交事务（COMMIT）"),
-                    ButtonVariant::Ghost,
-                    cx,
-                )
-                .disabled(self.busy || !in_tx)
-                .on_click(move |_, window, cx| {
-                    let _ = tx_view.update(cx, |this, cx| {
-                        this.execute_sql("COMMIT".to_owned(), None, window, cx);
-                    });
-                }),
-            );
-            let rollback_view = view.clone();
-            meta = meta.child(
-                icon_button_tip(
-                    "db-tx-rollback",
-                    tr(cx, "回滚事务"),
-                    Icon::new(DuckIcon::RotateCcw)
-                        .size(extended.icon.md)
-                        .text_color(tokens.colors.destructive),
-                    tr(cx, "回滚事务（ROLLBACK）"),
-                    ButtonVariant::Ghost,
-                    cx,
-                )
-                .disabled(self.busy || !in_tx)
-                .on_click(move |_, window, cx| {
-                    let _ = rollback_view.update(cx, |this, cx| {
-                        this.execute_sql("ROLLBACK".to_owned(), None, window, cx);
-                    });
-                }),
-            );
+            // 提交 / 回滚只在**事务中**存在（自动提交档位下这两个出口没有意义）。
+            if in_tx {
+                let tx_view = view.clone();
+                meta = meta.child(
+                    icon_button_tip(
+                        "db-tx-commit",
+                        tr(cx, "提交事务"),
+                        Icon::new(DuckIcon::Check)
+                            .size(extended.icon.md)
+                            .text_color(extended.colors.success),
+                        tr(cx, "提交事务（COMMIT）"),
+                        ButtonVariant::Ghost,
+                        cx,
+                    )
+                    .disabled(self.busy)
+                    .on_click(move |_, window, cx| {
+                        let _ = tx_view.update(cx, |this, cx| {
+                            this.execute_sql("COMMIT".to_owned(), None, window, cx);
+                        });
+                    }),
+                );
+                let rollback_view = view.clone();
+                meta = meta.child(
+                    icon_button_tip(
+                        "db-tx-rollback",
+                        tr(cx, "回滚事务"),
+                        Icon::new(DuckIcon::RotateCcw)
+                            .size(extended.icon.md)
+                            .text_color(tokens.colors.destructive),
+                        tr(cx, "回滚事务（ROLLBACK）"),
+                        ButtonVariant::Ghost,
+                        cx,
+                    )
+                    .disabled(self.busy)
+                    .on_click(move |_, window, cx| {
+                        let _ = rollback_view.update(cx, |this, cx| {
+                            this.execute_sql("ROLLBACK".to_owned(), None, window, cx);
+                        });
+                    }),
+                );
+            }
         }
         if let Some(picker) = self.connection_picker(cx) {
             meta = meta.child(picker);
         }
-        if let Some(picker) = self.namespace_picker("db-toolbar-schema-picker", cx) {
+        if let Some(picker) = self.namespace_picker(&self.toolbar_schema_select, cx) {
             meta = meta.child(picker);
         }
 
@@ -602,7 +657,63 @@ impl DatabasePage {
             // 中间只留弹性带：结果读数（N 行 · N 条语句 · 耗时）不再上顶部 ——
             // 摘要的「执行过程」与底部状态栏都在说这件事，三处重复（用户实测反馈）。
             // `status` 的操作反馈仍在底部状态栏与右上角通知，不丢。
-            .child(div().flex_1())
+            //
+            // 唯一的例外是**执行 SQL 文件**的进度：那是分钟级的活，读数只在状态栏出现
+            // 就太远；它在这条带上占据中段，跑完即消失（只在 `sql_file` 有值时渲染）。
+            .child({
+                let mut band = div().flex_1().min_w_0();
+                if let Some(job) = self.sql_file.as_ref() {
+                    // 总大小量不到（非普通文件）时只报条数，不编一个百分比出来。
+                    let readout = if job.now.total_bytes == 0 {
+                        trf(cx, "已执行 {} 条", &[&job.now.statements.to_string()])
+                    } else {
+                        let percent = (job.now.fraction() * 100.).round().to_string();
+                        trf(
+                            cx,
+                            "{} 条 · {}%",
+                            &[&job.now.statements.to_string(), &percent],
+                        )
+                    };
+                    band = band.child(
+                        h_flex()
+                            .id("db-sql-file-progress")
+                            .w_full()
+                            .min_w_0()
+                            .items_center()
+                            .gap(tokens.spacing.xs)
+                            .child(
+                                Icon::new(DuckIcon::FileText)
+                                    .size(extended.icon.sm)
+                                    .text_color(extended.colors.accent_text),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .max_w(px(SQL_FILE_NAME_WIDTH))
+                                    .truncate()
+                                    .text_size(tokens.typography.sm.size)
+                                    .line_height(tokens.typography.sm.line_height)
+                                    .text_color(tokens.colors.foreground)
+                                    .child(job.name.clone()),
+                            )
+                            .child(div().flex_1().min_w_0().child(progress_bar(
+                                "db-sql-file-progress-bar",
+                                job.now.fraction(),
+                                cx,
+                            )))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_features(tabular_numbers())
+                                    .text_size(tokens.typography.xs.size)
+                                    .line_height(tokens.typography.xs.line_height)
+                                    .text_color(tokens.colors.muted_foreground)
+                                    .child(SharedString::from(readout)),
+                            ),
+                    );
+                }
+                band
+            })
             .child(meta)
             .into_any_element()
     }

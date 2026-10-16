@@ -180,13 +180,34 @@ impl DataTableState {
     }
 
     /// 把横向滚动移到某一列的左缘（宿主「跳转列」用）。
+    ///
+    /// ⚠️ 两处口径必须与行区渲染（`table.rs` 的 `slot_x`）一致，否则「跳转」会停在
+    /// 一个空档上：
+    ///
+    /// 1. 前缀和按**可见列**逐列累加 —— [`Self::offsets`] 是**全部列**的前缀和，
+    ///    藏过列之后与画面上的位置对不上（藏列的宽度仍在里面）；
+    /// 2. `ScrollHandle` 的偏移**越滚越负**（gpui `Div::set_offset` 的文档：偏移是
+    ///    容器左上到第一个子元素左上的距离，「往下滚得越多越负」），且 prepaint 里会
+    ///    钳到 `[-max, 0]`。传正值会被钳回 0 —— 表现就是「点了完全没反应」。
+    ///
+    /// 目标列右侧剩余宽度不足时，上面的钳位会把偏移停在最大滚动量：列贴不到最左缘，
+    /// 那是横向滚动的物理边界（「后面没有了就是没有了」），不是缺陷。
     pub fn scroll_to_column(&mut self, col: usize, cx: &mut Context<Self>) {
-        let Some(offset) = self.offsets.get(col).copied() else {
+        let mut x = ROWNUM_WIDTH + SELECT_COLUMN_WIDTH;
+        let mut found = false;
+        for (index, _) in self.visible_columns() {
+            if index == col {
+                found = true;
+                break;
+            }
+            x += self.widths.get(index).copied().unwrap_or(MIN_COLUMN_WIDTH);
+        }
+        // 藏起来的列不是合法目标：滚过去也在屏幕上找不到它（宿主已过滤，这是防漏）。
+        if !found {
             return;
-        };
-        let x = ROWNUM_WIDTH + SELECT_COLUMN_WIDTH + offset;
+        }
         self.h_scroll
-            .set_offset(gpui::point(gpui::px(x), gpui::px(0.)));
+            .set_offset(gpui::point(gpui::px(-x), gpui::px(0.)));
         cx.notify();
     }
 

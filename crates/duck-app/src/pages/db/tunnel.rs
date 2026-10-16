@@ -245,7 +245,7 @@ pub(super) fn open_session(
         conn.set_read_only(true).map_err(StageError::Session)?;
     }
     let version = conn.server_version().unwrap_or_default();
-    // 命名空间清单 + 目录 + 库级对象（触发器 / 事件 / 用户）一次取齐；
+    // 命名空间清单 + 目录 + 库级对象（触发器 / 事件 / 索引 / 用户）一次取齐；
     // 只有目录失败算真失败，其余取不到就退化成空列表。
     let introspection =
         Introspection::load(&mut conn, effective.schema.as_deref()).unwrap_or_default();
@@ -257,6 +257,7 @@ pub(super) fn open_session(
         catalog: introspection.catalog,
         triggers: introspection.triggers,
         events: introspection.events,
+        indexes: introspection.indexes,
         users: introspection.users,
         schemas: introspection.schemas,
         databases: introspection.databases,

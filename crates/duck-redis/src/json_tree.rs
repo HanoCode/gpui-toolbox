@@ -305,7 +305,10 @@ fn leaf_of(value: &Value, name: String, path: String) -> JsonTreeNode {
 }
 
 /// 标量的展示串。
-fn preview(value: &Value) -> String {
+///
+/// `pub(crate)`：JSONPath 命中结果（`jsonpath.rs`）与树行共用同一条预览规则，
+/// 保证两边看到的串一字不差。
+pub(crate) fn preview(value: &Value) -> String {
     match value {
         Value::Object(_) | Value::Array(_) => String::new(),
         Value::String(text) => {

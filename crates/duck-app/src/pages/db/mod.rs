@@ -37,6 +37,7 @@
 //! | `query.rs` | 2,932 | SQL 执行：排队 / 取消 / 超时、编辑器状态、单元格与行编辑、暂存区、导出 |
 //! | `grid.rs` | 3,569 | 结果区：格式分发、tab 栏、列宽 / 列序、摘要·消息·计划三档、批量条 |
 //! | `charts.rs` | 2,152 | 图表与用户仪表板（12 栏网格） |
+//! | `builder/` | 3 文件 | 可视化 SQL 构建器：`sql.rs` 纯函数 spec → SQL、`panel.rs` 右栏面板、`mod.rs` 状态与动作 |
 //! | `instance.rs` | 904 | 实例监控四档：总览 / 指标 / 检查器 / 仪表板 |
 //! | `ai.rs` | 499 | AI 助手（text-to-SQL）：动作入口、产出落点、助手条与解释面板 |
 //! | `render_editor.rs` | 609 | 编辑器工具条 + 诊断条 |
@@ -52,20 +53,24 @@
 //! `toggle_keyword_case` / `toggle_editor_word_wrap` / `toggle_semantic_diagnostics` /
 //! `apply_query_page_size`。其余 491 个函数逐字节未动。
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use duck_ai::ProviderProfile;
 use duck_components::{
-    ActionHandler, ButtonVariant, CheckState, ConfirmHandler, DatabaseLogo, DuckIcon, FooterAction,
-    SidebarPanel, SidebarState, button, caption_heading, card, check_mark, check_row,
-    content::{accent_tag, description_list, description_row, empty_state, neutral_tag},
-    dialog_footer, dialog_footer_with_action, dialog_top_offset, dropdown_select, field_hint,
-    field_label, form_gap, icon_button, icon_button_tip, icon_text_button, meta_text, modal_drag,
-    modal_drag_area, modal_offset, modal_title_row, notify, sidebar_navigation_button, title_text,
+    ButtonVariant, CheckState, ConfirmHandler, DROPDOWN_MIN_WIDTH, DatabaseLogo, DuckIcon,
+    SidebarPanel, SidebarState, body_text, button, caption_heading, card, check_mark, check_row,
+    content::{
+        accent_tag, description_list, description_row, empty_state, neutral_tag, progress_bar,
+    },
+    dialog_footer, dialog_top_offset, dropdown_select, field_hint, field_label, form_gap,
+    icon_button, icon_button_tip, icon_text_button, meta_text, modal_drag, modal_drag_area,
+    modal_offset, modal_title_row, notify, sidebar_navigation_button, tabular_numbers, title_text,
     toolbar_action_button, toolbar_dropdown_button, toolbar_text_dropdown_button,
 };
 // 结果网格的行模式：公共数据表组件（行虚拟化 + 固定列头 + 列宽拖拽 + 就地编辑槽）。
@@ -95,21 +100,22 @@ use duck_db::sqlwords::{QueryLanguage, SqlWords};
 use duck_db::{
     AiProvider, BatchOutcome, BinaryEncoding, CancelHandle, CancelTimer, CatalogTable, Column,
     Connection, ConnectionHook, ConnectionHooks, DEFAULT_HOOK_TIMEOUT_SECS, DatabaseObject,
-    DbError, EditTarget, ExecOutcome, FilterOp, HookAction, HookContext, HookFailure, HookOutcome,
-    HookPhase, HookReport, HookStatus, InsertRow, InstanceMetric, InstanceOverview, InstanceTable,
-    InstanceView, OpenAiCompatible, OrderBy, PkValues, PlanNode, PlanTree, ProxyConfig, ProxyKind,
-    ProxyTunnel, ProxyTunnelSpec, ResultSet, RowCount, SshTunnel, SshTunnelSpec, SsmConfig,
-    SsmTunnel, SsmTunnelSpec, SwitchOutcome, TableFilter, TableForeignKey, TableIndex, TableKind,
-    TableRef, TableTrigger, Value, covers_columns, edit_target, fingerprint, parse_csv, parse_plan,
-    quote_qualified, run_hook, run_phase, tsv_field,
+    DbError, EditTarget, ExecOutcome, FileProgress, FileReport, FilterOp, HookAction, HookContext,
+    HookFailure, HookOutcome, HookPhase, HookReport, HookStatus, InsertRow, InstanceMetric,
+    InstanceOverview, InstanceTable, InstanceView, OpenAiCompatible, OrderBy, PkValues, PlanNode,
+    PlanTree, ProxyConfig, ProxyKind, ProxyTunnel, ProxyTunnelSpec, ResultSet, RowCount,
+    SqlFileError, SqlFileOptions, SshTunnel, SshTunnelSpec, SsmConfig, SsmTunnel, SsmTunnelSpec,
+    SwitchOutcome, TableFilter, TableForeignKey, TableIndex, TableKind, TableRef, TableTrigger,
+    Value, covers_columns, edit_target, execute_sql_file, fingerprint, parse_csv, parse_plan,
+    quote_identifier, quote_qualified, run_hook, run_phase, tsv_field,
 };
 use duck_theme::{UnderMinute, active_theme, tr, tr_relative_time, trf, trn};
 use gpui::{
-    Anchor, AnyElement, App, AppContext as _, ClickEvent, Context, CursorStyle, Empty, Entity,
-    FocusHandle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton,
-    ParentElement, Render, Role, SharedString, StatefulInteractiveElement as _, Styled,
-    Subscription, Task, Toggled, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
-    relative, uniform_list,
+    Anchor, AnyElement, App, AppContext as _, ClickEvent, Context, CursorStyle, DismissEvent,
+    Empty, Entity, FocusHandle, Focusable as _, FontWeight, Hsla, InteractiveElement, IntoElement,
+    KeyBinding, MouseButton, ParentElement, Render, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Task, Toggled, WeakEntity, Window,
+    actions, div, prelude::FluentBuilder as _, px, relative, uniform_list,
 };
 use gpui_component::{
     Icon, ResizableState, Sizable as _, Size, WindowExt as _,
@@ -119,6 +125,7 @@ use gpui_component::{
     input::{CompletionProvider, Editor, EditorState, Input, InputEvent, InputState, Rope},
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     resizable_panel,
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tooltip::Tooltip,
     v_flex, v_resizable,
 };
@@ -130,11 +137,38 @@ use serde::{Deserialize, Serialize};
 // 审计条目按 `AuditEntry` 的链式构造器拼（语句级事件要带指纹与耗时）。
 use crate::audit::AuditEntry;
 
+/// 可搜索下拉（gpui-component `Select`）的选项条目：`value` 是回传的稳定值，
+/// `label` 是展示文案（列名清单里两者相同；解耦字段留给未来的展示修饰）。
+#[derive(Clone)]
+pub(super) struct DbSelectOption {
+    pub(super) value: SharedString,
+    pub(super) label: SharedString,
+}
+
+impl SelectItem for DbSelectOption {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+}
+
+/// db 页四个可搜索下拉（过滤列 / 批量列 / 命名空间×2）共用的状态类型。
+pub(super) type DbSelectState = SelectState<SearchableVec<DbSelectOption>>;
+
 mod ai;
 mod browse;
+mod builder;
 mod charts;
+mod charts_plot;
+mod compare;
 mod completion;
 mod connect;
+mod er;
 mod grid;
 mod helpers;
 mod hooks;
@@ -147,6 +181,8 @@ mod render_sidebar;
 mod render_tabs;
 mod session;
 mod shell;
+mod structure;
+mod transfer;
 mod tunnel;
 
 // 含自由函数的子模块：名字转出到父模块，供各兄弟子模块取用（范式同 `pages::terminal` /
@@ -154,13 +190,18 @@ mod tunnel;
 // `session` / `render_editor` / `render_sidebar` / `render_tabs` / `shell`）无需转出；
 // `grid` 的自由函数（执行计划树）只在它自己内部用，也不转出。
 use self::browse::*;
+use self::builder::*;
 use self::charts::*;
+use self::charts_plot::*;
+use self::compare::*;
 use self::connect::*;
+use self::er::*;
 use self::helpers::*;
 use self::hooks::*;
 use self::instance::*;
 use self::objects::*;
 use self::profiles::*;
+use self::transfer::*;
 use self::tunnel::*;
 
 /// kv 单键：连接档案数组（结构体 → serde_json，范式同 `appearance`）。
@@ -207,6 +248,11 @@ const COLUMN_RESIZE_HANDLE: f32 = 4.;
 const COLUMNS_MODE_DEFAULT_WIDTHS: [f32; 3] = [160., 360., 120.];
 /// 「消息」tab 执行流水的保留条数（新条目在尾、裁头部）。
 const EXEC_LOG_CAP: usize = 200;
+/// 破坏性动作确认框的宽度。
+///
+/// 正文都是一行问句（「将从数据库中删除 N 行，确定继续吗？」），440 与 redis 页的
+/// 确认框同档：窄到能让目光一次扫完，宽到问句不必折行。
+const CONFIRM_DIALOG_WIDTH: f32 = 440.;
 /// SQL 编辑器**首行文本**距编辑器元素顶边的内边距。
 ///
 /// gpui-component 的 `Input` 渲染多行编辑器时会把 `editor_paddings.top` 设成
@@ -259,13 +305,22 @@ const HOOK_LOG_CAP: usize = 200;
 const KEY_TUNNEL_PROFILES: &str = "db_tunnel_profiles";
 /// 查询历史最多保留多少条的**出厂默认**（可在「设置 → 数据库」里改）。
 pub(super) const HISTORY_LIMIT: usize = 50;
-/// AI「解释」面板的最大高度（解释可能很长，超出自己滚，同样不挤占结果区）。
-const AI_EXPLAIN_MAX_HEIGHT: f32 = 220.;
 /// 全局并发上限：同时最多允许多少条数据库操作在跑（`docs/database-design.md` §4.4）。
 ///
 /// 三引擎的连接都是**一条连接一个锁**，真正的并行度受连接数限制；这个闸门挡的是
 /// 「多个连接同时压满」以及「同一页反复点触发一串操作把 background_executor 占满」。
 const MAX_CONCURRENT_DB_OPS: usize = 4;
+/// 「执行 SQL 文件」的超时守护时长（**防呆**，不是日常判据）。
+///
+/// 单条语句那套超时预算（[`DatabasePage::effective_timeout`]）在这里用不了：一整份
+/// 脚本跑十分钟是常态，按 30 秒掐掉会把一次正常的导入打成失败。所以文件执行按
+/// **整天**兜底 —— 守护到点仍会送那一枪（引擎侧真卡死时还有救），停止的日常入口是
+/// 工具条「停止」（它同时置逐条生效的停止谓词）。
+const SQL_FILE_GUARD_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+/// 文件执行的进度轮询间隔（界面读数刷新频率；后台按 100ms 合流上报，见 `sqlfile`）。
+const SQL_FILE_PROGRESS_POLL: Duration = Duration::from_millis(150);
+/// 工具条进度条前面那个文件名的宽度上限（超长截断，不把进度条挤没）。
+const SQL_FILE_NAME_WIDTH: f32 = 140.;
 /// 「新建连接」驱动选择弹窗宽度。
 const PICKER_WIDTH: f32 = 720.;
 /// 驱动卡片网格列数（弹窗宽度固定，3 列对齐 dbflux 的密度）。
@@ -278,6 +333,11 @@ const EDIT_DIALOG_WIDTH: f32 = 720.;
 const EDIT_DIALOG_BODY_MAX_HEIGHT: f32 = 540.;
 /// 「新建分组」提示弹窗宽度：正文只有一行输入，比常规确认弹窗窄一档。
 const GROUP_DIALOG_WIDTH: f32 = 380.;
+/// 「新建数据库」弹窗宽度：同为单行输入弹窗，与分组弹窗同档。
+const CREATE_DB_DIALOG_WIDTH: f32 = 380.;
+/// 「保存到 SQL 库」弹窗宽度：比单输入弹窗宽一档 —— 文件名（`<表名>.sql` 可能不短）
+/// 与文件夹两行都要放得下，下面还有一排「已有文件夹」快选。
+const SAVE_SQL_DIALOG_WIDTH: f32 = 460.;
 /// 详情页滚动卡片（DDL / 索引两张相邻卡片共用）的最大高度。
 ///
 /// 两张卡片原先各写各的裸值（260 / 240），20px 的差在视觉上无意义却让同页
@@ -586,16 +646,31 @@ struct ConnectAttempt {
     error: Option<StageError>,
 }
 
-/// 主区展示模式：SQL 结果 / 表浏览 / 实例信息页 / 用户仪表板。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// 主区展示模式：SQL 结果 / 表浏览 / 表结构 / 实例信息页 / 用户仪表板。
+///
+/// 不再 `Copy`：`Structure(TableRef)` 带着表引用，快照存取按 `clone()` 走
+///（全模式按值使用的只有 `take_editor_state` 那一处）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 enum Mode {
     /// SQL 执行结果。
     #[default]
     Query,
     /// 表浏览（分页）。
     Table,
+    /// 表结构编辑器（图形化字段网格；带的是目标表，一个标签一张表）。
+    ///
+    /// dbx `TableStructureEditor` 对位：点开不进 SQL 编辑器，进一张「字段网格」——
+    /// 改名 / 改类型 / 增删列都在网格上完成，SQL 预览随改动实时生成，
+    /// 「应用变更」确认后执行。
+    Structure(TableRef),
     /// 实例信息页（左栏连接节点下那四个入口，DBFlux 同形）。
     Instance(InstanceTab),
+    /// ER 关系图：一个库的表卡片 + 外键关系（dbx 对位；带的是库名 / schema）。
+    Er { namespace: String },
+    /// 比较数据：源库 vs 目标连接 + 库（规格带在变体里，结果在 `compare` 字段）。
+    Compare(CompareSpec),
+    /// 数据传输：源库 → 目标连接 + 库（规格带在变体里，结果在 `transfer` 字段）。
+    Transfer(TransferSpec),
     /// 用户仪表板（12 栏网格；带的是仪表板 id，见 [`Dashboard::id`]）。
     Dashboard(u32),
 }
@@ -616,7 +691,7 @@ enum InstanceTab {
     Inspector,
 }
 
-/// 一条**已保存查询**（kv 单键里的一项）。
+/// 一条**已保存查询**（kv 单键里的一项），也就是「SQL 库」里的一个 `.sql` 文件。
 ///
 /// `id` 与 `name` 分开：名字是给人看的、可以重名、可以改；定位（改名 / 删除 / 元素 id）
 /// 一律走 `id`，否则改个名字就会丢掉「正在编辑的是哪一条」这层关系。
@@ -624,8 +699,14 @@ enum InstanceTab {
 struct SavedQuery {
     /// 稳定 id（`saved-<递增序号>`，生成时保证不与现有项重复）。
     id: String,
-    /// 显示名（用户可改）。
+    /// 文件名（用户可改；界面上的「文件名」就是它，默认 `<表名>.sql`）。
     name: String,
+    /// 所属文件夹；`None` / 空 = **根文件夹「SQL 库」**（与 dbx 的 `rootFolder` 同口径）。
+    ///
+    /// `#[serde(default)]`：这一栏是本轮新加的，旧 kv 里的条目没有它 ——
+    /// 没有就是根，正好是旧行为（那时根本没有文件夹这一层）。
+    #[serde(default)]
+    folder: Option<String>,
     /// SQL 正文（载入编辑器用）。
     sql: String,
 }
@@ -644,10 +725,14 @@ impl SavedQuery {
     }
 }
 
-/// 图表类型（对齐 DBFlux 的四档：折线 / 柱状 / 面积 / 饼图）。
+/// 图表类型（对齐 DBFlux：折线 / 柱状 / 面积 / 饼图 / 散点 / 堆叠柱）。
 ///
-/// 四档都由 `gpui-component` 的样式化图表画（`chart::{LineChart, BarChart, AreaChart,
-/// PieChart}`），所以这里只是一个「选哪一种」的标签，不携带任何绘制参数。
+/// 前四档由 `gpui-component` 的样式化图表画（`chart::{LineChart, BarChart, AreaChart,
+/// PieChart}`），所以只携带「选哪一种」这个标签、没有任何绘制参数。
+///
+/// **后两档是自己画的**（`charts_plot.rs`）：那边拼不出「只有点没有线」的散点，也没有堆叠
+/// 模式，而它们的原语（`canvas` + `PathBuilder` + `paint_quad`）本仓都有 —— 见
+/// `docs/database-design.md` §4.16.11。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 enum ChartKind {
     /// 折线（看趋势）。
@@ -659,6 +744,16 @@ enum ChartKind {
     Area,
     /// 饼图（看占比；只吃一个数值列）。
     Pie,
+    /// 散点（看分布 / 相关性；一条数值列一张，点不连线）。
+    ///
+    /// 与折线同一份数据、同一套轴，差别只在**不连线**：线会暗示「两点之间是连续的」，
+    /// 而散点要读的是「点在哪儿、有多密」。
+    Scatter,
+    /// 堆叠柱（看构成；多条数值列**共用一根柱**叠起来）。
+    ///
+    /// 唯一一档「多列同框」的图：并排柱比的是「谁高」，堆叠柱比的是「合起来多少、各占多少」。
+    /// 它因此不走「一列一张」那张小倍数布局（见 `chart_panel` / `stacked_panel`）。
+    StackedBar,
 }
 
 /// 图表视角的配置（结果区改画图时用）。
@@ -1009,6 +1104,43 @@ impl ResultFormat {
     }
 }
 
+/// 右键「复制这一行为 …」的**行级 SQL** 三档（dbx `DataGridCopyExtractorId` 里
+/// `sql-inserts` / `sql-updates` / `where-clause` 三项的对位）。
+///
+/// 与 [`ResultFormat`] 分开是刻意的：那边的 `InsertSql` 作用对象是**选区**（勾选行 /
+/// 选中行 / 整份结果），这边永远是「**右键指向的那一行**」—— 用户在某一格上右键时，
+/// 心里想的是「把这条记录拿走」，不是「把整页结果拿走」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowSqlKind {
+    /// `INSERT INTO t (…) VALUES (…)`（整行，含主键）。
+    Insert,
+    /// `UPDATE t SET … WHERE 主键`（SET 不含主键列）。
+    Update,
+    /// `WHERE 主键 = …`（只给定位条件，拿去别处核对 / 当删除条件）。
+    Where,
+}
+
+impl RowSqlKind {
+    /// 复制成功后的状态栏回执。
+    fn done_note(self, cx: &App) -> SharedString {
+        match self {
+            Self::Insert => tr(cx, "已复制这一行的 SQL INSERT。").into(),
+            Self::Update => tr(cx, "已复制这一行的 SQL UPDATE。").into(),
+            Self::Where => tr(cx, "已复制这一行的 WHERE 条件。").into(),
+        }
+    }
+
+    /// 右键菜单项文案。收进「复制为 ▸」子菜单后与格式档同句式；「（此行）」
+    /// 跟选区档的「复制为 INSERT 语句」（勾选行 / 选中行 / 整份结果）区分开。
+    fn menu_label(self, cx: &App) -> &'static str {
+        match self {
+            Self::Insert => tr(cx, "复制为 INSERT 语句（此行）"),
+            Self::Update => tr(cx, "复制为 UPDATE 语句（此行）"),
+            Self::Where => tr(cx, "复制为 WHERE 条件（此行）"),
+        }
+    }
+}
+
 /// 一条已建立的会话：阻塞连接包在互斥锁里，由后台线程短暂持有。
 struct Session {
     conn: Arc<Mutex<Connection>>,
@@ -1020,6 +1152,12 @@ struct Session {
     triggers: Vec<DatabaseObject>,
     /// 当前命名空间里的事件（只有 MySQL 有独立事件调度器，其余恒空）。
     events: Vec<DatabaseObject>,
+    /// 当前命名空间里的**索引**（名字 + 建在哪张表上；没有命名空间级索引概念的
+    /// 引擎恒空，左栏树据此不画这个分类节点）。
+    ///
+    /// 与 [`Session::table_indexes`] 那一档不是一回事：这里回答「这个库有哪些索引」，
+    /// 那里回答「这张表有哪些索引」。
+    indexes: Vec<DatabaseObject>,
     /// 服务器级的用户与登录（MySQL / PG / MSSQL 有；SQLite 无用户体系恒空）。
     users: Vec<DatabaseObject>,
     /// 可选的命名空间清单（连接时取一次）。
@@ -1057,11 +1195,11 @@ struct Session {
 
 /// 一次内省取回的全部结果（建连 / 刷新 / 切命名空间三处共用同一套取法）。
 ///
-/// 为什么包一个结构：三处都要取「命名空间清单 + 目录 + 触发器 / 事件 / 用户」这六份，
-/// 每处各自写一遍元组解构，加一份新内省就要追三处（类型、构造、回投）。
+/// 为什么包一个结构：三处都要取「命名空间清单 + 目录 + 触发器 / 事件 / 索引 / 用户」
+/// 这七份，每处各自写一遍元组解构，加一份新内省就要追三处（类型、构造、回投）。
 ///
 /// **失败口径**：只有目录（`catalog`）失败会让整次内省失败——它是界面主体；
-/// 其余五份全部 `.unwrap_or_default()`：权限不足的账号取不到 `mysql.user`、
+/// 其余六份全部 `.unwrap_or_default()`：权限不足的账号取不到 `mysql.user`、
 /// 老引擎没有 `list_databases`，都不该把整条连接判死（左栏少一个分类节点而已）。
 #[derive(Default)]
 struct Introspection {
@@ -1070,11 +1208,16 @@ struct Introspection {
     catalog: Vec<CatalogTable>,
     triggers: Vec<DatabaseObject>,
     events: Vec<DatabaseObject>,
+    indexes: Vec<DatabaseObject>,
     users: Vec<DatabaseObject>,
 }
 
 impl Introspection {
-    /// 在**已加锁**的连接上按命名空间取齐六份内省结果。
+    /// 在**已加锁**的连接上按命名空间取齐七份内省结果。
+    ///
+    /// ⚠️ 索引走 [`Connection::list_indexes`]（**一次**问出整个库的索引，不是逐表问）
+    /// —— 几百张表的库逐表 `pragma_index_list` / `information_schema` 就是几百次往返，
+    /// 而这一步在三处（建连 / 刷新 / 切库）都会跑。
     fn load(conn: &mut Connection, schema: Option<&str>) -> Result<Self, DbError> {
         Ok(Self {
             // 命名空间清单也跟着重取（刷新要能看见别人新建的库）。
@@ -1083,6 +1226,7 @@ impl Introspection {
             catalog: conn.catalog(schema)?,
             triggers: conn.list_triggers(schema).unwrap_or_default(),
             events: conn.list_events(schema).unwrap_or_default(),
+            indexes: conn.list_indexes(schema).unwrap_or_default(),
             users: conn.list_users().unwrap_or_default(),
         })
     }
@@ -1094,17 +1238,21 @@ impl Introspection {
         session.catalog = self.catalog;
         session.triggers = self.triggers;
         session.events = self.events;
+        session.indexes = self.indexes;
         session.users = self.users;
     }
 }
 
-/// 左栏树的一个分类节点（表 / 视图 / 存储过程 / 函数 / 触发器 / 事件 / 用户与权限）。
+/// 左栏树的一个分类节点（表 / 视图 / 索引 / 存储过程 / 函数 / 触发器 / 事件 /
+/// 用户与权限）。
 ///
-/// 顺序即展示顺序 —— 与 DBX / DBFlux 的左栏一致（表在最前，权限类在最后）。
+/// 顺序即展示顺序 —— 与 DBX / DBFlux 的左栏一致（表在最前，权限类在最后）；索引紧跟
+/// 视图，因为它是「表这类东西」的伴生对象（存储过程往后的四类都是程序对象）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TreeCategory {
     Table,
     View,
+    Index,
     Procedure,
     Function,
     Trigger,
@@ -1114,9 +1262,10 @@ enum TreeCategory {
 
 impl TreeCategory {
     /// 全部分类，按展示顺序。
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Table,
         Self::View,
+        Self::Index,
         Self::Procedure,
         Self::Function,
         Self::Trigger,
@@ -1130,6 +1279,7 @@ impl TreeCategory {
         match self {
             Self::Table => "table",
             Self::View => "view",
+            Self::Index => "index",
             Self::Procedure => "procedure",
             Self::Function => "function",
             Self::Trigger => "trigger",
@@ -1143,6 +1293,7 @@ impl TreeCategory {
         match self {
             Self::Table => tr(cx, "表"),
             Self::View => tr(cx, "视图"),
+            Self::Index => tr(cx, "索引"),
             Self::Procedure => tr(cx, "存储过程"),
             Self::Function => tr(cx, "函数"),
             Self::Trigger => tr(cx, "触发器"),
@@ -1152,11 +1303,13 @@ impl TreeCategory {
         .to_string()
     }
 
-    /// 分类图标：触发器取闪电、事件取时钟（与 DBX 的取意一致），用户取人形。
+    /// 分类图标：触发器取闪电、事件取时钟（与 DBX 的取意一致），用户取人形，
+    /// 索引取「带序号的清单」（索引就是列的有序清单）。
     const fn icon(self) -> DuckIcon {
         match self {
             Self::Table => DuckIcon::Columns2,
             Self::View => DuckIcon::Layers,
+            Self::Index => DuckIcon::ListOrdered,
             Self::Procedure => DuckIcon::SquareTerminal,
             Self::Function => DuckIcon::SquareFunction,
             Self::Trigger => DuckIcon::Zap,
@@ -1165,7 +1318,7 @@ impl TreeCategory {
         }
     }
 
-    /// 目录条目里的哪一类归到这个分类。
+    /// 目录条目里的哪一类归到这个分类（索引不是目录条目，恒不匹配）。
     const fn matches(self, kind: TableKind) -> bool {
         matches!(
             (self, kind),
@@ -1183,6 +1336,7 @@ impl Session {
         match category {
             TreeCategory::Trigger => &self.triggers,
             TreeCategory::Event => &self.events,
+            TreeCategory::Index => &self.indexes,
             TreeCategory::User => &self.users,
             TreeCategory::Table
             | TreeCategory::View
@@ -1254,28 +1408,65 @@ enum TabKind {
     Database { name: String },
     /// 数据标签：一张表 / 一个视图一个，标题 = `表名@库`（无 schema 时裸名）。
     Data { object: TableRef },
+    /// 结构标签：一张表一个（同连接同表复用），标题 = `结构 表名@库`。
+    Structure { object: TableRef },
     /// 实例标签：仪表盘 / 实例概览 / 实例指标 / 实例检查器各一个（同连接同档复用）。
     ///
     /// 从「页面级 `Mode` 直切」迁到标签层：直切会把当前标签正在看的内容整个盖掉，
     /// 也回不去 —— 标签化之后每个实例页各自持快照（`mode` + `instance_data` 都在
     /// [`SessionView`] 里），切回查询标签原样恢复。
     Instance(InstanceTab),
+    /// ER 关系图标签：一个库一张（同连接同库复用），标题 = `ER 库名`。
+    Er { namespace: String },
+    /// 比较数据标签：一对规格一张（同规格复用），标题 = `比较 源→目标`。
+    Compare(CompareSpec),
+    /// 数据传输标签：一对规格一张（同规格复用），标题 = `传输 源→目标`。
+    Transfer(TransferSpec),
     /// 仪表板标签：一块用户自建仪表板一个（同连接同板复用），标题 = 板名。
     Dashboard(u32),
 }
 
-/// 结果区视图三档（对齐 dbx 的「行 / 列 / JSON」）。
+/// 比较数据的两侧规格：源 / 目标各是「连接 + 命名空间」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompareSpec {
+    /// 源连接（打开菜单所在的连接）。
+    source_conn: String,
+    /// 源命名空间。
+    source_ns: String,
+    /// 目标连接（页面上选，默认另一条已连接会话）。
+    target_conn: String,
+    /// 目标命名空间（页面上选）。
+    target_ns: String,
+}
+
+/// 数据传输的规格：源连接 + 源命名空间的若干表 → 目标连接 + 目标命名空间。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransferSpec {
+    /// 源连接。
+    source_conn: String,
+    /// 源命名空间。
+    source_ns: String,
+    /// 要搬的表（打开时按源目录定死；比较页的「传输此表」传单张）。
+    tables: Vec<TableRef>,
+    /// 目标连接（页面上选）。
+    target_conn: String,
+    /// 目标命名空间（页面上选）。
+    target_ns: String,
+}
+
+/// 结果区视图三档（对齐 dbflux 的「网格 / 记录 / JSON」）。
 ///
 /// 三档看的是**同一份结果的同一行**（有选中行用选中行，没有用首行）：
-/// 行模式 = 常规网格（默认）；列模式 = 把那一行转置成「名称 / 值 / 类型」三列；
-/// JSON = 那一行序列化成对象。落点在**结果区**（footnote 最前面的切换），不占右键菜单。
-/// 与 `chart_view` 是两码事：那是「换一种画法」，这是「换一种读一行数据的方式」。
+/// 网格 = 常规网格（默认）；记录 = 把那一行转置成「名称 / 值 / 类型」三列；
+/// JSON = 那一行序列化成对象。落点在**结果区脚注最前面的切换**（第四档「图表」
+/// 不在本枚举里 —— 它切换的是结果区顶部 tab，见 `DatabasePage::result_view_switch`），
+/// 不占右键菜单。与 `chart_view` 是两码事：那是「换一种画法」，这是「换一种读一行数据的方式」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ResultViewMode {
-    /// 常规网格（默认）。
+    /// 常规网格（默认）：切换器上叫「网格」。
     #[default]
     Grid,
-    /// 转置视图：一列一行，附引擎报的类型名。
+    /// 转置视图：一列一行，附引擎报的类型名。切换器上叫「记录」。
     Columns,
     /// 单行 JSON 预览。
     Json,
@@ -1287,7 +1478,8 @@ enum ResultViewMode {
 /// 头条与读数条不动。切 tab 只改**看的方式**，不清结果、不动分页与暂存。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ResultAreaTab {
-    /// 数据表（默认）：网格 / 列模式 / JSON 三档（[`ResultViewMode`]）在这里生效。
+    /// 数据表（默认）：网格 / 记录 / JSON 三档（[`ResultViewMode`]）在这里生效。脚注
+    /// 切换器的第四档「图表」会切到下面的 [`ResultAreaTab::Chart`]（本枚举里没有图表档）。
     #[default]
     Data,
     /// 摘要：结果集的统计概览（行列数、耗时、逐列类型与空值计数）。
@@ -1319,9 +1511,9 @@ struct ExecLogEntry {
 
 /// 右栏 dock 的分段（设计稿 `docs/db-ui-mockup.html` 的 `docktabs`）。
 ///
-/// 只有两段 —— **详情**（连接信息 / 命名空间 / DDL / 表元信息 / 选中行）与
-/// **历史**。AI 助手**不进这里**：它有独立按钮触发整块右滑浮层（见 `render_ai_bar`），
-/// 和 dock 挤在一栏会让「看数据」与「和模型说话」互相盖住。
+/// 五段 —— **详情**（连接信息 / 命名空间 / DDL / 表元信息 / 选中行）、**历史**、
+/// **单元格**（网格里点 ⓘ 的只读档案）、**构建器**（可视化 SQL 构建器）与
+/// **AI 助手**（与模型的一轮对话）。
 ///
 /// 页面级而非按标签存：右栏是 shell 级、一条路由一个（`with_right_sidebar`），
 /// 用户选的是「我现在想看哪一栏」，切标签不该把这个选择重置。
@@ -1334,6 +1526,40 @@ enum RightDock {
     History,
     /// 单元格详情：网格里点 ⓘ 后的只读档案（dbx「单元格详情」对位）。
     Cell,
+    /// 构建器：可视化拼 SQL（**不占结果区**，构建时原结果照看在眼里）。
+    Builder,
+    /// AI 助手：与模型的一轮对话（dbx `AiAssistant` 对位）。
+    ///
+    /// 曾经是一个「独立右滑浮层」（整块盖在编辑器上方，由 `ai_open` 控制），现在
+    /// 并进 dock 分段：助手要能**回看**「刚才问过什么、它答了什么、产出落到哪儿了」，
+    /// 一条贴在编辑器上的窄条放不下对话，还会把编辑器挤走；右栏本来就是「与当前
+    /// 对象相关的另一块屏」。
+    Ai,
+}
+
+/// AI 对话里一条消息的**说话人**（决定气泡靠哪边、用哪个底色）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiRole {
+    /// 用户：右对齐、强调薄底。
+    User,
+    /// 助手：左对齐、卡片底。
+    Assistant,
+}
+
+/// AI 助手对话里的一条消息。
+///
+/// 只存**看得见的东西**（谁说的 + 正文 + 一行补充说明），不存模型原始响应：
+/// 这里是一份对话记录，不是一份 API 日志；要复现问题看 `tracing` 里的
+/// `ai executed readonly sql` 那条（带 sql 与 tokens）。
+#[derive(Debug, Clone)]
+struct AiMessage {
+    /// 说话人。
+    role: AiRole,
+    /// 正文（用户问句 / 助手产出的 SQL / 解释文本）。
+    text: String,
+    /// 补充说明：tokens 读数与「产出落到哪儿了」（已自动执行 / 已填入编辑器）。
+    /// 用户消息恒为 `None` —— 用户自己知道他说了什么。
+    note: Option<SharedString>,
 }
 
 /// 右栏「历史」分段里的两个数据源。
@@ -1412,6 +1638,18 @@ struct SessionView {
     table_triggers: Vec<TableTrigger>,
     /// 表级元信息是为哪张表取的。
     table_meta_for: Option<TableRef>,
+    /// 表结构编辑器的草稿（`Mode::Structure` 的数据源；`None` = 还没取回列清单）。
+    ///
+    /// 按标签存：两个结构标签各改各的，切回来草稿原样。
+    structure: Option<StructureDraft>,
+    /// ER 关系图的数据（`Mode::Er` 的数据源；`None` = 还没取回）。
+    ///
+    /// 按标签存：两个 ER 标签各看各的库，切回来原样。
+    er: Option<ErData>,
+    /// 比较数据的状态（`Mode::Compare` 的数据源；`None` = 还没开跑）。
+    compare: Option<CompareState>,
+    /// 数据传输的状态（`Mode::Transfer` 的数据源；`None` = 还没开跑）。
+    transfer: Option<TransferState>,
     /// SQL 结果展示态。
     query_result: Option<QueryView>,
     /// SQL 结果可编辑时的目标表。
@@ -1428,6 +1666,12 @@ struct SessionView {
     query_has_more: bool,
     /// 查询结果**客户端分页**的当前页（0 起；`Mode::Query` 的网格按它切片）。
     query_page: usize,
+    /// 查询结果的**客户端排序**（`None` = 原始返回顺序）。
+    ///
+    /// 与表浏览的 `table_sort` 是两套，别混：那边是**服务器侧** `ORDER BY`（重取一页，
+    /// 数据本身换了序），这边结果已整批在手，排的是**展示顺序**（同「结果内搜索」
+    /// 「客户端分页」一层语义 —— 导出 / 编辑 / 多选仍按原始行集走）。
+    query_sort: Option<SortSpec>,
     /// 结果标签（一条语句一个）；`query_result` 恒等于激活标签的视图。
     result_tabs: Vec<ResultTab>,
     /// 激活的结果标签下标。
@@ -1474,6 +1718,141 @@ struct SessionView {
     /// 只影响**显示**：导出 / 复制 / 编辑仍按完整列集走。隐藏是「我不想看」，
     /// 不是「这列不存在」。
     hidden_columns: BTreeSet<String>,
+}
+
+/// 单元格详情的**值编辑器**（右栏「单元格」分段）。
+///
+/// 一框一开关一件事：`cell` 是编辑本体（列名 / 原值 / NULL 位），`row` / `col` 记住
+/// 它属于哪一格 —— 指纹比对用（换格 / 原值变了才重建输入框，用户正在敲的字不被
+/// 下一帧抹掉）。可编辑性与行编辑器同一道闸（[`DatabasePage::edit_source`]）。
+struct CellDetailEditor {
+    /// 指向的行（`cell_detail` 的第一维）。
+    row: usize,
+    /// 指向的列（`cell_detail` 的第二维）。
+    col: usize,
+    /// 编辑本体。
+    cell: RowCell,
+}
+
+/// 表结构编辑器里**一列**的草稿（`Mode::Structure` 的行）。
+struct StructureColumnDraft {
+    /// 原列名；`None` = 本轮新增（库里还没有这一列，SQL 预览走 `ADD COLUMN`）。
+    original: Option<String>,
+    /// 打开时内核报的类型名（判「类型改没改」的基准；新增列为空串）。
+    original_type: String,
+    /// 打开时读到的可空（新增列为 `true`；内核拿不到的引擎按打开值原样保留——
+    /// 不改就不生成语句，改了由「该属性对引擎是否可编辑」的闸门拦住）。
+    original_nullable: bool,
+    /// 字段名输入框（受控显示：当前生效的列名在这份草稿里，框只是显示）。
+    name: Entity<InputState>,
+    /// 类型输入框（`bigint` / `varchar(50)` 整段文本；不拆长度——那是另一层语义）。
+    kind: Entity<InputState>,
+    /// 可空勾选（新增列默认可空；主键勾上时联动关掉）。
+    nullable: bool,
+    /// 打开时读到的默认值（空串 = 无默认值；新增列为空串）。
+    original_default: String,
+    /// 默认值输入框（`CURRENT_TIMESTAMP` / `0` / `'x'` 整段文本）。
+    default: Entity<InputState>,
+    /// 打开时读到的注释（空串 = 无注释）。
+    original_comment: String,
+    /// 注释输入框。
+    comment: Entity<InputState>,
+    /// 打开时读到的字符集（空串 = 表默认；只有 MySQL 有）。
+    original_charset: String,
+    /// 字符集输入框。
+    charset: Entity<InputState>,
+    /// 打开时读到的排序规则（空串 = 字符集默认）。
+    original_collation: String,
+    /// 排序规则输入框。
+    collation: Entity<InputState>,
+    /// 是不是主键成员（打开时从内核读的真值；MySQL 上可改，其余引擎只展示）。
+    primary: bool,
+    /// 本轮标记删除：行淡化、操作位给「撤销删除」，SQL 预览出 `DROP COLUMN`。
+    dropped: bool,
+}
+
+/// 结构编辑器网格的行密度（dbx 同款三档；页内记忆，刷新 / 换表回落「标准」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StructureDensity {
+    Compact,
+    Standard,
+    Comfortable,
+}
+
+/// 「复制其他表字段」弹窗的草稿：源表名 + 候选字段（勾选态在本地）。
+/// `Clone`：弹窗内容闭包里要从页面状态快照一份去渲染。
+#[derive(Clone)]
+struct CopyFieldsDraft {
+    /// 源表（限定名文本，仅展示）。
+    table: String,
+    /// 候选字段（顺序即源表列序；`selected` 初始全勾——复制本就为了要它们）。
+    fields: Vec<(String, String, bool)>,
+}
+
+/// 表结构编辑器的标签（dbx `TableStructureEditor` 的 Tabs 对位）。
+///
+/// 按内核内省能力只开五个：约束、分区内核没有对应读取，**不冒充**（dbx 同款：
+/// 能力之外的标签直接不显示）。索引 / 外键 / 触发器三个标签本轮只读——内核没有
+/// 生成对应 DDL 的能力，摆一个改不动的编辑器只会让人误会。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StructureTab {
+    /// 只读展示打开时读到的建表 DDL + 复制入口。
+    Ddl,
+    /// 字段网格（本编辑器的主编辑面：改名 / 改类型 / 增删列）。
+    Columns,
+    /// 只读索引清单。
+    Indexes,
+    /// 只读外键清单。
+    ForeignKeys,
+    /// 只读触发器清单。
+    Triggers,
+}
+
+/// 表结构编辑器的整份草稿（一个标签一张表）。
+struct StructureDraft {
+    /// 目标表。
+    table: TableRef,
+    /// 当前激活的标签（打开 / 刷新时回落「字段」；页内记忆，切标签不丢）。
+    active_tab: StructureTab,
+    /// 字段搜索框（客户端过滤字段名 / 类型；`Change` 订阅在
+    /// [`DatabasePage::_subscriptions`]，见 `build_structure_draft`）。
+    search: Entity<InputState>,
+    /// 打开时读到的建表 DDL（DDL 标签的数据源；读取失败落 `None`，只影响 DDL
+    /// 标签显示空态，不拖垮编辑器）。
+    ddl: Option<String>,
+    /// 打开时读到的索引 / 外键 / 触发器（三个只读标签的数据源；与右栏同口径：
+    /// 哪个内省失败落空清单，不互相拖垮）。
+    indexes: Vec<TableIndex>,
+    foreign_keys: Vec<TableForeignKey>,
+    triggers: Vec<TableTrigger>,
+    /// 「复制其他表字段」的来源表清单（打开时的库内表快照，不含当前表；按名字排序）。
+    source_tables: Vec<String>,
+    /// 打开时的原列序（仅原列名；判「顺序变没变」——MySQL 生成物理重排 `AFTER`，
+    /// 其余引擎只在本地显示序里生效）。
+    original_order: Vec<String>,
+    /// 打开时的主键列（判「主键变没变」；MySQL 才生成 `ADD/DROP PRIMARY KEY`）。
+    original_primary: Vec<String>,
+    /// 主键可不可改：只有 MySQL 生成得了主键 DDL；其余引擎改主键 = 重建表，
+    /// 勾选框禁用并给出口径提示，不冒充。
+    primary_editable: bool,
+    /// 列级元数据哪个引擎拿不到哪些属性——按 [`DatabaseKind`] 现查（见
+    /// `StructureMeta::supports`），不逐列存。
+    kind: DatabaseKind,
+    /// 「复制其他表字段」弹窗的草稿（`None` = 没开）；挂在页面（[`DatabasePage`]）
+    /// 而不是这份草稿上：弹窗确认时目标列要追加进 `columns`，生命周期跟着弹窗走。
+    /// ——— 放在 [`DatabasePage::copy_fields`]。
+    /// 网格行密度（dbx 同款三档；刷新 / 换表回落「标准」）。
+    density: StructureDensity,
+    /// 列草稿（顺序即表列序；新增列追加尾部）。
+    columns: Vec<StructureColumnDraft>,
+}
+
+/// 列头下拉「列格式化」的格式档（挂在 [`DatabasePage::column_formats`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ColumnFormat {
+    /// 数值千分位：`1234567` 显示成 `1,234,567`。只对数值列的**显示**生效，
+    /// 复制 / 编辑 / SQL 生成的仍是原值。
+    Thousands,
 }
 
 /// 表级元信息包（换表 / 刷新时一次取齐，见 [`SessionView::table_meta_for`]）。
@@ -1549,6 +1928,26 @@ struct RunningQuery {
     timer: CancelTimer,
 }
 
+/// 正在跑的「执行 SQL 文件」任务（见 [`DatabasePage::sql_file`]）。
+///
+/// 三样跨线程的东西都是 `Arc` 包裹的原子量 / 互斥量，而不是页面字段 —— 页面拿不到
+/// 后台线程手里的 `Context`，只能靠它们通信。
+struct SqlFileJob {
+    /// 脚本文件名（状态栏、进度条与执行流水都用它）。
+    name: SharedString,
+    /// 停止标志：`should_stop` 谓词读它，工具条「停止」置它。
+    ///
+    /// 与 `running.cancel` 的分工：那一枪打断**正在跑的那条语句**，这个标志决定
+    /// **后面还跑不跑**（`execute_batch` 每条发起前问一次）。两个都置才是完整的
+    /// 「停止」。
+    stop: Arc<AtomicBool>,
+    /// 最近一次读回的进度（**渲染只读它**，不在 `render` 里碰锁）。
+    ///
+    /// 进度快照本体（`Arc<Mutex<..>>`）不在这里：它只被轮询任务与后台线程两端持有
+    /// （各自一份 `Arc`），页面从不读它 —— 页面读的是这份已经搬回主线程的拷贝。
+    now: FileProgress,
+}
+
 /// SQL 执行结果的展示态（跑一次存起来，渲染绝不现算）。
 #[derive(Clone, Default)]
 struct QueryView {
@@ -1612,6 +2011,26 @@ struct RowCell {
     /// 用 `Rc<Cell<bool>>` 而不是普通字段：开关的点击回调活在渲染闭包（`'static`）里，
     /// 拿不到 `&mut Self`；写进 `Cell` 后由回调直接改，提交时再读。
     null: Rc<std::cell::Cell<bool>>,
+}
+
+/// JSON 档（[`ResultViewMode::Json`]）里的**字段表单**。
+///
+/// 与右栏的行编辑卡**同型不同体**（各自一份 [`RowCell`]）：
+/// - 元素 id 必须错开（`db-json-*` / `db-row-*`）：同一个窗口里 ElementId 就是状态键，
+///   两份表单同时在场时共用一格会让勾选 / 焦点互相串；
+/// - 右栏那份可能停在别的行（用户在网格里双击过），JSON 这份永远跟着 JSON 档当前
+///   显示的那一行走。
+///
+/// 由渲染期同步（[`DatabasePage::sync_json_editor`]）维护：构造输入框实体需要
+/// `&mut Window`，而渲染是唯一拿得到它的时机。
+struct JsonEditor {
+    /// 这份表单服务的那一行（当前结果集内的下标）。
+    row: usize,
+    /// 那一行的指纹（列名 + 展示原值 + NULL 位，见 [`specs_stamp`]）。对不上就整份
+    /// 重建 —— 结果重取 / 翻页 / 换表之后「同一下标」已经是另一行数据了。
+    stamp: u64,
+    /// 每列一个输入框（与 [`RowEditor::cells`] 同型：暂存路径只认它）。
+    cells: Vec<RowCell>,
 }
 
 /// 单元格就地编辑器（双击进入）：一行输入框，回车提交。
@@ -1813,6 +2232,18 @@ const NUMERIC_PROBE_ROWS: usize = 64;
 
 /// 单张图的高度（小倍数一格的高度）。
 const CHART_PANEL_HEIGHT: f32 = 220.;
+
+/// 一张图最多画几个点；超了就走 LTTB 抽稀（[`charts::decimate_lttb`]）。
+///
+/// 取值口径是**数出来的**，不是拍的：结果区一屏画两张图，每张宽约半屏（≈ 600pt），
+/// 横轴还要留出 Y 轴刻度的那条沟（`VALUE_AXIS_GAP` ≈ 32pt），真正落在数据上的像素
+/// 也就 500 出头。画比像素更多的点，多出来的点只会叠在相邻像素上 —— 除了让绘制变慢、
+/// 让折线糊成一条实心带，没有任何信息增益。所以封在 400：比像素略少，
+/// 相邻点在屏幕上一定分得开，「峰在哪一行」这种判读才不会丢。
+///
+/// ⚠️ 与本仓既有的 `point_count` 不是一回事：`gpui-component` 的 `point_count` 只做
+/// `max(数据长度)`（见其 `chart::axis_point_count`），**只能拉长不能抽稀**。
+const CHART_MAX_POINTS: usize = 400;
 
 /// 当前结果集的**可编辑来源**（表浏览的表，或可编辑 SELECT 的表）。
 ///
@@ -2065,6 +2496,11 @@ pub struct DatabasePage {
     query_has_more: bool,
     /// 查询结果**客户端分页**的当前页（0 起；`Mode::Query` 的网格按它切片）。
     query_page: usize,
+    /// 查询结果的**客户端排序**（`None` = 原始返回顺序）。
+    ///
+    /// 与 `table_sort` 是**两套**：表浏览那套是服务器侧 `ORDER BY`（改的是取数），
+    /// 这套只重排**已到手的这批行**（同「结果内搜索」「客户端分页」一层）。
+    query_sort: Option<SortSpec>,
     /// 结果标签（一条语句一个）；`query_result` 恒等于激活标签的视图。
     result_tabs: Vec<ResultTab>,
     /// 激活的结果标签下标。
@@ -2128,6 +2564,12 @@ pub struct DatabasePage {
     /// 一次**未提交的查看**：不进标签快照 —— 收起是「这一屏想让 SQL 大点」，
     /// 切标签回来还照旧展开，不让用户每个标签都要再点一次。
     results_visible: bool,
+    /// SQL 编辑器（查询输入框）是否展开（工具条 `rows-3` 开关；`false` = 只留结果区）。
+    ///
+    /// 与 [`Self::results_visible`] 是**两条独立的轴**：看结果时把编辑器收起来
+    /// （结果占满主区）与只看 SQL 时把结果收起来是两种不同的需要，用同一个开关
+    /// 表达不了。与它同口径，也不进标签快照。
+    editor_visible: bool,
     /// 结果网格里被隐藏的列名（见 [`SessionView::hidden_columns`]：按标签存，
     /// 只影响显示）。渲染时推进 [`Self::data_table`] 的 `set_hidden_names`。
     hidden_columns: BTreeSet<String>,
@@ -2161,6 +2603,24 @@ pub struct DatabasePage {
     /// 它是一次**未提交的输入**，不是某个标签的结果区状态。
     filter_column: Option<String>,
     filter_op: FilterOp,
+    /// 过滤条「列」可搜索下拉（列多时顶上有搜索框；选项 / 选中值由
+    /// `sync_select_pickers` 在渲染入口按指纹同步，确认走 `SelectEvent` 订阅）。
+    filter_column_select: Entity<DbSelectState>,
+    /// 过滤列选项的签名（列名清单拼接）：没变就不动 `SelectState`，
+    /// 用户正在敲的搜索词不被下一帧抹掉。
+    filter_column_stamp: Option<String>,
+    /// 批量条「列」可搜索下拉（选项与过滤列同一份结果集列名）。
+    batch_column_select: Entity<DbSelectState>,
+    batch_column_stamp: Option<String>,
+    /// 命名空间（库 / Schema）可搜索下拉：编辑器工具条与右栏**各一份实体**
+    ///（两处可能同时可见，`Select` 的 ElementId 挂在实体上不能共用）。
+    toolbar_schema_select: Entity<DbSelectState>,
+    dock_schema_select: Entity<DbSelectState>,
+    /// 命名空间选项签名（活跃连接 + 名单 + 当前值）。
+    schema_stamp: Option<String>,
+    /// 命名空间下拉确认后待处理的切换：订阅闭包拿不到 `Window`，
+    /// 攒到渲染入口（那里有）再调 [`Self::select_database`] / [`Self::select_schema`]。
+    pending_namespace_pick: Option<String>,
     /// 过滤条里「待添加」的值输入框。
     filter_value: Entity<InputState>,
     /// 当前选中表的主键列名（表页加载时内省；空 = 无主键 / 只读）。
@@ -2179,8 +2639,23 @@ pub struct DatabasePage {
     table_triggers: Vec<TableTrigger>,
     /// 表级元信息是为哪张表取的（翻页不重复 `COUNT(*)`）。
     table_meta_for: Option<TableRef>,
+    /// 表结构编辑器的草稿（当前标签的那一份；`None` = 列清单还没取回）。按标签存。
+    structure: Option<StructureDraft>,
+    /// ER 关系图的数据（当前标签的那一份；`None` = 还没取回）。按标签存。
+    er: Option<ErData>,
+    /// 比较数据的状态（当前标签的那一份；`None` = 不是比较标签）。按标签存。
+    compare: Option<CompareState>,
+    /// 数据传输的状态（当前标签的那一份；`None` = 不是传输标签）。按标签存。
+    transfer: Option<TransferState>,
+    /// 「复制其他表字段」弹窗的草稿（`None` = 没开；见 [`CopyFieldsDraft`]）。
+    /// **不随标签走**：弹窗是一次「从源表挑字段追加进当前草稿」的临时态。
+    copy_fields: Option<CopyFieldsDraft>,
     /// 行编辑器（暂存式）：改动只存输入框，点保存才落库。
     row_editor: Option<RowEditor>,
+    /// JSON 档的字段表单（同上，见 [`JsonEditor`]）。**不随标签走**：它是一次
+    /// 「看着 JSON 改这一格」的临时态，渲染期按当前行同步（`filter_value` /
+    /// `batch_value` 同一条口径 —— 未提交的输入不是某个标签的结果区状态）。
+    json_editor: Option<JsonEditor>,
     /// 结果区的图表视角配置（`None` = 看表格）。按标签存（见 [`SessionView`]）。
     chart_view: Option<ChartConfig>,
     /// 结果区视图档位（行 / 列 / JSON 三选一，见 [`ResultViewMode`]）。按标签存。
@@ -2215,7 +2690,7 @@ pub struct DatabasePage {
     dashboard_collapsed: BTreeSet<u32>,
     /// 仪表板是否处于**编辑态**（对齐 DBFlux 的 View / Edit）。
     dashboard_editing: bool,
-    /// 右栏 dock 停在哪个分段（详情 / 历史）。
+    /// 右栏 dock 停在哪个分段（详情 / 历史 / 单元格 / 构建器）。
     ///
     /// 取代原先的 `history_open`：历史从「编辑器上方的横向面板」升级为
     /// **右侧常驻分段**（第五轮定稿），所以这不再是「开 / 关」，而是「看哪一栏」。
@@ -2244,14 +2719,19 @@ pub struct DatabasePage {
     ///
     /// 一次**未提交的查看**，不是某个标签的结果区状态 —— 不进快照，切标签保留。
     cell_detail: Option<(usize, usize)>,
+    /// 单元格详情的值编辑器（`None` = 这一格只读展示；可编辑性与行编辑器同一道闸）。
+    ///
+    /// 与 `cell_detail` 同口径：页面级、不进标签快照。
+    cell_detail_editor: Option<CellDetailEditor>,
+    /// 可视化 SQL 构建器的状态（右栏「构建器」分段的数据源）。
+    ///
+    /// 与 `cell_detail` 同口径：**页面级、不进标签快照** —— 右栏是 shell 级、一条路由
+    /// 一个，切标签把「正拼到一半的条件」清掉才是意外。
+    builder: BuilderState,
     /// 单元格就地编辑器（双击进入；`None` = 没在编辑）。
     cell_editor: Option<CellEditor>,
     /// 查询结果客户端分页的**仅本次**每页行数覆盖（`None` = 跟随默认设置）。
     query_page_size_override: Option<u32>,
-    /// 「自定义行数」弹窗的输入框（`None` = 弹窗没开）。
-    page_size_dialog: Option<Entity<InputState>>,
-    /// AI 助手面板是否展开。
-    ai_open: bool,
     /// 选中的 AI 厂商档案 id；`None` = 跟随助手页的默认档案 / 第一条。
     ///
     /// 档案本身（base_url / model / 密文 key）**不落在这里**：一律按需从
@@ -2260,8 +2740,11 @@ pub struct DatabasePage {
     ai_provider: Option<String>,
     /// AI 提问输入框。
     ai_question: Entity<InputState>,
-    /// AI「解释」动作的正文（`None` = 不展示）；**只展示，不执行**。
-    ai_explain: Option<String>,
+    /// AI 助手对话里的消息（页面级，跨标签保留：用户问的是「这个库」的问题，
+    /// 切到另一个标签再切回来还该看到刚才那轮）。
+    ai_messages: Vec<AiMessage>,
+    /// AI 对话消息区的滚动句柄：每追加一条就滚到底（新消息永远可见）。
+    ai_scroll: ScrollHandle,
     /// 最近一次执行失败的上下文（供「AI 修错 / 解释」注入真实错误原文）。
     last_error: Option<QueryError>,
     /// 状态栏文案（连接 / 执行的即时反馈）。
@@ -2286,6 +2769,24 @@ pub struct DatabasePage {
     run_timeout_secs: u64,
     /// 运行令牌自增源（见 [`RunningQuery::token`]）。
     run_seq: u64,
+    /// 正在跑的「执行 SQL 文件」任务（`None` = 没在跑，见 [`SqlFileJob`]）。
+    ///
+    /// 与 [`Self::running`] **并存**：文件执行确实占着一条 `running`（可取消、有守护），
+    /// 但它另有一条「读到多少字节 / 跑了多少条」的进度轴，以及一个**逐条**生效的停止
+    /// 谓词（`running.cancel` 只打断手上这一条，谓词决定后面还跑不跑）——两样都不属于
+    /// 单条查询，塞进 `RunningQuery` 只会让那条路背上看不懂的状态。
+    sql_file: Option<SqlFileJob>,
+    /// 列头下拉的**本地值筛选**：列名 → 允许的展示值集合（只过滤当前结果集的显示行，
+    /// 服务器数据不动；「清除」按列摘掉）。
+    ///
+    /// 值按**展示文本**记（与格子里看见的一致，NULL 也照 `render` 的文本算）；
+    /// 重跑查询 / 换标签时随结果一起失效（见 [`Self::sync_data_table`] 的调用点）。
+    local_filters: BTreeMap<String, BTreeSet<String>>,
+    /// 列头下拉的**列格式化**：列名 → 格式档（当前只有数值千分位）。
+    ///
+    /// 展示文本在 `build_table_model` 预算时应用（`Arc<str>` 一次算好），所以改档
+    /// 必须重推模型（`sync_data_table`），不能只在渲染层过滤。
+    column_formats: BTreeMap<String, ColumnFormat>,
     /// **单次覆盖**的查询超时（秒）；`None` = 跟随连接默认 / 全局默认。
     ///
     /// 只活在本次页面会话里（不落盘、不进档案）：落盘的「连接默认」在连接详情表单的
@@ -2309,6 +2810,10 @@ pub struct DatabasePage {
     /// 展开状态**不进 kv**：它是「这一次看库」的临时视图，不是偏好设置
     /// （与 `Appearance` 里那些密度 / 缩放是两回事）。
     tree_open: std::collections::HashSet<String>,
+    /// 左栏树里被**置顶**的对象（键 = `conn:namespace:名称`；会话内有效，不进 kv
+    /// —— 与 `tree_open` 同口径：是「这一次看库」的视图，不是偏好设置）。
+    /// 排序规则：置顶的排在本分类最前，其余保持目录原序。
+    pinned_tables: std::collections::BTreeSet<String>,
 }
 
 #[cfg(test)]

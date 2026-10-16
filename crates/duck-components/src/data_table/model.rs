@@ -16,7 +16,11 @@ use std::sync::Arc;
 /// 行高（定高是行虚拟化的前提）。
 pub const ROW_HEIGHT: f32 = 24.;
 /// 列头行高：两行（列名 + 类型）。
-pub const HEADER_HEIGHT: f32 = 38.;
+/// 列头高：**三行**（列名 / 类型+长度 / 注释；后两行缺省时不占档）。
+///
+/// 38 → 56 的那次扩档是给表头三段化的（列名 + 类型 + 注释，见
+/// `docs/database-design.md` §4.20.7）：行区独立滚动，这里只影响表头一条。
+pub const HEADER_HEIGHT: f32 = 56.;
 /// 行首「行号」列宽度（不计入列宽缓存）。
 pub const ROWNUM_WIDTH: f32 = 44.;
 /// 行首「多选」列宽度（不计入列宽缓存）。
@@ -86,11 +90,13 @@ impl CellValue {
     }
 }
 
-/// 一列的定义：列名 + 引擎报的类型名（列头第二行画它）。
+/// 一列的定义：列名 + 引擎报的类型名（列头第二行画它）+ 数据库注释（第三行）。
 #[derive(Debug, Clone)]
 pub struct ColumnSpec {
     pub name: Arc<str>,
     pub type_name: Arc<str>,
+    /// 列注释（表头第三行；拿不到就是空串，那一行不画）。
+    pub comment: Arc<str>,
 }
 
 impl ColumnSpec {
@@ -99,7 +105,15 @@ impl ColumnSpec {
         Self {
             name: name.into(),
             type_name: type_name.into(),
+            comment: Arc::from(""),
         }
+    }
+
+    /// 带注释的构造（`new` 后链一下即可，别处不受影响）。
+    #[must_use]
+    pub fn with_comment(mut self, comment: impl Into<Arc<str>>) -> Self {
+        self.comment = comment.into();
+        self
     }
 }
 

@@ -30,8 +30,8 @@ use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
     CatalogTable, DatabaseObject, FilterOp, OrderBy, PkValues, PlaceholderStyle, RowCount,
-    TableFilter, TableForeignKey, TableIndex, TableKind, TableRef, TableTrigger, filter_conditions,
-    order_by_clause, quote_identifier, quote_qualified,
+    TableColumnMeta, TableFilter, TableForeignKey, TableIndex, TableKind, TableRef, TableTrigger,
+    filter_conditions, order_by_clause, quote_identifier, quote_qualified,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -364,6 +364,7 @@ async fn drain(mut stream: tiberius::QueryStream<'_>, max_rows: usize) -> Result
                         .map(|column| Column {
                             name: column.name().to_owned(),
                             type_name: column_type_name(column.column_type()).to_owned(),
+                            comment: String::new(),
                         })
                         .collect();
                 }
@@ -652,6 +653,74 @@ impl MssqlConnection {
             columns.push(Column {
                 name: name.clone(),
                 type_name: describe_type(&base, length, precision, scale, nullable),
+                comment: String::new(),
+            });
+        }
+        Ok(columns)
+    }
+
+    /// 一张表的列级元数据（`sys.columns`：可空拿得到；默认值走
+    /// `OBJECT_DEFINITION(default_object_id)`；注释走扩展属性 `MS_Description`；
+    /// 字符集没有——T-SQL 的排序规则是列级的，但文本拿的是排序规则名，不冒充成字符集）。
+    pub fn table_column_meta(&mut self, table: &TableRef) -> Result<Vec<TableColumnMeta>, DbError> {
+        let schema = self.resolve_schema(table.schema.as_deref());
+        let (_, rows, _) = self.select(
+            "SELECT c.name, t.name, c.max_length, c.precision, c.scale, c.is_nullable, \
+                    OBJECT_DEFINITION(c.default_object_id), ep.value, c.collation_name \
+             FROM sys.columns c \
+             JOIN sys.types t ON t.user_type_id = c.user_type_id \
+             JOIN sys.objects o ON o.object_id = c.object_id \
+             JOIN sys.schemas s ON s.schema_id = o.schema_id \
+             LEFT JOIN sys.extended_properties ep \
+                    ON ep.major_id = o.object_id AND ep.minor_id = c.column_id \
+                   AND ep.class = 1 AND ep.name = 'MS_Description' \
+             WHERE s.name = @P1 AND o.name = @P2 \
+             ORDER BY c.column_id",
+            &[&schema.as_str(), &table.name.as_str()],
+            usize::MAX,
+        )?;
+        let mut columns = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Some(Value::Text(name)) = row.first() else {
+                continue;
+            };
+            let base = match row.get(1) {
+                Some(Value::Text(text)) => text.clone(),
+                _ => String::new(),
+            };
+            let length = match row.get(2) {
+                Some(Value::Int(value)) => *value,
+                _ => 0,
+            };
+            let precision = match row.get(3) {
+                Some(Value::UInt(value)) => *value,
+                _ => 0,
+            };
+            let scale = match row.get(4) {
+                Some(Value::UInt(value)) => *value,
+                _ => 0,
+            };
+            let nullable = matches!(row.get(5), Some(Value::Bool(true)));
+            let default = match row.get(6) {
+                Some(Value::Text(text)) => Some(text.clone()),
+                _ => None,
+            };
+            let comment = match row.get(7) {
+                Some(Value::Text(text)) => text.clone(),
+                _ => String::new(),
+            };
+            let collation = match row.get(8) {
+                Some(Value::Text(text)) => Some(text.clone()),
+                _ => None,
+            };
+            columns.push(TableColumnMeta {
+                name: name.clone(),
+                type_name: describe_type(&base, length, precision, scale, nullable),
+                comment,
+                nullable: Some(nullable),
+                default,
+                character_set: None,
+                collation,
             });
         }
         Ok(columns)
@@ -909,6 +978,36 @@ impl MssqlConnection {
              JOIN sys.schemas s ON s.schema_id = pt.schema_id \
              WHERE s.name = @P1 \
              ORDER BY tr.name",
+            &[&schema.as_str()],
+            usize::MAX,
+        )?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                let (Some(Value::Text(name)), Some(Value::Text(table))) = (row.first(), row.get(1))
+                else {
+                    return None;
+                };
+                Some(DatabaseObject {
+                    name: name.clone(),
+                    detail: Some(table.clone()),
+                })
+            })
+            .collect())
+    }
+
+    /// 一个命名空间里的**索引**清单（名字 + 建在哪张表上）。
+    ///
+    /// `sys.indexes.name` 对**堆**（无聚簇索引的表）是 NULL，那类行跳过 ——
+    /// 它不是「一个索引对象」，只是「这张表没有聚簇索引」的事实。
+    pub fn list_indexes(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        let schema = self.resolve_schema(schema);
+        let (_, rows, _) = self.select(
+            "SELECT i.name, t.name FROM sys.indexes i \
+             JOIN sys.tables t ON t.object_id = i.object_id \
+             JOIN sys.schemas s ON s.schema_id = t.schema_id \
+             WHERE s.name = @P1 AND i.name IS NOT NULL \
+             ORDER BY t.name, i.name",
             &[&schema.as_str()],
             usize::MAX,
         )?;

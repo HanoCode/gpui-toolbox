@@ -17,7 +17,9 @@ impl RedisPage {
             return;
         }
         let key = detail.key.clone();
-        let value = self.edit_buffer.read(cx).value().to_string();
+        // 内容就在值编辑器里（zedis 同款：值区即编辑器），直接取当前文本——
+        // 「保存值」按钮只在用户真改过（`value_modified`）时出现，见 value_header。
+        let value = self.value_editor.read(cx).value().to_string();
         let Some(session) = self.active_session() else {
             return;
         };
@@ -39,10 +41,12 @@ impl RedisPage {
                         detail.view = ValueView::Text {
                             rendered: value_echo,
                             notice: None,
-                            bytes: len,
                         };
                         detail.size = len;
                     }
+                    // 编辑器内容与保存后的详情一致：不是 Change 事件，手动归零，
+                    // 「保存值 / 放弃修改」随之消失。
+                    this.value_modified = false;
                     this.status = trf(cx, "已保存键 {}", &[&key_echo]).into();
                     notify::success(tr(cx, "值已保存"), window, cx);
                     cx.notify();

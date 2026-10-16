@@ -274,6 +274,44 @@ pub struct TableTrigger {
     pub event: String,
 }
 
+/// 一张表的**列级元数据**（表结构编辑器的数据源；比 [`Column`] 富一档）。
+///
+/// 属性槽位是 `Option`：`None` = 引擎拿不到（SQLite 没注释、PG 没有字符集概念）。
+/// `comment` 与 [`Column::comment`] 同约定：引擎没有就留空串。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableColumnMeta {
+    /// 列名。
+    pub name: String,
+    /// 引擎报的类型名（含长度修饰，口径同 [`Column::type_name`]）。
+    pub type_name: String,
+    /// 列注释（引擎没有就空串）。
+    pub comment: String,
+    /// 可空（拿不到为 `None`）。
+    pub nullable: Option<bool>,
+    /// 默认值原文（引擎报 `NULL` 也照抄；没有 / 拿不到为 `None`）。
+    pub default: Option<String>,
+    /// 字符集（仅 MySQL 有；拿不到为 `None`）。
+    pub character_set: Option<String>,
+    /// 排序规则（MySQL / PG 有；拿不到为 `None`）。
+    pub collation: Option<String>,
+}
+
+impl TableColumnMeta {
+    /// 从裸 [`Column`] 升格：五个属性全空（Mongo / ES 这类「列」只是名字的引擎用）。
+    #[must_use]
+    pub fn from_column(column: Column) -> Self {
+        Self {
+            name: column.name,
+            type_name: column.type_name,
+            comment: column.comment,
+            nullable: None,
+            default: None,
+            character_set: None,
+            collation: None,
+        }
+    }
+}
+
 /// 一张表的行数**口径**：`COUNT(*)` 是精确值，系统统计是估算值。
 ///
 /// 两者展示文案不同（「1 234 行」vs「约 1 234 行」），所以类型上就分开，
@@ -772,6 +810,21 @@ impl Connection {
         }
     }
 
+    /// 一个命名空间里的**索引**清单（名字 + 建在哪张表上）。
+    ///
+    /// 与 [`Self::table_indexes`] 的分工：这条给「库 → 索引」这一层（左栏树的分类
+    /// 节点），那条给「表 → 索引」（右栏的索引卡）。没有命名空间级索引概念的引擎
+    /// （ClickHouse / Mongo / ES）返回空清单——「没有」不是错误，树里不画这个节点。
+    pub fn list_indexes(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
+        match self {
+            Self::Sqlite(conn) => conn.list_indexes(schema),
+            Self::Postgres(conn) => conn.list_indexes(schema),
+            Self::Mysql(conn) => conn.list_indexes(schema),
+            Self::SqlServer(conn) => conn.list_indexes(schema),
+            Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => Ok(Vec::new()),
+        }
+    }
+
     /// 一个命名空间里的**事件**清单（MySQL `CREATE EVENT` 的那套调度对象）。
     ///
     /// 只有 MySQL 有独立的事件调度器；其余引擎恒空（PG 的「事件」是
@@ -842,6 +895,26 @@ impl Connection {
             Self::SqlServer(conn) => conn.table_columns(table),
             Self::Mongo(conn) => conn.table_columns(table),
             Self::Elasticsearch(conn) => conn.table_columns(table),
+        }
+    }
+
+    /// 一张表的**列级元数据**（表结构编辑器的数据源；比 [`Column`] 富一档）。
+    ///
+    /// 与 [`Self::table_columns`] 的分工：那条是「画结果集表头」的最小口径，
+    /// 这条是「编辑表结构」的完整口径——多出可空 / 默认值 / 字符集 / 排序规则，
+    /// 注释与 [`Column::comment`] 同源。
+    ///
+    /// 属性槽位是 `Option`：`None` = 引擎拿不到（SQLite 没注释、PG 没有字符集
+    /// 概念）。调用方**有啥画啥**：`None` 的属性画成不可编辑，不冒充。
+    pub fn table_column_meta(&mut self, table: &TableRef) -> Result<Vec<TableColumnMeta>, DbError> {
+        match self {
+            Self::Sqlite(conn) => conn.table_column_meta(table),
+            Self::Postgres(conn) => conn.table_column_meta(table),
+            Self::Mysql(conn) => conn.table_column_meta(table),
+            Self::ClickHouse(conn) => conn.table_column_meta(table),
+            Self::SqlServer(conn) => conn.table_column_meta(table),
+            Self::Mongo(conn) => conn.table_column_meta(table),
+            Self::Elasticsearch(conn) => conn.table_column_meta(table),
         }
     }
 

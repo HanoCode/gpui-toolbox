@@ -80,12 +80,20 @@ impl fmt::Display for Value {
 }
 
 /// 结果集的一列。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Column {
     /// 列名。
     pub name: String,
     /// 引擎报的类型名（展示用；拿不到时为空串）。
+    ///
+    /// 已含长度修饰（MySQL `column_type` 自带 `varchar(50)`、PG `format_type`
+    /// 自带 `character varying(50)`），表头「类型 + 长度」直接显示它，不另拆长度字段。
     pub type_name: String,
+    /// 数据库注释（MySQL `column_comment` / PG `col_description`；引擎没有就留空串）。
+    ///
+    /// 表头第三行与列头悬停详情卡都用它。**只从表内省来**（`table_columns`）：
+    /// 查询结果的列常常是表达式 / 别名 / 跨表，没有可信的注释来源，宁可空着。
+    pub comment: String,
 }
 
 /// 一个结果集。
@@ -198,6 +206,96 @@ impl ResultSet {
             out.push_str(");\n");
         }
         out
+    }
+
+    /// 渲染第 `row` 行的 `UPDATE` 语句（dbx「SQL UPDATE 语句」对位）。
+    ///
+    /// 定位与 [`Self::to_insert_sql`] 同一套规则：`table` 是调用方拼好的表引用文本，
+    /// 列名与字符串值用 `quote` 包裹。`SET` 只放**非主键列**（主键列是定位条件，改它
+    /// 等于换行），`WHERE` 按 `pk` 给出的主键列名逐列 `AND` —— 主键列名对不上当前
+    /// 结果集（列被藏 / 改名）或行号越界时返回 `None`，调用方把菜单项禁掉即可。
+    #[must_use]
+    pub fn to_update_sql(
+        &self,
+        table: &str,
+        quote: char,
+        pk: &[String],
+        row: usize,
+    ) -> Option<String> {
+        let cells = self.row_cells(row, pk)?;
+        let assignments = cells
+            .iter()
+            .filter(|(name, _)| !pk.contains(name))
+            .map(|(name, value)| format!("{} = {}", quote_name(name, quote), sql_literal(value)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if assignments.is_empty() {
+            // 整行都是主键（纯键表）：没有可 SET 的列，编一条空 SET 是语法错误。
+            return None;
+        }
+        Some(format!(
+            "UPDATE {table} SET {assignments}{};\n",
+            self.where_suffix(quote, pk, &cells)
+        ))
+    }
+
+    /// 渲染第 `row` 行的 `WHERE` 定位条件（dbx「WHERE 条件」对位）。
+    ///
+    /// 单独给这一档是因为「把这一行拿去别处核对 / 当删除条件」是高频动作，不需要
+    /// 整条 UPDATE 外壳。主键对不上或行号越界返回 `None`（同 [`Self::to_update_sql`]）。
+    #[must_use]
+    pub fn to_where_sql(
+        &self,
+        table: &str,
+        quote: char,
+        pk: &[String],
+        row: usize,
+    ) -> Option<String> {
+        let cells = self.row_cells(row, pk)?;
+        let _ = table;
+        let conditions = cells
+            .iter()
+            .filter(|(name, _)| pk.contains(name))
+            .map(|(name, value)| format!("{} = {}", quote_name(name, quote), sql_literal(value)))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        Some(format!("WHERE {conditions}"))
+    }
+
+    /// `WHERE` 子句正文（带前导空格，直接拼在 `SET …` 后面）；无主键时为空串。
+    fn where_suffix(&self, quote: char, pk: &[String], cells: &[(String, &Value)]) -> String {
+        let conditions = cells
+            .iter()
+            .filter(|(name, _)| pk.contains(name))
+            .map(|(name, value)| format!("{} = {}", quote_name(name, quote), sql_literal(value)))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {conditions}")
+        }
+    }
+
+    /// 第 `row` 行的 (列名, 值) 对；`pk` 里有列名不在结果集或行号越界时返回 `None`。
+    ///
+    /// 主键列名必须**全部**命中：`UPDATE` 的 WHERE 少一个主键列就可能定位到多行，
+    /// 宁可不给菜单项也不编一条会误伤的语句。
+    fn row_cells(&self, row: usize, pk: &[String]) -> Option<Vec<(String, &Value)>> {
+        let cells = self.rows.get(row)?;
+        if pk.is_empty() {
+            return None;
+        }
+        let pairs = self
+            .columns
+            .iter()
+            .zip(cells)
+            .map(|(column, value)| (column.name.clone(), value))
+            .collect::<Vec<_>>();
+        if pk.iter().any(|name| !pairs.iter().any(|(c, _)| c == name)) {
+            return None;
+        }
+        Some(pairs)
     }
 
     /// 渲染成 TSV 文本（含表头）。
@@ -636,10 +734,12 @@ mod tests {
                 Column {
                     name: "名称".into(),
                     type_name: "text".into(),
+                    comment: String::new(),
                 },
                 Column {
                     name: "n".into(),
                     type_name: "integer".into(),
+                    comment: String::new(),
                 },
             ],
             rows: vec![
@@ -664,10 +764,12 @@ mod tests {
                 Column {
                     name: "id".into(),
                     type_name: "integer".into(),
+                    comment: String::new(),
                 },
                 Column {
                     name: "blob".into(),
                     type_name: "bytea".into(),
+                    comment: String::new(),
                 },
             ],
             rows: vec![vec![Value::Int(7), Value::Bytes(vec![0x00, 0xff, 0x10])]],
@@ -690,6 +792,7 @@ mod tests {
             columns: vec![Column {
                 name: "blob".into(),
                 type_name: "bytea".into(),
+                comment: String::new(),
             }],
             rows: vec![vec![Value::Bytes(vec![1, 2])], vec![Value::Bytes(vec![3])]],
             truncated: false,
@@ -702,10 +805,12 @@ mod tests {
                 Column {
                     name: "name".into(),
                     type_name: "text".into(),
+                    comment: String::new(),
                 },
                 Column {
                     name: "blob".into(),
                     type_name: "bytea".into(),
+                    comment: String::new(),
                 },
             ],
             rows: vec![vec![Value::Text("a".into()), Value::Bytes(vec![1])]],
@@ -718,6 +823,7 @@ mod tests {
             columns: vec![Column {
                 name: "name".into(),
                 type_name: "text".into(),
+                comment: String::new(),
             }],
             rows: vec![vec![Value::Text("a".into())]],
             truncated: false,
@@ -729,6 +835,7 @@ mod tests {
             columns: vec![Column {
                 name: "blob".into(),
                 type_name: "bytea".into(),
+                comment: String::new(),
             }],
             rows: Vec::new(),
             truncated: false,
@@ -757,18 +864,22 @@ mod tests {
                 Column {
                     name: "id".into(),
                     type_name: "integer".into(),
+                    comment: String::new(),
                 },
                 Column {
                     name: "name".into(),
                     type_name: "text".into(),
+                    comment: String::new(),
                 },
                 Column {
                     name: "price".into(),
                     type_name: "numeric".into(),
+                    comment: String::new(),
                 },
                 Column {
                     name: "note".into(),
                     type_name: "text".into(),
+                    comment: String::new(),
                 },
             ],
             rows: vec![
@@ -817,6 +928,7 @@ mod tests {
             columns: vec![Column {
                 name: "doc".into(),
                 type_name: "json".into(),
+                comment: String::new(),
             }],
             rows: vec![vec![Value::Json(r#"{"a":1}"#.into())]],
             truncated: false,
@@ -857,6 +969,7 @@ mod tests {
             columns: vec![Column {
                 name: "a".into(),
                 type_name: String::new(),
+                comment: String::new(),
             }],
             rows: vec![vec![Value::Text("x\ty".into())]],
             truncated: false,
@@ -885,6 +998,7 @@ mod tests {
             columns: vec![Column {
                 name: "a".into(),
                 type_name: String::new(),
+                comment: String::new(),
             }],
             rows: vec![vec![Value::Text(r"a\|b".into())]],
             truncated: false,
@@ -898,6 +1012,7 @@ mod tests {
             columns: vec![Column {
                 name: "only".into(),
                 type_name: String::new(),
+                comment: String::new(),
             }],
             rows: Vec::new(),
             truncated: false,
@@ -915,6 +1030,7 @@ mod tests {
             columns: vec![Column {
                 name: "id".into(),
                 type_name: "INTEGER".into(),
+                comment: String::new(),
             }],
             rows: vec![vec![Value::Int(1)]],
             truncated: false,
@@ -930,6 +1046,57 @@ mod tests {
         assert_eq!(
             result.to_insert_sql("t", '"'),
             "INSERT INTO t (\"id\") VALUES (1);\n"
+        );
+    }
+
+    /// UPDATE / WHERE：SET 排除主键列、WHERE 按主键逐列 AND；主键对不上 / 行越界 / 无
+    /// 主键 / 纯键行各自给 `None` 或空 SET 的处理。
+    #[test]
+    fn to_update_and_where_sql_locate_by_primary_key() {
+        let sql = sample()
+            .to_update_sql("t", '"', &["id".to_owned()], 0)
+            .expect("主键在列里");
+        assert_eq!(
+            sql,
+            "UPDATE t SET \"name\" = 'a,b', \"price\" = 1.50, \"note\" = NULL WHERE \"id\" = 1;\n"
+        );
+        // 复合主键：两个条件 AND 相连。
+        let where_sql = sample()
+            .to_where_sql("t", '"', &["id".to_owned(), "name".to_owned()], 0)
+            .expect("主键都在列里");
+        assert_eq!(where_sql, "WHERE \"id\" = 1 AND \"name\" = 'a,b'");
+        // 主键列不在结果集：宁可不给语句也不编一条会误伤多行的 UPDATE。
+        assert!(
+            sample()
+                .to_update_sql("t", '"', &["nope".to_owned()], 0)
+                .is_none()
+        );
+        // 行号越界 / 空主键。
+        assert!(
+            sample()
+                .to_update_sql("t", '"', &["id".to_owned()], 9)
+                .is_none()
+        );
+        assert!(sample().to_update_sql("t", '"', &[], 0).is_none());
+        // 整行都是主键：没有可 SET 的列，返回 None（空 SET 是语法错误）。
+        let keyed = ResultSet {
+            columns: vec![Column {
+                name: "id".into(),
+                type_name: String::new(),
+                comment: String::new(),
+            }],
+            rows: vec![vec![Value::Int(1)]],
+            truncated: false,
+        };
+        assert!(
+            keyed
+                .to_update_sql("t", '"', &["id".to_owned()], 0)
+                .is_none()
+        );
+        // WHERE 反而正合适。
+        assert_eq!(
+            keyed.to_where_sql("t", '"', &["id".to_owned()], 0),
+            Some("WHERE \"id\" = 1".to_owned())
         );
     }
 }

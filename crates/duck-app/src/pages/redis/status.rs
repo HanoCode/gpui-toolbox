@@ -27,11 +27,6 @@
 
 use super::*;
 
-/// 类型统计最多列几个类型，多出来的折成「等 N 类」。
-///
-/// 状态栏是一条不能换行的窄带；七类全列出来会把右端的「断开」按钮挤出窗口。
-const TYPE_CENSUS_MAX: usize = 3;
-
 // ----------------------------------------------------------------------
 // 文案（纯函数，可直接单测）
 // ----------------------------------------------------------------------
@@ -70,75 +65,20 @@ fn memory_text(overview: &MemoryOverview) -> String {
 // 段构造（每段各返回 `Option`：拿不到就不渲染空格子）
 // ----------------------------------------------------------------------
 
-/// 延迟段：`延迟 0.42 ms`。还没探测到 / 探测失败时是 `None`。
-fn latency_segment(page: &RedisPage, cx: &App) -> Option<SharedString> {
-    let latency = page.probe.latency?;
-    Some(SharedString::from(trf(
-        cx,
-        "延迟 {}",
-        &[&latency_text(latency)],
-    )))
+/// 延迟值（不带前缀）：`0.42 ms` / `20 ms`。
+///
+/// 对齐 zedis 的状态栏读法：裸数值 + 图标，不写「延迟」前缀——图标就是前缀。
+fn latency_value(page: &RedisPage) -> Option<String> {
+    page.probe
+        .latency
+        .as_ref()
+        .map(|latency| latency_text(*latency))
 }
 
-/// 内存段：`内存 1.05M`（设了上限时 `内存 1.05M / 512.00M`）。
-fn memory_segment(page: &RedisPage, cx: &App) -> Option<SharedString> {
+/// 内存值（不带前缀）：`1.05M`（设了上限 `1.05M / 512.00M`）。
+fn memory_value(page: &RedisPage) -> Option<String> {
     let text = memory_text(page.probe.memory.as_ref()?);
-    (!text.is_empty()).then(|| SharedString::from(trf(cx, "内存 {}", &[&text])))
-}
-
-/// 类型构成段：`字符串 6 · 哈希 2 · 列表 1`，超过 [`TYPE_CENSUS_MAX`] 折成「等 N 类」。
-///
-/// 一个键都没加载（元数据还没回来）时返回 `None`——`0` 个类型的构成没有意义。
-fn type_segment(page: &RedisPage, cx: &App) -> Option<SharedString> {
-    let census = page.type_census();
-    if census.is_empty() {
-        return None;
-    }
-    let visible = census.len().min(TYPE_CENSUS_MAX);
-    let mut text = census[..visible]
-        .iter()
-        .map(|(key_type, count)| format!("{} {count}", key_type_label(*key_type, cx)))
-        .collect::<Vec<_>>()
-        .join(" · ");
-    if census.len() > visible {
-        text.push_str(" · ");
-        text.push_str(&trf(cx, "等 {} 类", &[&census.len().to_string()]));
-    }
-    Some(text.into())
-}
-
-/// 已加载键的类型分布，按数量降序（数量相同则按内核 `KeyType::ALL` 的顺序）。
-///
-/// `Missing` 不进表：它表示「元数据还没回来 / 键已消失」，不是一种类型。
-/// 数量为 0 的类型也不进表——状态栏不该出现「哈希 0」。
-///
-/// 纯函数（只读 `keys` + `key_meta`，不发网络、不改状态），所以可以直接单测
-/// 「同一批键得到同一串顺序」这件事本身。
-pub(super) fn type_census(
-    keys: &[String],
-    key_meta: &HashMap<String, KeyMeta>,
-) -> Vec<(KeyType, usize)> {
-    let mut census: Vec<(KeyType, usize)> = KeyType::ALL
-        .into_iter()
-        .filter(|key_type| *key_type != KeyType::Missing)
-        .map(|key_type| (key_type, 0usize))
-        .collect();
-    for key in keys {
-        let Some(meta) = key_meta.get(key.as_str()) else {
-            continue;
-        };
-        if let Some(entry) = census
-            .iter_mut()
-            .find(|(key_type, _)| *key_type == meta.key_type)
-        {
-            entry.1 += 1;
-        }
-    }
-    census.retain(|(_, count)| *count > 0);
-    // `sort_by` 是**稳定**排序：数量相同时保持 `KeyType::ALL` 的顺序，于是同一批键
-    // 每次都得到同一串文字，不会在两次重绘之间来回抖。
-    census.sort_by(|left, right| right.1.cmp(&left.1));
-    census
+    (!text.is_empty()).then_some(text)
 }
 
 /// 状态栏的 DB 选择器。
@@ -172,7 +112,7 @@ fn db_switcher(page: &RedisPage, cx: &App) -> AnyElement {
     let icon = Icon::new(DuckIcon::Database).size(active_theme(cx).extended().icon.sm);
     toolbar_text_dropdown_button(
         "redis-db-switcher",
-        SharedString::from(format!("db{current}")),
+        SharedString::from(format!("DB {current}")),
         icon,
         Anchor::BottomLeft,
         move |menu, _, _| {
@@ -192,33 +132,162 @@ fn db_switcher(page: &RedisPage, cx: &App) -> AnyElement {
     )
 }
 
-/// 右端的「重新探测」按钮（延迟 / 内存 / 库键数不会自己更新）。
-///
-/// 不置灰：探测不动 `busy`（见 [`RedisPage::spawn_probe`]），点到就是发一次一个往返的
-/// 读数，没有需要防的重入。为它引入灰显还得让整条状态栏订阅 `busy` 的变化，不值。
-fn probe_refresh_button(view: &WeakEntity<RedisPage>, cx: &App) -> AnyElement {
-    let theme = active_theme(cx);
-    let view = view.clone();
-    icon_button(
-        SharedString::from("redis-probe-refresh"),
-        tr(cx, "重新探测"),
-        Icon::new(DuckIcon::RotateCw)
-            .size(theme.extended().icon.sm)
-            .text_color(theme.tokens().colors.muted_foreground),
-        ButtonVariant::Ghost,
-        cx,
-    )
-    .on_click(move |_, _window, cx| {
-        let _ = view.update(cx, |this, cx| this.probe_status(cx));
-    })
-    .into_any_element()
-}
-
 // ----------------------------------------------------------------------
 // 探测与切换
 // ----------------------------------------------------------------------
 
+/// 当前值的**格式标签**（zedis `data_format`：Binary 图标 + 小写格式名，非交互）。
+fn data_format_label(page: &RedisPage, cx: &App) -> SharedString {
+    match page.decode {
+        DecodeKind::Json => SharedString::from("json"),
+        DecodeKind::Text => SharedString::from("text"),
+        DecodeKind::Hex => SharedString::from("hex"),
+        other => SharedString::from(decode_label(other, cx)),
+    }
+}
+
 impl RedisPage {
+    /// 底栏的值编辑器三件套：软换行开关 / 格式标签 / 视图切换。
+    ///
+    /// 对齐 zedis（`status_bar.rs:1671-1741`）：「✓软换行」是**开时才带对勾**的
+    /// 开关（体量超 [`SOFT_WRAP_MAX_BYTES`] 灰显并说明）；「json」是**非交互**的
+    /// 格式读数；「视图：」下拉三档——Auto 重新按内容检测（JSON → JSON 档）、
+    /// 纯文本 / Hex 直切解码档（与本仓的九档解码下拉同一真源，两处入口）。
+    fn render_editor_controls(&self, cx: &App) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        let view = self.view.clone();
+
+        let raw_len = self
+            .detail
+            .as_ref()
+            .map(|detail| detail.raw.len())
+            .unwrap_or(0);
+        let wrap_fits = raw_len <= SOFT_WRAP_MAX_BYTES;
+
+        // 软换行：开 = 前置对勾；超限灰显（排版几十万行会拖垮一帧，zedis 同款上限）。
+        let wrap_button = if self.soft_wrap {
+            icon_text_button(
+                "redis-soft-wrap",
+                tr(cx, "软换行"),
+                Icon::new(DuckIcon::Check).size(extended.icon.sm),
+                ButtonVariant::Ghost,
+                cx,
+            )
+        } else {
+            button(
+                "redis-soft-wrap",
+                tr(cx, "软换行"),
+                ButtonVariant::Ghost,
+                cx,
+            )
+        };
+        let wrap_button = wrap_button.disabled(!wrap_fits).on_click({
+            let view = view.clone();
+            move |_, window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.soft_wrap = !this.soft_wrap;
+                    this.apply_soft_wrap(window, cx);
+                    cx.notify();
+                });
+            }
+        });
+
+        // 格式标签：纯读数（zedis 把按钮 `disabled(true)`，这里直接画文字）。
+        let format = h_flex()
+            .flex_none()
+            .items_center()
+            .gap(tokens.spacing.xxs)
+            .child(
+                Icon::new(DuckIcon::Code)
+                    .size(extended.icon.sm)
+                    .text_color(extended.colors.accent_text),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(tokens.typography.xs.size)
+                    .text_color(extended.colors.accent_text)
+                    .child(data_format_label(self, cx)),
+            );
+
+        // 视图切换：三档映射到解码档（Auto = 重新检测；与头部九档下拉同一真源）。
+        // 勾选随**当前档位**走：Auto 勾在「检测结果」上（decode 等于 auto_decode
+        // 的结论 = 用户没强制指定别的档），纯文本 / Hex 直接比档位。菜单闭包要求
+        // `'static`，三个布尔在闭包外算好再捕获（DecodeKind / bool 都是 Copy）。
+        let current = match self.decode {
+            DecodeKind::Json => tr(cx, "Auto"),
+            DecodeKind::Text => tr(cx, "纯文本"),
+            DecodeKind::Hex => "Hex",
+            _ => tr(cx, "Auto"),
+        };
+        let detected = self
+            .detail
+            .as_ref()
+            .map(|detail| auto_decode(&detail.raw))
+            .unwrap_or(DecodeKind::Text);
+        let auto_checked = self.decode == detected;
+        let plain_checked = self.decode == DecodeKind::Text;
+        let hex_checked = self.decode == DecodeKind::Hex;
+        let auto_label = SharedString::from(tr(cx, "Auto"));
+        let plain_label = SharedString::from(tr(cx, "纯文本"));
+        let hex_label = SharedString::from("Hex");
+        let viewer = toolbar_text_dropdown_button(
+            "redis-viewer-mode",
+            SharedString::from(current),
+            Icon::new(DuckIcon::Rows3).size(extended.icon.sm),
+            Anchor::BottomLeft,
+            move |menu, _, _| {
+                let view_auto = view.clone();
+                let menu = menu.item(
+                    PopupMenuItem::new(auto_label.clone())
+                        .checked(auto_checked)
+                        .on_click(move |_, window, cx| {
+                            let _ = view_auto.update(cx, |this, cx| {
+                                let decode = this
+                                    .detail
+                                    .as_ref()
+                                    .map(|detail| auto_decode(&detail.raw))
+                                    .unwrap_or(DecodeKind::Text);
+                                this.switch_decode(decode, window, cx);
+                            });
+                        }),
+                );
+                let view_plain = view.clone();
+                let menu = menu.item(
+                    PopupMenuItem::new(plain_label.clone())
+                        .checked(plain_checked)
+                        .on_click(move |_, window, cx| {
+                            let _ = view_plain.update(cx, |this, cx| {
+                                this.switch_decode(DecodeKind::Text, window, cx);
+                            });
+                        }),
+                );
+                let view_hex = view.clone();
+                menu.item(
+                    PopupMenuItem::new(hex_label.clone())
+                        .checked(hex_checked)
+                        .on_click(move |_, window, cx| {
+                            let _ = view_hex.update(cx, |this, cx| {
+                                this.switch_decode(DecodeKind::Hex, window, cx);
+                            });
+                        }),
+                )
+            },
+            cx,
+        );
+
+        h_flex()
+            .flex_none()
+            .items_center()
+            .gap(tokens.spacing.xs)
+            .child(wrap_button)
+            .child(format)
+            .child(viewer)
+            .into_any_element()
+    }
+
     /// 探测专用的后台派发：与 [`RedisPage::spawn_redis`] 同构，但**不动 `busy`**。
     ///
     /// ⚠️ 这是刻意的，不是抄漏了。`busy` 的语义是「有**用户在等**的操作在跑」——
@@ -333,14 +402,12 @@ impl RedisPage {
         );
     }
 
-    /// 已加载键的类型分布，按数量降序（数量相同则按内核 `KeyType::ALL` 的顺序）。
-    ///
-    /// 纯读本地 `keys` + `key_meta`，不发任何命令（口径见模块文档「类型统计」一节）。
-    pub(super) fn type_census(&self) -> Vec<(KeyType, usize)> {
-        type_census(&self.keys, &self.key_meta)
-    }
-
     /// 状态栏：左半段「这一页做了什么」，右半段「服务端现在什么样」。
+    ///
+    /// 布局对齐 zedis（`status_bar.rs`）：`[状态消息] [DB 选择器] [≡ 工具菜单]
+    /// [45 / 45 键] ‖ [绿点 已连接] [延迟] [内存] [类型构成] [版本]`；
+    /// 断开 / 解锁写操作收进工具菜单，锁写时「解锁」按钮保留在右端
+    /// （它是安全动作，值得一个常驻入口）。
     pub(super) fn render_status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -350,48 +417,164 @@ impl RedisPage {
         let locked = self.gate().is_some_and(|gate| gate.is_locked());
         let connected = self.active.is_some();
 
+        // 工具菜单的文案先算好（闭包要求 `'static`，不能借 `cx`）。
+        let probe_label = SharedString::from(tr(cx, "重新探测"));
+        let disconnect_label = SharedString::from(tr(cx, "断开"));
+        let unlock_label = SharedString::from(trf(
+            cx,
+            "解锁写操作（{} 分钟）",
+            &[&(WRITE_UNLOCK_SECS / 60).to_string()],
+        ));
+        let mode_hint =
+            (mode != AccessMode::ReadWrite).then(|| SharedString::from(mode_label(mode, cx)));
+
         let mut bar = h_flex()
             .flex_none()
             .h(theme.density().status_bar)
+            .w_full()
             .items_center()
             .gap(tokens.spacing.sm)
             .px(tokens.spacing.sm)
             .bg(extended.colors.chrome)
             .border_t(extended.stroke.thin)
-            .border_color(extended.colors.hairline)
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
-                    .text_size(tokens.typography.xs.size)
-                    .text_color(tokens.colors.muted_foreground)
-                    .child(self.status.clone()),
-            );
-
-        if let Some(session) = self.active_session() {
-            bar = bar.child(neutral_tag(SharedString::from(session.version.clone()), cx));
-        }
-        bar = bar.child(meta_text(mode_label(mode, cx), cx));
+            .border_color(extended.colors.hairline);
 
         if connected {
-            // 右半段五段，全部只在「已连接」时有意义：库 / 键数 / 延迟 / 内存 / 类型构成。
-            bar = bar.child(db_switcher(self, cx));
-            bar = bar.child(meta_text(
-                SharedString::from(trf(
-                    cx,
-                    "{} / {} 键",
-                    &[&self.keys.len().to_string(), &self.dbsize.to_string()],
-                )),
+            // 工具菜单：低频的服务端动作收进来（zedis 的 `≡` 同位）。
+            bar = bar.child(toolbar_dropdown_button(
+                "redis-status-tools",
+                tr(cx, "服务端动作"),
+                Icon::new(DuckIcon::Ellipsis)
+                    .size(extended.icon.sm)
+                    .text_color(tokens.colors.muted_foreground),
+                Anchor::BottomLeft,
+                {
+                    let view = view.clone();
+                    move |menu, _, _| {
+                        let view_probe = view.clone();
+                        let menu = menu.item(PopupMenuItem::new(probe_label.clone()).on_click(
+                            move |_, _window, cx| {
+                                let _ = view_probe.update(cx, |this, cx| this.probe_status(cx));
+                            },
+                        ));
+                        let view_unlock = view.clone();
+                        let menu = if locked {
+                            menu.item(PopupMenuItem::new(unlock_label.clone()).on_click(
+                                move |_, window, cx| {
+                                    let _ = view_unlock
+                                        .update(cx, |this, cx| this.unlock_writes(window, cx));
+                                },
+                            ))
+                        } else {
+                            menu
+                        };
+                        let view_disconnect = view.clone();
+                        menu.item(PopupMenuItem::new(disconnect_label.clone()).on_click(
+                            move |_, window, cx| {
+                                let _ = view_disconnect
+                                    .update(cx, |this, cx| this.disconnect_active(window, cx));
+                            },
+                        ))
+                    }
+                },
                 cx,
             ));
-            bar = bar.children(latency_segment(self, cx).map(|text| meta_text(text, cx)));
-            bar = bar.children(memory_segment(self, cx).map(|text| meta_text(text, cx)));
-            bar = bar.children(type_segment(self, cx).map(|text| meta_text(text, cx)));
-            bar = bar.child(probe_refresh_button(&view, cx));
+            bar = bar.child(db_switcher(self, cx));
+            // 键数：`已加载 / 全库`，读起来就是「扫到多少了」。
+            bar = bar.child(
+                div()
+                    .flex_none()
+                    .text_size(tokens.typography.xs.size)
+                    .text_color(tokens.colors.muted_foreground)
+                    .child(SharedString::from(trf(
+                        cx,
+                        "{} / {} 键",
+                        &[&self.keys.len().to_string(), &self.dbsize.to_string()],
+                    ))),
+            );
+
+            // ── 值编辑器三件套（zedis status_bar.rs 的编辑器区段）─────────
+            // 只在数据视图且选中了**字符串值**时出现：软换行 / 格式标签 / 视图
+            // 切换都是「这个值怎么显示」的控件，别的视图与类型没有它们的位置。
+            if self.main_view == MainView::Data
+                && self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.key_type == KeyType::String)
+            {
+                bar = bar.child(self.render_editor_controls(cx));
+            }
+
+            // 右半段：弹性空档把健康与遥测推到右端（zedis 同构）。
+            bar = bar.child(div().flex_1().min_w_0());
+            bar = bar.child(
+                h_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(tokens.spacing.xxs)
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(extended.colors.status_completed),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(tokens.typography.xs.size)
+                            .text_color(tokens.colors.muted_foreground)
+                            .child(SharedString::from(tr(cx, "已连接"))),
+                    ),
+            );
+            bar = bar.children(mode_hint.map(|text| meta_text(text, cx)));
+            if let Some(latency) = latency_value(self) {
+                bar = bar.child(
+                    h_flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(tokens.spacing.xxs)
+                        .child(
+                            Icon::new(DuckIcon::Gauge)
+                                .size(extended.icon.sm)
+                                .text_color(tokens.colors.muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(tokens.typography.xs.size)
+                                .text_color(tokens.colors.muted_foreground)
+                                .child(SharedString::from(latency)),
+                        ),
+                );
+            }
+            if let Some(memory) = memory_value(self) {
+                bar = bar.child(
+                    h_flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(tokens.spacing.xxs)
+                        .child(
+                            Icon::new(DuckIcon::HardDrive)
+                                .size(extended.icon.sm)
+                                .text_color(tokens.colors.muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(tokens.typography.xs.size)
+                                .text_color(tokens.colors.muted_foreground)
+                                .child(SharedString::from(memory)),
+                        ),
+                );
+            }
+            if let Some(session) = self.active_session() {
+                bar = bar.child(neutral_tag(SharedString::from(session.version.clone()), cx));
+            }
         }
 
         if locked {
+            // 解锁是安全动作：常驻按钮（不收进菜单），锁写期间一眼可见。
             bar = bar.child(
                 button(
                     "redis-unlock-writes",
@@ -407,21 +590,6 @@ impl RedisPage {
                     let view = view.clone();
                     move |_, window, cx| {
                         let _ = view.update(cx, |this, cx| this.unlock_writes(window, cx));
-                    }
-                }),
-            );
-        } else if connected {
-            bar = bar.child(
-                button(
-                    "redis-disconnect",
-                    tr(cx, "断开"),
-                    ButtonVariant::Secondary,
-                    cx,
-                )
-                .on_click({
-                    let view = view.clone();
-                    move |_, window, cx| {
-                        let _ = view.update(cx, |this, cx| this.disconnect_active(window, cx));
                     }
                 }),
             );
@@ -468,93 +636,5 @@ mod tests {
 
         // 一个字段都没有 ⇒ 空串，调用方据此不渲染这一段。
         assert_eq!(memory_text(&MemoryOverview::default()), "");
-    }
-
-    /// 元数据夹具：(键名, 类型)。
-    fn meta_of(entries: &[(&str, KeyType)]) -> HashMap<String, KeyMeta> {
-        entries
-            .iter()
-            .map(|(key, key_type)| {
-                (
-                    (*key).to_owned(),
-                    KeyMeta {
-                        key_type: *key_type,
-                        ttl_secs: -1,
-                    },
-                )
-            })
-            .collect()
-    }
-
-    fn names(entries: &[&str]) -> Vec<String> {
-        entries.iter().map(|key| (*key).to_owned()).collect()
-    }
-
-    /// 按数量降序；数量相同时按内核 `KeyType::ALL` 的顺序（稳定）。
-    #[test]
-    fn type_census_counts_and_orders_by_frequency() {
-        let keys = names(&["a", "b", "c", "d", "e"]);
-        let meta = meta_of(&[
-            ("a", KeyType::String),
-            ("b", KeyType::Hash),
-            ("c", KeyType::Hash),
-            ("d", KeyType::Hash),
-            ("e", KeyType::List),
-        ]);
-        let census = type_census(&keys, &meta);
-        assert_eq!(
-            census,
-            vec![(KeyType::Hash, 3), (KeyType::String, 1), (KeyType::List, 1)]
-        );
-        // `String` 在 `KeyType::ALL` 里排在 `List` 前面 ⇒ 同数量时它在前。
-        assert_eq!(census[1].0, KeyType::String);
-        assert_eq!(census[2].0, KeyType::List);
-    }
-
-    /// ⚠️ 数量为 0 的类型不进表（状态栏不该出现「哈希 0」）。
-    #[test]
-    fn type_census_hides_types_with_no_keys() {
-        let census = type_census(&names(&["a"]), &meta_of(&[("a", KeyType::String)]));
-        assert_eq!(census, vec![(KeyType::String, 1)]);
-        assert_eq!(census.len(), 1, "其余七类都是 0，不该出现");
-    }
-
-    /// `Missing` 不是一种类型，元数据还没回来的键也不算进任何一个类型。
-    #[test]
-    fn type_census_skips_missing_and_unknown_metadata() {
-        let keys = names(&["a", "b", "c"]);
-        let meta = meta_of(&[
-            ("a", KeyType::String),
-            // `b` 压根没有元数据（还在路上）。
-            ("c", KeyType::Missing),
-        ]);
-        let census = type_census(&keys, &meta);
-        assert_eq!(census, vec![(KeyType::String, 1)]);
-        assert!(
-            census
-                .iter()
-                .all(|(key_type, _)| *key_type != KeyType::Missing),
-            "`Missing` 不该成为一类"
-        );
-    }
-
-    /// 一个键都没有 ⇒ 空表（调用方据此不渲染这一段）。
-    #[test]
-    fn type_census_of_nothing_is_empty() {
-        assert!(type_census(&[], &HashMap::new()).is_empty());
-        assert!(type_census(&names(&["a"]), &HashMap::new()).is_empty());
-    }
-
-    /// 同一批键跑两次得到**逐字相同**的顺序（状态栏文字不能在两次重绘之间抖）。
-    #[test]
-    fn type_census_is_stable_across_runs() {
-        let keys = names(&["a", "b", "c", "d"]);
-        let meta = meta_of(&[
-            ("a", KeyType::String),
-            ("b", KeyType::List),
-            ("c", KeyType::Set),
-            ("d", KeyType::Stream),
-        ]);
-        assert_eq!(type_census(&keys, &meta), type_census(&keys, &meta));
     }
 }

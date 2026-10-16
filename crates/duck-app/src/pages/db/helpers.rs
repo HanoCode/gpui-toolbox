@@ -4,6 +4,8 @@
 //! 本文件的函数**不持有页面状态**：要么纯参数进出，要么只收 `&App` / `&Context<Self>`
 //! 读全局状态。页面状态在 `mod.rs`，领域行为在各自的子模块。
 
+use std::collections::BTreeMap;
+
 use super::*;
 
 /// 这个引擎的「命名空间」是不是**就是库本身**？
@@ -15,6 +17,16 @@ use super::*;
 /// 归哪边都不影响（界面上不会出现这一组控件）。
 pub(super) fn namespace_is_database(kind: DatabaseKind) -> bool {
     !matches!(kind, DatabaseKind::Postgres | DatabaseKind::SqlServer)
+}
+
+/// 新建一个**空的**可搜索下拉状态（`searchable` 开着：选项多时下拉顶上有搜索框）。
+/// 选项与选中值由各渲染入口按指纹灌入；db 页所有下拉（过滤列 / 批量列 / 命名空间×2 /
+/// 比较与传输的目标连接、目标库）同用这一个工厂。
+pub(super) fn db_select_state(
+    window: &mut Window,
+    cx: &mut Context<DatabasePage>,
+) -> Entity<DbSelectState> {
+    cx.new(|cx| SelectState::new(SearchableVec::new(Vec::new()), None, window, cx).searchable(true))
 }
 
 /// 「库」清单优先取 [`Session::databases`]；它空（老引擎 / 权限不足 / ES）时退回
@@ -100,6 +112,23 @@ pub(super) fn text_input<T>(
     placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
+}
+
+/// 建一个**带初值**的输入框状态（构建器「列 ▾」菜单开行时预填列名用）。
+///
+/// 初值走 [`InputState::default_value`]（构造期直接落文本，不用再 `set_value` 追一次
+/// 窗口刷新）；空初值等于 [`text_input`]，调用方不必分支。
+pub(super) fn text_input_with<T>(
+    window: &mut Window,
+    cx: &mut Context<T>,
+    placeholder: impl Into<SharedString>,
+    value: &str,
+) -> Entity<InputState> {
+    cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder(placeholder)
+            .default_value(value)
+    })
 }
 
 /// 建一个带占位符的口令输入框状态（显示为掩码）。
@@ -211,6 +240,97 @@ pub(super) fn load_saved_queries(cx: &App) -> Vec<SavedQuery> {
         .unwrap_or_default()
 }
 
+/// 「保存到 SQL 库」的默认文件名：**`<表名>.sql`**（对齐 dbx —— 它用标签标题，
+/// 而标签标题就是对象名）。
+///
+/// 没有选中表时退回「SQL 首行前 24 个字符 + `.sql`」（与保存图表同口径）：给一个
+/// **能改的占位**，而不是「未命名」这种等于没给的东西。表名是空串（理论上不该有）
+/// 时同样走这条回退。
+pub(super) fn default_sql_file_name(table: Option<&TableRef>, sql: &str) -> String {
+    let stem = table
+        .map(|table| table.name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            sql.lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(24)
+                .collect()
+        });
+    ensure_sql_extension(&stem)
+}
+
+/// 补上 `.sql` 后缀（已有就不重复加；大小写不敏感，`.SQL` 也算已有）。
+///
+/// 补在后缀这一层而不是塞进默认值里：用户手打 `orders` 时也该落成 `orders.sql` ——
+/// 文件名带不带后缀不该取决于他是不是照抄了默认值（dbx 的 `defaultSavedSqlName`
+/// 也是这个口径）。
+pub(super) fn ensure_sql_extension(stem: &str) -> String {
+    let trimmed = stem.trim();
+    if trimmed.to_lowercase().ends_with(".sql") {
+        trimmed.to_owned()
+    } else {
+        format!("{trimmed}.sql")
+    }
+}
+
+/// 已保存查询里**出现过的**文件夹（去重 + 排序）。
+///
+/// **从查询本身推导**，不另存一份文件夹清单：文件夹存在的意义就是「里面有查询」，
+/// 单独存一份就多出两份状态要对齐（删掉查询忘了删文件夹 = 树上挂一个永远空的节点，
+/// 而它还是个可点的空壳）。代价是「建一个空文件夹」不保留 —— 本页也没有那个动作：
+/// 保存时填一个新名字即新建。
+pub(super) fn saved_query_folders(saved: &[SavedQuery]) -> Vec<String> {
+    let mut folders: Vec<String> = saved
+        .iter()
+        .filter_map(saved_query_folder)
+        .map(str::to_owned)
+        .collect();
+    folders.sort();
+    folders.dedup();
+    folders
+}
+
+/// 一条查询所属的文件夹（已裁空白）；`None` = **根文件夹「SQL 库」**。
+///
+/// 「根」在数据里有两种写法（字段缺失、字段是空串 / 全空白），归一在这一处：
+/// 判据散在各个调用点上，迟早出现「存的时候算根、分组的时候算文件夹」这种两边不一致。
+pub(super) fn saved_query_folder(saved: &SavedQuery) -> Option<&str> {
+    saved
+        .folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|folder| !folder.is_empty())
+}
+
+/// 「保存到 SQL 库」弹窗里「已有」的那一枚文件夹标签：点一下把名字填进文件夹输入框。
+///
+/// 值走**输入框自己的** `update`（`InputState` 是个实体，改值自己会重绘），所以这里
+/// 不需要一个能跟着重绘的选中态 —— 这正是本页没为这一栏单开一个下拉控件的理由
+/// （弹窗正文的宿主 `notify()` 到不了 `content` 闭包，见 `duck-components/src/dialog.rs`）。
+pub(super) fn folder_chip(name: &str, input: &Entity<InputState>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let input = input.clone();
+    let value = name.to_owned();
+    let label = SharedString::from(name.to_owned());
+    button(
+        SharedString::from(format!("db-save-sql-folder-{name}")),
+        label,
+        ButtonVariant::Ghost,
+        cx,
+    )
+    .h(theme.density().status_control)
+    .px(tokens.spacing.xs)
+    .on_click(move |_, window, cx| {
+        let value = value.clone();
+        input.update(cx, |state, cx| state.set_value(value, window, cx));
+    })
+    .into_any_element()
+}
+
 /// 从 kv 读已保存图表（解析失败 / 缺键 → 空，用户重存即可覆盖）。
 pub(super) fn load_saved_charts(cx: &App) -> Vec<SavedChart> {
     duck_store::kv_get(cx, KEY_SAVED_CHARTS)
@@ -290,18 +410,108 @@ pub(super) fn row_as_tsv(row: &[duck_db::Value]) -> String {
 /// 列宽也一并交给组件（`TableModel::estimated_widths` 与原先
 /// `compute_column_widths` 同一套采样口径：前 200 行、按展示文本字符数估宽再夹
 /// 上下限），宿主不再自留一份宽度缓存。
-pub(super) fn build_table_model(result: &ResultSet) -> TableModel {
+pub(super) fn build_table_model(
+    result: &ResultSet,
+    formats: &BTreeMap<String, ColumnFormat>,
+) -> TableModel {
     let columns = result
         .columns
         .iter()
-        .map(|column| ColumnSpec::new(column.name.clone(), column.type_name.clone()))
+        .map(|column| {
+            ColumnSpec::new(column.name.clone(), column.type_name.clone())
+                .with_comment(column.comment.clone())
+        })
         .collect();
     let rows = result
         .rows
         .iter()
-        .map(|row| RowData::new(row.iter().map(table_cell).collect()))
+        .map(|row| {
+            RowData::new(
+                row.iter()
+                    .enumerate()
+                    // 千分位按**列**生效：先查列名有没有开档，开了且列是数值型
+                    // 才对这一格换显示文本（原值不动，复制 / 编辑仍走 `Value`）。
+                    .map(|(col, value)| {
+                        let name = result.columns[col].name.as_str();
+                        let formatted = formats.get(name).is_some_and(|f| {
+                            *f == ColumnFormat::Thousands && result_column_is_numeric(name, result)
+                        });
+                        table_cell_with_format(value, formatted)
+                    })
+                    .collect(),
+            )
+        })
         .collect();
     TableModel::new(columns, rows)
+}
+
+/// 列是不是**数值型**：优先看该列第一个非空单元格的实际类型（结果集的类型名在
+/// 表达式列上常常拿不到），类型名兜底（`int` / `decimal` 这类前缀）。
+pub(super) fn result_column_is_numeric(name: &str, result: &ResultSet) -> bool {
+    if let Some(col) = result.columns.iter().position(|c| c.name == name) {
+        if let Some(value) = result.rows.iter().find_map(|row| row.get(col)) {
+            return matches!(
+                value,
+                Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Decimal(_)
+            );
+        }
+        if let Some(column) = result.columns.get(col) {
+            let t = column.type_name.to_ascii_lowercase();
+            return [
+                "int", "decimal", "numeric", "float", "double", "real", "num",
+            ]
+            .iter()
+            .any(|prefix| t.starts_with(prefix));
+        }
+    }
+    false
+}
+
+/// [`Value::render`] 加一层可选的千分位（整数部分按 3 位插逗号；负号与小数不动）。
+fn table_cell_with_format(value: &Value, thousands: bool) -> CellValue {
+    let kind = match value {
+        Value::Null => CellKind::Null,
+        Value::Bool(_) => CellKind::Bool,
+        Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Decimal(_) => CellKind::Number,
+        Value::Json(_) => CellKind::Json,
+        Value::Bytes(_) => CellKind::Bytes,
+        Value::Text(_) | Value::Date(_) | Value::Time(_) | Value::DateTime(_) => CellKind::Text,
+    };
+    let text = value.render();
+    CellValue::new(
+        kind,
+        if thousands && matches!(kind, CellKind::Number) {
+            thousands_separated(&text)
+        } else {
+            text
+        },
+    )
+}
+
+/// 数值展示文本的千分位：`-1234567.89` → `-1,234,567.89`。
+///
+/// 只处理**已经渲染好**的文本（内核把 `Decimal` 保成字符串正是为了不动精度），
+/// 按小数点切两半、只对整数部分从右往左插逗号；没有小数点就整段处理。
+pub(super) fn thousands_separated(text: &str) -> String {
+    let (sign, rest) = match text.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", text),
+    };
+    let (int_part, frac_part) = match rest.split_once('.') {
+        Some((int_part, frac_part)) => (int_part, Some(frac_part)),
+        None => (rest, None),
+    };
+    let mut grouped = String::with_capacity(int_part.len() + int_part.len() / 3);
+    for (index, ch) in int_part.chars().enumerate() {
+        if index > 0 && (int_part.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    match frac_part {
+        Some(frac_part) => format!("{sign}{grouped}.{frac_part}"),
+        None => format!("{sign}{grouped}"),
+    }
 }
 
 /// 单元格的**粗分类**（与展示文本分开：NULL 压灰、将来数值右对齐 / JSON 单独阅览
@@ -336,6 +546,199 @@ pub(super) fn visible_columns(
         .filter(|(_, column)| !hidden.contains(&column.name))
         .map(|(index, column)| (index, column.clone()))
         .collect()
+}
+
+/// 精确数值的三段分解：`(负号, 整数位〔去前导零〕, 小数位〔去尾随零〕)`。
+type ExactParts = (bool, String, String);
+
+/// 客户端排序的一格**排序键**。
+///
+/// 比较只读键、**不在比较函数里重算**：一万行的一次排序要做十几万次比较，每次都
+/// `Value::render()`（内含整串复制）会把「点一下列头」拖成肉眼可见的卡顿 —— 键在
+/// 排序前一次性建好，比较阶段零分配。
+///
+/// 结构照「先分类、再同族比」的口径：
+///
+/// | 档 | 谁进来 | 怎么比 |
+/// | --- | --- | --- |
+/// | [`Self::Exact`] | `Int` / `UInt` / `Decimal` | 十进制字面量精确比较（**绝不经过 `f64`**） |
+/// | [`Self::Float`] | `Float`，以及「本列出现过浮点」时的全部数值 | `f64` 比较（`NaN` 最小） |
+/// | [`Self::Text`] | 文本 / 日期 / 时间 / JSON / 布尔 / 二进制 | 展示文本的**小写**序 |
+/// | [`Self::Null`] | `NULL`、越界取不到的格 | 恒排最后（升序时） |
+///
+/// 同一列里混了类型（SQL 结果集完全允许）时按 [`Self::rank`] 的组序排：
+/// 数值 → 文本 → `NULL`。组内才按各自的口径比。
+///
+/// ⚠️ 数值族**不走 `f64`** 是本仓的硬纪律（`i64` 大数与 `NUMERIC(38)` 过浮点会
+/// 失序，而排错的表比不排更误导）。只有「本列真有浮点」时才统一抬到 `f64` ——
+/// 那是唯一可比的口径，且浮点类值本身就是 `f64`，不算有损中转。
+enum SortKey {
+    Exact(ExactParts),
+    Float(f64),
+    Text(String),
+    Null,
+}
+
+impl SortKey {
+    /// 跨类型的组序（数值 → 文本 → NULL）。
+    const fn rank(&self) -> u8 {
+        match self {
+            Self::Exact(_) | Self::Float(_) => 0,
+            Self::Text(_) => 1,
+            Self::Null => 2,
+        }
+    }
+}
+
+impl Ord for SortKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        use SortKey::{Exact, Float, Null, Text};
+        match (self, other) {
+            (Exact(left), Exact(right)) => exact_cmp(left, right),
+            // `NaN` 在这里被当成「与谁都不等」会让排序失去全序（`sort_by` 要求
+            // 全序），统一压成 `Equal` 参与比较、由下一档（行号）分先后。
+            (Float(left), Float(right)) => left.partial_cmp(right).unwrap_or(Ordering::Equal),
+            (Text(left), Text(right)) => left.cmp(right),
+            (Null, Null) => Ordering::Equal,
+            _ => self.rank().cmp(&other.rank()),
+        }
+    }
+}
+
+impl PartialOrd for SortKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for SortKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for SortKey {}
+
+/// 两格的精确十进制比较：先看符号，再比整数位（长度 → 逐位），最后补零比小数位。
+fn exact_cmp(left: &ExactParts, right: &ExactParts) -> Ordering {
+    match (left.0, right.0) {
+        (true, false) => return Ordering::Less,
+        (false, true) => return Ordering::Greater,
+        _ => {}
+    }
+    let magnitude = left
+        .1
+        .len()
+        .cmp(&right.1.len())
+        .then_with(|| left.1.cmp(&right.1))
+        .then_with(|| cmp_fraction(&left.2, &right.2));
+    // 同号负数：绝对值大的更小。
+    if left.0 {
+        magnitude.reverse()
+    } else {
+        magnitude
+    }
+}
+
+/// 小数位比较：短的按 `0` 补到等长再逐位比（`0.5` 与 `0.50` 相等）。
+fn cmp_fraction(left: &str, right: &str) -> Ordering {
+    for index in 0..left.len().max(right.len()) {
+        let x = left.as_bytes().get(index).copied().unwrap_or(b'0');
+        let y = right.as_bytes().get(index).copied().unwrap_or(b'0');
+        match x.cmp(&y) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    Ordering::Equal
+}
+
+/// 拆一个十进制字面量；不是十进制（科学计数法、`NaN` / `Infinity`）时给 `None`。
+fn exact_parts(text: &str) -> Option<ExactParts> {
+    let text = text.trim();
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    if digits.is_empty()
+        || digits.matches('.').count() > 1
+        || !digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+    {
+        return None;
+    }
+    let (integer, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    let integer = integer.trim_start_matches('0');
+    Some((
+        negative,
+        if integer.is_empty() {
+            "0".to_owned()
+        } else {
+            integer.to_owned()
+        },
+        fraction.trim_end_matches('0').to_owned(),
+    ))
+}
+
+/// 一格的排序键；`floats` = 本列出现过浮点（见 [`SortKey`] 的口径）。
+fn sort_key(value: Option<&Value>, floats: bool) -> SortKey {
+    let Some(value) = value else {
+        return SortKey::Null;
+    };
+    let text = match value {
+        Value::Null => return SortKey::Null,
+        Value::Float(number) => return SortKey::Float(*number),
+        Value::Int(number) => number.to_string(),
+        Value::UInt(number) => number.to_string(),
+        Value::Decimal(text) => text.clone(),
+        other => return SortKey::Text(other.render().to_lowercase()),
+    };
+    if floats {
+        return text
+            .trim()
+            .parse::<f64>()
+            .map_or(SortKey::Null, SortKey::Float);
+    }
+    exact_parts(&text).map_or_else(|| SortKey::Text(text.to_lowercase()), SortKey::Exact)
+}
+
+/// 按某一列**重排行下标**（客户端排序，SQL 结果集的列头）。
+///
+/// 只动下标、不动行数据：结果集仍是那**一份**（导出 / 编辑 / 多选都按原始行集走），
+/// 排序改变的是「网格按什么顺序看它」——与「结果内搜索」「客户端分页」同一层语义。
+///
+/// 口径三条：
+///
+/// 1. `NULL` **恒在最后**（升序时）——`NULL` 不是「最小的值」，是「没有值」，
+///    混在数字堆里会让人以为库里真有这个数；
+/// 2. 降序 = 升序结果**整体取反**：`NULL` 因此排到最前，与 PostgreSQL 的默认
+///    `NULLS FIRST` 行为一致（同一个直觉，不是两套规则）；
+/// 3. 同键行按**原行号**定序（`then_with`）：全序、结果可复现 —— 只按键排的话
+///    同值行的先后由排序算法决定，翻页 / 重排时看着像在跳。
+pub(super) fn sort_row_indexes(
+    rows: &[Vec<Value>],
+    indexes: &mut [usize],
+    column: usize,
+    descending: bool,
+) {
+    // 「本列有没有浮点」先扫一遍（O(行数)）：有就把**全部**数值抬到 `f64`，
+    // 免得在比较函数里反复解析一遍（那是 O(比较次数)，多得多）。
+    let floats = rows
+        .iter()
+        .any(|row| matches!(row.get(column), Some(Value::Float(_))));
+    let mut keyed: Vec<(SortKey, usize)> = indexes
+        .iter()
+        .map(|index| {
+            let key = sort_key(rows.get(*index).and_then(|row| row.get(column)), floats);
+            (key, *index)
+        })
+        .collect();
+    keyed.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    for (slot, (_, index)) in indexes.iter_mut().zip(keyed) {
+        *slot = index;
+    }
+    if descending {
+        indexes.reverse();
+    }
 }
 
 /// 结果内搜索的命中行：升序的**原始行下标**（空词 / 纯空白 = 不过滤，全部命中）。
@@ -469,4 +872,232 @@ pub(super) fn db_section_header(icon: DuckIcon, label: &'static str, cx: &App) -
                 .text_color(tokens.colors.muted_foreground)
                 .child(label),
         )
+}
+
+/// 校验「自定义行数」输入并取出页大小；非法时弹警告并给 `None`。
+///
+/// 弹层内联输入框与旧弹窗共用同一套判据（正整数、至少 1），文案同源。
+pub(super) fn parse_page_size_input(
+    input: &Entity<InputState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<u32> {
+    let Ok(size) = input.read(cx).value().trim().parse::<u32>() else {
+        notify::warning(tr(cx, "请输入一个行数（正整数）。"), window, cx);
+        return None;
+    };
+    if size == 0 {
+        notify::warning(tr(cx, "每页行数至少是 1。"), window, cx);
+        return None;
+    }
+    Some(size)
+}
+
+/// 页大小变更回调：`(新页大小, 是否落盘为默认, window, cx)`。
+///
+/// 抽成别名只为让 [`page_size_custom_section`] 的签名读得动 —— 裸写
+/// `Rc<dyn Fn(u32, bool, &mut Window, &mut App)>` 会被 clippy 的
+/// `type_complexity` 点出来（两个调用点也照此收窄）。
+pub(super) type PageSizeApply = Rc<dyn Fn(u32, bool, &mut Window, &mut App)>;
+
+/// 「N 行/页」弹层里的**自定义行数**区（dbx grid-foot 同款）：标题 +
+/// 读数行（可选）+ 输入框与 ✓，外加一行动作按钮。
+///
+/// `session_label` = `Some("仅本次")` 时出「仅本次 / 设为默认」两枚按钮
+/// （查询模式：预设与 ✓ 都只改本次会话）；表浏览是服务器侧取数，没有
+/// 「本次」这一层，按钮只出「设为默认」，✓ 直接写默认。
+/// `readout` 是「当前 / 默认」那行读数 —— 表浏览的当前值就是默认值，两栏
+/// 相同没有信息量，调用方给 `None` 时整行不出。
+///
+/// ⚠️ 整块必须拦住点击冒泡：菜单行（`PopupMenuItem::ElementItem`）的默认
+/// 行为是「点行即关弹层」，不拦的话点进输入框弹层就没了（与顶栏语言切换
+/// 拦鼠标按下同一条约定）。`close` 在动作成功后关弹层（发 `DismissEvent`，
+/// 由 `dropdown_menu` 的监听收尾）。
+pub(super) fn page_size_custom_section(
+    input: &Entity<InputState>,
+    readout: Option<SharedString>,
+    session_label: Option<SharedString>,
+    on_apply: PageSizeApply,
+    close: Rc<dyn Fn(&mut App)>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let check_persists = session_label.is_none();
+    v_flex()
+        .id("db-page-size-custom")
+        .gap(tokens.spacing.xs)
+        .py(tokens.spacing.xxs)
+        // 输入框 / 按钮的点击不能冒泡到菜单行（点行即关），见上方 ⚠️。
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .text_size(tokens.typography.sm.size)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(tokens.colors.foreground)
+                .child(tr(cx, "自定义行数")),
+        )
+        .children(readout.map(|readout| meta_text(readout, cx)))
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap(tokens.spacing.xs)
+                .child(
+                    div().flex_1().min_w_0().child(
+                        Input::new(input)
+                            .appearance(true)
+                            .with_size(Size::Small)
+                            .text_size(tokens.typography.sm.size)
+                            .w_full(),
+                    ),
+                )
+                .child(
+                    // ✓ = 快捷确认：查询模式按「仅本次」，表浏览直接写默认
+                    //（`check_persists` 随 `session_label` 推导，见上方）。
+                    icon_button(
+                        "db-page-size-check",
+                        tr(cx, "应用"),
+                        Icon::new(DuckIcon::CheckboxCheck).size(theme.extended().icon.sm),
+                        ButtonVariant::Secondary,
+                        cx,
+                    )
+                    .on_click({
+                        let input = input.clone();
+                        let on_apply = on_apply.clone();
+                        let close = close.clone();
+                        move |_, window, cx| {
+                            let Some(size) = parse_page_size_input(&input, window, cx) else {
+                                return;
+                            };
+                            on_apply(size, check_persists, window, cx);
+                            close(cx);
+                        }
+                    }),
+                ),
+        )
+        .children(session_label.map(|label| {
+            button("db-page-size-session", label, ButtonVariant::Secondary, cx)
+                .flex_1()
+                .on_click({
+                    let input = input.clone();
+                    let on_apply = on_apply.clone();
+                    let close = close.clone();
+                    move |_, window, cx| {
+                        let Some(size) = parse_page_size_input(&input, window, cx) else {
+                            return;
+                        };
+                        on_apply(size, false, window, cx);
+                        close(cx);
+                    }
+                })
+        }))
+        .child(
+            button(
+                "db-page-size-default",
+                tr(cx, "设为默认"),
+                ButtonVariant::Primary,
+                cx,
+            )
+            .flex_1()
+            .on_click({
+                let input = input.clone();
+                let on_apply = on_apply.clone();
+                let close = close.clone();
+                move |_, window, cx| {
+                    let Some(size) = parse_page_size_input(&input, window, cx) else {
+                        return;
+                    };
+                    on_apply(size, true, window, cx);
+                    close(cx);
+                }
+            }),
+        )
+        .into_any_element()
+}
+
+/// 确认框「同意」回调。
+///
+/// 用 `Rc<dyn Fn>` 而不是泛型 `FnOnce`：弹层的构建闭包是 `Fn`（每一轮重排都会
+/// 重跑），要在里面再克隆一份给按钮回调，`FnOnce` 拿不出来。抽成别名也让签名
+/// 不必内联那个复杂类型。
+type ConfirmHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// 破坏性动作的**主题确认框**（`duck_components` 的 `Dialog`，不是 rfd 系统模态）。
+///
+/// 为什么不用 `duck_platform::confirm`：那是**同步**的系统模态（原生窗），与本应用
+/// 的主题 / 字号 / 深浅色完全两套外观，而且它把 UI 线程钉在原地等用户点 —— 弹窗
+/// 期间整页不重绘。主题确认框是**异步**的：函数立刻返回，真正要做的事整段搬进
+/// `on_ok`。
+///
+/// 标题 / 正文 / 按钮文案在调用时就取成 `SharedString`：`tr` 要 `&App`，而弹层重排
+/// 的闭包里只有 `&mut App` 的弹层上下文，取不到「当前语言」那一刻。
+pub(super) fn open_confirm(
+    title: impl Into<SharedString>,
+    message: impl Into<SharedString>,
+    ok_text: impl Into<SharedString>,
+    on_ok: ConfirmHandler,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title: SharedString = title.into();
+    let message: SharedString = message.into();
+    let ok_text: SharedString = ok_text.into();
+    let drag = modal_drag(cx);
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let offset = modal_offset(&drag, cx);
+        // 外层闭包是 `Fn`（每次重排都重跑）→ 每一轮都得重新克隆一份交给内层。
+        let drag_for_content = drag.clone();
+        let title_for_content = title.clone();
+        let message_for_content = message.clone();
+        let on_ok_for_ok = on_ok.clone();
+        dialog
+            .w(px(CONFIRM_DIALOG_WIDTH))
+            .ml(offset.x)
+            .margin_top(dialog_top_offset(cx) + offset.y)
+            .opacity(offset.opacity)
+            .close_button(false)
+            .button_props(
+                DialogButtonProps::default()
+                    // `ok_text` 按值收：弹层闭包是 `Fn`，这里必须克隆一份出去。
+                    .ok_text(ok_text.clone())
+                    .cancel_text(tr(cx, "取消"))
+                    .show_cancel(true),
+            )
+            .content(move |content, _, cx| {
+                content.child(modal_drag_area(
+                    &drag_for_content,
+                    v_flex()
+                        .w_full()
+                        .child(modal_title_row(
+                            "db-confirm-title",
+                            &drag_for_content,
+                            title_for_content.clone(),
+                            cx,
+                        ))
+                        .child(body_text(message_for_content.clone(), cx)),
+                ))
+            })
+            .on_ok(move |_, window, cx| {
+                // 确认之后才真正动手；视图已销毁（`update` 返回 `Err`）也照样关弹窗，
+                // 不让一个点不掉的确认框挂在屏幕上。
+                on_ok_for_ok(window, cx);
+                true
+            })
+    });
+}
+
+/// 编辑表单的**指纹**：列名 + 展示原值 + NULL 位。
+///
+/// 回答的问题是「这份表单服务的那一行还是不是原来那一行」。结果重取 / 翻页 / 换表
+/// 之后，同一个下标已经指向另一行数据 —— 表单里的草稿不能跨行存活，所以对不上就
+/// 整份重建（见 [`DatabasePage::sync_json_editor`]）。
+///
+/// 比「行号相同」严：行号相同但内容换了（翻页回第一页、重跑同一句 SQL）同样要重建。
+pub(super) fn specs_stamp(specs: &[(String, String, bool)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    specs.hash(&mut hasher);
+    hasher.finish()
 }

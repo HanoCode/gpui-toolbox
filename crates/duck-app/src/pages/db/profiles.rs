@@ -613,6 +613,99 @@ impl DatabasePage {
         let form = cx.new(|_| form);
         self.open_edit_dialog(form, window, cx);
     }
+
+    /// 右键「复制连接」（dbx 同款）：克隆档案为新 id、名字加「副本」，随即进编辑表单。
+    ///
+    /// 口令**不**复制：凭据按连接 id 存在凭据文件里（`dbconn:{id}:*`），新 id 天然
+    /// 没有口令——这是安全口径不是疏漏，编辑表单让用户重填一遍。
+    pub(super) fn duplicate_connection(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut cfg) = self.connections.iter().find(|c| c.id == id).cloned() else {
+            return;
+        };
+        // `id_suffix` 混入了纳秒时间戳：同一名字连点两次「复制连接」也是两个新 id。
+        cfg.id = format!("conn-{}", id_suffix(&format!("{}-copy", cfg.name)));
+        cfg.name = if cfg.name.trim().is_empty() {
+            format!("{} 副本", cfg.display_name())
+        } else {
+            format!("{} 副本", cfg.name.trim())
+        };
+        self.upsert_connection(cfg.clone(), cx);
+        self.edit_connection(&cfg.id, window, cx);
+    }
+
+    /// 右键「移至新分组」（dbx 同款）：弹窗输入分组名，创建（如无）并把这条连接
+    /// 挪进去。与「新建分组」同一套弹窗骨架；空输入按「取消」处理。
+    pub(super) fn open_move_to_group_dialog(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = text_input(window, cx, tr(cx, "分组名"));
+        let drag = modal_drag(cx);
+        let view = self.view.clone();
+        let input_handle = input.clone();
+        let confirm: ConfirmHandler = {
+            let input = input.clone();
+            let view = view.clone();
+            let id = id.to_owned();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                let name = input.read(cx).value().trim().to_owned();
+                if name.is_empty() {
+                    notify::warning(tr(cx, "请填写分组名。"), window, cx);
+                    return false;
+                }
+                let _ = view.update(cx, |this, cx| {
+                    if !this.groups.contains(&name) {
+                        this.groups.push(name.clone());
+                        this.persist_groups(cx);
+                    }
+                    this.update_connection_field(&id, cx, |cfg| cfg.group = Some(name.clone()));
+                });
+                true
+            })
+        };
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let offset = modal_offset(&drag, cx);
+            let drag_for_content = drag.clone();
+            let confirm = Rc::clone(&confirm);
+            let input_for_content = input.clone();
+            dialog
+                .w(px(GROUP_DIALOG_WIDTH))
+                .ml(offset.x)
+                .margin_top(dialog_top_offset(cx) + offset.y)
+                .opacity(offset.opacity)
+                .close_button(false)
+                .content(move |content, _, cx| {
+                    content.child(modal_drag_area(
+                        &drag_for_content,
+                        v_flex()
+                            .w_full()
+                            .gap(form_gap(cx))
+                            .child(modal_title_row(
+                                "db-move-group-title",
+                                &drag_for_content,
+                                tr(cx, "移至新分组"),
+                                cx,
+                            ))
+                            .child(field_row(cx, tr(cx, "分组名"), &input_for_content)),
+                    ))
+                })
+                .footer(dialog_footer(
+                    "db-move-group",
+                    tr(cx, "移动"),
+                    ButtonVariant::Primary,
+                    confirm,
+                    cx,
+                ))
+        });
+        input_handle.update(cx, |state, cx| state.focus(window, cx));
+    }
 }
 
 /// 环境标签的展示文本（`None` 不展示）。

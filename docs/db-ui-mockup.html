@@ -513,7 +513,7 @@ select{
 .ai-head{height:40px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid var(--hairline)}
 .ai-acts{margin-left:auto;display:flex;gap:2px}
 
-/* ---------- 结果视图切换（行模式 / 列模式 / JSON） ---------- */
+/* ---------- 结果视图切换（网格 / 记录 / JSON） ---------- */
 .vmodes{display:flex;align-items:center;gap:2px;background:var(--surface2);border-radius:6px;padding:2px}
 .vmodes button{
   height:20px;padding:0 8px;border-radius:5px;border:none;background:transparent;color:var(--fg2);
@@ -740,8 +740,8 @@ table.rules td code{font-size:11.5px;background:var(--surface2);padding:1px 5px;
             <div class="grid" id="grid"></div>
             <div class="grid-foot">
               <div class="vmodes" id="vModes">
-                <button data-vm="rows" class="on">▦ 行模式</button>
-                <button data-vm="cols">☰ 列模式</button>
+                <button data-vm="rows" class="on">▦ 网格</button>
+                <button data-vm="cols">☰ 记录</button>
                 <button data-vm="json">{ } JSON</button>
               </div>
               <span id="gridStat">208 行 · 只读结果 · 耗时 8 ms</span>
@@ -953,9 +953,9 @@ table.rules td code{font-size:11.5px;background:var(--surface2);padding:1px 5px;
         <td><span class="pill later">P2</span></td>
       </tr>
       <tr>
-        <td>行模式 / 列模式 / JSON</td>
+        <td>网格 / 记录 / JSON</td>
         <td>结果视图三切换</td>
-        <td>列模式 = 首行转置「名称/值 + 类型」（dbx 转置查看对位，落在结果区而非右键菜单）；JSON = 单行序列化预览</td>
+        <td>记录 = 首行转置「名称/值 + 类型」（dbx 转置查看对位，落在结果区而非右键菜单）；JSON = 单行序列化预览</td>
         <td><span class="pill later">P2</span></td>
       </tr>
       <tr>
@@ -2090,7 +2090,7 @@ table.rules td code{font-size:11.5px;background:var(--surface2);padding:1px 5px;
       document.querySelectorAll('#vModes [data-vm]').forEach(function(x){
         x.classList.toggle('on', x.dataset.vm===window.resMode);
       });
-      log('结果视图切换 → <b>'+({rows:'行模式（表格）',cols:'列模式（名称/值，首行转置）',json:'JSON'})[window.resMode]+'</b>（footer 最前）');
+      log('结果视图切换 → <b>'+({rows:'网格（表格）',cols:'记录（名称/值，首行转置）',json:'JSON'})[window.resMode]+'</b>（footer 最前）');
       renderResults();
     }
   });

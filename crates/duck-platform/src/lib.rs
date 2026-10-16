@@ -49,6 +49,9 @@ pub use logging::{
     log_file_segment, log_file_stamp, logs_summary, prune_logs,
 };
 pub use open::{OpenRequest, URL_SCHEME};
-pub use paths::{app_data_dir, cache_dir, config_dir, db_path, ensure_dir, lock_path, log_dir};
+pub use paths::{
+    app_data_dir, cache_dir, config_dir, db_path, default_dialog_dir, ensure_dir, lock_path,
+    log_dir,
+};
 pub use shell::{open_url, reveal_in_finder};
 pub use time::local_utc_offset_seconds;

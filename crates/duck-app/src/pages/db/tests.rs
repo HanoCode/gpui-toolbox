@@ -20,14 +20,17 @@ fn visible_columns_keeps_original_indexes() {
         Column {
             name: "id".to_owned(),
             type_name: "INTEGER".to_owned(),
+            comment: String::new(),
         },
         Column {
             name: "secret".to_owned(),
             type_name: "TEXT".to_owned(),
+            comment: String::new(),
         },
         Column {
             name: "name".to_owned(),
             type_name: "TEXT".to_owned(),
+            comment: String::new(),
         },
     ];
     let hidden: BTreeSet<String> = ["secret".to_owned()].into_iter().collect();
@@ -55,14 +58,17 @@ fn matched_row_indexes_searches_visible_columns_only() {
         Column {
             name: "id".to_owned(),
             type_name: "INTEGER".to_owned(),
+            comment: String::new(),
         },
         Column {
             name: "name".to_owned(),
             type_name: "TEXT".to_owned(),
+            comment: String::new(),
         },
         Column {
             name: "secret".to_owned(),
             type_name: "TEXT".to_owned(),
+            comment: String::new(),
         },
     ];
     let hidden: BTreeSet<String> = ["secret".to_owned()].into_iter().collect();
@@ -419,10 +425,12 @@ fn tsv_copy_escapes_separators_newlines_and_quotes() {
             Column {
                 name: "id".to_owned(),
                 type_name: "INTEGER".to_owned(),
+                comment: String::new(),
             },
             Column {
                 name: "note".to_owned(),
                 type_name: "TEXT".to_owned(),
+                comment: String::new(),
             },
         ],
         rows: vec![
@@ -457,6 +465,7 @@ fn every_result_format_renders_or_declines() {
         columns: vec![Column {
             name: "id".to_owned(),
             type_name: "INTEGER".to_owned(),
+            comment: String::new(),
         }],
         rows: vec![vec![Value::Int(1)]],
         truncated: false,
@@ -527,6 +536,7 @@ fn binary_format_enables_only_for_raw_payloads() {
         columns: vec![Column {
             name: "blob".to_owned(),
             type_name: "BLOB".to_owned(),
+            comment: String::new(),
         }],
         rows: vec![vec![Value::Bytes(vec![1, 2, 3])]],
         truncated: false,
@@ -610,6 +620,7 @@ fn saved_query_ids_never_collide() {
     let mk = |id: &str| SavedQuery {
         id: id.to_owned(),
         name: id.to_owned(),
+        folder: None,
         sql: "SELECT 1".to_owned(),
     };
     assert_eq!(SavedQuery::next_id(&[]), "saved-1");
@@ -622,6 +633,74 @@ fn saved_query_ids_never_collide() {
         SavedQuery::next_id(&[mk("saved-1"), mk("saved-3")]),
         "saved-4"
     );
+}
+
+/// 「保存到 SQL 库」的默认文件名：**有选中表就用 `<表名>.sql`**，没有才退回 SQL 首行。
+#[test]
+fn default_sql_file_name_prefers_the_selected_table() {
+    let table = TableRef::bare("orders");
+    assert_eq!(
+        default_sql_file_name(Some(&table), "SELECT * FROM orders"),
+        "orders.sql"
+    );
+    // 表名带空白先裁掉（从树里拿到的名字不会带，但这一层不该假设）。
+    let padded = TableRef::bare("  orders  ");
+    assert_eq!(
+        default_sql_file_name(Some(&padded), "SELECT 1"),
+        "orders.sql"
+    );
+    // 空表名 = 没有表名，走回退（否则会生成一个叫 `.sql` 的文件）。
+    let blank = TableRef::bare("   ");
+    assert_eq!(
+        default_sql_file_name(Some(&blank), "SELECT a FROM t"),
+        "SELECT a FROM t.sql"
+    );
+    // 没有选中表：取首行前 24 个字符。
+    assert_eq!(
+        default_sql_file_name(None, "SELECT a FROM t\nWHERE x = 1"),
+        "SELECT a FROM t.sql"
+    );
+    // 首行超过 24 字符的截断。
+    let long = "SELECT column_one, column_two, column_three FROM some_table";
+    assert_eq!(
+        default_sql_file_name(None, long),
+        "SELECT column_one, colum.sql"
+    );
+}
+
+/// `.sql` 后缀补齐：已有不重复加，且大小写不敏感（用户手打 `Orders.SQL` 也算已有）。
+#[test]
+fn ensure_sql_extension_is_idempotent() {
+    assert_eq!(ensure_sql_extension("orders"), "orders.sql");
+    assert_eq!(ensure_sql_extension("orders.sql"), "orders.sql");
+    assert_eq!(ensure_sql_extension("Orders.SQL"), "Orders.SQL");
+    assert_eq!(ensure_sql_extension("  报表 "), "报表.sql");
+    // 名字里带 `sql` 但不是后缀：仍然要补（`mysql_notes` → `mysql_notes.sql`）。
+    assert_eq!(ensure_sql_extension("mysql_notes"), "mysql_notes.sql");
+}
+
+/// 文件夹从查询推导：去重、排序，空串与 `None` 一样算根文件夹。
+#[test]
+fn saved_query_folders_are_derived_and_normalised() {
+    let q = |folder: Option<&str>| SavedQuery {
+        id: "saved-1".to_owned(),
+        name: "a.sql".to_owned(),
+        folder: folder.map(str::to_owned),
+        sql: "SELECT 1".to_owned(),
+    };
+    let saved = vec![
+        q(None),
+        q(Some("  报表 ")),
+        q(Some("报表")),
+        q(Some("")),
+        q(Some("   ")),
+        q(Some("归档")),
+    ];
+    assert_eq!(saved_query_folders(&saved), vec!["归档", "报表"]);
+    // 判定单条时：空白等于根（两种写法归一）。
+    assert_eq!(saved_query_folder(&q(Some("  "))), None);
+    assert_eq!(saved_query_folder(&q(None)), None);
+    assert_eq!(saved_query_folder(&q(Some(" 报表 "))), Some("报表"));
 }
 
 /// 实例四档：`ALL` 是左栏渲染顺序，且只有仪表盘不取服务器数据。
@@ -738,6 +817,7 @@ fn result_set(columns: &[&str], rows: Vec<Vec<Value>>) -> ResultSet {
             .map(|name| Column {
                 name: (*name).to_owned(),
                 type_name: String::new(),
+                comment: String::new(),
             })
             .collect(),
         rows,
@@ -827,9 +907,30 @@ fn default_chart_columns_pick_a_label_axis_and_numeric_series() {
         CHART_SERIES_LIMIT,
         "序列数按 CHART_SERIES_LIMIT 封顶"
     );
+
+    // 既有日期列、又有别的文本列时，横轴取**日期**（DBFlux 的 `detect_chart_columns`
+    // 同口径：取最左的时间列）。想看的走势是随时间变化的，拿 `status` 当轴画出来没人要。
+    let dated = result_set(
+        &["status", "created_at", "amount"],
+        vec![
+            vec![
+                Value::Text("paid".into()),
+                Value::Text("2026-10-15 09:00:00".into()),
+                Value::Int(7),
+            ],
+            vec![
+                Value::Text("unpaid".into()),
+                Value::Text("2026-10-15 10:00:00".into()),
+                Value::Int(9),
+            ],
+        ],
+    );
+    let (x, y) = default_chart_columns(&dated).expect("有数值列");
+    assert_eq!(x, "created_at", "日期列优先当横轴");
+    assert_eq!(y, vec!["amount".to_owned()]);
 }
 
-/// 序列抽取：分类缺失 / 数值非数的行跳过（不补 0）。
+/// 序列抽取：横轴缺失 / 数值非数的行跳过（不补 0）。
 #[test]
 fn chart_series_skips_rows_that_cannot_be_plotted() {
     let result = result_set(
@@ -842,7 +943,14 @@ fn chart_series_skips_rows_that_cannot_be_plotted() {
         ],
     );
     let series = chart_series(&result, "label", "value");
-    assert_eq!(series, vec![("a".to_owned(), 1.0), ("d".to_owned(), 4.5)]);
+    // 分类轴：顺序就是行序，`axis` 记的正是行下标 —— 抽稀与排序都靠它，不能随手写成 0。
+    assert_eq!(series.len(), 2);
+    assert_eq!(series[0].label, "a");
+    assert_eq!(series[0].value, 1.0);
+    assert_eq!(series[0].axis, 0.0);
+    assert_eq!(series[1].label, "d");
+    assert_eq!(series[1].value, 4.5);
+    assert_eq!(series[1].axis, 3.0);
 
     // 列名不在结果里 → 空表（调用方据此提示「配置失效」）。
     assert!(chart_series(&result, "nope", "value").is_empty());
@@ -852,6 +960,198 @@ fn chart_series_skips_rows_that_cannot_be_plotted() {
     assert_eq!(chart_number(&Value::Float(f64::NAN)), None);
     assert_eq!(chart_number(&Value::Float(f64::INFINITY)), None);
     assert_eq!(chart_number(&Value::Bool(true)), None);
+}
+
+/// 轴类型按**值的形状**认，不看声明类型 —— 本仓驱动一律把日期渲染成字符串
+/// （`duck-db/src/result.rs` 写明这是刻意设计），拿 `type_name` 当判据会全部漏认。
+#[test]
+fn chart_axis_kind_reads_values_not_the_declared_type() {
+    let timed = result_set(
+        &["created_at", "n"],
+        vec![
+            vec![Value::Text("2026-10-15 22:39:07".into()), Value::Int(1)],
+            vec![Value::Text("2026-10-15 23:01:00".into()), Value::Int(2)],
+        ],
+    );
+    assert_eq!(chart_axis_kind(&timed, 0), ChartAxisKind::Time);
+
+    let numeric = result_set(
+        &["n", "m"],
+        vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ],
+    );
+    assert_eq!(chart_axis_kind(&numeric, 0), ChartAxisKind::Numeric);
+
+    assert_eq!(
+        chart_axis_kind(
+            &result_set(
+                &["who", "n"],
+                vec![vec![Value::Text("alice".into()), Value::Int(1)]]
+            ),
+            0
+        ),
+        ChartAxisKind::Categorical
+    );
+
+    // 一列里混进一个非时间值 → **整列**退回分类。只认一半的坏处是把脏行按它的
+    // 解析结果甩到轴的两端，看上去像真的极值。
+    let mixed = result_set(
+        &["t", "n"],
+        vec![
+            vec![Value::Text("2026-10-15".into()), Value::Int(1)],
+            vec![Value::Text("not a date".into()), Value::Int(2)],
+        ],
+    );
+    assert_eq!(chart_axis_kind(&mixed, 0), ChartAxisKind::Categorical);
+
+    // 整列 NULL（没有值可判）与布尔列都算分类。
+    let blanks = result_set(&["t", "n"], vec![vec![Value::Null, Value::Int(1)]]);
+    assert_eq!(chart_axis_kind(&blanks, 0), ChartAxisKind::Categorical);
+    let flags = result_set(&["ok", "n"], vec![vec![Value::Bool(true), Value::Int(1)]]);
+    assert_eq!(chart_axis_kind(&flags, 0), ChartAxisKind::Categorical);
+}
+
+/// 时间解析**严格**：宽松解析会把 `2026-1-8` 与 `2026-01-08` 变成两个不同的时刻，
+/// 于是同一条轴上出现两个「同一天」。
+#[test]
+fn time_seconds_is_strict_about_shape() {
+    // 只比大小、不比绝对值：绝对秒数随历法算法实现而变，比它等于把测试焊在实现上。
+    assert!(time_seconds("2026-10-15").unwrap() < time_seconds("2026-10-16").unwrap());
+    assert!(
+        time_seconds("2026-10-15 10:00:00").unwrap() < time_seconds("2026-10-15 10:00:01").unwrap()
+    );
+    // 空格与 `T` 两种分隔等价；纯日期 == 当天零点。
+    assert_eq!(
+        time_seconds("2026-10-15 10:00:00"),
+        time_seconds("2026-10-15T10:00:00")
+    );
+    assert_eq!(
+        time_seconds("2026-10-15"),
+        time_seconds("2026-10-15 00:00:00")
+    );
+    // 纯时刻也认（同一列同一种形状，差一个常数不影响先后）。
+    assert!(time_seconds("10:00:00").unwrap() < time_seconds("10:00:01").unwrap());
+
+    for bad in [
+        "2026-1-8",
+        "2026-10-15 9:00:00",
+        "2026-10-15 24:00:00",
+        "2026-10-15 10:60:00",
+        "2026-10-15 10:00:60",
+        "2026-10-15 10:00:00.",
+        "2026-10-15 10:00:00.x",
+        "2026-10-15 10:00:00:00",
+        "not a date",
+        "",
+    ] {
+        assert_eq!(time_seconds(bad), None, "{bad} 不该被认成时间");
+    }
+}
+
+/// 时间标签紧凑化：轴上留年份必然被截成半截，年份交给倒数那行读数。
+#[test]
+fn time_labels_compact_to_month_day_and_hour_minute() {
+    assert_eq!(compact_time_label("2026-10-15 22:39:07"), "10-15 22:39");
+    assert_eq!(compact_time_label("2026-10-15T22:39"), "10-15 22:39");
+    assert_eq!(compact_time_label("2026-10-15"), "10-15");
+    // 纯时刻列原样返回：那时候时间本身就是全部信息。
+    assert_eq!(compact_time_label("22:39:07"), "22:39:07");
+}
+
+/// 时间 / 数值轴要**重排**（`SELECT *` 的行序不保证按时间给，照原序连点会画出锯齿），
+/// 分类轴**不排**（分类的先后是 SQL 给的）。
+#[test]
+fn time_axis_points_are_sorted_but_categorical_ones_are_not() {
+    let result = result_set(
+        &["t", "v"],
+        vec![
+            vec![Value::Text("2026-10-15 12:00:00".into()), Value::Int(3)],
+            vec![Value::Text("2026-10-15 09:00:00".into()), Value::Int(1)],
+            vec![Value::Text("2026-10-15 10:00:00".into()), Value::Int(2)],
+        ],
+    );
+    let series = chart_series(&result, "t", "v");
+    let values: Vec<f64> = series.iter().map(|point| point.value).collect();
+    assert_eq!(values, vec![1.0, 2.0, 3.0], "时间轴按时间升序");
+    assert_eq!(series[0].label, "10-15 09:00", "标签同时紧凑化");
+
+    let numeric = result_set(
+        &["n", "v"],
+        vec![
+            vec![Value::Int(30), Value::Int(3)],
+            vec![Value::Int(10), Value::Int(1)],
+        ],
+    );
+    let values: Vec<f64> = chart_series(&numeric, "n", "v")
+        .iter()
+        .map(|point| point.value)
+        .collect();
+    assert_eq!(values, vec![1.0, 3.0], "数值轴按数值升序");
+
+    let by_name = result_set(
+        &["who", "v"],
+        vec![
+            vec![Value::Text("zoe".into()), Value::Int(1)],
+            vec![Value::Text("amy".into()), Value::Int(2)],
+        ],
+    );
+    let series = chart_series(&by_name, "who", "v");
+    assert_eq!(series[0].label, "zoe", "分类轴保持结果顺序");
+}
+
+/// LTTB：点数收敛、首尾必留、**尖峰不被抹掉**（等距抽样会把峰谷一起抹平）。
+#[test]
+fn decimate_lttb_keeps_the_ends_and_the_peaks() {
+    let mut points: Vec<ChartPoint> = (0..1_000)
+        .map(|index| ChartPoint {
+            label: index.to_string(),
+            value: 0.0,
+            axis: index as f64,
+        })
+        .collect();
+    points[500].value = 100.0;
+    let decimated = decimate_lttb(points, 40);
+    assert_eq!(decimated.len(), 40, "正好收敛到上限");
+    assert_eq!(decimated.first().unwrap().axis, 0.0, "首点必留");
+    assert_eq!(decimated.last().unwrap().axis, 999.0, "末点必留");
+    assert!(
+        decimated.iter().any(|point| point.value == 100.0),
+        "尖峰必须被选中"
+    );
+    // 抽稀后横轴仍然单调 —— 否则折线会自己折回去。
+    assert!(decimated.windows(2).all(|pair| pair[0].axis < pair[1].axis));
+
+    // 不足上限 → 原样返回（不做任何搬运）。
+    let few: Vec<ChartPoint> = (0..5)
+        .map(|index| ChartPoint {
+            label: index.to_string(),
+            value: index as f64,
+            axis: index as f64,
+        })
+        .collect();
+    assert_eq!(decimate_lttb(few.clone(), 40).len(), 5);
+    assert_eq!(decimate_lttb(few.clone(), 5).len(), 5);
+    // 退化档：少于三个点构不成三角形，要一个给第一个、要两个给首尾（且不除零）。
+    assert_eq!(decimate_lttb(few.clone(), 0).len(), 0);
+    assert_eq!(decimate_lttb(few.clone(), 1).len(), 1);
+    let two = decimate_lttb(few, 2);
+    assert_eq!(two.len(), 2);
+    assert_eq!(two[0].axis, 0.0);
+    assert_eq!(two[1].axis, 4.0);
+    // 空表不 panic。
+    assert!(decimate_lttb(Vec::new(), 10).is_empty());
+}
+
+/// 刻度密度：少点也至少标 2 个（一个刻度没有坐标感），多点封在 8 个（再密就互相盖住）。
+#[test]
+fn axis_tick_count_stays_within_the_readable_band() {
+    assert_eq!(axis_tick_count(0), 2);
+    assert_eq!(axis_tick_count(1), 2);
+    assert_eq!(axis_tick_count(5), 5);
+    assert_eq!(axis_tick_count(8), 8);
+    assert_eq!(axis_tick_count(400), 8, "抽稀到 400 点也仍然只标 8 个");
 }
 
 /// 配置失效判据：列名对不上就判失效（重跑后列变了不能按老配置画）。
@@ -893,9 +1193,17 @@ fn chart_kinds_round_trip_and_bound_their_series() {
     for kind in ChartKind::ALL {
         assert_eq!(ChartKind::from_key(kind.key()), Some(kind));
     }
+    assert_eq!(ChartKind::ALL.len(), 6, "四档现成组件 + 两档自绘");
     assert_eq!(ChartKind::from_key("nope"), None);
     assert_eq!(ChartKind::Pie.series_limit(), 1);
-    for kind in [ChartKind::Line, ChartKind::Bar, ChartKind::Area] {
+    // 散点 / 堆叠柱与折线同档：封顶 `CHART_SERIES_LIMIT`（堆叠柱是「一根柱最多堆几段」）。
+    for kind in [
+        ChartKind::Line,
+        ChartKind::Bar,
+        ChartKind::Area,
+        ChartKind::Scatter,
+        ChartKind::StackedBar,
+    ] {
         assert_eq!(kind.series_limit(), CHART_SERIES_LIMIT);
     }
     // 键两两不同（同一连接下几张图的元素 id 不能撞）。
@@ -914,6 +1222,173 @@ fn chart_kinds_round_trip_and_bound_their_series() {
         ..config
     };
     assert_eq!(line.effective_y().len(), 3);
+    // 堆叠柱吃**多列**：它的语义就是几列叠进同一根柱，截成一列就没得叠了。
+    let stacked = ChartConfig {
+        kind: ChartKind::StackedBar,
+        ..line.clone()
+    };
+    assert_eq!(stacked.effective_y().len(), 3);
+}
+
+/// 堆叠按**横轴标签**对齐（不是按点序）。
+///
+/// 陷阱就在这儿：序列之间的 X 不齐（有的行某一列没值），按点序垒会**错位** —— 第 n 个点
+/// 不等于第 n 个横轴位置。本仓的口径与 DBFlux `stack_columns` 一致：按标签对齐、同标签
+/// 同序列的多个点**累加**、缺值的序列在那一柱**不出段**（算 0，不是补一条 0 高的缝）。
+#[test]
+fn stack_columns_align_series_on_their_x_label() {
+    let point = |label: &str, value: f64, axis: f64| ChartPoint {
+        label: label.to_owned(),
+        value,
+        axis,
+    };
+    let series = vec![
+        vec![
+            point("a", 1.0, 0.0),
+            point("b", 2.0, 1.0),
+            point("c", 3.0, 2.0),
+        ],
+        vec![
+            point("b", 10.0, 1.0),
+            point("c", 20.0, 2.0),
+            point("d", 30.0, 3.0),
+        ],
+    ];
+    let columns = stack_columns(&series);
+    let labels: Vec<&str> = columns.iter().map(|column| column.label.as_str()).collect();
+    assert_eq!(labels, vec!["a", "b", "c", "d"], "横轴取并集、按 axis 升序");
+    assert_eq!(columns[0].segments, vec![(0, 1.0)], "只有第 0 条序列有 a");
+    assert_eq!(
+        columns[1].segments,
+        vec![(0, 2.0), (1, 10.0)],
+        "b 两段都叠上"
+    );
+    assert_eq!(columns[1].total(), 12.0);
+    assert_eq!(columns[3].segments, vec![(1, 30.0)], "只有第 1 条序列有 d");
+
+    // 同一条序列在同一个 X 上有多个点 → 累加；标签相同只占一柱。
+    let doubled = vec![vec![point("a", 1.0, 0.0), point("a", 2.0, 0.0)]];
+    let columns = stack_columns(&doubled);
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].segments, vec![(0, 3.0)]);
+
+    // 空标签 = 分类缺值（与 `chart_series` 跳过 NULL 同口径）：不该多出一根没名字的柱。
+    let blank = vec![vec![point("", 5.0, 0.0), point("a", 1.0, 1.0)]];
+    let columns = stack_columns(&blank);
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].label, "a");
+
+    // 空输入不 panic。
+    assert!(stack_columns(&[]).is_empty());
+    assert!(stack_columns(&[Vec::new()]).is_empty());
+}
+
+/// 堆叠柱的值域**从 0 起**，并罩住每个分段（不只是各柱的总和）。
+///
+/// 顶部余量按**跨度**算而不是按上界算（上游 `y_max + y_range * 0.08`）：全是正值时两者
+/// 差不多，一旦有负段，按上界算出来的余量会小一大截 —— 这条断言就是钉这个口径。
+#[test]
+fn stack_range_covers_every_segment_and_anchors_at_zero() {
+    let point = |label: &str, value: f64, axis: f64| ChartPoint {
+        label: label.to_owned(),
+        value,
+        axis,
+    };
+    // 一正一负：负段会掉到基线下面，只按总和取范围会把它画到框外。
+    let series = vec![
+        vec![point("a", 10.0, 0.0), point("b", -4.0, 1.0)],
+        vec![point("a", 2.0, 0.0), point("b", 1.0, 1.0)],
+    ];
+    let range = stack_range(&stack_columns(&series));
+    assert_eq!(range.min, -4.0, "负段的下界要罩住");
+    // 余量按**跨度**算（上游 `y_max + y_range * 0.08`）：12 - (-4) = 16 → +1.28。
+    assert!((range.max - 13.28).abs() < 1e-9, "实际 {}", range.max);
+    assert!(range.min <= 0.0 && range.max >= 0.0, "基线 0 必须在范围里");
+
+    // 空输入：0..=0，不 panic（调用方本来就不画）。
+    assert_eq!(stack_range(&[]), PlotRange { min: 0.0, max: 0.0 });
+}
+
+/// 刻度取「整数感」步长（1 / 2 / 5 / 10 × 10ⁿ），且一定落在范围里。
+#[test]
+fn ticks_pick_readable_steps_inside_the_range() {
+    assert_eq!(nice_step(0.9), 1.0);
+    assert_eq!(nice_step(1.5), 2.0);
+    assert_eq!(nice_step(3.0), 5.0);
+    assert_eq!(nice_step(7.0), 10.0);
+    assert_eq!(nice_step(12.0), 20.0);
+    assert_eq!(
+        nice_step(0.0),
+        1.0,
+        "退化步长给 1，不是 0（0 会让后面的循环停不下来）"
+    );
+
+    let range = PlotRange {
+        min: 0.0,
+        max: 10.0,
+    };
+    let values = ticks(range, 5);
+    assert_eq!(values, vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
+    for value in &values {
+        assert!(
+            (range.min..=range.max).contains(value),
+            "{value} 落在范围外"
+        );
+    }
+    // 范围退化（只有一个值）→ 就标那一个，不空转。
+    assert_eq!(ticks(PlotRange { min: 3.0, max: 3.0 }, 5), vec![3.0]);
+}
+
+/// 范围：非有限值丢掉，退化不除零，顶部余量只抬上界。
+#[test]
+fn plot_range_drops_non_finite_values_without_dividing_by_zero() {
+    // 空集（或全是 NaN / inf）给 0..=1 —— 调用方已经先判过「没点就不画」，这里不该 panic。
+    assert_eq!(PlotRange::of(Vec::new()), PlotRange { min: 0.0, max: 1.0 });
+    assert_eq!(
+        PlotRange::of(vec![f64::NAN, f64::INFINITY]),
+        PlotRange { min: 0.0, max: 1.0 }
+    );
+
+    let range = PlotRange::of(vec![5.0, -3.0, 10.0]);
+    assert_eq!(range.fraction(-3.0), 0.0);
+    assert_eq!(range.fraction(10.0), 1.0);
+    assert!((range.fraction(3.5) - 0.5).abs() < 1e-6, "中点落在一半高度");
+
+    // 只有一个值：跨度为 0，比例不能是 NaN（除数被兜成 1）。
+    let single = PlotRange::of(vec![7.0]);
+    assert_eq!(single.fraction(7.0), 0.0);
+    assert!(single.fraction(7.0).is_finite());
+
+    // 余量只抬上界：柱 / 点的读数就是它的高度，下界一动「0 在哪儿」就跟着漂。
+    let padded = PlotRange {
+        min: 0.0,
+        max: 10.0,
+    }
+    .headroom(0.08);
+    assert_eq!(padded.min, 0.0);
+    assert!((padded.max - 10.8).abs() < 1e-9);
+}
+
+/// 横轴刻度从**真标签**里抽：首尾必取，条数不超目标。
+///
+/// 为什么不另算刻度（上游按数值间隔生成）：本仓的横轴标签本身就来自数据（时间已紧凑化、
+/// 分类就是标签），另算一遍会出现「刻度算得出、却对不上任何一行」。
+#[test]
+fn sample_axis_always_keeps_both_ends() {
+    let items: Vec<(f64, String)> = (0..10)
+        .map(|index| (index as f64, format!("t{index}")))
+        .collect();
+    let picked = sample_axis(&items, 5);
+    assert_eq!(picked.len(), 5);
+    assert_eq!(picked[0].1, "t0", "第一个位置必标");
+    assert_eq!(picked[4].1, "t9", "最后一个位置必标");
+
+    // 目标多于数据：全给，不重复。
+    assert_eq!(sample_axis(&items, 99).len(), items.len());
+    // 只要一个：给第一个（不硬凑两个）。
+    assert_eq!(sample_axis(&items, 1).len(), 1);
+    // 空输入不 panic。
+    assert!(sample_axis(&[], 5).is_empty());
 }
 
 /// 饼图配色按黄金角旋转色相：条数够多也不撞色，且第一条就是基色。
@@ -1534,4 +2009,45 @@ fn a_referenced_profile_replaces_all_three_transports() {
     assert_eq!(out.transport(), TransportKind::Proxy);
     // 引用本身留在展开结果上，保存时才知道该写回哪份档案。
     assert_eq!(out.tunnel_profile.as_deref(), Some("tunnel-1"));
+}
+
+/// 千分位只动整数部分：小数、负号、已带逗号的口径都钉住。
+#[test]
+fn thousands_separated_groups_integer_part() {
+    assert_eq!(thousands_separated("0"), "0");
+    assert_eq!(thousands_separated("1234567"), "1,234,567");
+    assert_eq!(thousands_separated("-1234567.89"), "-1,234,567.89");
+    assert_eq!(thousands_separated("100"), "100");
+    assert_eq!(thousands_separated("1000.5"), "1,000.5");
+}
+
+/// 「列格式化 ▸ 千分位」只在数值列生效：文本列开了档也不换显示文本。
+#[test]
+fn build_table_model_applies_thousands_only_to_numeric_columns() {
+    let result = ResultSet {
+        columns: vec![
+            Column {
+                name: "count".to_owned(),
+                type_name: "INTEGER".to_owned(),
+                comment: "数量".to_owned(),
+            },
+            Column {
+                name: "code".to_owned(),
+                type_name: "VARCHAR(10)".to_owned(),
+                comment: String::new(),
+            },
+        ],
+        rows: vec![vec![Value::Int(1234567), Value::Text("1234567".into())]],
+        truncated: false,
+    };
+    let mut formats = std::collections::BTreeMap::new();
+    formats.insert("count".to_owned(), ColumnFormat::Thousands);
+    formats.insert("code".to_owned(), ColumnFormat::Thousands);
+    let model = build_table_model(&result, &formats);
+    // 数值列换文本；文本列原样。
+    assert_eq!(model.rows()[0].cells[0].display_ref(), "1,234,567");
+    assert_eq!(model.rows()[0].cells[1].display_ref(), "1234567");
+    // 列注释进了列规格（表头第三行 / 悬停详情的数据源）。
+    assert_eq!(model.columns()[0].comment.as_ref(), "数量");
+    assert_eq!(model.columns()[1].comment.as_ref(), "");
 }

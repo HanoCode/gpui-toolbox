@@ -514,7 +514,9 @@ pub trait KeyValueExt  { fn scan_keys(&self, ...) -> ...; }
 ### 4.6 SQL 智能层（sqlintel）
 
 `sqlparser 0.5x (visitor)`（MSRV 友好）：
-- 语句分类（SELECT/DML/DDL/多语句拆分）；
+- 语句分类（SELECT/DML/DDL/**多语句拆分**——⚠️ 切分**不走 `sqlparser`**：编辑器/文件里的文本
+  常常不是合法 SQL，解析器一遇错就整份放弃，而切分只需「哪里是语句边界」。手写单趟状态机，
+  见 §4.20.2）；
 - **风险分级** `SqlRisk` + **只读证明** `prove_read_only()`（dbx-sql-core 思想，纯函数、可单测）；
 - 方言差异表（初版仅 mysql/postgres/sqlite 三档，声明式内嵌，不上 YAML 热加载）；
 - 结果集可编辑性判定（供 4.5 用）。
@@ -1104,6 +1106,120 @@ gpui 对同一元素二次挂载是**硬 panic**（abort 级），编译期不�
    排序 / DDL）两边都没有时，整条返回空 div。表浏览下「没排过序、没藏列、没取到 DDL」
    是最常见的情形，正是这条要挡的。
 
+#### 4.16.9 底部视图切换器四档化 + 图标（2026-10-15，用户截图反馈）
+
+用户要求结果区**脚注最前面**的视图切换对齐 DBFlux：四档 **网格 / 记录 / JSON / 图表**，
+每档带图标，字号比普通按钮小一档。
+
+1. **命名**：`行模式 → 网格`、`列模式（转置视图）→ 记录`。`ResultViewMode` 的**枚举名不变**
+   （仍 `Grid` / `Columns` / `Json`），只换界面文案、图标与 `en.toml` 两个 key
+   （`"网格" = "Grid"` / `"记录" = "Record"`，旧的 `行模式` / `列模式` 两条随之删除）。
+2. **版式**：由「文字按钮（选中主色实心 / 其余 ghost）」改为与结果区顶部 tab 栏
+   （§4.16.1）**同一套**「图标 + 文字」格：`h(density.control)` + `px(spacing.sm)` +
+   `rounded(radius.sm)` + `typography.xs`（12pt）+ 选中 `nav_selected` 底 / 正文色 +
+   MEDIUM 字重，其余 `muted_foreground`、悬停 `hover_tint`、`role=Button` + `aria_label`。
+   字号统一为按钮的 `sm`(13) → 本切换器的 `xs`(12)，即用户要求的「缩小字体」。
+3. **图标**：网格 `DuckIcon::Table`、记录 `DuckIcon::Rows3`（**新增**，Lucide `rows-3`，
+   `assets/icons/rows-3.svg`）、图表 `DuckIcon::ChartLine`。JSON **不画 SVG** ——
+   就用字面的 `{}`（DBFlux 同款），字号取 `typography.xs`（＝`icon.sm` 的 12），
+   四档的图标槽宽度才不会一档一个样。
+4. **图表档的语义**：它不是第四种「读法」，而是**联动结果区顶部 tab** 的入口 ——
+   选中态按 `result_area_tab == Chart` 判定，点它走 `set_result_area_tab(Chart)`
+   （自动选列的既有逻辑不变）；点前三档除了换 `result_view`，还要把顶部 tab 切回
+   `Data`，否则「点了网格、画面还停在图表」。无结果时图表档置灰但**留在原位**
+   （与顶部摘要 / 图表档同一判据）。
+5. ⚠️ **顶部 tab 栏本轮不动**（用户指定）：摘要 / 图表 / 消息 / 执行计划仍在原处，
+   因此图表这块区域**按设计仍有两个入口**（顶部 tab 与脚注第四档，二者状态互相同步）。
+6. `docs/db-ui-mockup.html` 的档位名同步为「网格 / 记录」；该原型没有图表分支，
+   故**没有**补第四颗按钮（原型只是版式参考，不做假按钮）。
+
+#### 4.16.10 图表视角：LTTB 抽稀 + 时间轴识别 + 读数条（2026-10-15）
+
+`ResultAreaTab::Chart` 此前只有「四种图 + 列映射 + 保存」，有三处硬伤：**大结果集糊成
+一条实心带**、**横轴的时间列按原字符串排**、**整块区域一句事实读数都没有**。
+本轮补齐，判据全部落在 `charts.rs` 的纯函数层（`db/tests.rs` 直接压）。
+
+1. **LTTB 抽稀**（`decimate_lttb`，上限 `CHART_MAX_POINTS = 400`）。首尾必留，中间按
+   「三角形面积最大」选，所以**峰谷保得住** —— 等距抽样会把峰谷一起抹平，而峰谷恰恰是
+   看图要找的东西。400 不是拍的：结果区一屏两张图、每张约半屏宽（≈600pt），扣掉 Y 轴
+   刻度那条沟（`VALUE_AXIS_GAP` ≈32pt）后真正落在数据上的像素只有 500 出头，再多的点
+   只会叠在相邻像素上。⚠️ `gpui-component` 的 `point_count` **只做
+   `max(数据长度)`，只能拉长不能抽稀**（其 `chart::axis_point_count`），别拿它当抽稀用。
+   饼图**不抽**：它画的是汇总占比，抽掉点会让每一片都失真。
+2. **轴类型识别**（`ChartAxisKind{Time, Numeric, Categorical}` + `chart_axis_kind`）。
+   判据只看**值**，不看 `type_name`：本仓驱动一律把日期渲染成字符串
+   （`duck-db/src/result.rs` 的模块注释写明这是刻意设计，且**全仓没有任何驱动构造
+   `Value::Date/Time/DateTime`**），拿声明类型当判据会全部漏认。一列里混进一个非时间值
+   就**整列**退回分类 —— 只认一半的坏处是把脏行按解析结果甩到轴的两端，看上去像真极值。
+3. **时间 / 数值轴自动重排**：`SELECT *` 不写 `ORDER BY` 时行序不保证按时间给，照原序
+   连点会画出来回折的锯齿（看起来像剧烈震荡）。分类轴**不排** —— 分类的先后是 SQL 给的，
+   动一下就是换了意思。
+4. **默认横轴优先时间列**（`default_chart_columns`），与 DBFlux 的 `detect_chart_columns`
+   同口径（它取最左的 `Timestamp` 列）。既有日期又有别的文本列时（`SELECT created_at,
+   status, amount …`），想看的走势几乎总是随日期变化。
+5. **读数条**：`共 {} 行 · 横轴「{}」（{} 轴）· {} 个数值列`；每张小图标题在发生抽稀时
+   追加 `已抽稀 {}/{} 点`。**轴类型尤其要说**：时间 / 数值轴会重排行序，不讲明白
+   「怎么和我 SQL 里的顺序不一样」就会像 bug。
+6. **刻度自适应**（`axis_tick_count`，取 `2..=8`）：`x_tick_count` / `band_tick_count`
+   都是「均匀标 N 个」的杠杆，不管的话几百个分类标签会自己糊成一排。
+
+**当时以为做不了的两项已补齐**（散点 / 堆叠柱，见 §4.16.11）：上一轮写的是「绘图原语不
+支持」，那个结论**下早了** —— `gpui-component` 那两档组件确实不给，但原语是够的，DBFlux
+就是拿同一套原语自绘出来的。判断错在把「组件不支持」当成了「做不出来」。
+
+仍有一处**已知缺口**：图表的 `X` 只接一种类型（本仓给的是排好序的 `String` 标签），
+没有 DBFlux 那种 `AxisKind::Time` 的「按时间算刻度间距」。所以时间轴目前是
+**排好序 + 标签紧凑化**，刻度间距仍按等距的点算 —— 数据点疏密不均时刻度会不等宽。
+自绘那两档（§4.16.11）的刻度是**另算**的（`ticks` + `sample_axis`），不受这条限制。
+
+#### 4.16.11 散点 / 堆叠柱：照 DBFlux 的引擎自绘（2026-10-15 补）
+
+用户口径：「**你看 dbflux 是怎么实现的不就可以了吗，代码直接参考过来**」。查证结论：
+DBFlux 是 **Rust + GPUI**（`0xErwin1/dbflux`，Apache-2.0），图表引擎在
+`crates/dbflux_components/src/chart/`，`Scatter` / `StackedBar` 都在
+`spec.rs::ChartKind` 里 —— 用的**就是本仓这套原语**，所以能直接搬。
+
+**为什么走自绘而不是复用 `gpui-component` 的 `Plot`**：`Plot` trait 本身是公开的
+（`gpui-base::plot::Plot` + 公开的 `PlotElement::new`），但那是**给它们自己那套图表用的
+框架** —— `gpui-component` 的 `BarChart` 光 `impl Plot` 就 700+ 行（轴沟、band 刻度、
+悬停采样、tooltip 全在里面）。自绘反而更短：本批 `charts_plot.rs` 含注释与单测共 ~600 行，
+且**只依赖 `gpui::canvas` / `PathBuilder` / `paint_quad` 这些稳定原语**，不押在别人的内部
+结构上。
+
+**移植地图**（本仓 `crates/duck-app/src/pages/db/charts_plot.rs` ← 上游）：
+
+| 本仓 | DBFlux | 说明 |
+| --- | --- | --- |
+| `paint_dot` | `engine.rs::paint_filled_circle` | `PathBuilder` 没有「圆」原语，用**两段半圆**拼（右→左、左→右）。`LineChart` 的点色绑死在 `stroke` 上，所以「只有点没有线」在那边拼不出来 |
+| `scatter_element` | `engine.rs::paint_scatter` | 逐点画圆 |
+| `stack_columns` | `engine.rs::stack_columns` | 按 X 对齐多序列；同序列同 X 多点**累加**；缺值不出段 |
+| `paint_stack_columns` | `engine.rs::paint_stacked_bars` | 每根柱占满一格，逐段从基线往上垒；首尾各让半格 |
+| `paint_gridlines` | `engine.rs::paint_gridlines` | 横网格线（上游也没有竖线） |
+| `nice_step` / `ticks` | `axis.rs::nice_step` / `ticks_numeric` | 1 / 2 / 5 / 10 × 10ⁿ 的整数感步长 |
+
+⚠️ **许可**：上游是 Apache-2.0，本文件头已写明来源仓库与逐函数对应关系（Apache-2.0 要求
+保留归属并声明改动）。本仓是 vendored `gpui-base` 的地方，这条要与 `THIRD_PARTY_LICENSES.md`
+的口径一致。
+
+**三处刻意不同**（都在文件头列了，理由就地写在代码注释里）：
+
+1. **横轴键用标签字符串**，不用 `f64` 数据坐标：本仓横轴有「分类」这一档
+   （`ChartAxisKind::Categorical`），标签才是它的身份；上游只吃数值轴。
+2. **刻度数字沿用本仓既有的 `compact_number`**（`helpers.rs`），不引入第二套数字格式化。
+3. **刻度文字不进 canvas**：用**绝对定位的元素**画。本仓没有 canvas 内 shaping 的先例，
+   而文字走元素管线还能吃到主题字体与字号令牌。两边共用同一组纯函数把位置换算成 0~1 的
+   比例，所以对齐是**结构性的**（不是两处各算一遍、凑巧一样）。
+
+**进的是哪条渲染路**：折线 / 柱状 / 面积 / 饼仍是「**一列一张**」的小倍数
+（`chart_panel`）；**堆叠柱是唯一的「多列同框」**（`stacked_panel` + `stacked_element`）——
+它的语义就是「同一根柱由谁构成」，拆成一列一张就把要读的东西拆没了。散点走「一列一张」
+（每列一个点云）。结果区与仪表板两条路都按 `config.kind` 分流，口径只写一处。
+
+**纯函数层**（`charts_plot.rs` 上半段，`db/tests.rs` 直接压）：`PlotRange::of / headroom /
+fraction`（非有限值丢掉、退化不除零、余量只抬上界）、`nice_step` / `ticks`（刻度落在范围内）、
+`sample_axis`（**首尾必取**：横轴刻度从**真标签**里抽，不另算 —— 另算会出现「刻度算得出、
+却对不上任何一行」）、`stack_columns` / `stack_range`（负段的下界也要罩住，否则画到框外）。
+
 ### 4.17 SQL 补全词表：按引擎分层（2026-10-14 新增）
 
 **问题**：补全的关键字与函数原本是 `db.rs` 里两张**写死的通用表**（`SQL_KEYWORDS` 63 条 /
@@ -1218,6 +1334,395 @@ UI 层（db 页）：工具条「SQL 语义诊断」开关（`spell-check` 图�
 `result_v_scroll: Arc<UniformListScrollHandle>`（`uniform_list` 挂 `track_scroll`）
 + `Scrollbar::vertical` overlay，档位 [`ScrollbarMode::Scrolling`] —— 滚动时现身、
 停下淡出（gpui-base scrollbar.rs 默认档）。横向维持 `Always`（4.16.2 的结论不变）。
+
+### 4.19 可视化 SQL 构建器（2026-10-15，用户指定「对标 DBFlux 全功能、右栏承载」）
+
+用户要求：「在查询结果的**执行计划按钮后**，增加一个 SQL 构建器，直接参考 dbflux 的构建器的
+功能，使用**右侧菜单**来承载容器」；追问后确定的范围档位是「直接对标 DBFlux 全功能」、
+目标表来源是「**默认当前浏览表，可换**」。
+
+#### 4.19.1 入口与容器
+
+| 决定 | 内容 | 理由 |
+| --- | --- | --- |
+| 入口位置 | 结果区顶部 tab 行的**「执行计划」之后**，竖分隔线隔开 | 用户指定；分隔线把「切结果视图」的五个 tab 与这个**不开结果区**的入口分开 |
+| 容器 | 右栏 dock 新增**第四段「构建器」**（`RightDock::Builder`） | 用户指定「右侧菜单承载」；DBFlux 也是右侧栏（`docs/zh_Hans/QUERY_BUILDER.md`：「点击构建器，即可打开右侧栏面板」） |
+| 为何不做成 tab 档位 | 它**不进** `ResultAreaTab` | 它是「同时看结果 + 拼 SQL」，占结果区就看不见原结果了；故只借 tab 行的版式，选中态按「右栏开着**且**停在构建器那一栏」判定 |
+| 展开语义 | 点入口走 `reveal_right_dock(RightDock::Builder, cx)` | 「内容落在右栏」的既有纪律：右栏收着时替用户展开，否则点了什么都看不见 |
+| 会话依赖 | `render_sidebar.rs` 里**先于**「还没连库」那条早返回分流 | 与「历史」「单元格详情」同口径：连接断一下不该把拼到一半的条件一起收走 |
+| 默认表 | `open_builder` 先看 `selected_table`，没有才留空 | 用户指定「默认当前浏览表」；空手打开也允许（表可换） |
+
+⚠️ `docs/db-ui-mockup.html` **不动**：那份原型是**版式参考**，已经落后于实现两轮（连
+「单元格」分段都没有），往里面补假控件只会变成第二个要同步的真源 —— 与 §4.16.9 的口径一致。
+
+#### 4.19.2 三个文件的分工（纯计算 / 渲染 / 状态分离）
+
+| 文件 | 承担 | 关键点 |
+| --- | --- | --- |
+| `builder/sql.rs` | **纯函数** spec → SQL | 不碰 gpui / 连接 / I/O；**16 个单测**覆盖每条子句（`null_predicates_take_no_value` 就是抓真 bug 的那条，见 §4.19.5）；引号一律走 `duck_db::quote_identifier` / `quote_qualified` |
+| `builder/panel.rs` | 右栏面板渲染 | 只读状态 + 派发动作，不拼 SQL；窄栏版式（一行数据摊成两小行） |
+| `builder/mod.rs` | 类型、UI 状态、行增删、选项来源、动作落点 | `BuilderSpec` 每次渲染**现读现建**，不缓存（缓存就会出现「界面上改了、预览还是旧的」） |
+
+**与 DBFlux 的一处刻意差异**：DBFlux 的预览是**参数化占位符**（值不下发、运行期绑定）；
+本仓编辑器没有参数绑定通道（跑的是**文本** SQL），因此这里按引擎写成**字面量** ——
+预览与「填进编辑器直接执行」的内容必须逐字节一致。字面量分型见 `sql::literal`：
+`NULL` / 整数 / 小数 / 布尔（按引擎写 `1·0` 或 `TRUE·FALSE`）/ 已带引号的串原样，
+其余一律加引号并转义 `'` → `''`（宁可把数字包成字符串，也不把 `abc` 拼成裸标识符）。
+
+#### 4.19.3 四条实务判据（都是「少一类静默错误」）
+
+1. **列引用是输入框，不是下拉**。列名可以带别名前缀或写成表达式（`u.id` / `count(*)`），
+   下拉只能选「元信息里有的那几列」；元信息取不到时（视图、权限不足、还没连库）下拉是
+   一条**死路**。为不丢可用性，每个分区标题行另给「**插入列**」菜单：列清单拿得到时点一下
+   即开一行并填好列名，拿不到时它退成一句说明（**不是空菜单** —— 空菜单看起来像坏了）。
+2. **换表即清行**。列名是上一张表的，留着会生成一条跑不通的 SQL 而用户看不出为什么。
+   同时**立刻清空**旧表的列清单（留着会把旧表的列往新表的 SQL 里填）。
+3. **没进 SQL 的行要报数**。半填完的条件（选了列没填值）**不拼进 SQL** —— 静默拼
+   `= ''` 会让界面上的条件与真正跑的语句不一致，比不拼更坏；`RenderedSql::incomplete`
+   把条数交给面板显示。
+4. **分页只在能下发时下发**。`OFFSET` 只在有 `LIMIT` 时随行（SQLite / MySQL 的 `OFFSET`
+   必须跟 `LIMIT`；SQL Server 还要 `ORDER BY` + `OFFSET/FETCH`）。与其为每条引擎各写一套
+   「没上限时的 offset 写法」（`LIMIT -1` / `LIMIT 18446744073709551615`…），不如统一不下发，
+   由 `offset_is_ignored()` 让面板提示用户补上限。多条件一律加**括号**（`a OR b AND c`
+   的优先级极易读错）；`UPDATE` / `DELETE` 无条件时面板出 **destructive 色**警示。
+
+#### 4.19.4 复用与门禁
+
+- 引号：`duck_db::quote_identifier` / `quote_qualified`（与结果导出、对象树同一套规则）；
+- 算子：`duck_db::FilterOp`（9 档 + `needs_value()` + `sql_operator()`）与其键 / 文案
+  （`filter_op_key` / `filter_op_label` / `filter_op_from_key`，与过滤条**同一份**）；
+- 取列：`spawn_db`（阻塞内核 API 必须离开渲染线程），回来时比对「还是这张表」才落盘；
+- 执行 / 落编辑器：`execute_sql` / `stage_sql`（排队、取消、超时、结果标签全复用）；
+  ⚠️「执行」**先过 `guard_dangerous`**（为此刻意把它的可见性放到 `pub(super)`）——
+  构建器拼出的全表 `DELETE` / `UPDATE` 与编辑器里手写的是同一类语句，共用同一句确认
+  与同一个判据（`risk_of_statements`），不因为「语句是界面拼的」少问一次；
+- 无新增依赖（MSRV 1.85 门不变）；`en.toml` 新增 **44** 条（构建器 43 + i18n 守卫抓到的
+  漏译「别名」），`en_keys.txt` 已同步（表内 2871 条，含并发会话同期新增）。
+  ⚠️ 忘了跑守卫的代价是**静默的**：英文界面会直接显示中文，`cargo check` 一句话都不报。
+
+#### 4.19.5 一条内核 API 陷阱（真跑测试才抓到）
+
+`render_where` 最初写 `row.op.sql_operator().unwrap_or("IS NULL")` —— 看着天经地义，
+但内核 [`duck_db`] 的 `FilterOp::sql_operator()` 对 `IsNull` / `IsNotNull` **刻意返回 `None`**
+（`IS NULL` 在 `filter_conditions` 里单独拼，因为值走**绑定参数**这条路）。
+于是 `.unwrap_or("IS NULL")` 把 **`IS NOT NULL` 静默降级成 `IS NULL`** —— 一条语义完全相反的
+语句，界面、预览、执行三处**完全一致**地错，谁也看不出来。
+
+修法是抽出显式分派（`sql::null_operator`）：
+
+```rust
+fn null_operator(op: FilterOp) -> &'static str {
+    match op {
+        FilterOp::IsNotNull => "IS NOT NULL",
+        _ => "IS NULL",
+    }
+}
+```
+
+**教训**：判「这个 API 的某个取值会被 `Option` 表达」时，要读**实现**（那两档为什么返回
+`None`），不能靠名字猜。这条单测（`null_predicates_take_no_value`）是**唯一**能发现它的地方 ——
+它也因此成了「为什么纯函数层要有单测」的实证。
+
+#### 4.19.6 分期表
+
+| 期 | 内容 | 状态 |
+| --- | --- | --- |
+| 本期 | 入口 + 右栏容器 + **SELECT 全流程**（模式 / 目标表与别名 / 输出列与投影 / 条件（并且·或者）/ 排序与限制 / 实时预览 / 执行 / 在编辑器中打开）＋ **UPDATE·DELETE**（赋值 / 条件 / 全表警示 / 危险确认闸门） | ✅ 已落地 |
+| 后续 1 | `JOIN`（多表 + 连接类型 + `ON`） | 待做 |
+| 后续 2 | `GROUP BY` / 聚合函数 / `HAVING` | 待做 |
+| 后续 3 | 嵌套条件分组（`(a OR b) AND c`） | 待做 |
+| 后续 4 | UPDATE / DELETE 的**影响行数预览**（确认框里先亮出「这条会动几行」，需内核侧预统计） | 待做 |
+| 后续 5 | 已保存查询（与左栏「已保存查询」共用同一份 kv，不另存一份） | 待做 |
+| 后续 6 | schema 感知补全（列名输入框接 `SqlCompletionProvider`） | 待做 |
+
+### 4.20 批量执行、执行 SQL 文件与库级索引清单（2026-10-16）
+
+用户提了两件事：①「数据库**批量执行 SQL** 效率上，参考 `temp/dbflux` 和 `temp/dbx` 是怎么优化
+和控制的，以及**执行 SQL 文件**」；②「数据库连接展开后，数据库下面应该要有这些菜单：
+表 / 视图 / 存储过程 / 函数 / 触发器 / 事件 / 查询，**以及增加一个索引菜单**」。
+排期按用户指定：**先 A（批量执行 + SQL 文件）、后 B（对象树 + 索引）**。
+
+#### 4.20.1 参照项目的两条路线（读过源码，不是印象）
+
+| 控制点 | dbflux | dbx | 本仓取值 |
+| --- | --- | --- | --- |
+| 往返次数 | 整批一次 `simple_query` + portal 取行 + 共享行预算 | 流式分块 + 双阈值刷批 | 复用既有 `Connection::execute`，批内逐条 |
+| 刷批阈值 | — | 256 条 / 8 MB | `DEFAULT_FLUSH_STATEMENTS = 256` / `DEFAULT_FLUSH_BYTES = 8 MiB` |
+| 事务边界 | 由脚本文本自身的 `BEGIN/COMMIT` 决定 | 逐条自动提交；可选整文件手动事务 | `BatchTransaction::{Single, AutoCommit}`，同 dbx |
+| 遇错 | — | 手动事务档**禁**「继续执行」 | 同 dbx：`Single` 档**强制忽略** `continue_on_error` |
+| 取消 | — | — | **两级**：调用方谓词（每条发起前问一次）+ `CancelHandle`（打断正在跑的那条） |
+| 进度 | — | 事件合流 ≤ 100 ms | 字节级进度，`PROGRESS_INTERVAL = 100 ms` 合流 |
+| 编码 | — | — | 嗅探 UTF-8 / BOM / UTF-16 LE·BE / GBK |
+
+⚠️ **取消为什么要两级**：`CancelHandle`（`cancel.rs:37`）是**带外**句柄、只有「送一枪」没有
+「查状态」，七引擎各一套原语；「后面还跑不跑」只能由调用方谓词回答（`should_stop: &dyn Fn() -> bool`）。
+两个都置才是完整的「停止」。
+
+#### 4.20.2 切分器：单趟状态机 + 流式增量（A1）
+
+**为什么不用解析器**：编辑器/文件里的文本常常**不是合法 SQL**（打了一半、方言私有语法、
+dump 里的客户端指令），解析器一遇错就整份放弃，而切分器只需要「哪里是语句边界」。
+`sqlintel::Splitter` 是手写单趟字符扫描，认识的语法：三种引号、两类注释、
+**PostgreSQL dollar-quote**（`$tag$ … $tag$`，`$1` 这类参数占位符不被误认——tag 首字符必须
+是字母/下划线）、**MySQL `DELIMITER` 行指令与例程体**（`BEGIN…END` 里的 `;` 不算边界）、
+**SQL Server `GO` 批分隔**。
+
+- `split_statement_spans(sql)` = `Splitter::new(sql).run().0`；公开入口仍是 `split_statements`。
+- `Splitter::run` 返回 **`(Vec<StatementSpan>, String)`** —— 第二个是**结束时生效的分隔符档位**，
+  这正是流式化要跨块端过去的状态。
+- `Splitter::with_delimiter(sql, delimiter, starts_at_line_start)` 供续扫复用。
+- `at_offset(offset)`：**偏移 0 处算不算行首**由 `starts_at_line_start` 决定，`GO` / `DELIMITER`
+  这类**行指令**才看它。⚠️ 不靠「补空格/换行去凑行首」——那会改变字节位置，span 就对不上了。
+- **`StatementScanner`**（`push(chunk) -> Vec<String>` / `finish()`）是流式外壳：缓冲区里
+  **最后一条 span 永远留着不交**（它可能被块边界截断），下次从它的首字符重扫。等价性由
+  `streaming_scanner_matches_whole_text_split` 钉死：19 份样本（含 dump、`GO`、未收尾引号）×
+  8 种块宽（1 / 2 / 3 / 5 / 7 / 16 / 64 / 4096 字符）。
+
+#### 4.20.3 批量执行内核 `duck-db::batch`（A2）
+
+```rust
+pub fn execute_batch(
+    conn: &mut Connection,
+    statements: &[String],
+    options: &SqlBatchOptions,
+    should_stop: &dyn Fn() -> bool,
+    on_progress: &mut dyn FnMut(&StatementOutcome),
+) -> Result<BatchReport, DbError>;
+```
+
+- `SqlBatchOptions { transaction, continue_on_error, max_rows }`；
+  `BatchTransaction::{Single, AutoCommit}`。
+- `StatementOutcome { index, sql, status, outcome, elapsed_ms }` + `.affected()` / `.is_ok()`；
+  `StatementStatus` 区分 成功 / 失败 / **跳过**（遇错即停之后剩下的都进跳过，不是「没执行」的沉默）。
+- `BatchReport { statements, executed, failed, skipped, affected, stopped, cancelled, elapsed_ms,
+  transaction_error }` + `.all_ok()` / `.first_error()`。
+- `Single` 档：`BEGIN` 开在第一条之前、`COMMIT`/`ROLLBACK` 收在末尾；`transaction_error`
+  单独一个字段——**收尾失败与某条语句失败是两回事**。
+
+#### 4.20.4 执行 SQL 文件 `duck-db::sqlfile`（A3）
+
+内核 `execute_sql_file(conn, path, options, should_stop, on_statement, on_progress)`：
+
+| 控制点 | 取值 | 理由 |
+| --- | --- | --- |
+| 读盘块 | `CHUNK_BYTES = 256 KiB` | 一行能跨块；再小则 syscall 次数上去了 |
+| 编码嗅探 | `SNIFF_BYTES = 64 KiB` 头 | 够看出 BOM 与「是否严格 UTF-8」 |
+| 编码档位 | `SqlFileEncoding::{Utf8, Utf8Bom, Utf16Le, Utf16Be, Gbk}` | UTF-8 严格校验失败才回落 GBK（而不是先猜 GBK） |
+| 刷批 | 256 条 / 8 MiB 双阈值 | 同 dbx；条数管往返、字节管内存 |
+| 进度 | 100 ms 合流，字节级 | `FileProgress { bytes_read, total_bytes, statements, failed, affected }` + `.fraction()`（`total_bytes == 0` 时归 0，不除零） |
+| 错误明细 | `FileStatementError { index, bytes_read, sql, message }` | 上限 `MAX_ERRORS = 32`、SQL 截断 200 字符：报告是给人看的，不是日志 |
+| 报告 | `FileReport` + `.all_ok()` / `.first_error()` | 含 `cancelled` / `stopped` / `aborted_on_error` / `errors_truncated` 四个**互相独立**的收尾态 |
+| 错误类型 | `SqlFileError::{Io, Db}` | **故意不并进 `DbError`**——那是被全仓**穷举匹配**的枚举，加一支要动所有 match |
+
+⚠️ **一个真 bug（只有大文件才现形）**：`encoding_rs::Decoder::decode_to_string` 把 `String` 的
+**剩余容量**当输出上限（它自己不扩容）并**返回吃掉的字节数**。忽略返回值、`OutputFull` 时从头重解，
+输出会**成倍膨胀**（6000 条 INSERT 的样本跑出 15 条 + 乱码拼接）。修法是 `src = &src[read..]`
+自己推进，`OutputFull` 时 `text.reserve(...)`。小文件因「首次 reserve 后一遍解完」而侥幸正确 ——
+`sqlfile::tests::splits_statements_across_chunk_boundaries` 就是抓它的那条。
+
+**UI 侧**（`pages/db/query.rs` + `render_editor.rs`）：
+
+- 工具条「**执行文件**」钮（`id = "db-run-sql-file"`，`DuckIcon::FileText`，Ghost 档）→ `run_sql_file`
+  → **gpui 自带的异步** `file_dialogs::open_file`（⚠️ 绝不用 `duck_platform::open_file`：rfd 在
+  macOS 是**阻塞嵌套模态循环** → gpui 事件重入 → `RefCell already borrowed` abort；语义相关的
+  东西必须在**打开面板之前**固化，所以 `session_id` / `conn` / `row_cap` 都是先抓再进闭包）。
+- 跑文件时工具条中段换成进度带（`id = "db-sql-file-progress"`，文件名截断 + `progress_bar` +
+  `tabular_numbers` 读数；`total_bytes == 0` 显示「已执行 N 条」，否则「N 条 · P%」）。
+- `SqlFileJob { name, stop, now }`：⚠️ 进度快照本体（`Arc<Mutex<FileProgress>>`）与 `done`
+  标志**不放进结构体** —— 页面从不读它们（只读已搬回主线程的 `now`），放进去就是两个 never-read 字段。
+- 后台线程拿不到 `Context`：`Arc<Mutex<FileProgress>>` 共享 + 后台执行器 150 ms 定时轮询 +
+  `WeakEntity::update` 搬回主线程（照 `pages/terminal/transfer.rs` 的 SFTP 传输口径）。
+- 收尾：状态栏三档文案（停止优先于失败）+ toast + 执行流水（`push_exec_log`）+
+  `reload_introspection` 重取左栏（文件里可能建了表）。⚠️ 数字**先 `.to_string()` 成 `String`**
+  再交给 `trf` —— 实参切片混 `&str` / `&String` / `&SharedString` 推不出共同类型。
+
+#### 4.20.5 库级索引清单 `Connection::list_indexes`（B1）
+
+| 引擎 | 取法 |
+| --- | --- |
+| SQLite | `sqlite_master`（**排掉** `sqlite_autoindex_%`：那是隐式索引，不是用户建的） |
+| PostgreSQL | `pg_index` |
+| MySQL / MariaDB | `information_schema.statistics` |
+| SQL Server | `sys.indexes` |
+| ClickHouse / MongoDB / Elasticsearch | 返回空（ES 的索引即「表」，Mongo 是集合） |
+
+⚠️ **一次问出整库，不逐表问**：几百张表的库逐表 `pragma_index_list` / `information_schema`
+就是几百次往返，而这一步在**建连 / 刷新 / 切库三处**都会跑。
+
+#### 4.20.6 对象树八档与「查询」节点下移（B2）
+
+- `TreeCategory` 扩到 **8 档**：`Table, View, **Index**, Procedure, Function, Trigger, Event, User`
+  （`ALL: [Self; 8]`）。索引排在**表 / 视图之后、存储过程之前** —— 用户截图里它是新增项，
+  摆在「结构类」末尾最自然。图标取「带序号的清单」（索引 = 列的有序清单）。
+  ⚠️ `TreeCategory::key()` **不翻译**：它是状态键（存进 `tree_open`），翻译过的文案换语言就换键、
+  展开状态会跟着丢。
+- `Introspection` 加第 7 份 `indexes`（`pages/db/mod.rs:1169`）；`load` / `install` 三处
+  （建连 / 刷新 / 切库）共用同一套，加一份新内省不必追三处。
+  **失败口径**：只有 `catalog` 失败会让整次内省失败，其余六份一律 `.unwrap_or_default()` ——
+  权限不足取不到 `mysql.user`、老引擎没有 `list_databases`，都不该把整条连接判死。
+- 「查询」（已保存查询）节点从**连接级**挪到**库节点下**（用户截图要求它在库下面）。
+  ⚠️ 目前只是**摆位**变化；要真正按库隔离，得给 `SavedQuery` 加库/连接归属字段（未做）。
+
+### 4.21 表结构编辑器对位 dbx：Tabs 卡片 + 草稿态网格 + 底部应用条（2026-10-16）
+
+用户指出旧版「修改表结构」（两列输入 + 工具条）不符合操作习惯，指定完全参考
+dbx `TableStructureEditor` 重做；先出 `temp/table_structure_demo.html` 审核通过后
+落地。文件：`pages/db/structure.rs`（重写）、`pages/db/mod.rs`（`StructureDraft`
+扩字段 + `StructureTab` 枚举）。
+
+**布局五段**（dbx 同款垂直结构）：
+
+1. **目标条**：Database 图标 + `schema.table` 限定名（超长 truncate）+ 引擎
+   `kind_label` 徽标 + 「刷新」（重走 `open_structure`，草稿随刷新重建）。
+2. **Tabs 卡片**：DDL / 字段 / 索引 / 外键 / 触发器 五个标签（`StructureTab`）。
+   ⚠️ **按内核内省能力只开五个**——约束、分区内核没有读取，不冒充（dbx 同款：
+   capability 之外的标签直接不显示）。字段标签带计数徽标；右端工具区随标签切换：
+   DDL → 「复制 DDL」；字段 → 搜索框 + 「新增字段」；其余三个只读标签无工具。
+3. **SQL 预览卡**：标题 + 「N 条语句」徽标 + 「复制 SQL」，内容可滚动（max 200px）。
+4. **底部应用条**：左侧口径提示「编辑仅保存在本地草稿，应用前不写入数据库」，
+   右侧「应用变更」主按钮（无变更 / busy 时禁用）。
+
+**字段网格**：首轮表头四列位（#序号+主键星标 / 操作 / 字段名 / 类型）+ 已改 tag；
+补全后扩为九列（见下文第 2 条）。
+搜索框是**客户端**过滤（字段名 / 类型，大小写不敏感），`InputState::Change`
+订阅挂 `DatabasePage::_subscriptions`（草稿重建即随旧实体失效，无需手动清理）。
+新增行薄绿底（`success.opacity(opacity.tint)`）、标记删除整行淡化 + 「撤销删除」——
+删除仍是**草稿态**，SQL 预览出 `DROP COLUMN`，应用前可恢复。
+
+**取数口径**：`open_structure` 一次取六样（列清单 / 主键 / 索引 / 外键 / 触发器 /
+DDL，装进 `StructureMeta`）。只有列清单失败才整体报错；其余四槽各自
+`unwrap_or_default()` / `.ok()`，失败只让自己那个标签显示空态——右栏 `TableMeta`
+同款「不互相拖垮」。索引 / 外键 / 触发器三标签**只读**：内核没有生成对应 DDL 的
+能力，摆一个改不动的编辑器只会让人误会。
+
+**保持不变的既有约束**：SQL 生成仍是「一条改动一条独立 `ALTER`」（SQLite 改类型
+出注释不出假语句）；应用仍走 `execute_sql` 同一条执行路径（危险确认 / 历史 /
+审计 / 超时只有一份真相）。
+
+**首轮落地后的六项补全（2026-10-16 同日，全量完成）**：
+
+1. **内核列级元数据**：`duck_db::TableColumnMeta`（name / type_name / comment +
+   `nullable` / `default` / `character_set` / `collation` 五个 `Option` 属性）+
+   `Connection::table_column_meta()` 七驱动分发——SQLite 走 `pragma_table_info`
+   的 `notnull` / `dflt_value`；MySQL 走 `information_schema.columns` 全套；PG 走
+   `pg_attribute + pg_attrdef + pg_description + attcollation`；MSSQL 走
+   `sys.columns + OBJECT_DEFINITION + extended_properties`；ClickHouse 用
+   `Nullable(` 前缀推导可空；Mongo / ES 从 `Column` 映射。**拿不到的属性是
+   `None` / 空串，UI 按引擎能力闸门画成不可编辑，不冒充**（`attrs_known`）。
+2. **字段网格九列**（# / 操作 / 字段名 / 类型 / 可为空 / 主键 / 默认值 / 注释 /
+   字符集 / 排序规则）：可空与主键是 `switch_control`（⚠️ gpui-base 的 `Switch`
+   没实现 `Disableable`——禁用 = 闭包里拦 + `opacity.disabled` 淡出）；其余属性
+   是草稿输入框；整块 `overflow_x_scroll` 横向滚动（挂 `.id` 才有 Stateful）。
+3. **拖拽物理重排**：`StructureRowDrag` + `on_drag_move` 活重排（复用 grid.rs
+   先例）；MySQL 生成 `AFTER` 子句落物理列序（删列不算重排），其余引擎保持本地
+   显示序并在 SQL 预览出注释说明。
+4. **「复制其他表字段」弹窗**：候选清单来自源表 `table_column_meta`（全选 / 清除 /
+   逐行勾选），确认后 `append_copied_fields` 追加为新增行。⚠️ Dialog 的
+   `content` 闭包是 `Fn`（每次重渲染重跑）——`Div` 不可 Clone，候选行必须
+   **在闭包内现读现建**，不能把建好的 body 捕获进去。
+5. **默认值快捷预设**：NULL / CURRENT_TIMESTAMP / 0 / ''（空串）四个预设，走
+   duck_components 的 `toolbar_dropdown_button`——⚠️ `dropdown_menu_with_anchor`
+   只实现在 gpui-component 的 `Button` 上，duck 的 chrome 按钮（gpui-base）没有。
+   `literal_sql`：NULL / CURRENT_TIMESTAMP / 纯数字 / 已引号字面量原样，其余按
+   字符串字面量包引号。
+6. **密度三档**（紧凑 / 标准 / 舒适）：行高与行距两档位（`density_metrics`），
+   存 `StructureDraft.density`（会话内，不落盘）。
+
+**主键 DDL 口径修订**：MySQL 可勾选（`ADD / DROP PRIMARY KEY`），其余引擎生成
+不了对应 DDL，勾选框禁用并出注释——不再是「只展示不给改」。
+
+**DDL 标签保持只读**（demo 即设计基准，demo 的 DDL 标签也是只读）：可编辑 DDL
+意味着「改完不知道引擎会不会接」，与「不出假语句」的口径冲突，列为明确的**不做**。
+
+#### 4.20.7 结果网格表头三段化（2026-10-16，用户截图指定）
+
+用户要求查询结果**表头**改三段（附截图）：① 字段名（注意颜色）；② 字段类型+长度
+（小字、颜色区分）；③ 字段中文注释（较长的显示 `…`）；悬停弹**富详情卡**（列名 /
+类型 / 注释 + 可复制）；列头带**排序图标 + 下拉图标**，下拉四项：列格式化 /
+本地值筛选 / 数据库值筛选 / 清除。
+
+**内核（duck-db）**：`result::Column` 加 `comment: String`（struct 派生 `Default`，
+57 个构造点机械补齐）。类型长度**不另拆字段**——MySQL `column_type` / PG `format_type`
+本来就自带 `(50)` 修饰，表头直接显示 `type_name`。注释只在**表内省**给：
+- MySQL：`information_schema.columns.column_comment`；
+- PG：`table_columns` 改走 `pg_attribute + format_type + col_description`
+  （⚠️ 原先的 `information_schema.data_type` **丢长度**——`character varying(50)` 变
+  `character varying`；改后与写路径的 `column_sql_types` 同口径）；
+- SQLite：`pragma_table_info` 没有注释，留空（表注释藏在建表 SQL 文本里，不值得解析）。
+
+**回填口径**：查询结果的列元数据来自游标、**没有注释**；表浏览装结果时把
+`table_columns` 的注释**按列名**回填进 `result.columns`——`SELECT *` 与内省同序，
+别名 / 表达式对不上就留空（宁可空着，不猜）。换结果集（翻页重装 / 新查询 /
+装回标签快照）时列头下拉的本地筛选与格式化**一并清掉**：列级状态只对
+「看着的这份结果」负责。
+
+**组件（duck-components::data_table）**：
+- `ColumnSpec` 加 `comment`（`with_comment` 链式，`new` 不破坏既有调用）；
+  `HEADER_HEIGHT` 38 → **56**（三行：列名 `sm` 粗体正色 / 类型 `xs` 着色 / 注释 `xs` 灰）。
+- **排序点击从「整格」收窄到列名与箭头**：下拉按钮是独立点击目标，挂在整格会把
+  「点菜单」也计成「点排序」。箭头三态（`ArrowUpDown` 灰 → `ArrowUp/ArrowDown` 强调色）。
+- 类型着色三档（dbx 同款）：数字主色 / 文本绿 / 时间强调，认不出退灰。前缀表
+  **时间最先判**（`datetime` / `timestamp` 同时含数字档关键词），数字档不用单字母
+  前缀（`u`/`i` 会把 `image` 染成蓝）。
+- **下拉按钮** = 小号 ghost `Button` + `dropdown_menu_with_anchor(Anchor::BottomRight)`
+  （列头贴结果区上缘，只能向下弹）。菜单内容走新 hook `DataTableHooks::header_dropdown`
+  （签名与右键 `header_menu` 相同），文案/动作全在宿主——组件不含 i18n 的既有口径。
+- **悬停详情卡**走 gpui 的 **view tooltip**（`.tooltip(fn -> AnyView)`）：带复制按钮的
+  富内容只有 view 承载得了，纯文本 `Tooltip` 不够。视图在悬停延迟到点才建
+  （`gpui_base::tooltip` 的 `SHOW_DELAY`），不在每帧渲染路径上。
+
+**宿主四项菜单（都是真动作，无占位）**：
+| 项 | 行为 | 门槛 |
+| --- | --- | --- |
+| 列格式化 ▸ | 子菜单：**千分位**（勾选态=当前档）/ **原始值** | 仅数值列给（文本/日期没有可用的展示层模板，灰项只会让人猜） |
+| 本地值筛选 | 以**选中格**该列的展示文本为等值条件，开关本地过滤（`visible_row_indexes` 里夹在搜索与排序之间）；同一值再点一次=解除 | 无选中格置灰 |
+| 数据库值筛选 | 「该列 = 选中格的值」直落表浏览 WHERE（NULL 用 `IsNull`，不拿字符串 `"NULL"` 去等值）；无选中格只填筛选条草稿列 | 仅表浏览给 |
+| 清除 | 摘掉该列的排序 / 本地筛选 / 格式化（排序走 `clear_sort` 自己的刷新路径） | 有任一效果才画 |
+
+⚠️ **格式化在模型预算层应用**（`build_table_model` 把千分位写进 `Arc<str>` display），
+改档必须重推模型（`sync_data_table`），渲染层消化不了。千分位只动整数部分、保小数与
+负号，**复制 / 编辑 / SQL 生成的仍是原值**。
+
+⚠️ **闭包 HRTB 教训**：两处 `on_click` 共用一份点击行为时，裸闭包做中间变量推不出
+`for<'a>`（`implementation of Fn is not general enough`）——显式 `Rc<dyn Fn(&ClickEvent,
+&mut Window, &mut App)>` 再用轻包装闭包调用（`on_click` 要求裸 `Fn`，不收 `Rc`）。
+
+### 4.22 ER 关系图 / 比较数据 / 数据传输（2026-10-16）
+
+dbx 三张工具页对位，入口统一挂在**库节点右键**（ER 关系图 / 比较数据… / 数据传输…），
+各自一张标签（`TabKind::Er` / `Compare(CompareSpec)` / `Transfer(TransferSpec)`，
+`Mode` 三变体 + `SessionView.er` / `compare` / `transfer` 三份按标签快照；
+`er.rs` / `compare.rs` / `transfer.rs` 三个新模块）。
+
+**ER 关系图**（`er.rs`）：一个库的表卡片 + 外键关系。数据 = 内核
+`table_columns` / `table_foreign_keys` 逐表取（单表失败不连坐）；卡片流
+（260px 定宽 flex_wrap，≤80 张截断并明说）每张卡片 = 表头（点开数据标签）
++ 列清单（≤12 列，余量折叠计数）+ 外键行（点行跳**被引用表**）。
+「导出 Mermaid」生成 `erDiagram`（属性块 + `||--o{` 关系行）进剪贴板。
+⚠️ 跨卡连线要 taffy 布局后的几何，第一期用卡片内关系清单表达同样的信息。
+
+**比较数据**（`compare.rs`）：源 = 菜单所在连接 + 库（只读展示）；目标连接 /
+目标库是页面上两个**可搜索下拉**（`DbSelectState`，选项来自已连接会话的命名空间
+清单；状态按标签存，订阅在开标签时挂 `self._subscriptions`）。「开始比较」
+单次后台闭包对两侧连接跑：目标侧 `Introspection::load` 取表集合 → 逐源表分类
+（仅源有 / 仅目标有 / 两侧都有），两侧都有时比行数（`COUNT(*)`）、列名交集差、
+**主键级行差**（主键同名时各拉 ≤5 万键在内存做差，报「目标缺失 N 行（样例）」/
+「目标多出 N 行」；无主键或超上限明说未比对）。差异行动作：「生成补数 SQL」
+（拉回目标缺失行 ≤500 行，拼 INSERT 进编辑器）与「传输此表」（开单表传输标签）。
+上限：`COMPARE_TABLE_CAP=200` / `COMPARE_PK_CAP=50_000` / `COMPARE_BACKFILL_CAP=500`。
+单元格级逐列对比不在第一期口径（要对齐两侧类型系统），行集比对以主键为准。
+
+**数据传输**（`transfer.rs`）：源 = 菜单所在库的**全部基础表**（比较页可传单张）；
+目标连接 / 目标库同比较页的两个下拉。「开始传输」逐表串行（一张的回调里排下一张），
+每张一个后台闭包：源 `SELECT *`（≤10 万行）→ **源锁立刻释放** → 目标
+`apply_batch(&[], &inserts)` 分块 500 行写入（引擎类型亲和转换）。
+**不建表**：目标表不存在 → 跳过并明说；列按**同名交集**搬运（目标缺列被丢弃并在
+结果里注明读 N 行 / 插 M 行 / 丢 K 列）。跨引擎建表要搬一套类型系统，
+先用结构编辑器（§4.21）建好再传。
+
+⚠️ 复用注意：`db_select_state` 工厂从 shell.rs 挪进了 helpers.rs（shell 是「无自由
+函数不转出」的子模块，compare / transfer 取不到）；`SelectEvent` 单变体直接
+`let SelectEvent::Confirm(v) = event;` 解构（let-else 会被 clippy 判 irrefutable）。
 
 ## 5. 数据库支持矩阵（M1→M2 引擎与依赖）
 

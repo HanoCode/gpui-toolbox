@@ -27,6 +27,7 @@
 //!   供执行器与未来的 AI 闸门共用。
 
 pub mod ai;
+pub mod batch;
 pub mod cancel;
 pub mod config;
 pub mod csv;
@@ -37,6 +38,7 @@ pub mod plan;
 pub mod proxy;
 pub mod result;
 pub mod sqldiag;
+pub mod sqlfile;
 pub mod sqlintel;
 pub mod sqlwords;
 pub mod ssm;
@@ -46,14 +48,18 @@ pub mod import;
 pub mod tunnel;
 
 pub use ai::{AiProvider, OpenAiCompatible};
+pub use batch::{
+    BatchReport, BatchTransaction, SqlBatchOptions, StatementOutcome, StatementStatus,
+    execute_batch,
+};
 pub use cancel::{CancelHandle, CancelTimer};
 pub use config::{ConnectionConfig, DatabaseKind, EnvTag, SshTunnelConfig, TlsMode};
 pub use csv::parse_csv;
 pub use drivers::{
     BatchOutcome, CatalogTable, CellEdit, Connection, DatabaseObject, FilterOp, InsertRow,
     InstanceFact, InstanceMetric, InstanceOverview, InstanceTable, InstanceView, OrderBy, PkValues,
-    RowCount, SwitchOutcome, TableFilter, TableForeignKey, TableIndex, TableKind, TableRef,
-    TableTrigger, quote_identifier, quote_qualified,
+    RowCount, SwitchOutcome, TableColumnMeta, TableFilter, TableForeignKey, TableIndex, TableKind,
+    TableRef, TableTrigger, quote_identifier, quote_qualified,
 };
 pub use error::DbError;
 pub use hooks::{
@@ -64,10 +70,14 @@ pub use plan::{PlanNode, PlanTree, parse_plan};
 pub use proxy::{ProxyConfig, ProxyKind, ProxyTunnel, ProxyTunnelSpec};
 pub use result::{BinaryEncoding, Column, ExecOutcome, ResultSet, Value, tsv_field};
 pub use sqldiag::{Severity as SqlSeverity, SqlDiagnostic, diagnose_sql};
+pub use sqlfile::{
+    FileProgress, FileReport, FileStatementError, SqlFileEncoding, SqlFileError, SqlFileOptions,
+    execute_sql_file,
+};
 pub use sqlintel::{
-    EditTarget, ExplainSkip, FormattedSql, SqlFormatOptions, SqlKeywordCase, covers_columns,
-    edit_target, explain_sql, explain_sql_for, fingerprint, format_sql, format_sql_with,
-    normalize_for_fingerprint, risk_of_statements, split_statements,
+    EditTarget, ExplainSkip, FormattedSql, SqlFormatOptions, SqlKeywordCase, StatementScanner,
+    covers_columns, edit_target, explain_sql, explain_sql_for, fingerprint, format_sql,
+    format_sql_with, normalize_for_fingerprint, risk_of_statements, split_statements,
 };
 pub use sqlwords::{QueryLanguage, SqlWords};
 pub use ssm::{SsmConfig, SsmTunnel, SsmTunnelSpec};

@@ -12,6 +12,7 @@ mod audit;
 mod backup;
 mod deeplink;
 mod diagnostics;
+mod file_dialogs;
 mod hotkey;
 mod http_client;
 mod language_switch;

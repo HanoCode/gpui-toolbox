@@ -42,56 +42,6 @@ pub(super) fn text_input<C: AppContext>(
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
 }
 
-/// 顶栏 / 状态栏档位下拉的通用骨架（查询模式 / 过期时间 / 排序 / DB 选择共用）。
-///
-/// `options` 的每一项是 `(档位, 菜单文案)`，按钮上显示**当前档位**的文案；
-/// `on_select` 拿到被点的档位与窗口——有的档位要重扫（查询模式 / DB 切换），
-/// 有的只重算本地视图（过期时间 / 排序），差别留给调用方。
-///
-/// `anchor` 要跟着按钮在工具条里的位置走：左端的按钮用 `BottomLeft`（菜单向右展开），
-/// 右端的用 `BottomRight`（向左展开），否则菜单会顶出窗口右缘。
-/// ⚠️ 状态栏在窗口**底部**，那里的按钮也要用 `*Bottom*`——`Anchor::TopLeft` 会把弹层
-/// 挂到按钮下缘之外，只能靠 `Positioner` 的视口钳位救回来。
-pub(super) fn toolbar_switcher<V>(
-    id: &'static str,
-    anchor: Anchor,
-    options: &[(V, SharedString)],
-    current: V,
-    icon: impl IntoElement,
-    on_select: impl Fn(V, &mut Window, &mut App) + 'static,
-    cx: &App,
-) -> AnyElement
-where
-    V: Copy + PartialEq + 'static,
-{
-    let current_label = options
-        .iter()
-        .find(|(value, _)| *value == current)
-        .map_or_else(SharedString::default, |(_, label)| label.clone());
-    let items = options.to_vec();
-    // 不写 `Rc<dyn Fn(..)>` 标注：菜单项要多次回调，用 `Rc` 共享**具体闭包类型**即可
-    // （`dyn` 那层只会招来 clippy 的 `type_complexity`，没有实际好处）。
-    let on_select = Rc::new(on_select);
-    toolbar_text_dropdown_button(
-        id,
-        current_label,
-        icon,
-        anchor,
-        move |menu, _, _| {
-            items.iter().fold(menu, |menu, (value, label)| {
-                let value = *value;
-                let on_select = Rc::clone(&on_select);
-                menu.item(
-                    PopupMenuItem::new(label.clone())
-                        .checked(value == current)
-                        .on_click(move |_, window, cx| on_select(value, window, cx)),
-                )
-            })
-        },
-        cx,
-    )
-}
-
 /// 从 kv 读连接档案；解析失败回落空表（用户重存即可覆盖）。
 ///
 /// 2026-10-12 换档迁移：旧 wire 是 `read_only: bool`，新 wire 是 `write_policy`

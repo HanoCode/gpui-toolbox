@@ -347,10 +347,10 @@ pub fn prefix_pattern(prefix: &str, separator: &str) -> String {
 
 /// 「自动展开阈值」的**缺省值**（连接档案未填时用）。
 ///
-/// 与 zedis 对齐（`temp/zedis/src/states/app.rs::auto_expand_threshold`
-/// 的 `unwrap_or(100)`）：开箱即用要能看到**键名长什么样**，而不是一屏
-/// 折叠的命名空间；100 这个量级在多数库里既能铺开叶子、又不至于撑爆列表。
-pub const AUTO_EXPAND_DEFAULT: usize = 100;
+/// `0` = **默认全折叠**（2026-10-15 用户定夺：列表默认收起，命名空间自己点开；
+/// zedis 的 `unwrap_or(100)` 是它的选择，本仓以用户偏好为准）。想要开箱铺开
+/// 的用户在连接表单里把「自动展开阈值」填成正数即可。
+pub const AUTO_EXPAND_DEFAULT: usize = 0;
 
 /// 一个节点是否该**默认展开**（连接档案的「自动展开阈值」）。
 ///

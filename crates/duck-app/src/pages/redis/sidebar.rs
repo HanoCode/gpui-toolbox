@@ -155,56 +155,11 @@ impl RedisPage {
             )
             .child(
                 div()
-                    .flex_none()
-                    .px(tokens.spacing.sm)
-                    .pb(tokens.spacing.xs)
-                    .child(
-                        h_flex()
-                            .h(theme.density().control)
-                            .w_full()
-                            .px(tokens.spacing.sm)
-                            .rounded(theme.components().input_radius)
-                            .border(extended.stroke.thin)
-                            .border_color(extended.colors.hairline)
-                            .bg(tokens.colors.background)
-                            .child(
-                                Input::new(&self.search)
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .w_full(),
-                            ),
-                    ),
-            )
-            .child(
-                div()
                     .flex_1()
                     .min_h_0()
                     .id("redis-connections-scroll")
                     .overflow_y_scroll()
                     .child(nav),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .p(tokens.spacing.sm)
-                    .border_t(extended.stroke.thin)
-                    .border_color(extended.colors.hairline)
-                    .child(
-                        button(
-                            "redis-new-connection",
-                            tr(cx, "新建连接"),
-                            ButtonVariant::Secondary,
-                            cx,
-                        )
-                        .on_click({
-                            let view = view.clone();
-                            move |_, window, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    this.new_connection(window, cx);
-                                });
-                            }
-                        }),
-                    ),
             )
             .into_any_element()
     }

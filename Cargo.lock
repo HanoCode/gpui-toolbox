@@ -1863,6 +1863,7 @@ dependencies = [
  "base64 0.22.1",
  "duck-ai",
  "duck-platform",
+ "encoding_rs",
  "futures-util",
  "mongodb",
  "mysql",

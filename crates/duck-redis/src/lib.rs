@@ -42,6 +42,7 @@ pub mod conn;
 pub mod decode;
 pub mod error;
 pub mod json_tree;
+pub mod jsonpath;
 pub mod monitor;
 pub mod query;
 pub mod scan;
@@ -66,8 +67,10 @@ pub use decode::{DecodeKind, Decoded, HEX_PREVIEW_BYTES, Message, decode, hex_du
 pub use error::RedisError;
 pub use json_tree::{
     JSON_TREE_MAX_CHILDREN, JSON_TREE_MAX_NODES, JSON_TREE_PREVIEW_CHARS, JsonNodeKind,
-    JsonTreeNode, JsonTreeRow, default_expanded, flatten, json_tree, toggle_path, tree_of,
+    JsonTreeNode, JsonTreeRow, default_expanded, flatten, json_tree, parse_document, toggle_path,
+    tree_of,
 };
+pub use jsonpath::{JsonPathHit, JsonPathQuery, run as jsonpath_run};
 pub use monitor::{MonitorSession, POLL_TIMEOUT};
 pub use query::{QueryMode, ScanPlan, escape_glob, scan_plan};
 pub use scan::{

@@ -330,11 +330,12 @@ impl RedisConfig {
     ///
     /// | 档案里的值 | 生效值 | 含义 |
     /// |---|---|---|
-    /// | 未填 | [`crate::scan::AUTO_EXPAND_DEFAULT`]（100） | 缺省：小命名空间直接铺开 |
+    /// | 未填 | [`crate::scan::AUTO_EXPAND_DEFAULT`]（0） | 缺省：**全折叠**，命名空间自己点开 |
     /// | `0` | `0` | 显式关掉自动展开（只看顶层，自己点开） |
     /// | `n` | `n` | 子树键数 ≤ `n` 就展开 |
     ///
-    /// 注意「未填」与「显式 0」**不再是同一个可观察结果**：前者是缺省 100。
+    /// 注意「未填」与「显式 0」现在**是同一个可观察结果**（缺省即 0，2026-10-15
+    /// 用户定夺；想要铺开的用户自己填正数）。
     #[must_use]
     pub fn effective_auto_expand(&self) -> usize {
         match self.auto_expand_threshold {
@@ -561,7 +562,7 @@ mod tests {
         };
         assert_eq!(off.effective_auto_expand(), 0);
 
-        // 未填走缺省 100（zedis 同款）——「留空」不再是「不展开」。
+        // 未填走缺省 0（2026-10-15 用户定夺：默认全折叠）——「留空」＝「不展开」。
         let unset = RedisConfig {
             auto_expand_threshold: None,
             ..cfg.clone()
@@ -570,7 +571,7 @@ mod tests {
             unset.effective_auto_expand(),
             crate::scan::AUTO_EXPAND_DEFAULT
         );
-        assert_eq!(crate::scan::AUTO_EXPAND_DEFAULT, 100);
+        assert_eq!(crate::scan::AUTO_EXPAND_DEFAULT, 0);
     }
 
     /// 旧档案迁移：2026-10-12 之前的 `read_only` 布尔 → `write_policy` 单选轴。

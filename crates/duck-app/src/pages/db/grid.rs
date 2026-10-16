@@ -18,6 +18,49 @@ impl Render for ColumnsModeResizeDrag {
     }
 }
 
+/// 右键「在结果中搜索此值」时，最多拿单元格文本的前多少个**字符**当搜索词。
+///
+/// 256 是个「普通值全部装得下、异常值一定被拦住」的量级：电话号码 / 邮箱 / UUID /
+/// 短备注都在几十字符内；而 TEXT / JSON 列可以是整篇文档，那种长度当搜索词既
+/// 没意义（没人按 1 MB 的串匹配），又会在**每一行**上做一次子串匹配。截断之后
+/// 语义变成「按这段文本的开头过滤」—— 短值下与「按整个值过滤」完全一样。
+const SEARCH_VALUE_MAX_CHARS: usize = 256;
+
+/// 单元格右键菜单在**弹出那一刻**读齐的事实。
+///
+/// 菜单构建闭包是 `Fn`（每次右键 rebuild 一次），拿不到 `&DatabasePage`：弹出时
+/// 一次读完、之后只借克隆。顺带把「一万行也不在渲染路径上白拼几百 KB」这条纪律
+/// 落成结构 —— 文本只在真弹菜单时才算。
+///
+/// 每一项「能不能点」都在这里判完，**不在点击回调里兜底**：菜单里出现一个点了
+/// 只弹「不可用」的项，比不放这一项更让人困惑。点击路径上的守卫（
+/// [`DatabasePage::toggle_column_hidden`] 一类）仍然保留 —— 那是并发 / 竞态下的
+/// 第二道闸，不是第一道。
+struct CellMenuFacts {
+    /// 这一格的列名（越界 = `None`）。
+    column: Option<String>,
+    /// 这一格的文本（[`Value::render`]，与网格里显示的一致）。
+    cell_text: String,
+    /// 整行一条 TSV（粘进表格软件就是一整行单元格）。
+    row_text: String,
+    /// 「复制 ▸」父项文案（跟着选区走，见菜单里的说明）。
+    submenu_label: SharedString,
+    /// 结果集可写 → 「复制 ▸」里的 INSERT 档可用（与
+    /// [`ResultFormat::exportable`] 的第二个入参同源）。
+    can_insert: bool,
+    /// 结果集可编辑（单表 + 主键齐全）→ 「编辑此单元格」可用。
+    editable: bool,
+    /// 这一行能按主键删（有主键且本行能定位 —— 与
+    /// [`DatabasePage::delete_current_row`] 的守卫同源）。
+    deletable: bool,
+    /// 有列被藏着 → 菜单里给「全部显示」。
+    any_hidden: bool,
+    /// 列头三态排序在这一模式下有意义（表浏览 / SQL 结果各有一套落地）。
+    sortable: bool,
+    /// 当前生效的排序 → 决定两个方向项的勾选态与「清除排序」要不要出现。
+    sort: Option<SortSpec>,
+}
+
 impl DatabasePage {
     /// 摘要「执行过程」里的**来源语句 chip**（dbx 的「SQL 结果」tag 同款）：单行化显示 + 左键复制。
     ///
@@ -115,7 +158,7 @@ impl DatabasePage {
         // 表浏览下「没排过序、没藏列、没取到 DDL」是最常见的情形，别在那儿摆一条空带。
         let has_tabs = self.mode == Mode::Query && !self.result_tabs.is_empty();
         let has_readings = !self.hidden_columns.is_empty()
-            || self.table_sort.is_some()
+            || self.active_sort().is_some()
             || (self.mode == Mode::Table && self.table_ddl.is_some());
         if !has_tabs && !has_readings {
             return div().into_any_element();
@@ -222,46 +265,61 @@ impl DatabasePage {
                     cx,
                 ))
             })
-            // 排序读数（原编辑条迁来）：表浏览按列排序后如实说一句，不然「顺序
-            // 不对」没有任何线索。排序只在表浏览存在，查询结果不受它影响。
-            .when_some(self.table_sort.as_ref(), |bar, spec| {
-                bar.child(neutral_tag(
-                    SharedString::from(trf(
+            // 排序读数（原编辑条迁来）：按列排过之后如实说一句，不然「顺序不对」
+            // 没有任何线索。表浏览与 SQL 结果集各读自己那一份（[`Self::active_sort`]）。
+            //
+            // ⚠️ 只在**这一列真的还在结果里**时读数：客户端排序是**按列名**记的
+            //（`query_sort`），同一标签里换一条语句重跑之后，旧列名可能已经不存在
+            // —— 那时排序根本没生效，读数却还挂着「按 X 升序」，是一句假话。
+            .when_some(
+                self.current_result().and_then(|result| {
+                    self.active_sort().filter(|spec| {
+                        result
+                            .columns
+                            .iter()
+                            .any(|column| column.name == spec.column)
+                    })
+                }),
+                |bar, spec| {
+                    bar.child(neutral_tag(
+                        SharedString::from(trf(
+                            cx,
+                            "按 {} {}",
+                            &[&spec.column, if spec.descending { "降序" } else { "升序" }],
+                        )),
                         cx,
-                        "按 {} {}",
-                        &[&spec.column, if spec.descending { "降序" } else { "升序" }],
-                    )),
-                    cx,
-                ))
-            })
+                    ))
+                },
+            )
             // 弹性带把读数与右端入口分开；来源语句 chip 已撤（摘要「执行过程」
             // 里的语句可复制，历史与右栏详情也能看全文）。
             .child(div().flex_1().min_w_0())
             // 字段筛选 / 跳转列已并入 tab 栏动作组（回滚之后）。
             // DDL 入口（原对象头条迁来）：只在表浏览且当前表取到了 DDL 时出现，
-            // 与右栏 DDL 卡的「放进编辑器」同一条 `stage_sql` 路径 —— 右栏可能
-            // 被折叠，这里是常驻入口。
+            // 与右栏 DDL 卡的「修改表结构」同一条 `open_structure_tab` 路径 ——
+            // 右栏可能被折叠，这里是常驻入口。
             .when(
                 self.mode == Mode::Table && self.table_ddl.is_some(),
                 |bar| {
                     bar.child(
                         button(
                             "db-result-ddl",
-                            tr(cx, "在编辑器中修改 DDL"),
+                            tr(cx, "修改表结构"),
                             ButtonVariant::Ghost,
                             cx,
                         )
                         .on_click({
                             let view = self.view.clone();
-                            let ddl = self.table_ddl.clone().unwrap_or_default();
+                            let target = self.selected_table.clone();
                             move |_, window, cx| {
                                 let _ = view.update(cx, |this, cx| {
-                                    this.stage_sql(
-                                        ddl.clone(),
-                                        tr(cx, "已把当前 DDL 放进编辑器，改好后执行。").into(),
-                                        window,
-                                        cx,
-                                    );
+                                    let Some(conn_id) = this.active.clone() else {
+                                        return;
+                                    };
+                                    let Some(target) = target.clone() else {
+                                        return;
+                                    };
+                                    this.open_structure_tab(&conn_id, target, false, window, cx);
                                 });
                             }
                         }),
@@ -272,7 +330,7 @@ impl DatabasePage {
     }
 
     /// 结果区脚注（设计稿 `grid-foot`）：视图三档切换 + 行数 / 耗时读数；右端
-    /// 导出与（表浏览的）翻页组。
+    /// 行数下拉与（表浏览的）翻页组。
     ///
     /// 全部是「这一次结果」的**常驻**事实——工具条中部那份 status 是易逝的操作
     /// 反馈，翻完页 / 切完标签就没了；这里跟结果共存亡。来源语句挪去了读数条
@@ -327,18 +385,21 @@ impl DatabasePage {
                 |bar| bar.child(neutral_tag(tr(cx, "已达上限"), cx)),
             )
             .child(div().flex_1().min_w_0())
-            // dbx grid-foot 同款的右端三件套：「N 行/页」下拉 → 紧凑翻页组
-            // （« ‹ [页码] › »）→ 导出菜单。翻页组**常驻**（只有一页时按钮
-            // 置灰，不再整组消失 —— dbx 同款，空一页也是页）。
-            // 「保存结果」导出在 tab 栏（QueryResultToolbarActions 同款位置）
-            // 也有一份 —— dbx 两处都有，footer 这份照用户给的截图落位。
+            // dbx grid-foot 同款的右端两件套：「N 行/页」下拉 → 紧凑翻页组
+            // （« ‹ [页码] › »）。翻页组**常驻**（只有一页时按钮置灰，不再整组
+            // 消失 —— dbx 同款，空一页也是页）。
+            //
+            // ⚠️ 「导出」**不再在这里出现**：tab 栏那份和这里那份用的是同一个元素
+            // id（`db-export`），而同一个窗口里 ElementId 就是状态键 —— 两处共用
+            // 一格状态，点一次会把两份弹层一起叫出来（用户实测「出现两个弹窗」）。
+            // 同一个动作在一个窗口里只留一个入口：tab 栏那份与写动作组同排，
+            // 离结果最近。
             .when(matches!(self.mode, Mode::Query | Mode::Table), |bar| {
                 bar.child(match self.mode {
                     Mode::Query => self.query_page_size_dropdown(cx),
                     _ => self.browse_page_size_dropdown(cx),
                 })
                 .child(self.render_pager_compact(cx))
-                .child(self.export_dropdown(cx))
             })
             .into_any_element()
     }
@@ -346,10 +407,11 @@ impl DatabasePage {
     /// footer 的**紧凑翻页组**（dbx grid-foot 同款：`« ‹ [页码] › »`）。
     ///
     /// 两种模式共用一条版式：查询 = 客户端分页（总页数已知，五个钮都能判
-    /// 置灰）；表浏览 = 服务器侧分页（总页数未知，「»」永远置灰 —— 装作知道
-    /// 再点空是骗人）。**常驻**：只有一页时按钮置灰但整条还在（dbx 同款，
-    /// 整组消失会让人找不到页码输入框）。「跳至某页」回车即跳，见
-    /// [`Self::jump_to_page`]（两种模式同一份输入框）。
+    /// 置灰）；表浏览 = 服务器侧分页，总页数按**表级元信息的行数**估（带筛选
+    /// 时不给，见 `Mode::Table` 臂）。「»」与「最后一页」只在总页数已知时判
+    /// 置灰，未知时永远置灰 —— 装作知道再点空是骗人。**常驻**：只有一页时
+    /// 按钮置灰但整条还在（dbx 同款，整组消失会让人找不到页码输入框）。
+    /// 「跳至某页」回车即跳，见 [`Self::jump_to_page`]（两种模式同一份输入框）。
     pub(super) fn render_pager_compact(&self, cx: &Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -385,7 +447,12 @@ impl DatabasePage {
                             }
                         }
                     },
-                    Mode::Instance(_) | Mode::Dashboard(_) => {}
+                    Mode::Instance(_)
+                    | Mode::Dashboard(_)
+                    | Mode::Structure(_)
+                    | Mode::Er { .. }
+                    | Mode::Compare(_)
+                    | Mode::Transfer(_) => {}
                 });
             }
         };
@@ -407,14 +474,27 @@ impl DatabasePage {
                     .table_rows
                     .as_ref()
                     .is_some_and(|rows| rows.row_count() >= page_size);
-                (self.table_page, None, Some(can_next))
+                // 总页数：表级元信息里的行数（SQLite 是精确 `COUNT(*)`；InnoDB / PG
+                // 是统计估算，估算页数也比没有强 —— 用户要的是「还有多远到头」的量级）。
+                // **带筛选时不给**：筛选后的行数服务器没报，拿全表行数凑总数是骗人。
+                let pages = self
+                    .table_filters
+                    .is_empty()
+                    .then_some(self.table_row_count)
+                    .flatten()
+                    .map(|count| count.value().div_ceil(page_size as u64).max(1) as usize);
+                (self.table_page, pages, Some(can_next))
             }
-            Mode::Instance(_) | Mode::Dashboard(_) => (0, Some(1), Some(false)),
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => (0, Some(1), Some(false)),
         };
         let can_prev = page > 0;
         let can_next = can_next.unwrap_or_else(|| pages.is_some_and(|pages| page + 1 < pages));
         let can_last = pages.is_some_and(|pages| page + 1 < pages);
-        let page_text = SharedString::from((page + 1).to_string());
         h_flex()
             .flex_none()
             .items_center()
@@ -441,16 +521,43 @@ impl DatabasePage {
                 .disabled(!can_prev)
                 .on_click(goto(page.saturating_sub(1))),
             )
-            // 页码框（dbx 同款：居中窄框，回车即跳；当前页常显在框里是死值
-            // —— 输入框是空的，占位才是当前页）。
+            // 页码框 + 总页数（用户指定版式：`[页码] / N`；不再出「第 n / N 页」
+            // 那条静态读数）。框里显示的是**当前页**，由 [`Self::sync_page_jump`]
+            // 在渲染入口回写；键盘输入仍是「回车即跳」。
+            //
+            // 总页数：查询侧按结果整批 `div_ceil`；表浏览按**表级元信息的行数**估
+            //（SQLite 精确、InnoDB/PG 统计估算；带筛选时拿不到筛选后的行数，不硬凑）。
+            // 两边都拿不到（表行数没取回）时只留页码框。
             .child(
-                div().w(px(56.)).flex_none().child(
-                    Input::new(&self.page_jump)
-                        .appearance(false)
-                        .with_size(Size::Small)
-                        .text_size(tokens.typography.sm.size)
-                        .w_full(),
-                ),
+                h_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(tokens.spacing.xxs)
+                    .child(
+                        div()
+                            .id("db-page-jump")
+                            .w(px(56.))
+                            .flex_none()
+                            // 同上：脚注挂在结果面板下，不拦住鼠标按下这一格就永远进不了焦点。
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                // 带框（`appearance(true)`）：这一格是**可编辑的页码**，
+                                // 不画边框就只剩一个跟着内容浮动的数字，看不出能点。
+                                Input::new(&self.page_jump)
+                                    .appearance(true)
+                                    .with_size(Size::Small)
+                                    .text_size(tokens.typography.sm.size)
+                                    .w_full(),
+                            ),
+                    )
+                    .children(pages.map(|pages| {
+                        div()
+                            .flex_none()
+                            .line_height(tokens.typography.sm.line_height)
+                            .text_size(tokens.typography.sm.size)
+                            .text_color(tokens.colors.muted_foreground)
+                            .child(SharedString::from(format!("/{pages}")))
+                    })),
             )
             .child(
                 icon_button(
@@ -474,56 +581,201 @@ impl DatabasePage {
                 .disabled(!can_last)
                 .on_click(goto(pages.map_or(page, |pages| pages.saturating_sub(1)))),
             )
-            .children(pages.map(|pages| {
-                meta_text(
-                    SharedString::from(trf(cx, "第 {} / {} 页", &[&page_text, &pages.to_string()])),
-                    cx,
-                )
-            }))
             .into_any_element()
     }
 
-    /// 结果视图三档切换（行 / 列 / JSON），落在结果 footer **最前面**。
+    /// 当前展示的页码（**0 起**）。
     ///
-    /// 选中档用主色按钮、其余用 ghost —— 三个都是**动作**（点了切视图），不是标签，
-    /// 所以用按钮而不是 tag：tag 不表达可点。
+    /// 查询侧要按总页数夹一下：`query_page` 可能落在结果变短之后的界外（重跑
+    /// 一条返回更少行的语句、改页大小），而脚注画的是夹住之后的那一页。
+    /// 表浏览是服务器侧分页，页码就是本地那一个。「实例 / 仪表板」没有页的概念。
+    fn current_page(&self, cx: &App) -> usize {
+        match self.mode {
+            Mode::Query => {
+                let total = self.current_result().map_or(0, |result| result.rows.len());
+                let size = self.query_page_size(cx).max(1);
+                let pages = total.div_ceil(size).max(1);
+                self.query_page.min(pages - 1)
+            }
+            Mode::Table => self.table_page,
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => 0,
+        }
+    }
+
+    /// 把页码框回写成**当前页**（受控显示：页码是状态，框只是它的显示）。
+    ///
+    /// 为什么在这里统一写：改页码的路径有十几处（翻页 / 跳页 / 搜索重排 / 换表 /
+    /// 改页大小 / 换结果标签），其中大半拿不到 `Window`，而写输入框必须给窗口 ——
+    /// 所以收在**渲染入口**同步一次。`set_value` 不发 `InputEvent::Change`，本页也
+    /// 没有 observe 这个输入框，因此这一写不会反过来触发本页重绘（值相同时直接
+    /// 跳过，稳态下零开销）。
+    ///
+    /// ⚠️ 输入框**聚焦时跳过**：用户正在打字，把值按回去会把输入吞掉；那会儿框里
+    /// 的文本本来就是用户意图，回车走 [`Self::jump_to_page`] 自己回写。
+    pub(super) fn sync_page_jump(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page_jump.focus_handle(cx).is_focused(window) {
+            return;
+        }
+        self.write_page_jump(window, cx);
+    }
+
+    /// 无条件把页码框写成当前页（跳过「聚焦则不动」那条守卫）。
+    ///
+    /// 给 [`Self::jump_to_page`] 用：按下回车时输入框必然聚焦，但此时要的是
+    /// **真实**页码（输入越界时显示的是被夹住的那一页，与脚注一致）。
+    pub(super) fn write_page_jump(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = (self.current_page(cx) + 1).to_string();
+        if self.page_jump.read(cx).value().as_ref() == text {
+            return;
+        }
+        self.page_jump
+            .update(cx, |state, cx| state.set_value(text, window, cx));
+    }
+
+    /// 结果视图四档切换（网格 / 记录 / JSON / 图表），落在结果 footer **最前面**。
+    ///
+    /// 版式照结果区顶部 tab 栏（dbflux 底部切换同款）：图标 + 文字、12pt 小字
+    /// （比普通按钮的 13pt 小一档）、选中档 `nav_selected` 底 + 正文色，其余
+    /// `muted_foreground`、悬停 `hover_tint`。
+    ///
+    /// 前三档换的是「同一份结果怎么读」：网格 = 常规网格（默认），记录 = 选中行的
+    /// 转置视图（名称 / 值 / 类型），JSON = 该行序列化。三档共用 `result_view`。
+    ///
+    /// **图表不是第四种读法**：它联动结果区顶部 tab（[`ResultAreaTab::Chart`]）——
+    /// 选中态按 `result_area_tab` 判定，点它 = `set_result_area_tab(Chart)`；点前三档
+    /// 除了换 `result_view` 还要把顶部 tab 切回**数据表**，否则「点了网格、画面还是图表」。
     pub(super) fn result_view_switch(&self, cx: &Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
+        let extended = theme.extended();
         let view = self.view.clone();
         let current = self.result_view;
-        let modes = [
-            (ResultViewMode::Grid, "grid", tr(cx, "行模式")),
-            (ResultViewMode::Columns, "columns", tr(cx, "列模式")),
-            (ResultViewMode::Json, "json", "JSON"),
-        ];
+        let in_chart = self.result_area_tab == ResultAreaTab::Chart;
+        let has_result = self.current_result().is_some();
+        let hover_tint = extended.colors.hover_tint;
+        let disabled_opacity = extended.opacity.disabled;
+
+        /// 一档点了之后去哪。
+        #[derive(Clone, Copy)]
+        enum Target {
+            /// 换读法：切数据表 tab + 换 `result_view`。
+            Mode(ResultViewMode),
+            /// 图表：切结果区顶部 tab（图表的配置 / 画法与网格无关）。
+            Chart,
+        }
+
+        let item = |id: &'static str,
+                    label: &'static str,
+                    icon: AnyElement,
+                    active: bool,
+                    enabled: bool,
+                    target: Target| {
+            let mut el = div()
+                .id(SharedString::from(id))
+                .h(theme.density().control)
+                .px(tokens.spacing.sm)
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(tokens.spacing.xxs)
+                .rounded(tokens.radius.sm)
+                .text_size(tokens.typography.xs.size)
+                .font_weight(if active {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
+                .text_color(if active {
+                    tokens.colors.foreground
+                } else {
+                    tokens.colors.muted_foreground
+                })
+                .when(active, |el| el.bg(extended.colors.nav_selected))
+                .child(icon)
+                .child(label);
+            if enabled {
+                let view = view.clone();
+                el = el
+                    .cursor_pointer()
+                    .role(Role::Button)
+                    .aria_label(label)
+                    .hover(move |style| style.bg(hover_tint))
+                    .on_click(move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| match target {
+                            Target::Chart => this.set_result_area_tab(ResultAreaTab::Chart, cx),
+                            Target::Mode(mode) => {
+                                this.result_view = mode;
+                                // 从图表 / 摘要等 tab 点回来时顶部 tab 也得跟着回数据表；
+                                // 已在数据表时 `set_result_area_tab` 直接 return（不 notify）。
+                                this.set_result_area_tab(ResultAreaTab::Data, cx);
+                                cx.notify();
+                            }
+                        });
+                    });
+            } else {
+                // 没有结果可画时「图表」置灰但**留在原位**（与顶部 tab 同一口径），
+                // 工具条布局不跳，用户也看得到还有哪些视图。
+                el = el.opacity(disabled_opacity);
+            }
+            el.into_any_element()
+        };
+
+        // JSON 档的「图标」就是字面的 `{}`（dbflux 同款，不另画 SVG）：与图标同档字号
+        // （`icon.sm` = 12 = `typography.xs`），四档的图标槽宽度才不会一档一个样。
+        let braces = div()
+            .text_size(tokens.typography.xs.size)
+            .line_height(tokens.typography.xs.line_height)
+            .font_weight(FontWeight::MEDIUM)
+            .child("{}")
+            .into_any_element();
+
         h_flex()
             .flex_none()
             .items_center()
             .gap(tokens.spacing.xxs)
-            .children(modes.into_iter().map(|(mode, slug, label)| {
-                let selected = mode == current;
-                button(
-                    SharedString::from(format!("db-result-view-{slug}")),
-                    label,
-                    if selected {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Ghost
-                    },
-                    cx,
-                )
-                .on_click({
-                    let view = view.clone();
-                    move |_, _, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.result_view = mode;
-                            cx.notify();
-                        });
-                    }
-                })
-                .into_any_element()
-            }))
+            .child(item(
+                "db-result-view-grid",
+                tr(cx, "网格"),
+                Icon::new(DuckIcon::Table)
+                    .size(extended.icon.sm)
+                    .into_any_element(),
+                !in_chart && current == ResultViewMode::Grid,
+                true,
+                Target::Mode(ResultViewMode::Grid),
+            ))
+            .child(item(
+                "db-result-view-columns",
+                tr(cx, "记录"),
+                Icon::new(DuckIcon::Rows3)
+                    .size(extended.icon.sm)
+                    .into_any_element(),
+                !in_chart && current == ResultViewMode::Columns,
+                true,
+                Target::Mode(ResultViewMode::Columns),
+            ))
+            .child(item(
+                "db-result-view-json",
+                "JSON",
+                braces,
+                !in_chart && current == ResultViewMode::Json,
+                true,
+                Target::Mode(ResultViewMode::Json),
+            ))
+            .child(item(
+                "db-result-view-chart",
+                tr(cx, "图表"),
+                Icon::new(DuckIcon::ChartLine)
+                    .size(extended.icon.sm)
+                    .into_any_element(),
+                in_chart,
+                has_result,
+                Target::Chart,
+            ))
             .into_any_element()
     }
 
@@ -532,11 +784,19 @@ impl DatabasePage {
     /// 越界一律回落首行——「翻到第 3 页后结果变短」这种情形下，`selected_row`
     /// 可能指向已不存在的行，落到空态比 panic 好。
     pub(super) fn current_row<'a>(&self, result: &'a ResultSet) -> Option<&'a [Value]> {
-        let index = self
-            .selected_row
-            .filter(|index| *index < result.rows.len())
-            .unwrap_or(0);
+        let index = self.current_row_index(result.rows.len())?;
         result.rows.get(index).map(Vec::as_slice)
+    }
+
+    /// 当前行的**下标**（与 [`Self::current_row`] 是同一判据的两种取用方式）。
+    ///
+    /// JSON 档要按下标去建编辑表单（[`Self::sync_json_editor`]），只拿切片不够；
+    /// 判据写在**一处** —— 越界回落首行、空结果 `None`，两处口径不会漂。
+    pub(super) fn current_row_index(&self, rows: usize) -> Option<usize> {
+        if rows == 0 {
+            return None;
+        }
+        Some(self.selected_row.filter(|index| *index < rows).unwrap_or(0))
     }
 
     /// 切换某一列的显示 / 隐藏（结果区「字段筛选」）。
@@ -633,11 +893,7 @@ impl DatabasePage {
                 let view = view.clone();
                 menu.item(PopupMenuItem::separator())
                     .item(PopupMenuItem::new(show_all).on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.hidden_columns.clear();
-                            this.sync_data_table_rows(cx);
-                            cx.notify();
-                        });
+                        let _ = view.update(cx, |this, cx| this.show_all_columns(cx));
                     }))
             },
             cx,
@@ -712,9 +968,15 @@ impl DatabasePage {
         let view = self.view.clone();
         let has_query = !self.result_search_text(cx).is_empty();
         h_flex()
+            .id("db-result-search")
             .flex_none()
             .items_center()
             .gap(tokens.spacing.xxs)
+            // ⚠️ 整块必须拦住鼠标按下：结果面板外层挂了 `track_focus(grid_focus)` +
+            // `on_mouse_down → focus(网格)`（「聚焦的网格拥有剪贴板键」那条）。不拦的话
+            // 输入框刚拿到焦点就被父级抢回网格 —— 表现就是「搜索框点不动、也搜不了」。
+            // 同一份修法见 `render_pager_compact` / 批量条 / 过滤条的输入框。
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 h_flex()
                     .w(px(180.))
@@ -864,7 +1126,6 @@ impl DatabasePage {
                                     move |_, _, cx| {
                                         let _ = view.update(cx, |this, cx| {
                                             this.last_error = None;
-                                            this.ai_explain = None;
                                             cx.notify();
                                         });
                                     }
@@ -1035,7 +1296,7 @@ impl DatabasePage {
                 .collect();
             let copy_cell_label = tr(cx, "复制单元格");
             let copied_cell_note = tr(cx, "已复制单元格。");
-            let submenu_label = tr(cx, "复制全部");
+            let submenu_label = tr(cx, "复制为");
             let detail_label = tr(cx, "单元格详情");
             let editing_input = cell_editing
                 .as_ref()
@@ -1118,7 +1379,7 @@ impl DatabasePage {
                             state.focus(window, cx);
                             state.select_all(window, cx);
                         });
-                        let _ = entity.update(cx, |this, cx| {
+                        entity.update(cx, |this, cx| {
                             this.selected_row = Some(row_index);
                             this.cell_detail = Some((row_index, index));
                             this.install_cell_editor(
@@ -1229,6 +1490,10 @@ impl DatabasePage {
     ///
     /// 复用内核的 [`ResultSet::to_json_pretty`]（与导出 JSON 同一套序列化口径），
     /// 只把行裁成一行——不另写一份「值 → JSON」的手工拼接，避免两处口径漂移。
+    ///
+    /// 版式是**两层**：上面是可就地改的字段表单（[`Self::render_json_form`]），下面是
+    /// 这份只读 JSON 预览。不是二选一：表单能改值，但嵌套结构 / 数组的真实形状只有
+    /// JSON 表达得清楚，砍掉预览等于把这一档的另一半用途丢了。
     pub(super) fn render_result_json(&self, result: &ResultSet, cx: &Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -1272,20 +1537,173 @@ impl DatabasePage {
             .border_t(extended.stroke.thin)
             .border_color(extended.colors.hairline)
             .child(
-                div()
-                    .text_size(tokens.typography.mono_md.size)
-                    .line_height(tokens.typography.mono_md.line_height)
-                    .text_color(tokens.colors.foreground)
-                    .child(SharedString::from(single.to_json_pretty())),
+                v_flex()
+                    .w_full()
+                    .gap(tokens.spacing.md)
+                    // ① 字段表单在前：进 JSON 档的主动作是**改这一行的字段**（嵌在一层
+                    //    JSON 文本里点不动任何东西，用户实测反馈）。
+                    .child(self.render_json_form(cx))
+                    // ② 只读预览在后：保留嵌套结构的真实形状。
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap(tokens.spacing.xs)
+                            .child(caption_heading(tr(cx, "JSON 预览"), cx))
+                            .child(
+                                div()
+                                    .text_size(tokens.typography.mono_md.size)
+                                    .line_height(tokens.typography.mono_md.line_height)
+                                    .text_color(tokens.colors.foreground)
+                                    .child(SharedString::from(single.to_json_pretty())),
+                            ),
+                    ),
             )
             .into_any_element()
     }
 
-    /// 导出结果下拉（五档：TSV / CSV / Markdown / JSON / INSERT）。
+    /// JSON 档的**字段表单**：把当前行铺成「字段名 + 输入框」，改完「暂存更改」进暂存区。
+    ///
+    /// 走的是与网格就地编辑 / 右栏编辑卡**同一条**暂存路径
+    /// （[`DatabasePage::stage_json_edits`] → `pending_edits`），所以「提交」时一处写库、
+    /// 撤销栈算一步，不会多出一套口径。表单实体由渲染期同步（[`Self::sync_json_editor`]）。
+    fn render_json_form(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let view = self.view.clone();
+        let Some(form) = self.json_editor.as_ref() else {
+            // 表单没建起来 = 这一行不可编辑（多表 / 无主键 / 空结果）：如实说明，
+            // 别让用户对着只读的 JSON 猜「为什么点不动」。
+            return v_flex()
+                .w_full()
+                .child(meta_text(
+                    tr(cx, "这一行不可编辑（需要单表 + 主键），JSON 档只能查看。"),
+                    cx,
+                ))
+                .into_any_element();
+        };
+        let row = form.row;
+        let footer = h_flex()
+            .w_full()
+            .items_center()
+            .gap(tokens.spacing.xs)
+            .child(
+                button(
+                    "db-json-save",
+                    tr(cx, "暂存更改"),
+                    ButtonVariant::Primary,
+                    cx,
+                )
+                .disabled(self.busy)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| this.stage_json_edits(window, cx));
+                    }
+                }),
+            )
+            .child(
+                button(
+                    "db-json-delete",
+                    tr(cx, "删除行"),
+                    ButtonVariant::Secondary,
+                    cx,
+                )
+                .disabled(self.busy)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.delete_current_row(row, window, cx);
+                        });
+                    }
+                }),
+            );
+        card(cx)
+            .id("db-json-editor")
+            .w_full()
+            .p(tokens.spacing.lg)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(tokens.spacing.sm)
+                    .child(caption_heading(tr(cx, "字段表单"), cx))
+                    .child(self.row_editor_fields(&form.cells, "json", cx))
+                    .child(meta_text(
+                        tr(cx, "改动先暂存，点结果区上方的「提交」才落库。"),
+                        cx,
+                    ))
+                    .child(footer),
+            )
+            .into_any_element()
+    }
+
+    /// 让 JSON 档的字段表单跟上「现在显示的是哪一行」。
+    ///
+    /// 在**渲染期**做（`Render::render` 的头一行）：构造 `InputState` 要 `&mut Window`，
+    /// 而渲染是页面唯一同时握着窗口与 `&mut self` 的时机（双击开行编辑器是同一个理由）。
+    /// 这里只改页面自己的字段、**不 notify** —— 渲染中发通知就是死循环。
+    ///
+    /// 只有指纹对不上（[`specs_stamp`]）才整份重建：行没换就原样留着，用户正在输入框
+    /// 里敲的字不会被下一帧抹掉。
+    pub(super) fn sync_json_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 只有 JSON 档要这份表单；切走时留着（切回来接着改），但**不再同步**。
+        if self.result_view != ResultViewMode::Json {
+            return;
+        }
+        let Some(rows) = self.current_result().map(|result| result.rows.len()) else {
+            self.json_editor = None;
+            return;
+        };
+        // 空结果 / 不可编辑（多表 / 无主键）都没有可编辑的行：表单跟着消失，由
+        // `render_json_form` 的空态如实说明。
+        let Some(row) = self.current_row_index(rows) else {
+            self.json_editor = None;
+            return;
+        };
+        let Some(specs) = self.row_editor_specs(row) else {
+            self.json_editor = None;
+            return;
+        };
+        let stamp = specs_stamp(&specs);
+        if self
+            .json_editor
+            .as_ref()
+            .is_some_and(|form| form.stamp == stamp)
+        {
+            return;
+        }
+        let cells = specs
+            .into_iter()
+            .map(|(column, original, was_null)| {
+                // 原值回填：编辑器的起点就是「库里现在是什么」（与双击开编辑同形）。
+                let input = cx.new(|cell_cx| InputState::new(&mut *window, cell_cx));
+                if !was_null {
+                    input.update(cx, |state, cx| {
+                        state.set_value(original.clone(), window, cx);
+                    });
+                }
+                RowCell {
+                    column,
+                    original,
+                    was_null,
+                    input,
+                    null: Rc::new(std::cell::Cell::new(false)),
+                }
+            })
+            .collect();
+        self.json_editor = Some(JsonEditor { row, stamp, cells });
+    }
+
+    /// 导出结果下拉（五档：TSV / CSV / Markdown / JSON / INSERT）+「导入 CSV…」。
     ///
     /// 档位清单与结果区右键的「复制为 …」同源（[`ResultFormat::ALL`]），这里只是
     /// 多一层落盘文件名与保存对话框。「导出 INSERT」只对 SQL 引擎开放：MongoDB /
     /// Elasticsearch 没有带引号的表名，导不出能直接执行的语句。
+    ///
+    /// 「导入 CSV」**并进这个下拉**，不再单独占一枚工具条图标：它与导出共用同一批
+    /// 文件格式，摆在一起是「进出这份结果的文件口子」；单独立一枚图标时它藏在最右端，
+    /// 与相邻的图表切换按钮没有任何关系，反而看不出是干嘛的（需求原话：最右侧那枚
+    /// 导入图标去掉）。可用性判据不变：结果集可编辑（单表 + 主键）且当前不忙。
     pub(super) fn export_dropdown(&self, cx: &App) -> AnyElement {
         let theme = active_theme(cx);
         let extended = theme.extended();
@@ -1295,6 +1713,7 @@ impl DatabasePage {
         let has_raw = self
             .current_result()
             .is_some_and(|result| result.raw_bytes().is_some());
+        let import_ready = self.edit_source().is_some() && !self.busy;
         // 菜单构建闭包是 `Fn` 且 `'static`：文案必须在外面按当前语言取好（`tr`
         // 要 `&App`，闭包里拿不到），所以这里先结成「档位 + 文案」对——
         // 一份清单派生一对，不会像手写文案数组那样加档错位。
@@ -1302,14 +1721,16 @@ impl DatabasePage {
             .iter()
             .map(|format| (*format, format.export_label(cx)))
             .collect();
+        let import_label = tr(cx, "导入 CSV…");
         // 文字按钮（设计稿「⤓ 导出 ∨」）：纯图标版让人猜这个下载箭头是干嘛的。
+        let title = tr(cx, "导出 / 导入");
         toolbar_text_dropdown_button(
             "db-export",
-            tr(cx, "导出"),
+            title,
             Icon::new(DuckIcon::Download).size(extended.icon.sm),
             Anchor::TopRight,
             move |menu, _, _| {
-                export_items.iter().fold(menu, |menu, (format, label)| {
+                let menu = export_items.iter().fold(menu, |menu, (format, label)| {
                     let enabled = format.exportable(has_result, can_insert, has_raw);
                     menu.item(PopupMenuItem::new(*label).disabled(!enabled).on_click({
                         let view = view.clone();
@@ -1319,7 +1740,15 @@ impl DatabasePage {
                                 view.update(cx, |this, cx| this.export_result(format, window, cx));
                         }
                     }))
-                })
+                });
+                let import_view = view.clone();
+                menu.separator().item(
+                    PopupMenuItem::new(import_label)
+                        .disabled(!import_ready)
+                        .on_click(move |_, window, cx| {
+                            let _ = import_view.update(cx, |this, cx| this.import_csv(window, cx));
+                        }),
+                )
             },
             cx,
         )
@@ -1512,6 +1941,53 @@ impl DatabasePage {
                 ResultAreaTab::Plan,
                 true,
             ))
+            // 「构建器」**不是结果区的档位**（它开在右栏，结果照看在眼里），所以不并进
+            // `ResultAreaTab`；但它是这一排里的入口，版式照抄 tab 格，另加一道竖分隔线
+            // 把它与「切结果视图」那几个 tab 分开。选中态 = 右栏开着**且**正停在构建器
+            // 那一栏：亮着＝现在看的就是它，与 tab 的选中语义一致。
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(1.))
+                    .h(tokens.spacing.lg)
+                    .bg(extended.colors.hairline),
+            )
+            .child({
+                let active = self.right_dock == RightDock::Builder
+                    && crate::app::right_sidebar_open(cx).unwrap_or(false);
+                let builder_view = view.clone();
+                div()
+                    .id("db-area-tab-builder")
+                    .flex_none()
+                    .h(theme.density().control)
+                    .pl(tokens.spacing.sm)
+                    .pr(tokens.spacing.xs)
+                    .flex()
+                    .items_center()
+                    .gap(tokens.spacing.xxs)
+                    .rounded(tokens.radius.md)
+                    .cursor_pointer()
+                    .text_size(tokens.typography.xs.size)
+                    .font_weight(if active {
+                        FontWeight::MEDIUM
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .text_color(if active {
+                        tokens.colors.foreground
+                    } else {
+                        tokens.colors.muted_foreground
+                    })
+                    .when(active, |el| el.bg(extended.colors.nav_selected))
+                    .hover(move |style| style.bg(extended.colors.hover_tint))
+                    .role(Role::Button)
+                    .aria_label(tr(cx, "构建器"))
+                    .on_click(move |_, window, cx| {
+                        let _ = builder_view.update(cx, |this, cx| this.open_builder(window, cx));
+                    })
+                    .child(Icon::new(DuckIcon::SlidersHorizontal).size(extended.icon.sm))
+                    .child(tr(cx, "构建器"))
+            })
             .child(div().flex_1().min_w_0())
             // 结果内搜索（自读数条上移）：找行是「看着结果」时的动作，跟档位与写
             // 动作同一排；读数条只留事实读数。词不进快照，仍是临时态。
@@ -2170,7 +2646,7 @@ impl DatabasePage {
         panel = panel.child(self.render_result_footer(cx));
         // ⚠️ 面板层**不再挂右键菜单**：gpui-component 的 `ContextMenu` 右键处理不截停
         // 冒泡，面板与单元格两层嵌套会各弹一份叠在一起（用户点「复制整行」实际看到
-        // 的却是外层的「复制为 TSV」，整页结果进了剪贴板）。「复制全部」已并入单元格
+        // 的却是外层的「复制为 TSV」，整页结果进了剪贴板）。「复制为」已并入单元格
         // 菜单（`ResultFormat::Tsv` 一档），其余格式走脚注「导出」落盘。
         panel.into_any_element()
     }
@@ -2198,14 +2674,17 @@ impl DatabasePage {
             "data table component was not synced to the result being rendered"
         );
         // 本帧要用的宿主真源：都是小值 / 借用（`'static` 那份由组件自己拷）。
-        let sort = self.table_sort.as_ref();
+        let sort = self.active_sort();
         let editing = self.cell_editor.as_ref();
         let view = DataTableView {
             selected_row: self.selected_row,
             checked: Some(&self.checked_rows),
-            // SQL 结果集的列头不可排：那块内容由用户自己的 `ORDER BY` 决定，界面上
-            // 再加一层排序会与语句里的写法打架（只有表浏览才可点列头排序）。
-            sortable: self.mode == Mode::Table,
+            // 两种模式都可点列头排序，但**排的地方不同**：表浏览是服务器侧
+            // `ORDER BY`（重取一页、数据真的换了序），SQL 结果集是客户端重排
+            //（结果整批在手，只改展示顺序，不动语句、不重新查库）。
+            // 后者不会与用户语句里的 `ORDER BY` 打架：界面排的是「拿到手的这批行」，
+            // 用户写法决定的仍是「取到哪批行、按什么顺序取」。
+            sortable: matches!(self.mode, Mode::Table | Mode::Query),
             sort_column: sort.map(|spec| spec.column.as_str()),
             sort_descending: sort.is_some_and(|spec| spec.descending),
             editing: editing.map(|editor| CellPos::new(editor.row, editor.col)),
@@ -2245,6 +2724,11 @@ impl DatabasePage {
             tr(cx, "按 {} 排序"),
             tr(cx, "提交"),
             tr(cx, "单元格详情"),
+            tr(cx, "{} 的列操作"),
+            tr(cx, "列名"),
+            tr(cx, "类型"),
+            tr(cx, "注释"),
+            tr(cx, "复制列名"),
         )
     }
 
@@ -2262,16 +2746,21 @@ impl DatabasePage {
         let cell_dbl_view = self.view.clone();
         let row_dbl_view = self.view.clone();
         DataTableHooks {
-            // 单元格右键菜单（网格**唯一**一层）：复制单元格 / 复制整行 / 复制 ▸ /
-            // 单元格详情。行级菜单也并到这里 —— 组件库的 `ContextMenu` 不截停冒泡，
-            // 行与格两层嵌套会各弹一份叠在一起（见 `git log` 里那一轮修复）。
+            // 单元格右键菜单（网格**唯一**一层）：复制 / 搜索 / 藏列 / 排序 / 写动作 /
+            // 详情。行级菜单也并到这里 —— 组件库的 `ContextMenu` 不截停冒泡，行与格
+            // 两层嵌套会各弹一份叠在一起（见 `git log` 里那一轮修复）。
+            //
+            // 内容照 dbx 的宽度摆：一次右键把「看着这一格能做的事」都摆上来，别为了
+            // 藏一列 / 排一次序还得跑回工具条。同一件事的**多个目标**（这一格 / 这一行
+            // / 整份结果）都在，但一律只作用于**当前选区**（见下面「复制 ▸」的说明）。
             cell_menu: Some(Rc::new(move |menu, pos, window, cx| {
                 let view = menu_view.clone();
                 let Some(entity) = view.upgrade() else {
                     return menu;
                 };
-                // 文本与选区口径都**弹出时**才算：一万行也不在渲染路径上白拼几百 KB。
-                let (cell_text, row_text, can_insert, submenu_label) = {
+                // 弹出这一刻的事实**一次读齐**（只读借用页面）：文本与选区口径都
+                // 弹出时才算 —— 一万行也不在渲染路径上白拼几百 KB。
+                let facts = {
                     let page = entity.read(cx);
                     let Some(result) = page.current_result() else {
                         return menu;
@@ -2297,30 +2786,89 @@ impl DatabasePage {
                     } else if page.selected_row.is_some() {
                         tr(cx, "复制选中行").into()
                     } else {
-                        tr(cx, "复制全部").into()
+                        tr(cx, "复制为").into()
                     };
-                    (
+                    CellMenuFacts {
+                        column: result
+                            .columns
+                            .get(pos.col)
+                            .map(|column| column.name.clone()),
                         cell_text,
                         row_text,
-                        page.insert_context().is_some(),
                         submenu_label,
-                    )
+                        can_insert: page.insert_context().is_some(),
+                        editable: page.edit_source().is_some(),
+                        deletable: page.pk_values_for_row(pos.row).is_some(),
+                        any_hidden: !page.hidden_columns.is_empty(),
+                        sortable: matches!(page.mode, Mode::Table | Mode::Query),
+                        sort: page.active_sort().cloned(),
+                    }
                 };
+                let CellMenuFacts {
+                    column,
+                    cell_text,
+                    row_text,
+                    submenu_label,
+                    can_insert,
+                    editable,
+                    deletable,
+                    any_hidden,
+                    sortable,
+                    sort,
+                } = facts;
                 // 菜单构建闭包是 `Fn`（每次右键 rebuild 一次）：文案只许借出克隆。
                 let copy_cell_label = tr(cx, "复制单元格");
                 let copied_cell_note = tr(cx, "已复制单元格。");
                 let copy_row_label = tr(cx, "复制整行");
                 let copied_row_note = tr(cx, "已复制该行。");
+                let copy_column_label = tr(cx, "复制列名");
+                let copied_column_note = tr(cx, "已复制列名。");
                 let detail_label = tr(cx, "单元格详情");
+                let search_label = tr(cx, "在结果中搜索此值");
+                let hide_label = tr(cx, "隐藏此列");
+                let show_all_label = tr(cx, "全部显示");
+                let clear_sort_label = tr(cx, "清除排序");
+                let edit_label = tr(cx, "编辑此单元格");
+                let delete_label = tr(cx, "删除该行");
+                // 「按 X 升序 / 降序」的文案要带列名：整份菜单里只有这一组是**指着
+                // 某一列**说的，不带名字就成了「按什么排序？」。
+                let (asc_label, desc_label) = match column.as_ref() {
+                    Some(name) => (
+                        SharedString::from(trf(cx, "按 {} 升序", &[name])),
+                        SharedString::from(trf(cx, "按 {} 降序", &[name])),
+                    ),
+                    None => (tr(cx, "升序").into(), tr(cx, "降序").into()),
+                };
+                // 当前排序落没落在这一列上（决定两个方向项的勾选态）。
+                let sorted_here = column
+                    .as_ref()
+                    .is_some_and(|name| sort.as_ref().is_some_and(|spec| spec.column == *name));
+                let sorted_descending = sort.as_ref().is_some_and(|spec| spec.descending);
                 // 「复制 ▸」子菜单：一次拿走**全部**行。文本在点某档的那一刻才按当前
                 // 结果集渲染（一万行也不在渲染路径上白白拼几百 KB）。
                 let copy_items: Vec<(ResultFormat, &'static str)> = ResultFormat::ALL
                     .iter()
                     .map(|format| (*format, format.copy_label(cx)))
                     .collect();
+                // 行级 SQL 三档也收进这个子菜单（用户口径：所有「复制为 X」集中在
+                // 一处，别在顶层再占一段）：与上面各档的作用域互补 —— 格式档拿的是
+                // **选区**（勾选行 / 选中行 / 整份结果），这三档永远是「**右键指向的
+                // 那一行**」。可用性同一道闸门：INSERT 只要有引擎的引号规则就能给；
+                // UPDATE / WHERE 要主键定位（与「编辑此单元格」同门槛），没有就整组
+                // 不画，留着置灰项只会让人猜「为什么这一行复制不出来」。
+                let sql_row_items: Vec<(RowSqlKind, &'static str)> = [
+                    (RowSqlKind::Insert, can_insert),
+                    (RowSqlKind::Update, editable),
+                    (RowSqlKind::Where, editable),
+                ]
+                .into_iter()
+                .filter(|(_, available)| *available)
+                .map(|(kind, _)| (kind, kind.menu_label(cx)))
+                .collect();
                 let all_view = view.clone();
+                let sql_menu_row = pos.row;
                 let copy_menu = PopupMenu::build(window, cx, move |menu, _, _| {
-                    copy_items.into_iter().fold(menu, |menu, (format, label)| {
+                    let menu = copy_items.into_iter().fold(menu, |menu, (format, label)| {
                         let enabled = format.exportable(true, can_insert, false);
                         let all_view = all_view.clone();
                         menu.item(PopupMenuItem::new(label).disabled(!enabled).on_click(
@@ -2333,22 +2881,48 @@ impl DatabasePage {
                                 });
                             },
                         ))
+                    });
+                    if sql_row_items.is_empty() {
+                        return menu;
+                    }
+                    let sql_view = all_view.clone();
+                    let menu = menu.separator();
+                    sql_row_items.into_iter().fold(menu, |menu, (kind, label)| {
+                        let sql_view = sql_view.clone();
+                        menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                            let Some(entity) = sql_view.upgrade() else {
+                                return;
+                            };
+                            let row = sql_menu_row;
+                            entity.update(cx, |this, cx| {
+                                this.copy_row_as_sql(kind, row, cx);
+                            });
+                        }))
                     })
                 });
+                // 菜单项按**用途分组**攒进 `Vec` 再一次性拼上：分组之间那句
+                // `separator()` 只有在**这一组真的有东西**时才该出现（空组 + 分隔线
+                // 会在菜单里留下一段莫名其妙的横线）。链式 `.item()` 做不到「有条件地
+                // 加分隔线」——攒起来 Fold 才做得到。
+                let mut items: Vec<PopupMenuItem> = Vec::with_capacity(14);
+                // ── 第一组：把这一格 / 这一行 / 这一列的名字拿走 ──
+                //
+                // 文案与文本**一个闭包一份克隆**：菜单项各是一个 `'static` 闭包，
+                // 共享一份 `String` 就得让先建的那个改成借用，反而绕。
+                let copy_cell_text = cell_text.clone();
                 let cell_view = view.clone();
-                let row_view = view.clone();
-                let detail_view = view.clone();
-                menu.item(
+                items.push(
                     PopupMenuItem::new(copy_cell_label).on_click(move |_, _, cx| {
                         let Some(entity) = cell_view.upgrade() else {
                             return;
                         };
                         entity.update(cx, |this, cx| {
-                            this.put_on_clipboard(cell_text.clone(), copied_cell_note, cx);
+                            this.put_on_clipboard(copy_cell_text.clone(), copied_cell_note, cx);
                         });
                     }),
-                )
-                .item(
+                );
+                let row_view = view.clone();
+                items.push(
                     PopupMenuItem::new(copy_row_label).on_click(move |_, _, cx| {
                         let Some(entity) = row_view.upgrade() else {
                             return;
@@ -2357,37 +2931,178 @@ impl DatabasePage {
                             this.put_on_clipboard(row_text.clone(), copied_row_note, cx);
                         });
                     }),
-                )
-                .item(PopupMenuItem::submenu(submenu_label, copy_menu))
-                .item(PopupMenuItem::new(detail_label).on_click(move |_, _, cx| {
+                );
+                if let Some(name) = column.clone() {
+                    let column_view = view.clone();
+                    items.push(
+                        PopupMenuItem::new(copy_column_label).on_click(move |_, _, cx| {
+                            let Some(entity) = column_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| {
+                                this.put_on_clipboard(name.clone(), copied_column_note, cx);
+                            });
+                        }),
+                    );
+                }
+                items.push(PopupMenuItem::submenu(submenu_label, copy_menu));
+                // （行级 SQL 三档已并入上面的「复制为」子菜单：所有「复制为 X」集中
+                // 一处，顶层不再单独占一段。）
+                // ── 第二组：把这一列从视野里收掉 / 放回来，或按这一格的值过滤 ──
+                //
+                // 「搜索此值」写的是**结果内搜索框**（不是服务器侧 WHERE）：与「在结果
+                // 中搜索」那块输入框是同一份状态，所以过滤完用户能在框里看到词、接着改。
+                let search_view = view.clone();
+                items.push(
+                    PopupMenuItem::new(search_label).on_click(move |_, window, cx| {
+                        let Some(entity) = search_view.upgrade() else {
+                            return;
+                        };
+                        let value = cell_text.clone();
+                        entity.update(cx, |this, cx| {
+                            this.search_in_result(&value, window, cx);
+                        });
+                    }),
+                );
+                if let Some(name) = column.clone() {
+                    let hide_view = view.clone();
+                    items.push(PopupMenuItem::new(hide_label).on_click(move |_, _, cx| {
+                        let Some(entity) = hide_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| {
+                            this.toggle_column_hidden(&name, cx);
+                        });
+                    }));
+                }
+                if any_hidden {
+                    let show_view = view.clone();
+                    items.push(
+                        PopupMenuItem::new(show_all_label).on_click(move |_, _, cx| {
+                            let Some(entity) = show_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| this.show_all_columns(cx));
+                        }),
+                    );
+                }
+                // ── 第三组：按这一列定序（表浏览与 SQL 结果各有一套落地） ──
+                //
+                // 三态与点列头同一套：右键定序是**直接指定方向**（不像点列头要轮转），
+                // 所以两个方向项各一项、当前生效的那个打勾；「清除排序」只在真有排序时给。
+                if sortable {
+                    items.push(PopupMenuItem::separator());
+                    let asc_view = view.clone();
+                    let asc_name = column.clone();
+                    items.push(
+                        PopupMenuItem::new(asc_label)
+                            .checked(sorted_here && !sorted_descending)
+                            .on_click(move |_, _, cx| {
+                                let Some(entity) = asc_view.upgrade() else {
+                                    return;
+                                };
+                                let Some(name) = asc_name.clone() else {
+                                    return;
+                                };
+                                entity.update(cx, |this, cx| this.sort_by(&name, false, cx));
+                            }),
+                    );
+                    let desc_view = view.clone();
+                    let desc_name = column.clone();
+                    items.push(
+                        PopupMenuItem::new(desc_label)
+                            .checked(sorted_here && sorted_descending)
+                            .on_click(move |_, _, cx| {
+                                let Some(entity) = desc_view.upgrade() else {
+                                    return;
+                                };
+                                let Some(name) = desc_name.clone() else {
+                                    return;
+                                };
+                                entity.update(cx, |this, cx| this.sort_by(&name, true, cx));
+                            }),
+                    );
+                    if sort.is_some() {
+                        let clear_view = view.clone();
+                        items.push(PopupMenuItem::new(clear_sort_label).on_click(
+                            move |_, _, cx| {
+                                let Some(entity) = clear_view.upgrade() else {
+                                    return;
+                                };
+                                entity.update(cx, |this, cx| this.clear_sort(cx));
+                            },
+                        ));
+                    }
+                }
+                // ── 第四组：写动作（只在结果集可编辑时出现） ──
+                if editable || deletable {
+                    items.push(PopupMenuItem::separator());
+                }
+                if editable {
+                    let edit_view = view.clone();
+                    items.push(
+                        PopupMenuItem::new(edit_label).on_click(move |_, window, cx| {
+                            let Some(entity) = edit_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| {
+                                this.begin_cell_edit(pos, window, cx);
+                            });
+                        }),
+                    );
+                }
+                if deletable {
+                    let delete_view = view.clone();
+                    items.push(
+                        PopupMenuItem::new(delete_label).on_click(move |_, window, cx| {
+                            let Some(entity) = delete_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| {
+                                this.delete_current_row(pos.row, window, cx);
+                            });
+                        }),
+                    );
+                }
+                // ── 第五组：这一格的完整内容（长文本 / 二进制在这里看） ──
+                items.push(PopupMenuItem::separator());
+                let detail_view = view.clone();
+                items.push(PopupMenuItem::new(detail_label).on_click(move |_, _, cx| {
                     let Some(entity) = detail_view.upgrade() else {
                         return;
                     };
                     entity.update(cx, |this, cx| {
                         this.open_cell_detail(pos.row, pos.col, cx);
                     });
-                }))
+                }));
+                items.into_iter().fold(menu, |menu, item| menu.item(item))
             })),
-            // 列头右键：直接定序 / 预选过滤列 / 复制列名（DBX / TablePlus 的标准列头
-            // 菜单；「筛选」只是把草稿列填上，仍要点「添加」生效）。
+            // 列头右键：直接定序 / 预选过滤列 / 藏列 / 复制列名（DBX / TablePlus 的
+            // 标准列头菜单；「筛选」只是把草稿列填上，仍要点「添加」生效）。
             //
-            // ⚠️ 只在**表浏览**下给：排序与筛选都是服务器侧的表页动作
-            //（`toggle_table_sort` / `draft_filter_column` 的前置判断），SQL 结果集的
-            // 列头本来就是纯展示 —— 给它挂菜单只会剩一个「复制列名」。
-            header_menu: (self.mode == Mode::Table).then(|| {
+            // ⚠️ 表浏览与 SQL 结果**都要给**：排序两边都有落地（服务器侧 `ORDER BY`
+            // vs 客户端重排，见 [`Self::active_sort`]），藏列 / 复制列名更是两种模式
+            // 都成立。差别只在「筛选」——那是表页动作，只有表浏览给。
+            header_menu: matches!(self.mode, Mode::Table | Mode::Query).then(|| {
                 let view = self.view.clone();
                 let hook: HeaderMenuHook = Rc::new(move |menu, col, _window, cx| {
                     let view = view.clone();
                     let Some(entity) = view.upgrade() else {
                         return menu;
                     };
-                    let name = {
+                    // 弹出这一刻一次读齐（与单元格菜单同一条纪律）：列名、模式、
+                    // 当前排序、藏列集合都只读一次，之后只借克隆。
+                    let (name, table_mode, sort) = {
                         let page = entity.read(cx);
                         let Some(result) = page.current_result() else {
                             return menu;
                         };
                         match result.columns.get(col) {
-                            Some(column) => column.name.clone(),
+                            Some(column) => (
+                                column.name.clone(),
+                                page.mode == Mode::Table,
+                                page.active_sort().cloned(),
+                            ),
                             None => return menu,
                         }
                     };
@@ -2396,40 +3111,237 @@ impl DatabasePage {
                     let filter_label = trf(cx, "筛选「{}」", &[&name]).to_string();
                     let copy_label = tr(cx, "复制列名");
                     let copied_note = tr(cx, "已复制列名。");
+                    let hide_label = tr(cx, "隐藏此列");
+                    let clear_sort_label = tr(cx, "清除排序");
+                    let sorted_here = sort.as_ref().is_some_and(|spec| spec.column == name);
+                    let sorted_descending = sort.as_ref().is_some_and(|spec| spec.descending);
                     let asc_view = view.clone();
                     let desc_view = view.clone();
                     let filter_view = view.clone();
                     let copy_view = view.clone();
+                    let hide_view = view.clone();
+                    let clear_view = view.clone();
                     let asc_name = name.clone();
                     let desc_name = name.clone();
                     let filter_name = name.clone();
-                    menu.item(PopupMenuItem::new(asc_label).on_click(move |_, _, cx| {
-                        let Some(entity) = asc_view.upgrade() else {
-                            return;
+                    let hide_name = name.clone();
+                    let mut menu = menu
+                        .item(
+                            PopupMenuItem::new(asc_label)
+                                .checked(sorted_here && !sorted_descending)
+                                .on_click(move |_, _, cx| {
+                                    let Some(entity) = asc_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity
+                                        .update(cx, |this, cx| this.sort_by(&asc_name, false, cx));
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(desc_label)
+                                .checked(sorted_here && sorted_descending)
+                                .on_click(move |_, _, cx| {
+                                    let Some(entity) = desc_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity
+                                        .update(cx, |this, cx| this.sort_by(&desc_name, true, cx));
+                                }),
+                        );
+                    // 「筛选」是**表页**动作（服务器侧 WHERE）：SQL 结果集没有表页可筛，
+                    // 不给这一项，否则点了只会填上一个不会生效的草稿列。
+                    if table_mode {
+                        menu = menu.item(PopupMenuItem::new(filter_label).on_click(
+                            move |_, _, cx| {
+                                let Some(entity) = filter_view.upgrade() else {
+                                    return;
+                                };
+                                entity.update(cx, |this, cx| {
+                                    this.draft_filter_column(&filter_name, cx)
+                                });
+                            },
+                        ));
+                    }
+                    menu = menu
+                        .separator()
+                        .item(PopupMenuItem::new(copy_label).on_click(move |_, _, cx| {
+                            let Some(entity) = copy_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| {
+                                this.put_on_clipboard(name.clone(), copied_note, cx);
+                            });
+                        }))
+                        .item(PopupMenuItem::new(hide_label).on_click(move |_, _, cx| {
+                            let Some(entity) = hide_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| this.toggle_column_hidden(&hide_name, cx));
+                        }));
+                    if sort.is_some() {
+                        menu = menu.item(PopupMenuItem::new(clear_sort_label).on_click(
+                            move |_, _, cx| {
+                                let Some(entity) = clear_view.upgrade() else {
+                                    return;
+                                };
+                                entity.update(cx, |this, cx| this.clear_sort(cx));
+                            },
+                        ));
+                    }
+                    menu
+                });
+                hook
+            }),
+            // 列头**下拉**操作台（左键点 ∨，锚在按钮下方）：只收「这一列怎么显示、
+            // 怎么筛」的四件事，与右键菜单（复制 / 藏列 / 写动作）是两条入口。每一项
+            // 都落真实动作：格式化改模型预算、本地筛选改显示行、数据库筛选走表浏览
+            // 的 WHERE 草稿、清除按列摘干净 —— 摆占位菜单等于让人猜。
+            header_dropdown: matches!(self.mode, Mode::Table | Mode::Query).then(|| {
+                let view = self.view.clone();
+                let hook: HeaderMenuHook = Rc::new(move |menu, col, window, cx| {
+                    let view = view.clone();
+                    let Some(entity) = view.upgrade() else {
+                        return menu;
+                    };
+                    // 弹出这一刻一次读齐（与右键菜单同一条纪律）：列名、数值性、
+                    // 有没有选中格、各档开关都只读一次，之后只借克隆。
+                    let (
+                        name,
+                        numeric,
+                        has_selection,
+                        local_active,
+                        format_active,
+                        sorted_here,
+                        db_filterable,
+                    ) = {
+                        let page = entity.read(cx);
+                        let Some(result) = page.current_result() else {
+                            return menu;
                         };
-                        entity.update(cx, |this, cx| this.sort_table_by(&asc_name, false, cx));
-                    }))
-                    .item(PopupMenuItem::new(desc_label).on_click(move |_, _, cx| {
-                        let Some(entity) = desc_view.upgrade() else {
-                            return;
+                        let Some(column) = result.columns.get(col) else {
+                            return menu;
                         };
-                        entity.update(cx, |this, cx| this.sort_table_by(&desc_name, true, cx));
-                    }))
-                    .item(PopupMenuItem::new(filter_label).on_click(move |_, _, cx| {
-                        let Some(entity) = filter_view.upgrade() else {
-                            return;
-                        };
-                        entity.update(cx, |this, cx| this.draft_filter_column(&filter_name, cx));
-                    }))
-                    .separator()
-                    .item(PopupMenuItem::new(copy_label).on_click(move |_, _, cx| {
-                        let Some(entity) = copy_view.upgrade() else {
-                            return;
-                        };
-                        entity.update(cx, |this, cx| {
-                            this.put_on_clipboard(name.clone(), copied_note, cx);
+                        let name = column.name.clone();
+                        (
+                            name.clone(),
+                            super::helpers::result_column_is_numeric(&name, result),
+                            page.selected_row.is_some(),
+                            page.local_filters.contains_key(&name),
+                            page.column_formats.contains_key(&name),
+                            page.active_sort().is_some_and(|spec| spec.column == name),
+                            page.mode == Mode::Table,
+                        )
+                    };
+                    let format_label = tr(cx, "列格式化");
+                    let thousands_label = tr(cx, "千分位");
+                    let raw_label = tr(cx, "原始值");
+                    let local_label = tr(cx, "本地值筛选");
+                    let db_label = tr(cx, "数据库值筛选");
+                    let clear_label = tr(cx, "清除");
+                    let menu_view = view.clone();
+                    let mut menu = menu;
+                    // 「列格式化」只对数值列给：千分位有真实落点（模型预算时改显示
+                    // 文本），文本 / 日期挑格式没有可用的展示层模板，给一条灰的只会
+                    // 让人猜。子菜单两档的勾选态就是当前档位。
+                    if numeric {
+                        let thousands_view = menu_view.clone();
+                        let raw_view = menu_view.clone();
+                        let thousands_name = name.clone();
+                        let raw_name = name.clone();
+                        let submenu = PopupMenu::build(window, cx, move |menu, _, _| {
+                            menu.item(
+                                PopupMenuItem::new(thousands_label)
+                                    .checked(format_active)
+                                    .on_click(move |_, _, cx| {
+                                        let Some(entity) = thousands_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.set_column_format(
+                                                &thousands_name,
+                                                Some(ColumnFormat::Thousands),
+                                                cx,
+                                            );
+                                        });
+                                    }),
+                            )
+                            .item(
+                                PopupMenuItem::new(raw_label)
+                                    .checked(!format_active)
+                                    .on_click(move |_, _, cx| {
+                                        let Some(entity) = raw_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.set_column_format(&raw_name, None, cx);
+                                        });
+                                    }),
+                            )
                         });
-                    }))
+                        menu = menu.item(
+                            PopupMenuItem::submenu(format_label, submenu)
+                                .icon(Icon::new(DuckIcon::Code)),
+                        );
+                    }
+                    // 「本地值筛选」以选中格的值为等值条件：没有选中格就没有条件可落，
+                    // 置灰而不是弹出「请先选中」的提示（菜单项点了才解释是死路）。
+                    menu = menu.item(
+                        PopupMenuItem::new(local_label)
+                            .icon(Icon::new(DuckIcon::ListFilter))
+                            .checked(local_active)
+                            .disabled(!has_selection)
+                            .on_click({
+                                let view = menu_view.clone();
+                                let name = name.clone();
+                                move |_, _, cx| {
+                                    let Some(entity) = view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.toggle_local_filter_from_selection(&name, cx);
+                                    });
+                                }
+                            }),
+                    );
+                    // 「数据库值筛选」是表页动作（服务器侧 WHERE）：SQL 结果集没有
+                    // 表页可筛，不给这一项，否则点了只会填上一个不会生效的草稿列。
+                    if db_filterable {
+                        menu = menu.item(
+                            PopupMenuItem::new(db_label)
+                                .icon(Icon::new(DuckIcon::Database))
+                                .on_click({
+                                    let view = menu_view.clone();
+                                    let name = name.clone();
+                                    move |_, window, cx| {
+                                        let Some(entity) = view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.db_filter_from_selection(&name, window, cx);
+                                        });
+                                    }
+                                }),
+                        );
+                    }
+                    if local_active || format_active || sorted_here {
+                        menu = menu.separator().item(
+                            PopupMenuItem::new(clear_label)
+                                .icon(Icon::new(DuckIcon::Eraser))
+                                .on_click({
+                                    let view = menu_view.clone();
+                                    let name = name.clone();
+                                    move |_, _, cx| {
+                                        let Some(entity) = view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.clear_column_effects(&name, cx);
+                                        });
+                                    }
+                                }),
+                        );
+                    }
+                    menu
                 });
                 hook
             }),
@@ -2439,38 +3351,7 @@ impl DatabasePage {
                 let Some(entity) = cell_dbl_view.upgrade() else {
                     return;
                 };
-                // 只读借用阶段取「原值 + 是否 NULL」，随后才构造输入框实体。
-                let prep = entity.read(cx).cell_editor_prep(pos.row, pos.col);
-                let Some((original, was_null)) = prep else {
-                    entity.update(cx, |this, cx| this.select_cell(pos, cx));
-                    return;
-                };
-                // 结果集不可编辑就明说，不摆空编辑框。
-                if entity.read(cx).edit_source().is_none() {
-                    notify::info(
-                        tr(cx, "当前结果集不可编辑（需要单表 + 主键）。"),
-                        window,
-                        cx,
-                    );
-                    return;
-                }
-                let input = cx.new(|cell_cx| InputState::new(&mut *window, cell_cx));
-                // 原值回填：编辑器的起点就是「库里现在是什么」。
-                if !was_null {
-                    let seed = original.clone();
-                    input.update(cx, |state, cx| state.set_value(seed, window, cx));
-                }
-                // dbx / dbflux 同款：进编辑即聚焦 + **全选** —— 高亮选区本身就是
-                // 「输入框已接管这一格」的视觉信号，直接打字即可整格覆盖。
-                input.update(cx, |state, cx| {
-                    state.focus(window, cx);
-                    state.select_all(window, cx);
-                });
-                entity.update(cx, |this, cx| {
-                    this.select_cell(pos, cx);
-                    this.install_cell_editor(pos.row, pos.col, original, was_null, input, cx);
-                    cx.notify();
-                });
+                entity.update(cx, |this, cx| this.begin_cell_edit(pos, window, cx));
             })),
             // 双击行空白处（行号 / 多选列一带）= 开行编辑器（暂存式：改动只存输入框，
             // 点保存才落库）。
@@ -2530,7 +3411,7 @@ impl DatabasePage {
     pub(super) fn sync_data_table(&mut self, cx: &mut Context<Self>) {
         let model = self
             .current_result()
-            .map(|result| Arc::new(build_table_model(result)))
+            .map(|result| Arc::new(build_table_model(result, &self.column_formats)))
             .unwrap_or_default();
         self.data_table
             .update(cx, |state, cx| state.set_model(model, cx));
@@ -2554,11 +3435,340 @@ impl DatabasePage {
         });
     }
 
+    /// 当前模式生效的排序：表浏览读服务器侧的 `table_sort`，SQL 结果读客户端的
+    /// `query_sort`。
+    ///
+    /// 两个字段**刻意分开**（见各自的定义）：它们不只是「谁排的」不同 —— 一个是
+    /// 数据库真的按它取数、另一个只是换个顺序看这批已到手的行。任何要「显示当前
+    /// 排序」的地方（列头箭头、读数 chip、三态轮转）都从这里取，免得两处各判一遍。
+    pub(super) fn active_sort(&self) -> Option<&SortSpec> {
+        match self.mode {
+            Mode::Table => self.table_sort.as_ref(),
+            Mode::Query => self.query_sort.as_ref(),
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => None,
+        }
+    }
+
+    /// 右键定序：**直接指定方向**（不像点列头那样三态轮转），两套落地按模式分派。
+    ///
+    /// 点列头（[`Self::on_data_table_event`] 的 `SortRequested`）与右键菜单是同一个
+    /// 动作的两种入口 —— 都在这里汇合，免得「右键按升序」和「点头一次」哪一天漂开。
+    pub(super) fn sort_by(&mut self, column: &str, descending: bool, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Table => self.sort_table_by(column, descending, cx),
+            Mode::Query => {
+                self.query_sort = Some(SortSpec {
+                    column: column.to_owned(),
+                    descending,
+                });
+                // 与 [`Self::toggle_query_sort`] 同一条：排序换了，同一页码下的内容
+                // 整体换了一批，回第 1 页。
+                self.query_page = 0;
+                self.sync_data_table_rows(cx);
+                cx.notify();
+            }
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => {}
+        }
+    }
+
+    /// 取消当前排序（右键「清除排序」）。
+    ///
+    /// 表浏览那一支的作废集合与翻页口径必须与 [`Self::sort_table_by`] 完全一致：
+    /// 取消排序同样是「行号的含义变了」，只清 `table_sort` 会把勾选 / 选中行留在
+    /// 旧行号上，下一次删行就删错。
+    pub(super) fn clear_sort(&mut self, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Table => {
+                if self.table_sort.is_none() {
+                    return;
+                }
+                self.table_sort = None;
+                self.checked_rows.clear();
+                self.selected_row = None;
+                self.row_editor = None;
+                self.table_page = 0;
+                self.load_table_page(cx);
+            }
+            Mode::Query => {
+                if self.query_sort.is_none() {
+                    return;
+                }
+                self.query_sort = None;
+                self.query_page = 0;
+                self.sync_data_table_rows(cx);
+                cx.notify();
+            }
+            Mode::Instance(_)
+            | Mode::Dashboard(_)
+            | Mode::Structure(_)
+            | Mode::Er { .. }
+            | Mode::Compare(_)
+            | Mode::Transfer(_) => {}
+        }
+    }
+
+    /// 把藏起来的列全部放出来（工具条「字段筛选」与右键菜单「全部显示」共用）。
+    pub(super) fn show_all_columns(&mut self, cx: &mut Context<Self>) {
+        if self.hidden_columns.is_empty() {
+            return;
+        }
+        self.hidden_columns.clear();
+        self.sync_data_table_rows(cx);
+        cx.notify();
+    }
+
+    /// 列头下拉「列格式化 ▸」：改该列的格式档（`None` = 还原原始值）。
+    ///
+    /// ⚠️ display 文本在模型里**预算**（`Arc<str>` 一次算好，见 `build_table_model`），
+    /// 改档必须重推模型，渲染层消化不了。
+    pub(super) fn set_column_format(
+        &mut self,
+        column: &str,
+        format: Option<ColumnFormat>,
+        cx: &mut Context<Self>,
+    ) {
+        match format {
+            Some(format) => {
+                self.column_formats.insert(column.to_owned(), format);
+            }
+            None => {
+                self.column_formats.remove(column);
+            }
+        }
+        self.sync_data_table(cx);
+    }
+
+    /// 列头下拉「本地值筛选」：以**当前选中格**该列的展示文本为等值条件，开关本地过滤。
+    ///
+    /// 只动显示行（`visible_row_indexes` 里夹一层），服务器数据不动；同一值再点一次
+    /// = 解除。值按展示文本记（NULL 照 `render` 的文本算），与格子看见的口径一致。
+    pub(super) fn toggle_local_filter_from_selection(
+        &mut self,
+        column: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let value_text = {
+            let Some(result) = self.current_result() else {
+                return;
+            };
+            let Some(col) = result.columns.iter().position(|c| c.name == column) else {
+                return;
+            };
+            self.selected_row
+                .and_then(|row| result.rows.get(row))
+                .and_then(|row| row.get(col))
+                .map(Value::render)
+                .unwrap_or_else(|| "NULL".to_owned())
+        };
+        {
+            let set = self.local_filters.entry(column.to_owned()).or_default();
+            // 没有这个值 = 命中它（加进白名单）；已经有 = 再点一次解除。
+            if !set.remove(&value_text) {
+                set.insert(value_text);
+            }
+        }
+        // 集合空了顺手摘键：空集合在过滤里等于「一行都留不下」，留着只会骗人。
+        if self
+            .local_filters
+            .get(column)
+            .is_some_and(BTreeSet::is_empty)
+        {
+            self.local_filters.remove(column);
+        }
+        self.sync_data_table_rows(cx);
+    }
+
+    /// 列头下拉「数据库值筛选」：把「该列 = 当前格的值」直接落成一条**服务器侧**条件。
+    ///
+    /// 只有表浏览有服务器侧筛选可挂。有选中格就一步加条件（`add_table_filter`）；
+    /// 没有就只把筛选条草稿的列填上，操作符与值留给用户挑。NULL 格用「为空」
+    /// 操作符——拿字符串 `"NULL"` 去等值永远查不出东西。
+    pub(super) fn db_filter_from_selection(
+        &mut self,
+        column: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != Mode::Table {
+            return;
+        }
+        self.filter_column = Some(column.to_owned());
+        let cell = {
+            let Some(result) = self.current_result() else {
+                return;
+            };
+            let col = result.columns.iter().position(|c| c.name == column);
+            let row = self.selected_row;
+            match (row, col) {
+                (Some(row), Some(col)) => result.rows.get(row).and_then(|r| r.get(col)).cloned(),
+                _ => None,
+            }
+        };
+        match cell {
+            Some(cell) if !cell.is_null() => {
+                self.filter_op = FilterOp::Eq;
+                let text = cell.render();
+                self.filter_value
+                    .update(cx, |state, cx| state.set_value(text, window, cx));
+                self.add_table_filter(window, cx);
+            }
+            Some(_) => {
+                self.filter_op = FilterOp::IsNull;
+                self.after_filter_changed(cx);
+            }
+            None => cx.notify(),
+        }
+    }
+
+    /// 列头下拉「清除」：摘掉该列的排序 / 本地筛选 / 格式化（有一件算一件）。
+    pub(super) fn clear_column_effects(&mut self, column: &str, cx: &mut Context<Self>) {
+        let had_filter = self.local_filters.remove(column).is_some();
+        let had_format = self.column_formats.remove(column).is_some();
+        if self.active_sort().is_some_and(|spec| spec.column == column) {
+            // 排序有自己的刷新路径（表浏览重取页 / 查询重推行序），让它走完。
+            self.clear_sort(cx);
+            return;
+        }
+        if had_format {
+            self.sync_data_table(cx);
+        } else if had_filter {
+            self.sync_data_table_rows(cx);
+        }
+    }
+
+    /// 把这一格的值填进结果内搜索框（右键「在结果中搜索此值」）。
+    ///
+    /// 与 [`Self::clear_result_search`] 同一条纪律：写的是**输入框自己的值**，展示
+    /// 行序由 `shell.rs` 里那条 `InputEvent::Change` 订阅重推 —— 这里不再推一遍
+    ///（推两次会白算两遍命中集）。
+    ///
+    /// ⚠️ 取值**截到** [`SEARCH_VALUE_MAX_CHARS`]：TEXT / JSON 列没有长度上限，一格
+    /// 可能就是整篇文档。拿整篇当搜索词既没意义（没人按 1 MB 的串匹配），又要在
+    /// **每一行**上做一次子串匹配。截断后语义是「按这段文本的开头过滤」，普通短值
+    /// 完全不受影响。
+    pub(super) fn search_in_result(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let value: String = value.chars().take(SEARCH_VALUE_MAX_CHARS).collect();
+        self.result_search.update(cx, |state, cx| {
+            state.set_value(&value, window, cx);
+        });
+        // 回执用**固定文案**，不把值拼进去：一格可能是整篇文档，拼进通知就是一条
+        // 占满屏幕的横幅。搜索框自己已经显示了这个词，回执只需说一句「做了」。
+        self.toast(notify::Tone::Info, tr(cx, "已按该值过滤结果。"), cx);
+        cx.notify();
+    }
+
+    /// 开始就地编辑某一格（双击与右键菜单**共用**这一条路）。
+    ///
+    /// 两个入口的守卫、原值回填、聚焦全选完全同一份 —— 分开写迟早只有一处被改动
+    ///（比如「结果集不可编辑时给提示」只加在双击那条路上，右键进来就是个空框）。
+    pub(super) fn begin_cell_edit(
+        &mut self,
+        pos: CellPos,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 只读借用阶段取「原值 + 是否 NULL」，随后才构造输入框实体。
+        let Some((original, was_null)) = self.cell_editor_prep(pos.row, pos.col) else {
+            self.select_cell(pos, cx);
+            return;
+        };
+        // 结果集不可编辑就明说，不摆空编辑框。
+        if self.edit_source().is_none() {
+            notify::info(
+                tr(cx, "当前结果集不可编辑（需要单表 + 主键）。"),
+                window,
+                cx,
+            );
+            return;
+        }
+        let input = cx.new(|cell_cx| InputState::new(&mut *window, cell_cx));
+        // 原值回填：编辑器的起点就是「库里现在是什么」。
+        if !was_null {
+            let seed = original.clone();
+            input.update(cx, |state, cx| state.set_value(seed, window, cx));
+        }
+        // dbx / dbflux 同款：进编辑即聚焦 + **全选** —— 高亮选区本身就是
+        // 「输入框已接管这一格」的视觉信号，直接打字即可整格覆盖。
+        input.update(cx, |state, cx| {
+            state.focus(window, cx);
+            state.select_all(window, cx);
+        });
+        self.select_cell(pos, cx);
+        self.install_cell_editor(pos.row, pos.col, original, was_null, input, cx);
+        cx.notify();
+    }
+
+    /// 点列头：升序 → 降序 → 取消（SQL 结果集的**客户端**排序）。
+    ///
+    /// 与表浏览的 [`Self::toggle_table_sort`] 是同一套三态轮转、两套落地：
+    /// 表浏览重发一次带 `ORDER BY` 的取数（服务器侧），这里只是把**已到手的行**
+    /// 重排一遍（`sync_data_table_rows` 重算展示行序）—— 不必、也不该重新查库。
+    ///
+    /// 勾选 / 选中行都不动：它们记的是**原始行下标**，而排序只改展示顺序
+    ///（`visible_row_indexes` 里排的是展示下标），两者的对应关系不受影响。
+    pub(super) fn toggle_query_sort(&mut self, column: &str, cx: &mut Context<Self>) {
+        self.query_sort = SortSpec::next(self.query_sort.as_ref(), column);
+        // 排序变了，页码的含义也变了（同一页码下的内容整体换了一批）：回第 1 页。
+        self.query_page = 0;
+        self.sync_data_table_rows(cx);
+        cx.notify();
+    }
+
     /// 当前应在网格里显示的行：`(原始行下标, 行号起点)`；没有结果时 `None`。
     fn visible_row_indexes(&self, cx: &App) -> Option<(Vec<usize>, usize)> {
         let result = self.current_result()?;
         let visible = visible_columns(&result.columns, &self.hidden_columns);
-        let matched = matched_row_indexes(&result.rows, &visible, &self.result_search_text(cx));
+        let mut matched = matched_row_indexes(&result.rows, &visible, &self.result_search_text(cx));
+        // 列头下拉的**本地值筛选**夹在「搜索命中」与「客户端排序」之间：只留
+        // 「每个筛选列都命中任一允许值」的行。值按展示文本比（与格子里看见的一致），
+        // 服务器数据不动——这是查询结果的筛选，别和表浏览的 WHERE 草稿混了。
+        if !self.local_filters.is_empty() {
+            let column_pos: Vec<(usize, &BTreeSet<String>)> = self
+                .local_filters
+                .iter()
+                .filter_map(|(name, values)| {
+                    result
+                        .columns
+                        .iter()
+                        .position(|column| &column.name == name)
+                        .map(|pos| (pos, values))
+                })
+                .collect();
+            matched.retain(|&row| {
+                column_pos.iter().all(|(pos, values)| {
+                    result
+                        .rows
+                        .get(row)
+                        .and_then(|cells| cells.get(*pos))
+                        .is_some_and(|cell| values.contains(cell.render().as_str()))
+                })
+            });
+        }
+        // 客户端排序夹在「搜索命中」与「分页切片」之间：先定序、再切片，
+        // 否则每一页各自排序，「第 2 页」就成了第 1 页的重排（表浏览那条注释同款）。
+        if let Some(spec) = self.query_sort.as_ref()
+            && let Some(column) = result
+                .columns
+                .iter()
+                .position(|column| column.name == spec.column)
+        {
+            sort_row_indexes(&result.rows, &mut matched, column, spec.descending);
+        }
         if self.mode != Mode::Query {
             // 表浏览 = 服务器侧分页，整页即一页。
             return Some((matched, 0));
@@ -2602,8 +3812,13 @@ impl DatabasePage {
                 self.toggle_all_checked(cx);
             }
             DataTableEvent::SortRequested { column } => {
+                // 同一个动作、两套落地（见 [`Self::active_sort`] 的说明）。
                 let name = column.to_string();
-                self.toggle_table_sort(&name, cx);
+                if self.mode == Mode::Table {
+                    self.toggle_table_sort(&name, cx);
+                } else {
+                    self.toggle_query_sort(&name, cx);
+                }
             }
             // 列宽由组件自管（拖拽 / 双击自适应都在组件里）。这条事件是「将来要把
             // 列宽落盘」的接缝，目前没有第二真源要同步。
@@ -2632,30 +3847,8 @@ impl DatabasePage {
         let selected = self.checked_rows.len();
         // 「能不能批量改」与「能不能改这一格」同源：结果集可编辑（单表 + 主键齐全）。
         let has_pk = self.edit_source().is_some();
-        let columns = self
-            .current_result()
-            .map(|result| result.columns.clone())
-            .unwrap_or_default();
-        let options: Vec<(SharedString, SharedString)> = columns
-            .iter()
-            .map(|column| {
-                let name = SharedString::from(column.name.clone());
-                (name.clone(), name)
-            })
-            .collect();
-        let current: SharedString = self
-            .batch_column
-            .clone()
-            .map_or_else(|| SharedString::from(tr(cx, "选择列")), SharedString::from);
-        let on_select = {
-            let view = view.clone();
-            move |value: SharedString, _window: &mut Window, cx: &mut App| {
-                let _ = view.update(cx, |this, cx| {
-                    this.batch_column = Some(value.to_string());
-                    cx.notify();
-                });
-            }
-        };
+        // 「列」是可搜索下拉：选项与选中值由 `sync_select_pickers` 按指纹同步
+        //（列多时下拉顶上有搜索框，见 `DbSelectState`）；确认走 `SelectEvent` 订阅。
 
         let mut bar = h_flex()
             .w_full()
@@ -2671,13 +3864,12 @@ impl DatabasePage {
                 SharedString::from(trf(cx, "已选 {} 行", &[&selected.to_string()])),
                 cx,
             ))
-            .child(dropdown_select(
-                "db-batch-column",
-                options,
-                current,
-                on_select,
-                cx,
-            ))
+            .child(
+                Select::new(&self.batch_column_select)
+                    .placeholder(tr(cx, "选择列"))
+                    .h(theme.density().control)
+                    .min_w(px(DROPDOWN_MIN_WIDTH)),
+            )
             .child(
                 h_flex()
                     .flex_none()
@@ -2708,9 +3900,12 @@ impl DatabasePage {
                 // 批量改值输入框的宽度区间：布局约束（不在 spacing 阶梯上），保留裸值；
                 // `min_w` 保底可读、`max_w` 防止长值把整行撑爆，中间 `flex_1` 自适应。
                 div()
+                    .id("db-batch-value")
                     .min_w(px(160.))
                     .max_w(px(260.))
                     .flex_1()
+                    // 批量条的输入框同样在结果面板下（见 `result_search_box` 的 ⚠️）。
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .when(self.batch_null, |slot| {
                         // 勾了「写 NULL」时输入框淡出（内容会被忽略）——与行编辑器的
                         // NULL 开关同一处理，不真禁用（值仍可读）。
@@ -2793,21 +3988,6 @@ impl DatabasePage {
         let tokens = theme.tokens();
         let extended = theme.extended();
         let view = self.view.clone();
-        let columns = self
-            .current_result()
-            .map(|result| result.columns.clone())
-            .unwrap_or_default();
-        let options: Vec<(SharedString, SharedString)> = columns
-            .iter()
-            .map(|column| {
-                let name = SharedString::from(column.name.clone());
-                (name.clone(), name)
-            })
-            .collect();
-        let current_column: SharedString = self
-            .filter_column
-            .clone()
-            .map_or_else(|| SharedString::from(tr(cx, "选择列")), SharedString::from);
 
         let mut bar = h_flex()
             .w_full()
@@ -2820,21 +4000,14 @@ impl DatabasePage {
             .border_b(extended.stroke.thin)
             .border_color(extended.colors.hairline)
             .child(meta_text(tr(cx, "过滤"), cx))
-            .child(dropdown_select(
-                "db-filter-column",
-                options,
-                current_column,
-                {
-                    let view = view.clone();
-                    move |value, _window, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.filter_column = Some(value.to_string());
-                            cx.notify();
-                        });
-                    }
-                },
-                cx,
-            ))
+            // 「列」是可搜索下拉：选项与选中值由 `sync_select_pickers` 按指纹同步
+            //（列多时下拉顶上有搜索框，见 `DbSelectState`）；确认走 `SelectEvent` 订阅。
+            .child(
+                Select::new(&self.filter_column_select)
+                    .placeholder(tr(cx, "选择列"))
+                    .h(theme.density().control)
+                    .min_w(px(DROPDOWN_MIN_WIDTH)),
+            )
             .child(dropdown_select(
                 "db-filter-op",
                 FilterOp::ALL
@@ -2861,11 +4034,14 @@ impl DatabasePage {
             ))
             .child(
                 div()
+                    .id("db-filter-value")
                     // 值输入框的宽度区间：布局约束（不在 spacing 阶梯上），保留裸值；
                     // 与批量条同口径（`min_w` 保底可读、`max_w` 防长值撑爆）。
                     .min_w(px(160.))
                     .max_w(px(260.))
                     .flex_1()
+                    // 过滤条的输入框同样在结果面板下（见 `result_search_box` 的 ⚠️）。
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .when(!self.filter_op.needs_value(), |slot| {
                         // 「为空 / 不为空」不吃值：淡出而不禁用（值仍可读、仍可改，
                         // 与批量条的「写 NULL」同一处理）。

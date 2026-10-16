@@ -144,6 +144,11 @@ sqlparser = "0.52"
 # 默认无 feature（`debug` 才会拉 anstream/anstyle/okhsl，不启用）。
 # 传递依赖 `winnow 0.7` 早已在 Cargo.lock 内，零版本新增。
 sqlformat = "0.5.0"
+# `encoding_rs` 0.8：**执行 SQL 文件**（duck-db::sqlfile）要按文件真实编码解码
+# ——中文 dump 里 GBK / GB2312 很常见，按 UTF-8 硬解会整片变成 U+FFFD。
+# 它**已在锁文件与本 crate 的依赖图里**（`tiberius → encoding_rs`），这里只是提成
+# 直接依赖，**零新增下载**（同 `base64` 那一条先例）。MSRV 1.36，远低于全仓 1.85。
+encoding_rs = "0.8"
 
 # MongoDB（docs/database-design.md §5 的 M2 选型）：**必须精确钉 `=3.6.0`**。
 # 与本仓其它「钉版本」的理由不同，这条不是 API 兼容问题而是**硬门**问题：

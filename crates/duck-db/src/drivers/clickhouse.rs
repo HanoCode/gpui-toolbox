@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex};
 use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
-    CatalogTable, FilterOp, OrderBy, PkValues, RowCount, TableFilter, TableIndex, TableKind,
-    TableRef, filter_conditions, order_by_clause, quote_identifier, quote_qualified,
+    CatalogTable, FilterOp, OrderBy, PkValues, RowCount, TableColumnMeta, TableFilter, TableIndex,
+    TableKind, TableRef, filter_conditions, order_by_clause, quote_identifier, quote_qualified,
 };
 // URL 成分编码的实现住在 `drivers/mod.rs`：Elasticsearch 的路径段要用同一份，
 // 编码规则不能有两处口径。
@@ -432,6 +432,40 @@ impl ClickHouseConnection {
         self.column_types(table)
     }
 
+    /// 一张表的列级元数据（`system.columns`：默认值 / 注释拿得到；可空从类型文本的
+    /// `Nullable(` 前缀推导——ClickHouse 把可空编码进类型本身；字符集没有）。
+    pub fn table_column_meta(&mut self, table: &TableRef) -> Result<Vec<TableColumnMeta>, DbError> {
+        let database = self.resolve_schema(table.schema.as_deref());
+        let reply = self.endpoint.post(
+            "SELECT name, type, default_expression, comment FROM system.columns \
+             WHERE database = {db:String} AND table = {tbl:String} ORDER BY position",
+            None,
+            self.read_only,
+            &[("db", database.as_str()), ("tbl", table.name.as_str())],
+        )?;
+        let parsed = parse_compact(&reply.body)?;
+        let mut columns = Vec::with_capacity(parsed.rows.len());
+        for row in &parsed.rows {
+            let Some(name) = row.first().and_then(json_text) else {
+                continue;
+            };
+            let type_name = row.get(1).and_then(json_text).unwrap_or_default();
+            columns.push(TableColumnMeta {
+                nullable: Some(type_name.starts_with("Nullable(")),
+                default: row
+                    .get(2)
+                    .and_then(json_text)
+                    .filter(|text| !text.is_empty()),
+                comment: row.get(3).and_then(json_text).unwrap_or_default(),
+                character_set: None,
+                collation: None,
+                name,
+                type_name,
+            });
+        }
+        Ok(columns)
+    }
+
     /// [`Self::table_columns`] 的 `&self` 版本。
     ///
     /// 为什么要单独一个有：`table_page` 是 `&self`，而它的过滤需要知道每一列的**声明
@@ -455,6 +489,7 @@ impl ClickHouseConnection {
             columns.push(Column {
                 name,
                 type_name: row.get(1).and_then(json_text).unwrap_or_default(),
+                comment: String::new(),
             });
         }
         Ok(columns)
@@ -815,6 +850,8 @@ fn parse_compact(body: &str) -> Result<Compact, DbError> {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
+                    // ClickHouse 的列注释要另发 DESCRIBE 才拿得到，结果集元数据里没有。
+                    comment: String::new(),
                 })
                 .collect()
         })
@@ -1207,6 +1244,7 @@ mod tests {
                 .map(|(name, type_name)| Column {
                     name: (*name).to_owned(),
                     type_name: (*type_name).to_owned(),
+                    comment: String::new(),
                 })
                 .collect::<Vec<_>>()
         };

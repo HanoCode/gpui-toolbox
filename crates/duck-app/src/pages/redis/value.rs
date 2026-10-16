@@ -120,7 +120,6 @@ pub(super) fn decode_view(bytes: &[u8], kind: DecodeKind, cx: &App) -> ValueView
                 ValueView::Text {
                     rendered: decoded.text,
                     notice,
-                    bytes: bytes.len(),
                 }
             }
         }
@@ -131,47 +130,24 @@ pub(super) fn decode_view(bytes: &[u8], kind: DecodeKind, cx: &App) -> ValueView
     }
 }
 
+/// 字符串值的**自动检测**（zedis 的 `ViewMode::Auto` 语义）：内容是合法 JSON
+/// 就按 JSON 档展示（美化 + 语法高亮），否则文本档。zedis 每次加载值都把
+/// 视图重置回 Auto（`should_reset_viewer_mode`），这里同款——用户在解码下拉
+/// 里选的档位活到下一次加载为止，不让一次临时选择粘在所有键上。
+pub(super) fn auto_decode(bytes: &[u8]) -> DecodeKind {
+    if bytes.len() > VALUE_RENDER_LIMIT {
+        return DecodeKind::Text;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) if parse_document(text).is_some() => DecodeKind::Json,
+        _ => DecodeKind::Text,
+    }
+}
+
 /// 有损 UTF-8（键名与元素都是二进制安全的，展示时替换坏字节）。
 pub(super) fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
-/// 解码档位切换（只有字符串值有这九档；M1.5 起从三档扩到九档）。
-///
-/// 九档在右栏一行放不下，所以允许换行（`flex_wrap`）：档位再多也不会把右栏撑破。
-pub(super) fn decode_chips(
-    key_type: KeyType,
-    current: DecodeKind,
-    view: &WeakEntity<RedisPage>,
-    cx: &App,
-) -> Option<AnyElement> {
-    if key_type != KeyType::String {
-        return None;
-    }
-    let tokens = active_theme(cx).tokens();
-    let mut row = h_flex().flex_wrap().gap(tokens.spacing.xxs);
-    for mode in DecodeKind::ALL {
-        row = row.child(
-            button(
-                SharedString::from(format!("redis-decode-{}", mode.wire_name())),
-                decode_label(mode, cx),
-                if mode == current {
-                    ButtonVariant::Primary
-                } else {
-                    ButtonVariant::Secondary
-                },
-                cx,
-            )
-            .on_click({
-                let view = view.clone();
-                move |_, _window, cx| {
-                    let _ = view.update(cx, |this, cx| this.switch_decode(mode, cx));
-                }
-            }),
-        );
-    }
-    Some(row.into_any_element())
-}
-
 /// 类型相关的值编辑表单（每个类型只给该类型有意义的字段）。
 ///
 /// `enabled` = 写闸门放行；为假时全部按钮禁用，原因由调用方在下文统一说明
@@ -188,48 +164,9 @@ pub(super) fn value_editor(
     let mut form = v_flex().w_full().gap(tokens.spacing.xs);
 
     match key_type {
-        KeyType::String => {
-            form = form
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap(tokens.spacing.xxs)
-                        .child(field_label(tr(cx, "编辑字符串值"), cx))
-                        .child(
-                            div()
-                                .w_full()
-                                // 字符串值编辑框的固定高度（约 4 行文本），布局约束、非间距。
-                                .h(px(64.))
-                                .px(tokens.spacing.xs)
-                                .py(tokens.spacing.xs)
-                                .rounded(theme.components().input_radius)
-                                .border(theme.extended().stroke.thin)
-                                .border_color(theme.extended().colors.hairline)
-                                .bg(tokens.colors.background)
-                                .child(
-                                    Input::new(&page.edit_buffer)
-                                        .appearance(false)
-                                        .bordered(false)
-                                        .w_full(),
-                                ),
-                        ),
-                )
-                .child(
-                    button(
-                        "redis-save-value",
-                        tr(cx, "保存值"),
-                        ButtonVariant::Primary,
-                        cx,
-                    )
-                    .disabled(!enabled)
-                    .on_click({
-                        let view = view.clone();
-                        move |_, window, cx| {
-                            let _ = view.update(cx, |this, cx| this.save_string_value(window, cx));
-                        }
-                    }),
-                );
-        }
+        // 字符串值的编辑入口已上移到键头部的铅笔（编辑态下输入框替换值本体，
+        // 见 `render_value_editor`）——这里不再画第二份表单，免得两个「保存」打架。
+        KeyType::String => {}
         KeyType::Hash => {
             form = form
                 .child(
@@ -525,10 +462,55 @@ impl RedisPage {
                 .and_then(|detail| detail.tree.as_ref())
                 .map(default_expanded)
                 .unwrap_or_default();
+            // 文档换了一份，JSONPath 的命中就不再指向「看到的那个节点」——
+            // 宁可清空也不显示错位的定位（口径见 `jsonpath_hits` 字段注释）。
+            self.jsonpath_hits = Arc::new(Vec::new());
+            self.jsonpath_error = None;
+            self.jsonpath_selected = None;
         }
         // `json_key` 只在**确实有树**时才记：它就是「这份折叠状态从哪来」的凭据。
         self.json_key = self.json_available().then(|| key.to_owned());
         self.sync_json_rows();
+    }
+
+    /// 把当前详情的文本形态回填进内容编辑器，并同步高亮语言与软换行。
+    ///
+    /// 两个调用点：**详情到位**（选中键 / 刷新 / 保存成功后的重读）与**切解码档**
+    /// ——两者都意味着「编辑器该显示的内容换了一份」。回填走 `set_value`
+    /// （不发历史、折叠 undo），语言按解码档切（JSON 档 → tree-sitter 高亮），
+    /// 软换行按开关与体量上限重算（超 [`SOFT_WRAP_MAX_BYTES`] 强制关，同 zedis）。
+    pub(super) fn sync_value_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rendered) = self.detail.as_ref().and_then(|detail| match &detail.view {
+            ValueView::Text { rendered, .. } => Some(rendered.clone()),
+            _ => None,
+        }) else {
+            return;
+        };
+        let language = if self.decode == DecodeKind::Json {
+            "json"
+        } else {
+            "text"
+        };
+        let wrap = self.soft_wrap && rendered.len() <= SOFT_WRAP_MAX_BYTES;
+        self.value_editor.update(cx, |state, cx| {
+            state.set_value(rendered, window, cx);
+            state.set_highlighter(language, cx);
+            state.set_soft_wrap(wrap, window, cx);
+        });
+        // 回填不是用户改动：订阅里的「与详情比对」也会得出同样的结论，
+        // 这里直接归零是为了不依赖事件顺序（Change 是异步投递的）。
+        self.value_modified = false;
+    }
+
+    /// 底栏切软换行后把开关应用到编辑器（体量超限仍强制关，见上限常量）。
+    pub(super) fn apply_soft_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wrap = self.soft_wrap
+            && self
+                .detail
+                .as_ref()
+                .is_some_and(|detail| detail.raw.len() <= SOFT_WRAP_MAX_BYTES);
+        self.value_editor
+            .update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
     }
 
     /// 切呈现档位（文本 / 树）。纯本地：不重扫、不重新读值。
@@ -555,7 +537,7 @@ impl RedisPage {
     ///
     /// 行序**只在这里算**：渲染期每帧重算一遍展平会为每个节点克隆一遍
     /// `path` / `name` / `preview`（两万节点就是六万次分配），滚动直接垮掉。
-    fn sync_json_rows(&mut self) {
+    pub(super) fn sync_json_rows(&mut self) {
         let rows = self
             .detail
             .as_ref()
@@ -567,8 +549,9 @@ impl RedisPage {
 
     /// 主区右栏：**值编辑器**（对齐 zedis 的值编辑区）。
     ///
-    /// 自上而下四段：键信息条（键名 / 类型 / 原始大小 / TTL / 刷新 / 保存）→
-    /// 呈现与解码档位 → 值本体（文本或可折叠树）→ 该类型的结构化写入口。
+    /// 自上而下四段：键头部（星标 / 类型胶囊 / mono 键名 / 大小·空闲·编码 / TTL /
+    /// 刷新 / 解码下拉，40px 与键树工具条同高同线）→ JSONPath 栏（含「文本 | 树」
+    /// 切换）→ 值本体（文本或可折叠树）→ 该类型的结构化写入口。
     ///
     /// 键的**属性与危险操作**不在这里，在 shell 级右栏
     /// （`sidebar::render_right_sidebar`）——两块面板各司其职，右栏是「关于这个键」，
@@ -608,26 +591,71 @@ impl RedisPage {
             .id("redis-value-editor")
             .gap(tokens.spacing.sm)
             .p(tokens.spacing.sm)
-            .child(value_header(detail, &view, cx))
-            .child(value_tier_row(self, detail, &view, cx));
+            .child(value_header(self, detail, can_write, &view, cx))
+            .child(jsonpath_bar(self, detail, &view, cx))
+            // 求值结果条：有错误显示错误，有命中显示命中（无则整块不画）。
+            .child(jsonpath_results(self, &view, cx));
 
         // 值本体。⚠️ 树档的 `uniform_list` 必须**直接挂在 flex 容器下**：包一层
         // 默认 `display:block` 的 `div()` 会让它在 gpui-pre 0.3.8 下量不出高度、
         // **整表不渲染**（键数是照常计数的、无任何报错，界面一片空白）——
         // 与键列表同一个坑，见 `render_browser` 的同名注释与无头回归测试。
+        //
+        // 文本形态（含 JSON）：**内容区就是一个代码编辑器**（zedis 同款）——
+        // 可选中复制、（可写时）直接键入修改、行号与软换行内建、JSON 高亮走
+        // 编辑器的语言高亮（tree-sitter，`sync_value_editor` 按解码档切换）。
+        // 只读不是灰掉的 `disabled`：外观不变、照常选中复制，只是拒绝改动。
+        let notice = match &detail.view {
+            ValueView::Text { notice, .. } => notice.clone(),
+            _ => None,
+        };
         column = if self.effective_value_view() == ValueViewMode::Tree {
             let rows = self.json_rows.clone();
             let row_count = rows.len();
             let row_view = view.clone();
+            // 命中高亮跟着行闭包进树（`'static`：先克隆成拥有所有权的值）。
+            let row_selected = self.jsonpath_selected.clone();
             column.child(
                 uniform_list("redis-json-tree", row_count, move |range, _window, cx| {
                     range
-                        .filter_map(|index| rows.get(index).map(|row| json_row(row, &row_view, cx)))
+                        .filter_map(|index| {
+                            rows.get(index)
+                                .map(|row| json_row(row, row_selected.as_deref(), &row_view, cx))
+                        })
                         .collect::<Vec<_>>()
                 })
+                // 点击 JSONPath 命中时 `scroll_to_item` 写进这个句柄，
+                // 下一帧布局时生效（deferred，gpui-pre 的既定语义）。
+                .track_scroll(&self.json_tree_scroll)
                 .flex_1()
                 .min_h_0(),
             )
+        } else if matches!(detail.view, ValueView::Text { .. }) {
+            // ⚠️ 外层必须是 **flex 容器**（`v_flex`）：`div()` 是 display:block，
+            // Editor 的 `flex_1` 在它下面量不到高度——编辑器只画出内容自己那几行
+            // （与 uniform_list「包一层 div 整表不渲染」同源的坑，见上）。
+            column = column.child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(
+                        Editor::new(&self.value_editor)
+                            .appearance(false)
+                            .bordered(false)
+                            .readonly(!can_write)
+                            .flex_1()
+                            .min_h_0(),
+                    )
+                    // 解码档位的说明行（GZIP 解压出多少字节、时间戳按哪个单位……）
+                    // 垫在编辑器下面：没有它，用户不知道这段字是从哪来的。
+                    .children(
+                        notice
+                            .map(|text| meta_text(SharedString::from(text), cx))
+                            .into_iter(),
+                    ),
+            );
+            column
         } else {
             column.child(
                 div()
@@ -655,12 +683,132 @@ impl RedisPage {
 
         column.into_any_element()
     }
+
+    /// 执行 JSONPath 查询（「运行」按钮与输入框回车共用）。
+    ///
+    /// 文档来源是**当前展示串**（`ValueView::Text` 的 `rendered`）：JSONPath 是
+    /// 对「用户此刻看到的内容」提问，不是对服务端上的原始字节提问。所以只有
+    /// 文本 / JSON 解码档的字符串值可查，其余一律明确报错。
+    ///
+    /// 三个失败面分开说清楚：没选键 / 查询语法错 / 值不是 JSON——混成一句
+    /// 「查询失败」会让用户排查不了自己那一半的问题。
+    pub(super) fn run_jsonpath(&mut self, cx: &mut Context<Self>) {
+        self.jsonpath_error = None;
+        self.jsonpath_hits = Arc::new(Vec::new());
+        self.jsonpath_selected = None;
+        let Some(detail) = &self.detail else {
+            self.jsonpath_error = Some(tr(cx, "先选中一个键，再执行 JSONPath。").to_owned());
+            cx.notify();
+            return;
+        };
+        let query_text = self.jsonpath_input.read(cx).value().trim().to_owned();
+        if query_text.is_empty() {
+            self.jsonpath_error = Some(
+                tr(
+                    cx,
+                    "输入一条以 $ 开头的 JSONPath，如 $.store.book[0].title。",
+                )
+                .to_owned(),
+            );
+            cx.notify();
+            return;
+        }
+        let rendered = match &detail.view {
+            ValueView::Text { rendered, .. } => rendered.clone(),
+            _ => {
+                self.jsonpath_error =
+                    Some(tr(cx, "JSONPath 只支持字符串值（解码档：文本 / JSON）。").to_owned());
+                cx.notify();
+                return;
+            }
+        };
+        let Some(document) = parse_document(&rendered) else {
+            self.jsonpath_error =
+                Some(tr(cx, "当前值不是合法 JSON，无法执行 JSONPath。").to_owned());
+            cx.notify();
+            return;
+        };
+        match jsonpath_run(&query_text, &document) {
+            Ok(hits) => {
+                self.jsonpath_hits = Arc::new(hits);
+            }
+            Err(error) => {
+                self.jsonpath_error = Some(error);
+            }
+        }
+        cx.notify();
+    }
+
+    /// 点击一条 JSONPath 命中：切到树档、展开祖先、滚动到那一行并高亮。
+    ///
+    /// 行身份就是 [`JsonTreeNode::path`]（命中与树行同一条 `render_path` 规则，
+    /// 见内核 `jsonpath.rs` 的同源约定），所以这里不做任何字符串换算——拿着
+    /// 命中的 path 在树里走一遍祖先链，把链上的容器全部展开，再按行下标滚动。
+    ///
+    /// 边界口径：
+    /// - 命中节点因树节点上限（[`JSON_TREE_MAX_NODES`]）没有建出：树里找不到
+    ///   就不跳、不高亮（命中列表照常显示）——树预算与命中封顶是两套口径，
+    ///   这种错位理论上存在，静默放过比编一句报错文案更诚实；
+    /// - 树档不可用（值不是 JSON）：命中本就不该存在，直接返回；
+    /// - 处于编辑态先退出：编辑框盖着值本体，跳了也看不见。
+    pub(super) fn jump_to_jsonpath_hit(&mut self, path: &str, cx: &mut Context<Self>) {
+        // 先在不可变借用里把祖先链算完（`chain` 是 owned 的），再放开手做变更
+        // ——否则 `root` 的借用会跟 `set_value_view` 的 `&mut self` 打架，
+        // 只好整树克隆（两万节点的分配就为一跳，不值）。
+        let chain = self
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.tree.as_ref())
+            .and_then(|root| ancestor_chain(root, path));
+        // 树里找不到（命中节点因树预算没建出）就不跳：命中列表照常显示。
+        if chain.is_none() {
+            return;
+        }
+        self.set_value_view(ValueViewMode::Tree, cx);
+        // 展开祖先链（含目标自己：容器命中顺带把子行也亮出来）。
+        if let Some(chain) = chain
+            && chain
+                .iter()
+                .any(|ancestor| self.json_expanded.insert(ancestor.clone()))
+        {
+            self.sync_json_rows();
+        }
+        // 行下标按**当前**行序找：祖先展开后目标行一定在序列里（找到了链才展开）。
+        let row_index = self.json_rows.iter().position(|row| {
+            matches!(row, JsonTreeRow::Row { path: row_path, .. } if row_path.as_str() == path)
+        });
+        if let Some(index) = row_index {
+            self.json_tree_scroll
+                .scroll_to_item(index, ScrollStrategy::Center);
+            self.jsonpath_selected = Some(path.to_owned());
+        }
+        cx.notify();
+    }
 }
 
-/// 值面板的「文本」档内容（原来的值展示区，整体从 shell 右栏搬来）。
+/// 在树里找一条路径，返回**从根到它**的路径链（含它自己）；找不到返回 `None`。
 ///
-/// 可视区高度由外层容器负责（[`RedisPage::render_value_editor`] 里的
-/// `redis-value-body`），这里只管内容本身。
+/// 给命中点击定位用：展开集合需要的是祖先链，而祖先路径只有树自己知道——
+/// 路径是 `render_path` 拼出来的，从字符串反解就得重写一遍引号转义规则
+/// （`["a.b"]` 与 `.a.b` 的区分），不如直接沿着树走一遍，按身份比对。
+fn ancestor_chain(root: &JsonTreeNode, target: &str) -> Option<Vec<String>> {
+    fn walk(node: &JsonTreeNode, target: &str, chain: &mut Vec<String>) -> bool {
+        chain.push(node.path.clone());
+        if node.path == target {
+            return true;
+        }
+        for child in &node.children {
+            if walk(child, target, chain) {
+                return true;
+            }
+        }
+        chain.pop();
+        false
+    }
+    let mut chain = Vec::new();
+    walk(root, target, &mut chain).then_some(chain)
+}
+
 fn text_body(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) -> AnyElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
@@ -668,34 +816,14 @@ fn text_body(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) -> AnyEle
     let Some(detail) = &page.detail else {
         return div().into_any_element();
     };
+    // ⚠️ 文本形态**不走这里**：`render_value_editor` 里 `ValueView::Text` 分支
+    // 已整体换成代码编辑器（`value_editor` 实体）。本函数只管其余形态
+    // （Hex 预览 / 过大 / 解码失败 / 集合类），在「文本档不可用但树档回落
+    // 文本」时也可能被调到，所以没有 Text 分支是**有意**的。
     match &detail.view {
-        ValueView::Text {
-            rendered,
-            notice,
-            bytes,
-        } => v_flex()
-            .w_full()
-            .gap(tokens.spacing.xxs)
-            .child(
-                div()
-                    .w_full()
-                    .p(tokens.spacing.xs)
-                    .text_size(tokens.typography.mono_md.size)
-                    .line_height(tokens.typography.mono_md.line_height)
-                    .child(SharedString::from(rendered.clone())),
-            )
-            // 解码档位的说明行（GZIP 解压出多少字节、时间戳按哪个单位解读……）：
-            // 没有它，用户不知道 GZIP 档显示的这段字是从哪来的。
-            .children(
-                notice
-                    .clone()
-                    .map(|text| meta_text(SharedString::from(text), cx)),
-            )
-            .child(meta_text(
-                trf(cx, "原始 {} 字节", &[&bytes.to_string()]),
-                cx,
-            ))
-            .into_any_element(),
+        // 文本形态已在 `render_value_editor` 被编辑器分支拦截，到不了这里；
+        // 枚举必须穷尽，给一个明确的空兜底而不是让它意外混进别的分支。
+        ValueView::Text { .. } => div().into_any_element(),
         ValueView::Binary { hex, bytes } => v_flex()
             .w_full()
             .gap(tokens.spacing.xxs)
@@ -768,7 +896,15 @@ fn text_body(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) -> AnyEle
 }
 
 /// 树档的一行（行高统一，供 `uniform_list` 用）。
-fn json_row(row: &JsonTreeRow, view: &WeakEntity<RedisPage>, cx: &App) -> AnyElement {
+///
+/// `selected` 是 JSONPath 命中点击定位的那一行（路径即行身份）：命中行垫
+/// 选中底色，滚动到位之后眼睛有的放矢。
+fn json_row(
+    row: &JsonTreeRow,
+    selected: Option<&str>,
+    view: &WeakEntity<RedisPage>,
+    cx: &App,
+) -> AnyElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let extended = theme.extended();
@@ -801,6 +937,7 @@ fn json_row(row: &JsonTreeRow, view: &WeakEntity<RedisPage>, cx: &App) -> AnyEle
                 SharedString::from(preview.clone())
             };
             let path = path.clone();
+            let is_selected = selected == Some(path.as_str());
             h_flex()
                 .id(SharedString::from(format!("redis-json-{path}")))
                 .h(px(JSON_TREE_ROW_HEIGHT))
@@ -812,6 +949,7 @@ fn json_row(row: &JsonTreeRow, view: &WeakEntity<RedisPage>, cx: &App) -> AnyEle
                 .pr(tokens.spacing.sm)
                 .role(Role::ListItem)
                 .aria_label(SharedString::from(format!("{name} {detail}")))
+                .when(is_selected, |row| row.bg(extended.colors.nav_selected))
                 .when(*expandable, |row| {
                     row.cursor_pointer()
                         .hover(move |style| style.bg(extended.colors.hover_tint))
@@ -919,33 +1057,118 @@ fn stream_rows(entries: &[(String, Vec<(String, String)>)], cx: &App) -> AnyElem
     list.into_any_element()
 }
 
-/// 值面板的顶栏：键名 + 类型 + 原始大小 + TTL + 刷新 / 保存。
-fn value_header(detail: &KeyDetail, view: &WeakEntity<RedisPage>, cx: &App) -> Div {
+/// 类型胶囊（zedis `KeyTypeBadge` 的实心形态）：类型色淡底 + 同色文字 + 细描边。
+///
+/// 用在键头部（一处），与键树行的 plain 文字形态区分——头部只出现一次，
+/// 可以亮一点；树里重复上千次的才需要全去饱和。
+fn key_type_pill(key_type: KeyType, cx: &App) -> AnyElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let extended = theme.extended();
-    let ttl_text: SharedString = match detail.ttl {
-        -1 => SharedString::from(tr(cx, "永久")),
-        -2 => SharedString::from(tr(cx, "键不存在")),
-        seconds => trf(cx, "{} 秒", &[&seconds.to_string()]).into(),
-    };
-    // 原始大小：字符串给**服务端上那一份的字节数**（解码 / 解压之前），
-    // 集合给元素条数——两种类型的「大小」本来就不是一回事。
+    let dark = matches!(theme.mode(), duck_theme::ThemeMode::Dark);
+    let color = key_type_color(key_type, dark);
+    div()
+        .flex_none()
+        .px(tokens.spacing.xs)
+        .py(px(1.))
+        .rounded(tokens.radius.sm)
+        .bg(color.opacity(0.15))
+        .border(extended.stroke.thin)
+        .border_color(color.opacity(0.35))
+        .text_size(extended.badge.size)
+        .line_height(extended.badge.line_height)
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_color(color)
+        .child(SharedString::from(key_type.badge_code()))
+        .into_any_element()
+}
+
+/// 值面板的键头部（40px 单行，对齐 zedis 的 `EDITOR_KEY_BAR_HEIGHT`）。
+///
+/// 从左到右：收藏星 → 类型胶囊 → mono 键名 → 大小 → 编码·空闲 → TTL 芯片 →
+/// 刷新 → 解码下拉（仅字符串）→ 保存（仅字符串且有改动语义时可见）。
+///
+/// 「空闲 / 内部编码」从 shell 右栏借来：zedis 把它们放在头部（`24.62 kB raw · 空闲`），
+/// 读值时一眼可见；右栏那两行详情保留（面板职责不同）。
+fn value_header(
+    page: &RedisPage,
+    detail: &KeyDetail,
+    can_write: bool,
+    view: &WeakEntity<RedisPage>,
+    cx: &App,
+) -> Div {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let dark = matches!(theme.mode(), duck_theme::ThemeMode::Dark);
+    let favorite = page.active_tags().is_favorite(&detail.key);
+    let star_color = duck_theme::color_from_rgb(if dark { 0xd8b45c } else { 0xa8801a });
+
+    // 原始大小：字符串给**服务端上那一份的字节数**（解码 / 解压之前），集合给元素
+    // 条数。⚠️ 不拼「 raw」后缀：字符串的 `OBJECT ENCODING` 本来就是 `raw` /
+    // `embstr` / `int`，编码段会把它显示出来——再拼一次就是「20.4 KB raw raw」。
     let size_text: SharedString = if detail.key_type == KeyType::String {
         SharedString::from(format_bytes(detail.raw.len()))
     } else {
         trf(cx, "{} 项", &[&detail.size.to_string()]).into()
     };
+    // TTL 芯片：会过期的给人性化时长（`3.3h` 同款），永久的给「永久」，
+    // 键已消失的给「键不存在」。不画「∞」：多数库的键都是永久的。
+    let ttl_text: SharedString = match detail.ttl {
+        -2 => SharedString::from(tr(cx, "键不存在")),
+        -1 => SharedString::from(tr(cx, "永久")),
+        seconds => format_ttl_chip(seconds)
+            .map(SharedString::from)
+            .unwrap_or_else(|| trf(cx, "{} 秒", &[&seconds.to_string()]).into()),
+    };
+    // 编码 · 空闲（`OBJECT` 拿不到就整段不画——与右栏详情同一口径）。
+    let object_text = match (&detail.encoding, detail.idletime_secs) {
+        (Some(encoding), Some(idle)) => Some(format!(
+            "{encoding} · {}",
+            trf(cx, "空闲 {} 秒", &[&idle.to_string()])
+        )),
+        (Some(encoding), None) => Some(encoding.clone()),
+        (None, Some(idle)) => Some(trf(cx, "空闲 {} 秒", &[&idle.to_string()]).to_owned()),
+        (None, None) => None,
+    };
     let is_string = detail.key_type == KeyType::String;
 
-    h_flex()
+    let mut header = h_flex()
         .flex_none()
         .w_full()
+        .h(px(VALUE_BAR_HEIGHT))
         .items_center()
         .gap(tokens.spacing.xs)
-        .pb(tokens.spacing.xs)
         .border_b(extended.stroke.thin)
         .border_color(extended.colors.hairline)
+        .child(
+            // 收藏星：金星 = 已收藏，弱化色 = 未收藏（与键树行的星同色源）。
+            icon_button(
+                "redis-value-favorite",
+                if favorite {
+                    tr(cx, "取消收藏")
+                } else {
+                    tr(cx, "收藏这个键")
+                },
+                Icon::new(DuckIcon::Star)
+                    .size(extended.icon.sm)
+                    .text_color(if favorite {
+                        star_color
+                    } else {
+                        tokens.colors.muted_foreground
+                    }),
+                ButtonVariant::Ghost,
+                cx,
+            )
+            .on_click({
+                let view = view.clone();
+                let key = detail.key.clone();
+                move |_, _window, cx| {
+                    let _ = view.update(cx, |this, cx| this.toggle_key_favorite(&key, cx));
+                }
+            }),
+        )
+        .child(key_type_pill(detail.key_type, cx))
         .child(
             div()
                 .flex_1()
@@ -955,15 +1178,52 @@ fn value_header(detail: &KeyDetail, view: &WeakEntity<RedisPage>, cx: &App) -> D
                 .text_color(tokens.colors.foreground)
                 .child(SharedString::from(detail.key.clone())),
         )
-        .child(neutral_tag(key_type_label(detail.key_type, cx), cx))
-        .child(meta_text(size_text, cx))
-        .child(meta_text(trf(cx, "TTL {}", &[ttl_text.as_ref()]), cx))
+        .child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .text_color(tokens.colors.muted_foreground)
+                .child(size_text),
+        );
+    if let Some(object_text) = object_text {
+        header = header.child(
+            div()
+                .flex_none()
+                .text_size(tokens.typography.xs.size)
+                .text_color(tokens.colors.muted_foreground)
+                .child(SharedString::from(object_text)),
+        );
+    }
+    header = header
+        .child(
+            // TTL 芯片（展示；编辑入口在右栏「键管理」，头部不放第二个真源）。
+            h_flex()
+                .flex_none()
+                .items_center()
+                .gap(tokens.spacing.xxs)
+                .px(tokens.spacing.xxs)
+                .rounded(tokens.radius.sm)
+                .bg(tokens.colors.surface)
+                .border(extended.stroke.thin)
+                .border_color(extended.colors.hairline)
+                .child(
+                    Icon::new(DuckIcon::Clock)
+                        .size(extended.icon.sm)
+                        .text_color(tokens.colors.muted_foreground),
+                )
+                .child(
+                    div()
+                        .text_size(tokens.typography.xs.size)
+                        .text_color(tokens.colors.foreground)
+                        .child(ttl_text),
+                ),
+        )
         .child(
             icon_button(
                 "redis-value-refresh",
                 tr(cx, "重新读取这个键"),
                 Icon::new(DuckIcon::RotateCw).size(extended.icon.sm),
-                ButtonVariant::Secondary,
+                ButtonVariant::Ghost,
                 cx,
             )
             .on_click({
@@ -972,55 +1232,105 @@ fn value_header(detail: &KeyDetail, view: &WeakEntity<RedisPage>, cx: &App) -> D
                     let _ = view.update(cx, |this, cx| this.refresh_selected_key(window, cx));
                 }
             }),
-        )
-        .child(
-            // 「保存」只对字符串有意义（其余类型的写入口是下方的结构化表单），
-            // 所以不是字符串就整块不画，而不是画一个灰按钮占位。
-            div().children(is_string.then(|| {
+        );
+    // 字符串值：内容区本身就是编辑器（zedis 同款），**改了才出现**保存 / 放弃——
+    // 没改时按钮常驻只会让人犹豫「我到底改没改」。放弃 = 把详情原文回填进
+    // 编辑器（`value_modified` 由订阅里的比对自动归零）。
+    if is_string && page.value_modified {
+        header = header
+            .child(
                 button(
-                    "redis-value-save",
-                    tr(cx, "保存"),
-                    ButtonVariant::Primary,
+                    "redis-value-discard",
+                    tr(cx, "放弃修改"),
+                    ButtonVariant::Secondary,
                     cx,
                 )
                 .on_click({
                     let view = view.clone();
                     move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| this.sync_value_editor(window, cx));
+                    }
+                }),
+            )
+            .child(
+                button(
+                    "redis-value-save",
+                    tr(cx, "保存值"),
+                    ButtonVariant::Primary,
+                    cx,
+                )
+                .disabled(!can_write)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
                         let _ = view.update(cx, |this, cx| this.save_string_value(window, cx));
                     }
-                })
-                .into_any_element()
-            })),
-        )
+                }),
+            );
+    }
+    // 解码下拉：只有字符串值有九档可切；其余类型整块不画（不是画一个灰按钮）。
+    if is_string {
+        let current = page.decode;
+        header = header.child(toolbar_dropdown_button(
+            "redis-decode-menu",
+            tr(cx, "切换解码档位"),
+            Icon::new(DuckIcon::Code)
+                .size(extended.icon.sm)
+                .text_color(tokens.colors.muted_foreground),
+            Anchor::BottomRight,
+            {
+                let items: Vec<(DecodeKind, SharedString)> = DecodeKind::ALL
+                    .iter()
+                    .map(|&mode| (mode, SharedString::from(decode_label(mode, cx))))
+                    .collect();
+                let view = view.clone();
+                move |menu, _, _| {
+                    items.iter().fold(menu, |menu, &(mode, ref label)| {
+                        let view = view.clone();
+                        menu.item(
+                            PopupMenuItem::new(label.clone())
+                                .checked(mode == current)
+                                .on_click(move |_, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.switch_decode(mode, window, cx)
+                                    });
+                                }),
+                        )
+                    })
+                }
+            },
+            cx,
+        ));
+    }
+    header
 }
 
-/// 呈现档位与解码档位：两排按钮，都只改「同一份字节怎么显示」。
+/// JSONPath 栏（对齐 zedis 的 `bytes_editor::render_jsonpath_bar`）：
+/// 左侧「JSONPath：」+ 输入框 + 运行，右侧「文本 | 树」切换。
 ///
-/// 拆成两行是**有意的**：两排按钮长得一样（一档一个 Secondary / Primary），
-/// 挤在同一行里分不清哪个按钮管的是「呈现」、哪个管的是「解码」。
-fn value_tier_row(
+/// 树档仍然只在 JSON 解码档可用（判据在 [`RedisPage::json_available`] 一处），
+/// 按钮灰显的语义与从前一致——这里只是搬了位置。
+fn jsonpath_bar(
     page: &RedisPage,
     detail: &KeyDetail,
     view: &WeakEntity<RedisPage>,
     cx: &App,
 ) -> Div {
-    let tokens = active_theme(cx).tokens();
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
     let effective = page.effective_value_view();
     let available = page.json_available();
 
-    let mut views = h_flex()
-        .w_full()
-        .flex_wrap()
-        .items_center()
-        .gap(tokens.spacing.xxs);
-    views = views.child(meta_text(tr(cx, "视图"), cx));
+    let mut views = h_flex().flex_none().items_center().gap(px(2.));
     for mode in ValueViewMode::ALL {
         let usable = mode != ValueViewMode::Tree || available;
+        let selected = mode == effective;
         views = views.child(
             button(
                 SharedString::from(format!("redis-value-view-{}", mode.wire_name())),
                 value_view_label(mode, cx),
-                if mode == effective {
+                if selected {
                     ButtonVariant::Primary
                 } else {
                     ButtonVariant::Secondary
@@ -1037,23 +1347,138 @@ fn value_tier_row(
         );
     }
 
-    let mut column = v_flex()
+    // JSONPath 只对「字符串值的文本形态」有意义：其余类型输入框整体灰显
+    // （按钮可点、报错也行，但灰输入框能把「查不了」说在点击之前）。
+    let jsonpath_usable =
+        detail.key_type == KeyType::String && matches!(detail.view, ValueView::Text { .. });
+
+    h_flex()
         .flex_none()
         .w_full()
+        .h(px(VALUE_BAR_HEIGHT))
+        .items_center()
+        .gap(tokens.spacing.xs)
+        .border_b(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .child(meta_text(tr(cx, "JSONPath："), cx))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(theme.density().control)
+                .px(tokens.spacing.sm)
+                .rounded(theme.components().input_radius)
+                .border(extended.stroke.thin)
+                .border_color(extended.colors.hairline)
+                .bg(tokens.colors.background)
+                .when(!jsonpath_usable, |box_| {
+                    box_.opacity(extended.opacity.disabled)
+                })
+                .child(
+                    Input::new(&page.jsonpath_input)
+                        .appearance(false)
+                        .bordered(false)
+                        .w_full(),
+                ),
+        )
+        .child(
+            button(
+                "redis-jsonpath-run",
+                tr(cx, "运行"),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .disabled(!jsonpath_usable)
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    let _ = view.update(cx, |this, cx| this.run_jsonpath(cx));
+                }
+            }),
+        )
+        .child(views)
+}
+
+/// JSONPath 的求值结果条：错误一行，命中一个可滚动的小列表（含总数）。
+///
+/// 放在 JSONPath 栏与值本体之间（zedis 同位）。**命中行可点**：点一下切到
+/// 树档、展开祖先、滚动到那一行并高亮（[`RedisPage::jump_to_jsonpath_hit`]）；
+/// 被定位过的那条命中自己也垫选中底色，两边对得上号。
+fn jsonpath_results(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    if let Some(error) = &page.jsonpath_error {
+        return div()
+            .w_full()
+            .flex_none()
+            .text_size(tokens.typography.xs.size)
+            .text_color(theme.extended().colors.status_failed)
+            .child(SharedString::from(error.clone()))
+            .into_any_element();
+    }
+    let hits = page.jsonpath_hits.as_ref();
+    if hits.is_empty() {
+        return div().into_any_element();
+    }
+    let mut list = v_flex()
+        .w_full()
+        .flex_none()
+        .max_h(px(160.))
+        .id("redis-jsonpath-results")
+        .overflow_y_scroll()
         .gap(tokens.spacing.xxs)
-        .child(views);
-    // 解码档位（九档）只有字符串值有，`decode_chips` 自己带 `flex_wrap`，
-    // 所以面板再窄也只是多占几行、不会横向撑破。
-    if let Some(chips) = decode_chips(detail.key_type, page.decode, view, cx) {
-        column = column.child(
+        .p(tokens.spacing.xxs)
+        .rounded(theme.components().input_radius)
+        .border(theme.extended().stroke.thin)
+        .border_color(theme.extended().colors.hairline)
+        .bg(tokens.colors.background)
+        .child(meta_text(
+            trf(cx, "命中 {} 项", &[&hits.len().to_string()]),
+            cx,
+        ));
+    for (index, hit) in hits.iter().enumerate() {
+        let path = hit.path.clone();
+        let located = page.jsonpath_selected.as_deref() == Some(path.as_str());
+        list = list.child(
             h_flex()
+                .id(SharedString::from(format!("redis-jsonpath-hit-{index}")))
                 .w_full()
-                .flex_wrap()
-                .items_center()
-                .gap(tokens.spacing.xxs)
-                .child(meta_text(tr(cx, "解码"), cx))
-                .child(div().flex_1().min_w_0().child(chips)),
+                .gap(tokens.spacing.sm)
+                .px(tokens.spacing.xxs)
+                .rounded(theme.components().input_radius)
+                .role(Role::Button)
+                .aria_label(trf(cx, "在树中定位 {}", &[&path]))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.extended().colors.hover_tint))
+                .when(located, |row| row.bg(theme.extended().colors.nav_selected))
+                .on_click({
+                    let view = view.clone();
+                    move |_: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                        let path = path.clone();
+                        let _ = view.update(cx, |this, cx| {
+                            this.jump_to_jsonpath_hit(&path, cx);
+                        });
+                    }
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .min_w(px(180.))
+                        .truncate()
+                        .text_size(tokens.typography.xs.size)
+                        .text_color(tokens.colors.foreground)
+                        .child(SharedString::from(hit.path.clone())),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(tokens.typography.xs.size)
+                        .text_color(tokens.colors.muted_foreground)
+                        .child(SharedString::from(hit.preview.clone())),
+                ),
         );
     }
-    column
+    list.into_any_element()
 }

@@ -48,11 +48,16 @@ impl DatabasePage {
         let lbl_copy_name = tr(cx, "复制名称");
         let note_copied_name = tr(cx, "已复制名称。");
 
+        // 标签多到放不下时**横向滚动**（`overflow_x_scroll` 前必须先 `.id(...)`，
+        // 与结果区横向滚动 `db-result-columns-x` 同一先例）；`restrict_scroll_to_axis`
+        // 防止标签条把纵向滚轮也吞掉。
         let mut row = h_flex()
-            .min_w_0()
+            .id("db-tab-strip")
             .flex_1()
+            .min_w_0()
             .gap(tokens.spacing.xxs)
-            .overflow_x_hidden();
+            .overflow_x_scroll()
+            .restrict_scroll_to_axis();
         for (index, tab_id) in self.tabs.iter().enumerate() {
             // 标签元素是**标签 id**，经 `tab_conn` 找到所属连接再取展示信息。
             let Some(conn_id) = self.tab_conn.get(tab_id) else {
@@ -142,6 +147,15 @@ impl DatabasePage {
                         Some(TabKind::Instance(tab)) => Icon::new(instance_tab_icon(*tab))
                             .size(extended.icon.sm)
                             .into_any_element(),
+                        // 三张工具页：ER 关系图取「网络」形，比较 / 传输取「双向箭头」。
+                        Some(TabKind::Er { .. }) => Icon::new(DuckIcon::Network)
+                            .size(extended.icon.sm)
+                            .into_any_element(),
+                        Some(TabKind::Compare(_)) | Some(TabKind::Transfer(_)) => {
+                            Icon::new(DuckIcon::ArrowRightLeft)
+                                .size(extended.icon.sm)
+                                .into_any_element()
+                        }
                         Some(TabKind::Dashboard(_)) => Icon::new(DuckIcon::Columns2)
                             .size(extended.icon.sm)
                             .into_any_element(),
@@ -291,22 +305,6 @@ impl DatabasePage {
                     }
                 })
             })
-            .child(
-                toolbar_action_button(
-                    "db-import-csv",
-                    tr(cx, "导入 CSV"),
-                    Icon::new(DuckIcon::Upload).size(extended.icon.md),
-                    false,
-                    self.edit_source().is_none() || self.busy,
-                    cx,
-                )
-                .on_click({
-                    let view = view.clone();
-                    move |_, window, cx| {
-                        let _ = view.update(cx, |this, cx| this.import_csv(window, cx));
-                    }
-                }),
-            )
             .into_any_element()
     }
 

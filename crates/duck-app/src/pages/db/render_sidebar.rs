@@ -21,25 +21,36 @@ impl DatabasePage {
         // 会把它搬走，详情分支还要用。
         let body_px = tokens.spacing.lg;
         let body_py = tokens.spacing.md;
-        let dock_body = move |body: AnyElement| {
+        // `scroll` 决定分段体是「内容自然高度 + 外层滚动」还是「自己占满、内部自理」：
+        // 详情 / 历史 / 单元格 / 构建器都是前一种（内容有多长就多长，超出由外层滚）；
+        // AI 助手是后一种（对话区自己滚、输入区钉在底部），套进外层滚动会被滚走。
+        let dock_shell = move |body: AnyElement, scroll: bool| {
             v_flex()
                 .id("db-right-sidebar")
                 .size_full()
                 .min_h_0()
+                .min_w_0()
                 .child(self.render_right_dock_tabs(cx))
                 .child(
                     div()
                         .id("db-right-sidebar-body")
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scroll()
+                        .min_w_0()
+                        .when(scroll, |el| el.overflow_y_scroll())
                         .px(body_px)
                         .py(body_py)
                         .child(body),
                 )
                 .into_any_element()
         };
+        let dock_body = |body: AnyElement| dock_shell(body, true);
 
+        // AI 助手：不套滚动壳（见上），且与会话**无关** —— 还没连库时也该能打开它，
+        // 看到欢迎语与「去哪配置厂商」那条提示。
+        if self.right_dock == RightDock::Ai {
+            return dock_shell(self.render_ai_dock(cx), false);
+        }
         if self.right_dock == RightDock::History {
             return dock_body(self.render_history_dock(cx));
         }
@@ -47,6 +58,11 @@ impl DatabasePage {
         // 早返回分流，否则「网格里刚点过 ⓘ、连接断了一下」详情就跟着消失。
         if self.right_dock == RightDock::Cell {
             return dock_body(self.render_cell_detail_dock(cx));
+        }
+        // 构建器同样**不依赖会话分支**：右栏停在构建器上时连接断了，已经拼了一半的
+        // 条件不该跟着消失（构建器自己会说明「先选一张目标表」/ 列清单取不到）。
+        if self.right_dock == RightDock::Builder {
+            return dock_body(self.render_builder_dock(cx));
         }
 
         let Some(session) = self.active_session() else {
@@ -72,7 +88,7 @@ impl DatabasePage {
         // 左栏对象树是空的（还没有任何命名空间被选中），而这个**唯一能选出库的入口
         // 也一起消失了** —— 界面表现就是「连接成功了，但什么都看不到」。
         // 单库时它至少充当「你现在在哪个库里」的显式读数，不是噪音。
-        let schema_picker = self.namespace_picker("db-schema-picker", cx);
+        let schema_picker = self.namespace_picker(&self.dock_schema_select, cx);
 
         // ── 结构管理入口：新建表 ──
         //
@@ -197,9 +213,11 @@ impl DatabasePage {
                         .then(|| self.table_ddl.clone())
                         .flatten()
                         .map(|ddl| {
-                            // 「在编辑器中修改」= 把当前定义送进编辑器当起点（改完由用户
-                            // 自己按执行）。视图 / 无 DDL 的引擎不会有这张卡，无需额外判据。
-                            let stage_ddl = ddl.clone();
+                            // 「修改表结构」= 新开**结构标签**（dbx 的图形化字段网格
+                            // 对位）：改名 / 改类型 / 增删列都在网格上完成，SQL 预览
+                            // 实时生成、确认后执行 —— 把 DDL 送进编辑器只是它的
+                            // 兜底（标签里随时可以「复制 SQL」拿走全文）。
+                            let target = self.selected_table.clone();
                             let view = view.clone();
                             v_flex()
                                 .w_full()
@@ -213,27 +231,29 @@ impl DatabasePage {
                                         .child(
                                             button(
                                                 "db-edit-ddl",
-                                                tr(cx, "在编辑器中修改"),
+                                                tr(cx, "修改表结构"),
                                                 ButtonVariant::Ghost,
                                                 cx,
                                             )
                                             .on_click(
-                                                move |_, window, cx| {
-                                                    let Some(entity) = view.upgrade() else {
-                                                        return;
-                                                    };
-                                                    entity.update(cx, |this, cx| {
-                                                        this.stage_sql(
-                                                            stage_ddl.clone(),
-                                                            tr(
-                                                                cx,
-                                                                "已把当前 DDL 放进编辑器，改好后执行。",
-                                                            )
-                                                            .into(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    });
+                                                {
+                                                    move |_, window, cx| {
+                                                        let Some(entity) = view.upgrade() else {
+                                                            return;
+                                                        };
+                                                        let Some(target) = target.clone() else {
+                                                            return;
+                                                        };
+                                                        entity.update(cx, |this, cx| {
+                                                            let Some(conn_id) = this.active.clone()
+                                                            else {
+                                                                return;
+                                                            };
+                                                            this.open_structure_tab(
+                                                                &conn_id, target, false, window, cx,
+                                                            );
+                                                        });
+                                                    }
                                                 },
                                             ),
                                         ),

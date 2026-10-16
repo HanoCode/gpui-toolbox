@@ -164,8 +164,9 @@ use duck_components::{
     caption_heading,
     content::{description_list, description_row, empty_state, neutral_tag},
     dialog_top_offset, field_hint, field_label, form_field, form_gap, form_row, icon_button,
-    meta_text, modal_drag, modal_drag_area, modal_offset, modal_title_row, notify, segmented_tabs,
-    sidebar_navigation_button, switch_control, toolbar_action_button, toolbar_text_dropdown_button,
+    icon_text_button, meta_text, modal_drag, modal_drag_area, modal_offset, modal_title_row,
+    notify, segmented_tabs, sidebar_navigation_button, switch_control, toolbar_action_button,
+    toolbar_dropdown_button, toolbar_text_dropdown_button,
 };
 use duck_redis::capability::{AccessMode, Capability, DenyReason, Gate};
 use duck_redis::config::{
@@ -176,26 +177,27 @@ use duck_redis::decode::{DecodeKind, Message as DecodeMessage, decode as redis_d
 use duck_redis::scan::{ScanPage, TreeNode};
 use duck_redis::value::KeyType;
 use duck_redis::{
-    AclProbe, ClientInfo, ConfigEntry, ConfirmKind, DbKeyStats, JsonTreeNode, JsonTreeRow, KeyMeta,
-    KeyObjectInfo, KeySort, KeyTags, MemoryOverview, MonitorSession, QueryMode, RedisConnection,
-    RedisError, RedisValue, ScanPlan, ServerFeatures, SlowlogEntry, Sortable, StatusOverview,
-    TagColor, TagFilter, TagStore, TrashEntry, TrashMeta, TrashStore, TtlFilter, WRITE_UNLOCK_SECS,
-    build_tree_sorted, confirm_kind, default_expanded, flatten, format_ttl_chip, is_destructive,
-    now_millis, parse_info_sections, payload_fits, scan_plan, should_auto_expand, should_stash,
-    stamp_folder_tags, toggle_path, tree_of, ttl_chip_kind,
+    AclProbe, ClientInfo, ConfigEntry, ConfirmKind, DbKeyStats, JsonPathHit, JsonTreeNode,
+    JsonTreeRow, KeyMeta, KeyObjectInfo, KeySort, KeyTags, MemoryOverview, MonitorSession,
+    QueryMode, RedisConnection, RedisError, RedisValue, ScanPlan, ServerFeatures, SlowlogEntry,
+    Sortable, StatusOverview, TagColor, TagFilter, TagStore, TrashEntry, TrashMeta, TrashStore,
+    TtlFilter, WRITE_UNLOCK_SECS, build_tree_sorted, confirm_kind, default_expanded, flatten,
+    format_ttl_chip, is_destructive, jsonpath_run, now_millis, parse_document, parse_info_sections,
+    payload_fits, scan_plan, should_auto_expand, should_stash, stamp_folder_tags, toggle_path,
+    tree_of, ttl_chip_kind,
 };
 use duck_theme::{UnderMinute, active_theme, tf, tr, tr_relative_time, trf};
 use gpui::{
     Anchor, AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, InteractiveElement as _,
-    IntoElement, ParentElement, Render, Role, ScrollHandle, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled, Subscription, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, uniform_list,
+    IntoElement, ParentElement, Render, Role, ScrollHandle, ScrollStrategy, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled, Subscription, Task, UniformListScrollHandle,
+    WeakEntity, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use gpui_component::{
     Icon, ResizableState, WindowExt as _,
     dialog::{DialogButtonProps, DialogFooter},
     h_flex, h_resizable,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     menu::PopupMenuItem,
     resizable_panel, v_flex,
 };
@@ -244,21 +246,34 @@ const TREE_TAG_BAR_WIDTH: f32 = 3.;
 ///
 /// 16px：七个小方块（「无」+ 六档）连间隙正好铺满右栏宽度；再大就换行了。
 const TAG_SWATCH: f32 = 16.;
-/// 左栏宽度档位（与 `db.rs` 保持一致，两页切换时侧栏不跳宽）。
-const SIDEBAR_WIDTH_RANGE: RangeInclusive<f32> = 184.0..=340.0;
-const SIDEBAR_DEFAULT_WIDTH: f32 = 236.;
+/// 左栏宽度档位：默认宽收窄对齐 zedis 的 `SIDEBAR_WIDTH`（180px），
+/// 连接树是「导航」，不该吃掉键浏览的宽度。
+const SIDEBAR_WIDTH_RANGE: RangeInclusive<f32> = 150.0..=280.0;
+const SIDEBAR_DEFAULT_WIDTH: f32 = 180.;
 /// 键列表行高：与 `typography.sm` 的 18px 行高同源。
 const KEY_ROW_HEIGHT: f32 = 24.;
+/// 值区各工具条（键头部 / JSONPath 栏）的高度：对齐 zedis 的
+/// `EDITOR_KEY_BAR_HEIGHT`（40px）——键树工具条、键头部、侧栏标题行三者同高同线。
+const VALUE_BAR_HEIGHT: f32 = 40.;
 /// JSON 树的行高：比键行略矮（树里一行只有「名字 + 值」，没有徽标）。
 const JSON_TREE_ROW_HEIGHT: f32 = 22.;
 /// 主区右侧值面板的宽度档位（可拖拽）。
 ///
 /// 下限 320：再窄就连一个 JSON 值的标量预览都放不下（`JSON_TREE_PREVIEW_CHARS`
-/// 是 80 个字符）。上限 760：超过这个宽度，键树会被挤成一条竖线，
-/// 而值本身早就能在面板里横向滚动了。
-const VALUE_PANE_RANGE: RangeInclusive<f32> = 320.0..=760.0;
-/// 值面板出厂宽度：JSON 的默认展开两档正好一屏、又给键树留出大半。
-const VALUE_PANE_DEFAULT: f32 = 460.;
+/// 是 80 个字符）。上限 1000：zedis 的值区是主区的大头，键树才是窄的那一栏。
+const VALUE_PANE_RANGE: RangeInclusive<f32> = 320.0..=1000.0;
+/// 值面板出厂宽度：对齐 zedis 的比例（键树窄栏，值区占大半）。
+const VALUE_PANE_DEFAULT: f32 = 640.;
+/// 主区**左侧键列表**的宽度档位（zedis `KEY_TREE_MIN_WIDTH` / `KEY_TREE_MAX_WIDTH`）。
+///
+/// 出厂宽度取**下限**（2026-10-15 用户反馈「太宽」；zedis 同样是初始 = min 330），
+/// 拖动之后由 `value_pane` 记住用户的宽度。
+const KEY_LIST_MIN_WIDTH: f32 = 330.;
+const KEY_LIST_MAX_WIDTH: f32 = 800.;
+/// 软换行的体量上限（zedis `SOFT_WRAP_MAX_BYTES` 同款 512 KB）：
+/// 超过的值即使开关开着也不换行（几十万行换行排版会把一帧拖成幻灯片），
+/// 底栏的软换行按钮同时灰显并在提示里说明。
+const SOFT_WRAP_MAX_BYTES: usize = 512_000;
 /// 树里**类型徽标列**的固定宽度（zedis `TYPE_BADGE_COL_WIDTH`）：
 /// 定宽才能让不同长度的徽标（`SET` / `LIST` / `ZSET`）后面的键名对齐。
 const TREE_TYPE_COL_WIDTH: f32 = 36.;
@@ -419,7 +434,6 @@ enum ValueView {
     Text {
         rendered: String,
         notice: Option<String>,
-        bytes: usize,
     },
     /// 二进制形态（hex 预览）。
     Binary { hex: String, bytes: usize },
@@ -695,8 +709,14 @@ pub struct RedisPage {
     search: Entity<InputState>,
     /// 键名过滤（`SCAN MATCH` 的模式串）。
     pattern: Entity<InputState>,
-    /// 字符串值编辑缓冲。
-    edit_buffer: Entity<InputState>,
+    /// 字符串值内容区（zedis 同款代码编辑器：行号 / 软换行 / 语法高亮，
+    /// 只读态仍可选中复制）。随详情加载回填，用户在**编辑器里直接改**——
+    /// 改动会被 `value_modified` 记下，头部出现「保存值」。
+    value_editor: Entity<EditorState>,
+    /// 编辑器内容相对当前详情有没有被用户改过（决定「保存值」是否出现）。
+    value_modified: bool,
+    /// 值内容区的软换行开关（底栏可切；zedis 缺省开，超限自动禁用）。
+    soft_wrap: bool,
     /// 字符串值的解码档位（文本 / JSON / Hex）。
     decode: DecodeKind,
     /// 值面板的呈现档位（文本 / 树）。
@@ -841,6 +861,27 @@ pub struct RedisPage {
     /// ⚠️ 它**跟着选中的键走**（换键要回填），所以是唯一一个「内容由状态驱动」
     /// 的输入框；写回时先跟本地标注比一次，避免回填动作被当成用户输入。
     note_input: Entity<InputState>,
+
+    // ── JSONPath 栏（P3-redis，2026-10-15）───────────────────────────────
+    /// JSONPath 查询输入框（回车即求值，与「运行」按钮同一入口）。
+    jsonpath_input: Entity<InputState>,
+    /// 最近一次求值的命中（`Arc`：渲染期只读，与 `json_rows` 同一纪律）。
+    ///
+    /// 换键 / 换解码档即作废——命中是对「当时那份文档」的定位，文档变了
+    /// 路径就可能指到别的东西上，宁可清空也不显示错位的命中。
+    jsonpath_hits: Arc<Vec<JsonPathHit>>,
+    /// 求值错误（查询语法 / 当前值不是 JSON / 没选中键）。
+    jsonpath_error: Option<String>,
+    /// JSONPath 命中点击后在树档里**高亮的那一行**（存路径，即行身份）。
+    ///
+    /// 与命中同生死：换键 / 换解码档 / 重新求值都会清掉——命中作废时高亮
+    /// 没有理由继续挂着。
+    jsonpath_selected: Option<String>,
+    /// JSON 树档的滚动句柄（命中点击时 [`UniformListScrollHandle::scroll_to_item`] 用）。
+    ///
+    /// ⚠️ 每帧都要 `.track_scroll(&handle)` 挂回 `uniform_list`：句柄是**共享状态**，
+    /// 挂接动作本身不持有它。
+    json_tree_scroll: UniformListScrollHandle,
 
     // ── 服务端观测（M1.4） ──────────────────────────────────────────────
     /// 连接内主视图（数据 / 服务端）。
@@ -1262,7 +1303,6 @@ impl RedisPage {
             cx,
             tr(cx, "输入键名关键字，回车搜索（留空表示全部）"),
         );
-        let edit_buffer = text_input(window, cx, tr(cx, "字符串值"));
         let hash_field = text_input(window, cx, tr(cx, "字段名"));
         let hash_value = text_input(window, cx, tr(cx, "字段值"));
         let list_value = text_input(window, cx, tr(cx, "元素值"));
@@ -1278,6 +1318,15 @@ impl RedisPage {
         let cli_input = text_input(window, cx, tr(cx, "输入命令，如 INFO server"));
         // 备注框与上面那一排**不同**：它的内容跟着选中的键走（换键回填）。
         let note_input = text_input(window, cx, tr(cx, "给这个键写点备注，自动保存"));
+        let jsonpath_input = text_input(window, cx, tr(cx, "如 $.store.book[*].title，回车执行"));
+        // 值内容区编辑器（zedis 同款）：行号 + 软换行（缺省开）+ 语言高亮。
+        // 具体语言（json / text）在详情加载回填时按解码档同步。
+        let value_editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("text")
+                .line_number(true)
+                .soft_wrap(true)
+        });
 
         // 搜索 / 过滤框内容变化都要重绘（列表按它们过滤）。
         let mut subscriptions = Vec::new();
@@ -1353,11 +1402,59 @@ impl RedisPage {
             },
         ));
 
+        // JSONPath 输入框：回车即求值（与「运行」按钮同一入口，见 `run_jsonpath`）。
+        subscriptions.push(cx.subscribe(
+            &jsonpath_input,
+            |_this: &mut Self,
+             _source: Entity<InputState>,
+             event: &InputEvent,
+             cx: &mut Context<Self>| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    cx.entity().update(cx, |this, cx| this.run_jsonpath(cx));
+                }
+            },
+        ));
+
+        // 值编辑器的「用户改过没有」判定（zedis bytes_editor 同款）：
+        // `Change` 不分程序回填与用户敲键——**每次都跟当前详情比对**，相同即视为
+        // 回填（加载详情、保存成功后的重填都走这里），不同才是用户真改了。
+        subscriptions.push(cx.subscribe(
+            &value_editor,
+            |this: &mut Self,
+             _source: Entity<EditorState>,
+             event: &InputEvent,
+             cx: &mut Context<Self>| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                let modified = match this
+                    .detail
+                    .as_ref()
+                    .map(|detail| match &detail.view {
+                        ValueView::Text { rendered, .. } => {
+                            Some(rendered.as_str() != this.value_editor.read(cx).value().as_ref())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(None)
+                {
+                    Some(modified) => modified,
+                    None => false,
+                };
+                if this.value_modified != modified {
+                    this.value_modified = modified;
+                    cx.notify();
+                }
+            },
+        ));
+
         Self {
             sidebar,
             search,
             pattern,
-            edit_buffer,
+            value_editor,
+            value_modified: false,
+            soft_wrap: true,
             decode: DecodeKind::default(),
             value_view: ValueViewMode::default(),
             json_key: None,
@@ -1395,13 +1492,18 @@ impl RedisPage {
             busy: false,
             limit_announced: false,
             key_meta: HashMap::new(),
-            tree_mode: false,
+            tree_mode: true,
             tree_overrides: HashMap::new(),
             tree_rows: Vec::new(),
             tags: Self::load_tags(cx),
             tag_filter: TagFilter::default(),
             trash: Self::load_trash(cx),
             note_input,
+            jsonpath_input,
+            jsonpath_hits: Arc::new(Vec::new()),
+            jsonpath_error: None,
+            jsonpath_selected: None,
+            json_tree_scroll: UniformListScrollHandle::new(),
             main_view: MainView::Data,
             panel: ServerPanel::Info,
             panel_data: PanelData::default(),
@@ -1688,8 +1790,8 @@ mod tests {
         assert_eq!(folder.key_type, None, "文件夹没有类型徽标");
     }
 
-    /// 默认展开：阈值 0 = 只看顶层；阈值 100（zedis 缺省）铺开小命名空间；
-    /// 用户显式切过的节点**优先于阈值**。
+    /// 默认展开：阈值 0 = 只看顶层（**也是缺省**，2026-10-15 用户定夺全折叠）；
+    /// 阈值 100（zedis 缺省）铺开小命名空间；用户显式切过的节点**优先于阈值**。
     #[test]
     fn expansion_follows_threshold_then_overrides() {
         let meta = HashMap::new();
@@ -1698,10 +1800,10 @@ mod tests {
         assert_eq!(folded.len(), 2, "阈值 0 只出顶层两行");
         assert!(folded.iter().all(|row| row.depth == 0));
 
-        let opened = flatten(&fixture(), &meta, AUTO_EXPAND_DEFAULT);
+        let opened = flatten(&fixture(), &meta, 100);
         assert!(
             opened.iter().any(|row| row.label == "1"),
-            "缺省 100 时 user 的子树应展开"
+            "阈值 100 时 user 的子树应展开"
         );
 
         // 覆盖表优先：显式收起后，阈值再大也不展开。
@@ -1715,7 +1817,7 @@ mod tests {
             &TreeShape {
                 separator: ":",
                 overrides: &overrides,
-                auto_expand: AUTO_EXPAND_DEFAULT,
+                auto_expand: 100,
                 meta: &meta,
                 tags: &KeyTags::empty(),
             },

@@ -488,6 +488,7 @@ mod tests {
             .map(|name| Column {
                 name: (*name).to_owned(),
                 type_name: "text".to_owned(),
+                comment: String::new(),
             })
             .collect()
     }

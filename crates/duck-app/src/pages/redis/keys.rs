@@ -420,16 +420,20 @@ impl RedisPage {
             },
             move |this, result, window, cx| match result {
                 Ok((key_type, ttl, object, value)) => {
-                    let decode = this.decode;
+                    // 解码档随详情**重置**（zedis 的 `ViewMode::Auto` 语义：每次
+                    // 加载都回 Auto）：字符串值解析为 JSON 就用 JSON 档（美化 +
+                    // tree-sitter 高亮），否则文本档。用户在解码下拉里选的档位
+                    // 活到下一次加载为止。
+                    let decode = match (&value, key_type) {
+                        (RedisValue::String(bytes), KeyType::String) => auto_decode(bytes),
+                        _ => this.decode,
+                    };
+                    this.decode = decode;
                     let detail = build_detail(detail_key, key_type, ttl, object, value, decode, cx);
-                    // 字符串值顺手填进编辑框：选中即能改，少一步复制粘贴。
-                    if let ValueView::Text { rendered, .. } = &detail.view {
-                        this.edit_buffer.update(cx, |input, cx| {
-                            input.set_value(rendered.clone(), window, cx);
-                        });
-                    }
                     let key_name = detail.key.clone();
                     this.detail = Some(detail);
+                    // 内容编辑器回填新值 + 按解码档切高亮语言（JSON 档着色）。
+                    this.sync_value_editor(window, cx);
                     // 树档的展开状态：换键按默认档重来，同一个键（写完刷新）保留。
                     this.adopt_json_tree(&key_name);
                     // 备注框跟着选中的键走：把本地标注里的那条填进去。
@@ -872,16 +876,34 @@ impl RedisPage {
     ///
     /// 只用已缓存的原始字节重算，**不重发 `GET`**——切档是纯展示行为，
     /// 让它产生网络流量既慢又可能与服务端内容产生时间差。
-    pub(super) fn switch_decode(&mut self, mode: DecodeKind, cx: &mut Context<Self>) {
+    pub(super) fn switch_decode(
+        &mut self,
+        mode: DecodeKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.decode == mode {
             return;
         }
         self.decode = mode;
+        // 解码档换了，展示的文档就是另一份——JSONPath 的命中全部作废
+        // （同 `adopt_json_tree` 的口径：文档变了宁可清空）。
+        self.jsonpath_hits = Arc::new(Vec::new());
+        self.jsonpath_error = None;
+        self.jsonpath_selected = None;
         if let Some(detail) = &mut self.detail
             && detail.key_type == KeyType::String
         {
             detail.view = decode_view(&detail.raw, mode, cx);
+            // 树档跟着档位走：非 JSON 档没有树，换键口径在此同样适用。
+            detail.tree = match (&detail.view, mode) {
+                (ValueView::Text { rendered, .. }, DecodeKind::Json) => tree_of(rendered),
+                _ => None,
+            };
         }
+        // 内容编辑器同步回填 + 切高亮语言（JSON 档 → tree-sitter 着色）。
+        self.sync_value_editor(window, cx);
+        self.sync_json_rows();
         cx.notify();
     }
 

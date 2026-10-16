@@ -86,7 +86,7 @@ use crate::cancel::CancelHandle;
 use crate::config::{ConnectionConfig, TlsMode};
 use crate::drivers::{
     BatchOutcome, CatalogTable, CellEdit, FilterOp, InsertRow, OrderBy, PkValues, RowCount,
-    TableFilter, TableIndex, TableKind, TableRef, url_encode,
+    TableColumnMeta, TableFilter, TableIndex, TableKind, TableRef, url_encode,
 };
 use crate::error::DbError;
 use crate::result::{Column, ExecOutcome, ResultSet, Value};
@@ -576,6 +576,16 @@ impl ElasticsearchConnection {
         let path = format!("/{}/_mapping", url_encode(&index_of(table)?));
         let value = self.endpoint.request("GET", &path, None, None)?.json()?;
         Ok(columns_with_id(&flatten_mappings(&value)))
+    }
+
+    /// 一个索引的列级元数据：列来自 mapping，没有可空 / 默认值 / 注释 / 字符集概念，
+    /// 五个属性槽位全空——调用方有啥画啥。
+    pub fn table_column_meta(&mut self, table: &TableRef) -> Result<Vec<TableColumnMeta>, DbError> {
+        Ok(self
+            .table_columns(table)?
+            .into_iter()
+            .map(TableColumnMeta::from_column)
+            .collect())
     }
 
     /// 一页文档。
@@ -1077,6 +1087,7 @@ fn columns_with_id(columns: &[Column]) -> Vec<Column> {
     all.push(Column {
         name: ID_COLUMN.to_owned(),
         type_name: ID_TYPE.to_owned(),
+        comment: String::new(),
     });
     all.extend_from_slice(columns);
     all
@@ -1100,7 +1111,11 @@ fn flatten_mappings(value: &Json) -> Vec<Column> {
     }
     found
         .into_iter()
-        .map(|(name, type_name)| Column { name, type_name })
+        .map(|(name, type_name)| Column {
+            name,
+            type_name,
+            comment: String::new(),
+        })
         .collect()
 }
 
@@ -1551,6 +1566,7 @@ fn outcome_of(value: &Json, max_rows: usize) -> Result<(u64, Option<ResultSet>),
                 columns: vec![Column {
                     name: "value".to_owned(),
                     type_name: String::new(),
+                    comment: String::new(),
                 }],
                 rows: vec![vec![map_json(other, "")]],
                 truncated: false,
@@ -1579,6 +1595,7 @@ fn rows_of_array(items: &[Json], max_rows: usize) -> ResultSet {
                             columns.push(Column {
                                 name: name.clone(),
                                 type_name: String::new(),
+                                comment: String::new(),
                             });
                             columns.len() - 1
                         }
@@ -1594,6 +1611,7 @@ fn rows_of_array(items: &[Json], max_rows: usize) -> ResultSet {
                     columns.push(Column {
                         name: "value".to_owned(),
                         type_name: String::new(),
+                        comment: String::new(),
                     });
                 }
                 row = vec![map_json(other, "")];
@@ -1615,6 +1633,7 @@ fn rows_of_hits(hits: &[Json], max_rows: usize) -> (Vec<Column>, Vec<Vec<Value>>
     let mut columns = vec![Column {
         name: ID_COLUMN.to_owned(),
         type_name: ID_TYPE.to_owned(),
+        comment: String::new(),
     }];
     let mut rows: Vec<Vec<Value>> = Vec::with_capacity(hits.len().min(max_rows));
     let mut truncated = false;
@@ -1637,6 +1656,7 @@ fn rows_of_hits(hits: &[Json], max_rows: usize) -> (Vec<Column>, Vec<Vec<Value>>
                         columns.push(Column {
                             name: name.clone(),
                             type_name: String::new(),
+                            comment: String::new(),
                         });
                         columns.len() - 1
                     }
@@ -1673,6 +1693,7 @@ fn single_row(value: &Json) -> ResultSet {
         .map(|name| Column {
             name: name.clone(),
             type_name: String::new(),
+            comment: String::new(),
         })
         .collect();
     let row: Vec<Value> = map.values().map(|cell| map_json(cell, "")).collect();
@@ -1920,6 +1941,7 @@ mod tests {
         let columns = columns_with_id(&[Column {
             name: "title".to_owned(),
             type_name: "text".to_owned(),
+            comment: String::new(),
         }]);
         assert_eq!(columns[0].name, "_id");
         assert_eq!(columns[1].name, "title");
@@ -1998,18 +2020,22 @@ mod tests {
             Column {
                 name: "_id".to_owned(),
                 type_name: ID_TYPE.to_owned(),
+                comment: String::new(),
             },
             Column {
                 name: "title".to_owned(),
                 type_name: "text".to_owned(),
+                comment: String::new(),
             },
             Column {
                 name: "ts".to_owned(),
                 type_name: "date".to_owned(),
+                comment: String::new(),
             },
             Column {
                 name: "tag".to_owned(),
                 type_name: "keyword".to_owned(),
+                comment: String::new(),
             },
         ];
         // 调用方给的 order_by 恰好是主键（`_id`）→ 全被挡下 → 退回 `_doc`。
@@ -2431,10 +2457,12 @@ mod tests {
             Column {
                 name: "title".to_owned(),
                 type_name: "text".to_owned(),
+                comment: String::new(),
             },
             Column {
                 name: "ts".to_owned(),
                 type_name: "date".to_owned(),
+                comment: String::new(),
             },
         ]);
         // 三道命中、limit=2：探测到还有下一页。
