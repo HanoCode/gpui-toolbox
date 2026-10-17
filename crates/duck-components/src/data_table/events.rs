@@ -30,6 +30,48 @@ impl CellPos {
     }
 }
 
+/// 单元格矩形选区：锚点（起选那一格）→ 焦点（现在拖到哪一格）。
+///
+/// 存**模型行下标**（与 `CellPos` 同口径），不是展示位置：排序 / 搜索只改展示
+/// 顺序，选区跟着行走 —— 用户选的是「这几行数据」，不是「第 3 到第 5 个格子」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellRange {
+    pub anchor: CellPos,
+    pub focus: CellPos,
+}
+
+impl CellRange {
+    #[must_use]
+    pub const fn new(anchor: CellPos, focus: CellPos) -> Self {
+        Self { anchor, focus }
+    }
+
+    /// 规整成 `(行起, 行止, 列起, 列止)`（含两端）。
+    #[must_use]
+    pub fn bounds(&self) -> (usize, usize, usize, usize) {
+        (
+            self.anchor.row.min(self.focus.row),
+            self.anchor.row.max(self.focus.row),
+            self.anchor.col.min(self.focus.col),
+            self.anchor.col.max(self.focus.col),
+        )
+    }
+
+    #[must_use]
+    pub fn contains(&self, position: CellPos) -> bool {
+        let (row_start, row_end, col_start, col_end) = self.bounds();
+        (row_start..=row_end).contains(&position.row)
+            && (col_start..=col_end).contains(&position.col)
+    }
+
+    /// 选中的格子数（含两端）。
+    #[must_use]
+    pub fn cell_count(&self) -> usize {
+        let (row_start, row_end, col_start, col_end) = self.bounds();
+        (row_end - row_start + 1).saturating_mul(col_end - col_start + 1)
+    }
+}
+
 /// 组件 → 宿主的事件。
 #[derive(Debug, Clone)]
 pub enum DataTableEvent {
@@ -37,14 +79,23 @@ pub enum DataTableEvent {
     RowSelected { row: usize },
     /// 点了某个单元格（宿主用它更新「单元格详情」指向）。
     CellSelected(CellPos),
+    /// 在某格按下鼠标：宿主把选区锚点设到这一格（并清掉旧选区）。
+    SelectionStarted(CellPos),
+    /// 拖动中进入了某一格：宿主把选区焦点更新到这一格（矩形扩展）。
+    SelectionExtended(CellPos),
     /// 某一行勾选框变化（`checked` 是**目标态**，不是「现在的态」）。
     RowCheckedToggled { row: usize, checked: bool },
     /// 表头全选框变化（目标态）。
     AllCheckedToggled { checked: bool },
     /// 点列头排序（宿主决定「升 / 降 / 取消」三态怎么轮转，排序在服务器侧做）。
-    SortRequested { column: Arc<str> },
+    ///
+    /// `additive` = 点的时候按着 `Shift`：语义是**追加一级排序**，不是替换现有排序
+    /// （多列排序的通用手势，表格软件与 DBX 一致）。
+    SortRequested { column: Arc<str>, additive: bool },
     /// 列宽定稿（拖拽收尾；组件自己已经用上，宿主可用它落盘）。
     ColumnResized { col: usize, width: f32 },
+    /// 拖列头改了列序（组件已改好；宿主可用它落盘）。
+    ColumnOrderChanged,
     /// 点了就地编辑格里的 ✓：宿主按自己的编辑记录提交（文本真源在宿主那 side
     /// 的 `InputState` 上，组件只报「该提交了」）。
     CellEditSubmitRequested(CellPos),

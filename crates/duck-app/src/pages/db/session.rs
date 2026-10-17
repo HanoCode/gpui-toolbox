@@ -825,6 +825,11 @@ impl DatabasePage {
         let tab = self.next_tab_id();
         self.tab_conn.insert(tab.clone(), conn_id.to_owned());
         self.tab_kind.insert(tab.clone(), kind);
+        // 新标签的基线 = 空文本（dbx 的 `originalSql` 同款）：之后写过字就算
+        // 「未保存」；载入 / 保存时再更新基线。防御性摘掉旧链接（id 不复用，
+        // 理论上不会有残留）。
+        self.tab_original_sql.insert(tab.clone(), String::new());
+        self.tab_saved_link.remove(&tab);
         let at = self
             .tabs
             .iter()
@@ -832,8 +837,242 @@ impl DatabasePage {
             .map_or(self.tabs.len(), |at| at + 1);
         self.tabs.insert(at, tab.clone());
         self.active_tab = Some(tab.clone());
+        self.note_tab_active(&tab);
         self.active = Some(conn_id.to_owned());
         self.install_editor_state(SessionEditorState::default(), window, cx);
+    }
+
+    /// 把一张标签记成「刚刚活跃」（MRU 队首）；已在历史里就先摘出来再放回。
+    ///
+    /// ⚠️ [`Self::spawn_tab_for`] 直接赋 `active_tab` 不经 [`Self::activate`]，所以
+    /// 新标签的记账也要走这里 —— 漏了的话「关掉刚开的标签」会跳到更早的历史位。
+    fn note_tab_active(&mut self, id: &str) {
+        self.tab_mru.retain(|tab| tab != id);
+        self.tab_mru.insert(0, id.to_owned());
+    }
+
+    /// 关掉 `closed` 之后该激活哪张标签：**活跃历史**里最近的那张还活着的；
+    /// 历史空了（用户从没切过标签）回落到标签条上的第一张 —— 与旧行为一致。
+    fn next_tab_after_close(&self, closed: &[String]) -> Option<String> {
+        self.tab_mru
+            .iter()
+            .find(|tab| !closed.contains(tab) && self.tabs.contains(tab))
+            .cloned()
+            .or_else(|| self.tabs.first().cloned())
+    }
+
+    /// 把历史里的死标签摘掉（关闭 / 断开连接后调，防止历史越长越脏）。
+    fn prune_tab_mru(&mut self, closed: &[String]) {
+        self.tab_mru.retain(|tab| !closed.contains(tab));
+    }
+
+    /// 一张标签编辑器里的**当前文本**：活动标签读编辑器实体（快照位里还是旧的），
+    /// 其余读快照位（切走那一刻的现场）。
+    fn tab_sql_text(&self, id: &str, cx: &App) -> String {
+        if self.active_tab.as_deref() == Some(id) {
+            self.sql.read(cx).value().to_string()
+        } else {
+            self.sessions_views
+                .get(id)
+                .map(|state| state.text.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    /// 一张查询标签有没有**未保存的更改**（dbx 的 `isTabDirty` 同口径）：只有查询
+    /// 标签参与判定（数据 / 结构 / 实例等标签没有「未保存」的概念）；文本非空、
+    /// 且与基线（[`Self::tab_original_sql`]）不同才算脏 —— 空文本不问，原样未动
+    /// 也不问。
+    fn tab_is_dirty(&self, id: &str, cx: &App) -> bool {
+        if self.tab_kind.get(id) != Some(&TabKind::Query) {
+            return false;
+        }
+        let text = self.tab_sql_text(id, cx);
+        sql_is_dirty(&text, self.tab_original_sql.get(id).map(String::as_str))
+    }
+
+    /// **静默**保存一张查询标签的 SQL（dbx `saveTabForCloseAll` 的单标签版，不弹
+    /// 命名框）：从 SQL 库载入过的写回**原条目**（文件名不变），没载入过的按默认
+    /// 名新建一条（与「保存到 SQL 库」同口径的默认名：选中表优先，否则 SQL 首行）。
+    /// 保存成功后基线更新为当前文本 —— 这张标签从此不脏。
+    fn save_tab_sql(&mut self, id: &str, cx: &mut Context<Self>) {
+        let text = self.tab_sql_text(id, cx);
+        if text.trim().is_empty() {
+            return;
+        }
+        // 已关联的条目：记住它的文件名，正文写回去（dbx 的 `existing?.name` 同款）。
+        let mut linked: Option<String> = self.tab_saved_link.get(id).cloned();
+        // 链接指向的条目已被删（左栏删了它，标签还链着）：当作没关联，下面按新
+        // 条目走。判定并成一条谓词 —— 嵌套 `if let` 会被 clippy 提「可合并」，而
+        // `if x && let Some(..)` 要 1.88 的 let-chains（本仓 MSRV 1.85）。
+        let link_alive = linked
+            .as_ref()
+            .is_some_and(|link| self.saved_queries.iter().any(|saved| saved.id == *link));
+        if !link_alive {
+            linked = None;
+        }
+        let name = if let Some(link) = linked {
+            // 上一段刚确认过条目还在；真不在（理论上不可达）就放弃保存。
+            let Some(saved) = self.saved_queries.iter_mut().find(|saved| saved.id == link) else {
+                return;
+            };
+            saved.sql = text.clone();
+            saved.name.clone()
+        } else {
+            // 默认名用**当前**选中表（与「保存到 SQL 库」同口径）；不是当前
+            // 标签时拿不到选中表，自然退回 SQL 首行 —— 可以接受。
+            let table = (self.active_tab.as_deref() == Some(id))
+                .then(|| self.selected_table.clone())
+                .flatten();
+            let name = default_sql_file_name(table.as_ref(), &text);
+            let new_id = SavedQuery::next_id(&self.saved_queries);
+            self.saved_queries.push(SavedQuery {
+                id: new_id.clone(),
+                name: name.clone(),
+                folder: None,
+                sql: text.clone(),
+            });
+            self.tab_saved_link.insert(id.to_owned(), new_id);
+            name
+        };
+        self.tab_original_sql.insert(id.to_owned(), text);
+        self.persist_saved_queries(cx);
+        self.status = trf(cx, "已保存到 SQL 库「{}」。", &[&name]).into();
+    }
+
+    /// 「未保存的更改」确认弹窗（dbx AppTabBar 的 closeConfirm 对位）：琥珀警告
+    /// 图标 + 一句话 + 右下「取消 / 不保存 / 保存」三颗按钮（dbx 同序：保存是
+    /// 默认主键，⏎ 等价于点它）。三个答案共用 [`Self::pending_close_tabs`]：
+    /// 取消 = 原样留着；不保存 = 逐张硬关；保存 = 逐张静默存（脏的才存）再关。
+    ///
+    /// 关闭可能顺带断连接（每连接最后一张标签），所以**先存完再关**，不能边存边关。
+    fn open_unsaved_changes_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dirty_count = self
+            .pending_close_tabs
+            .iter()
+            .filter(|id| self.tab_is_dirty(id, cx))
+            .count();
+        let title: SharedString = tr(cx, "未保存的更改").into();
+        let message: SharedString = if dirty_count == 1 {
+            let name = self
+                .pending_close_tabs
+                .iter()
+                .find(|id| self.tab_is_dirty(id, cx))
+                .and_then(|id| self.tab_base_title(id, cx))
+                .unwrap_or_default();
+            trf(
+                cx,
+                "「{}」有未保存的更改，关闭后将丢失。是否保存后再关闭？",
+                &[&name],
+            )
+            .into()
+        } else {
+            let count = dirty_count.to_string();
+            trf(
+                cx,
+                "{} 张标签有未保存的更改，关闭后将丢失。是否全部保存后再关闭？",
+                &[&count],
+            )
+            .into()
+        };
+        let drag = modal_drag(cx);
+        let view = self.view.clone();
+        // 两个答案的回调先备好 `Rc`：外层构建闭包是 `Fn`（每轮重排重跑），内层
+        // 每轮克隆一份（与 [`open_confirm`] 同一套做法）。类型用 [`ActionHandler`]
+        // —— 内联 `Rc<dyn Fn(..)>` 会被 clippy 提 type_complexity。
+        let discard: ActionHandler = {
+            let view = view.clone();
+            Rc::new(move |window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    let ids = std::mem::take(&mut this.pending_close_tabs);
+                    for id in ids {
+                        this.force_close_tab(&id, window, cx);
+                    }
+                });
+            })
+        };
+        let save: ActionHandler = {
+            let view = view.clone();
+            Rc::new(move |window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    let ids = std::mem::take(&mut this.pending_close_tabs);
+                    // 先存完再关：关闭可能断连接，断掉之后快照就没了。
+                    for id in &ids {
+                        if this.tab_is_dirty(id, cx) {
+                            this.save_tab_sql(id, cx);
+                        }
+                    }
+                    for id in ids {
+                        this.force_close_tab(&id, window, cx);
+                    }
+                });
+            })
+        };
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let offset = modal_offset(&drag, cx);
+            let drag_for_content = drag.clone();
+            let title_for_content = title.clone();
+            let message_for_content = message.clone();
+            let discard_for_footer = discard.clone();
+            let save_for_footer = save.clone();
+            let save_for_ok = save.clone();
+            dialog
+                .w(px(CONFIRM_DIALOG_WIDTH))
+                .ml(offset.x)
+                .margin_top(dialog_top_offset(cx) + offset.y)
+                .opacity(offset.opacity)
+                .close_button(false)
+                .content(move |content, _, cx| {
+                    content.child(modal_drag_area(
+                        &drag_for_content,
+                        v_flex()
+                            .w_full()
+                            .child(unsaved_title_row(title_for_content.clone(), cx))
+                            .child(body_text(message_for_content.clone(), cx)),
+                    ))
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            button(
+                                "db-unsaved-cancel",
+                                tr(cx, "取消"),
+                                ButtonVariant::Secondary,
+                                cx,
+                            )
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            button(
+                                "db-unsaved-discard",
+                                tr(cx, "不保存"),
+                                ButtonVariant::Secondary,
+                                cx,
+                            )
+                            .on_click(move |_, window, cx| {
+                                discard_for_footer(window, cx);
+                                window.close_dialog(cx);
+                            }),
+                        )
+                        .child(
+                            button(
+                                "db-unsaved-save",
+                                tr(cx, "保存"),
+                                ButtonVariant::Primary,
+                                cx,
+                            )
+                            .on_click(move |_, window, cx| {
+                                save_for_footer(window, cx);
+                                window.close_dialog(cx);
+                            }),
+                        ),
+                )
+                // 键盘 ⏎ 走 base 的 `Confirm` action → 这里；鼠标点按钮走上面 footer。
+                .on_ok(move |_, window, cx| {
+                    save_for_ok(window, cx);
+                    true
+                })
+        });
     }
 
     /// 打开（或复用）某张表 / 视图的**数据标签**。
@@ -1013,6 +1252,26 @@ impl DatabasePage {
     ///
     /// 这是「每个查询标签各自保留 SQL 与结果集」的落地点（见 [`SessionEditorState`]）。
     /// 重复点同一个标签是**空操作** —— 内容与结果区必须原样留着。
+    /// 标签拖拽重排：把 `id` 移到第 `to` 个位置。
+    ///
+    /// 越界夹到末尾；`from == to` 直接返回（拖动经过同一张标签会反复触发，
+    /// 不判等会让 `cx.notify()` 每帧都跑一次）。
+    ///
+    /// 只动 `tabs` 的顺序：`active_tab` 与 `tab_conn` 都是**按 id** 记的，
+    /// 不存下标，所以重排不会把「当前在看哪张」弄错。
+    pub(super) fn move_tab_to(&mut self, id: &str, to: usize, cx: &mut Context<Self>) {
+        let Some(from) = self.tabs.iter().position(|tab| tab == id) else {
+            return;
+        };
+        if from == to || self.tabs.len() < 2 {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        let to = to.min(self.tabs.len());
+        self.tabs.insert(to, tab);
+        cx.notify();
+    }
+
     pub(super) fn activate(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn_id) = self.tab_conn.get(id).cloned() else {
             return;
@@ -1031,6 +1290,7 @@ impl DatabasePage {
         }
         let state = self.sessions_views.remove(id).unwrap_or_default();
         self.active_tab = Some(id.to_owned());
+        self.note_tab_active(id);
         self.active = Some(conn_id);
         // 换标签 = 换一份结果：上一份结果的搜索词对新结果几乎必然失效，
         // 清掉（见 `result_search` 字段注释——不按标签留存的原因）。
@@ -1060,23 +1320,9 @@ impl DatabasePage {
             // 建表标签：还没落库，名字就是动作本身（重名靠后置去重加序号）。
             Some(TabKind::NewTable { .. }) => tr(cx, "新建表").to_owned(),
             Some(TabKind::Database { name }) => name.clone(),
-            // 三张工具页：标题直说这是谁的 ER / 从哪比到哪 / 从哪传到哪
+            // 两张工具页：标题直说这是谁的 ER / 从哪传到哪
             //（连接名带库，同一标签条上不同连接的同名库可辨）。
             Some(TabKind::Er { namespace }) => format!("ER {namespace}"),
-            Some(TabKind::Compare(spec)) => format!(
-                "比较 {}:{} → {}:{}",
-                self.connection_display(&spec.source_conn),
-                spec.source_ns,
-                self.connection_display(&spec.target_conn),
-                spec.target_ns
-            ),
-            Some(TabKind::Transfer(spec)) => format!(
-                "传输 {}:{} → {}:{}",
-                self.connection_display(&spec.source_conn),
-                spec.source_ns,
-                self.connection_display(&spec.target_conn),
-                spec.target_ns
-            ),
             Some(TabKind::Instance(tab)) => tab.heading(cx).to_owned(),
             Some(TabKind::Dashboard(id)) => self
                 .dashboards
@@ -1086,15 +1332,6 @@ impl DatabasePage {
                 .unwrap_or_else(|| tr(cx, "仪表板").to_owned()),
             _ => cfg.display_name().to_string(),
         })
-    }
-
-    /// 连接的显示名（标签标题 / 比较与传输的规格条共用）；档案不在了退回 id。
-    fn connection_display(&self, conn_id: &str) -> String {
-        self.connections
-            .iter()
-            .find(|cfg| cfg.id == conn_id)
-            .map(|cfg| cfg.display_name())
-            .unwrap_or_else(|| conn_id.to_owned())
     }
 
     /// 关闭除 `keep` 外的全部标签（连接语义同 [`Self::close_tab`]）。    ///
@@ -1111,9 +1348,7 @@ impl DatabasePage {
             .filter(|tab| tab.as_str() != keep)
             .cloned()
             .collect();
-        for tab in victims {
-            self.close_tab(&tab, window, cx);
-        }
+        self.request_close_tabs(victims, window, cx);
     }
 
     /// 关闭 `id` **右侧**的全部标签（标签顺序即用户看到的顺序）。
@@ -1127,25 +1362,59 @@ impl DatabasePage {
             return;
         };
         let victims: Vec<String> = self.tabs.iter().skip(pos + 1).cloned().collect();
-        for tab in victims {
-            self.close_tab(&tab, window, cx);
-        }
+        self.request_close_tabs(victims, window, cx);
     }
 
     /// 关闭全部标签（每个连接的最后一个标签 = 断开该连接）。
     pub(super) fn close_all_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let victims: Vec<String> = self.tabs.clone();
-        for tab in victims {
-            self.close_tab(&tab, window, cx);
-        }
+        self.request_close_tabs(victims, window, cx);
     }
 
-    /// 关闭一个查询标签。
+    /// 关闭一个查询标签（未保存检查在 [`Self::request_close_tabs`]）。
     ///
     /// 该连接**还有别的标签**时只关这一个标签（连接保持，其他标签的编辑区原样）；
     /// 已是最后一个标签时语义回到「断开连接」——钩子时序交给
     /// [`Self::disconnect_conn`]，与会话绑定的东西（指标历史 / AI 目录）一起清。
     pub(super) fn close_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_close_tabs(vec![id.to_owned()], window, cx);
+    }
+
+    /// 关闭前的**未保存检查**（dbx 的 closeConfirm 同款）：清单里有任何脏标签就弹
+    /// 「未保存的更改」，「取消 / 不保存 / 保存」三个答案各回各家（保存 = 静默落
+    /// SQL 库再关，见 [`Self::save_tab_sql`]）；一张脏标签都没有就全部直接关。
+    ///
+    /// 决定之前把整份清单挂在 [`Self::pending_close_tabs`]：弹窗是异步的，本函数
+    /// 在用户点按钮之前就返回了，真正的关闭搬进弹窗回调。
+    pub(super) fn request_close_tabs(
+        &mut self,
+        ids: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dirty: Vec<String> = ids
+            .iter()
+            .filter(|id| self.tab_is_dirty(id, cx))
+            .cloned()
+            .collect();
+        if dirty.is_empty() {
+            for id in ids {
+                self.force_close_tab(&id, window, cx);
+            }
+            return;
+        }
+        self.pending_close_tabs = ids;
+        self.open_unsaved_changes_dialog(window, cx);
+    }
+
+    /// 真正执行关闭（**跳过**未保存检查）：确认弹窗的「不保存 / 保存」两个答案、
+    /// 以及程序化路径（删除连接档案 / 删仪表板后的收尾）都走这里。
+    pub(super) fn force_close_tab(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(conn_id) = self.tab_conn.get(id).cloned() else {
             return;
         };
@@ -1163,20 +1432,26 @@ impl DatabasePage {
     }
 
     /// 只移除一个查询标签（不动连接）：丢掉它的编辑区快照，必要的话把激活位
-    /// 挪到剩下的第一个标签。
+    /// 挪到**活跃历史**里最近的那张（见 [`Self::tab_mru`]）。
     pub(super) fn remove_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.sessions_views.remove(id);
         self.tab_conn.remove(id);
         self.tab_kind.remove(id);
+        // 基线与 SQL 库链接跟着标签走：标签没了参照物也没了（防 id 复用串台）。
+        self.tab_original_sql.remove(id);
+        self.tab_saved_link.remove(id);
+        self.pending_close_tabs.retain(|tab| tab != id);
         self.tabs.retain(|tab| tab != id);
+        let closed = [id.to_owned()];
         if self.active_tab.as_deref() == Some(id) {
             self.active_tab = None;
             self.active = None;
             self.install_editor_state(SessionEditorState::default(), window, cx);
-            if let Some(next) = self.tabs.first().cloned() {
+            if let Some(next) = self.next_tab_after_close(&closed) {
                 self.activate(&next, window, cx);
             }
         }
+        self.prune_tab_mru(&closed);
         cx.notify();
     }
 
@@ -1282,22 +1557,27 @@ impl DatabasePage {
             self.sessions_views.remove(tab);
             self.tab_conn.remove(tab);
             self.tab_kind.remove(tab);
+            // 基线与 SQL 库链接同 `remove_tab`：跟着标签一起拆。
+            self.tab_original_sql.remove(tab);
+            self.tab_saved_link.remove(tab);
         }
+        self.pending_close_tabs.retain(|tab| !closed.contains(tab));
         self.tabs.retain(|tab| !closed.contains(tab));
         if self
             .active_tab
             .as_deref()
             .is_some_and(|tab| closed.iter().any(|c| c == tab))
         {
-            // 关掉的正是当前标签：它的编辑区随快照一起丢弃。换成剩下的第一个标签
-            // （没有就留空）——先清空再装，免得旧标签的内容残留到新标签上。
+            // 关掉的正是当前标签：它的编辑区随快照一起丢弃。换成**活跃历史**里
+            // 最近的那张（没有就留空）——先清空再装，免得旧标签的内容残留到新标签上。
             self.active_tab = None;
             self.active = None;
             self.install_editor_state(SessionEditorState::default(), window, cx);
-            if let Some(next) = self.tabs.first().cloned() {
+            if let Some(next) = self.next_tab_after_close(&closed) {
                 self.activate(&next, window, cx);
             }
         }
+        self.prune_tab_mru(&closed);
         cx.notify();
     }
 
@@ -1357,12 +1637,7 @@ impl DatabasePage {
             // 实例页不是结果集：没有可导出的行。仪表板也不是——它一屏有**好几份**结果集，
             // 导出 / 复制的「当前结果集」在这页没有单一定义（要导出就点开对应图表）。
             // 结构编辑器同理：它编辑的是**定义**，不是行数据。
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => None,
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => None,
         }
     }
 }

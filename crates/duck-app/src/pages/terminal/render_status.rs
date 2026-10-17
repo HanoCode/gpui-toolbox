@@ -1,6 +1,7 @@
 //! 状态栏与 shell 级右栏会话详情的渲染。
 
 use super::*;
+use crate::pages::terminal::keys::{KeyScope, shortcuts};
 
 impl TerminalPage {
     /// 底部状态栏：左侧连接信息，右侧传输速率。SFTP 标签改报目录信息。
@@ -32,36 +33,76 @@ impl TerminalPage {
                 .child(text)
         };
 
-        let mut left = h_flex().min_w_0().items_center().gap(spacing.md).child(
+        // 路径格：宽度封顶 + 省略号收口 + 点一下就复制。
+        //
+        // 以前两条完整路径都往左段里塞：`/usr/local/share/doc/nginx/changelog.gz`
+        // 这种路径一条就能挤掉右段的版本号，而它**没有截断**，长到把布局撑破。
+        // 「看一眼完整路径」与「复制它」是同一件事的两种表达，所以点击即复制。
+        let path_cell = |icon: DuckIcon, label: &'static str, path: String| {
+            let copy = path.clone();
             h_flex()
+                .id(SharedString::from(format!("terminal-status-path-{label}")))
                 .flex_none()
+                .min_w_0()
+                .max_w(px(STATUS_PATH_MAX_WIDTH))
                 .items_center()
-                .gap(spacing.xs)
-                .child(
-                    div()
-                        .size(px(STATUS_DOT_SIZE))
-                        .flex_none()
-                        .rounded_full()
-                        .bg(status.color(cx)),
-                )
-                .child(tr(cx, status.label()))
-                .child(host),
-        );
+                .gap(spacing.xxs)
+                .rounded(tokens.radius.sm)
+                .px(spacing.xxs)
+                .cursor_pointer()
+                .role(Role::Button)
+                .aria_label(SharedString::from(path.clone()))
+                .hover(move |style| style.bg(extended.colors.hover_tint))
+                .on_click(move |_, window, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()));
+                    notify::success(trf(cx, "已复制路径：{}", &[&copy]), window, cx);
+                })
+                .child(Icon::new(icon).size(icon_size).text_color(muted))
+                .child(div().min_w_0().truncate().child(format!("{label} {path}")))
+        };
+
+        // 左段可被右段挤：`min_w_0` 让出空间，`overflow_x_hidden` 收口 ——
+        // 窄窗口时读数格子依次被裁，版本号（右段）永远完整可见。
+        let mut left = h_flex()
+            .min_w_0()
+            .overflow_x_hidden()
+            .items_center()
+            .gap(spacing.md)
+            .child(
+                h_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(spacing.xs)
+                    .child(
+                        div()
+                            .size(px(STATUS_DOT_SIZE))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(status.color(cx)),
+                    )
+                    .child(tr(cx, status.label()))
+                    .child(host),
+            );
         if is_sftp {
-            left = left
-                .child(cell(
-                    DuckIcon::HardDrive,
-                    self.pane(Side::Local).path.clone(),
-                ))
-                .child(cell(
-                    DuckIcon::Folders,
-                    // 远端路径为空 = 还没列举出来，显示「—」比显示空白清楚。
-                    if self.pane(Side::Remote).path.trim().is_empty() {
-                        "—".to_owned()
-                    } else {
-                        self.pane(Side::Remote).path.clone()
-                    },
-                ));
+            // 只报**当前那一侧**的路径。
+            //
+            // 以前两栏的路径都往状态栏塞：两段完整路径加起来必然撑破左段，而状态栏
+            // 里读者只关心「我正在看的那一栏在哪」。想复制另一栏的路径，
+            // 点那一栏就会切过来（`focused_side`）。
+            let side = self.focused_side;
+            let path = self.pane(side).path.clone();
+            let shown = if path.trim().is_empty() {
+                // 远端路径为空 = 还没列举出来，显示「—」比显示空白清楚。
+                "—".to_owned()
+            } else {
+                path
+            };
+            let icon = if side.is_local() {
+                DuckIcon::HardDrive
+            } else {
+                DuckIcon::Folders
+            };
+            left = left.child(path_cell(icon, tr(cx, side.title()), shown));
         } else {
             // 网格与回滚行数都是**真实读数**：前者来自内核的 `Dims`，
             // 后者取自起会话用的那份设置（「设置 → 终端」的「回滚行数」）
@@ -113,6 +154,114 @@ impl TerminalPage {
             .into_any_element()
     }
 
+    /// 右栏该「审视」的那条档案：选中的连接，且它**没有活着的会话**。
+    ///
+    /// 三条排除：没选中过、选中项已不在档案表里（被删了）、以及内置的本地 shell
+    ///（它不是一台远端主机，详情没有意义）。
+    fn inspectable_profile(&self) -> Option<String> {
+        let owner = self.selected_profile.as_deref()?;
+        if owner == data::LOCAL_SHELL_ID || self.profile(owner).is_none() {
+            return None;
+        }
+        // 连着的那条不抢右栏：那时用户看的是会话本身。
+        (self.link_status(owner) != LinkStatus::Connected).then(|| owner.to_owned())
+    }
+
+    /// 右栏的「连接档案详情」：一台**还没连上**的机器在看什么、怎么连。
+    fn render_profile_detail(&self, owner: &str, cx: &App) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        let lang = theme.lang();
+        let view = self.view.clone();
+        let Some(entry) = self.connection_entry(owner) else {
+            return v_flex().size_full().into_any_element();
+        };
+
+        let info = vec![
+            description_row(t(lang, "名称"), body_text(entry.label.clone(), cx)),
+            description_row(t(lang, "主机"), body_text(entry.endpoint(), cx)),
+            description_row(t(lang, "端口"), body_text(entry.port.clone(), cx)),
+            description_row(
+                t(lang, "认证方式"),
+                body_text(
+                    format!("{} · {}", t(lang, entry.auth.label()), entry.auth_detail),
+                    cx,
+                ),
+            ),
+            description_row(
+                t(lang, "状态"),
+                status_cell(entry.status.color(cx), t(lang, entry.status.label()), cx),
+            ),
+        ];
+
+        let open = {
+            let id = owner.to_owned();
+            let view_open = view.clone();
+            icon_text_button(
+                "terminal-profile-open",
+                tr(cx, "连接"),
+                Icon::new(DuckIcon::ArrowRightLeft)
+                    .size(extended.icon.md)
+                    .text_color(tokens.colors.muted_foreground),
+                ButtonVariant::Primary,
+                cx,
+            )
+            .on_click(move |_, window, cx| {
+                let _ = view_open.update(cx, |this, cx| this.open_connection(&id, window, cx));
+            })
+        };
+        let edit = {
+            let id = owner.to_owned();
+            let view_edit = view.clone();
+            icon_text_button(
+                "terminal-profile-edit",
+                tr(cx, "编辑连接"),
+                Icon::new(DuckIcon::Pencil)
+                    .size(extended.icon.md)
+                    .text_color(tokens.colors.muted_foreground),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .on_click(move |_, window, cx| {
+                let _ = view_edit.update(cx, |this, cx| {
+                    this.open_edit_connection(&id, window, cx);
+                });
+            })
+        };
+
+        v_flex()
+            .id("terminal-right-sidebar")
+            .size_full()
+            .min_h_0()
+            .overflow_y_scroll()
+            .gap(tokens.spacing.lg)
+            .px(tokens.spacing.lg)
+            .py(tokens.spacing.md)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(tokens.spacing.sm)
+                    .child(caption_heading(tr(cx, "连接详情"), cx))
+                    .child(
+                        card(cx)
+                            .w_full()
+                            .px(tokens.spacing.lg)
+                            .py(tokens.spacing.sm)
+                            .child(description_list(info)),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(tokens.spacing.xs)
+                            .flex_wrap()
+                            .child(open)
+                            .child(edit),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// 右侧栏内容：会话详情 + 传输队列摘要 + 快捷键。
     pub(crate) fn render_right_sidebar(&self, cx: &App) -> AnyElement {
         let theme = active_theme(cx);
@@ -122,6 +271,12 @@ impl TerminalPage {
         let view = self.view.clone();
 
         let Some(tab) = self.active_tab() else {
+            // 没有活动会话：如果用户选中过某条档案（左栏单击 / 右键），
+            // 就显示**这条档案**的详情。以前这里恒定是「打开一个会话后…」，
+            // 于是「这台机器到底连的是哪个端口」在连上之前无处可看。
+            if let Some(owner) = self.inspectable_profile() {
+                return self.render_profile_detail(&owner, cx);
+            }
             return v_flex()
                 .size_full()
                 .items_center()
@@ -133,6 +288,13 @@ impl TerminalPage {
                 ))
                 .into_any_element();
         };
+
+        // 选中一条**当前没连着**的档案时，右栏让位给这条档案的详情：
+        // 「我正在看的那台机器」优先于「我上一条会话」。连着的那条不抢 ——
+        // 那时用户显然在看会话本身。
+        if let Some(owner) = self.inspectable_profile() {
+            return self.render_profile_detail(&owner, cx);
+        }
 
         let connection = self.connection_entry(&tab.id);
 
@@ -270,24 +432,10 @@ impl TerminalPage {
                     });
                 }),
             );
-            let view_delete = view.clone();
-            let owner_delete = owner.clone();
-            actions = actions.child(
-                icon_text_button(
-                    "terminal-right-delete",
-                    tr(cx, "删除连接"),
-                    Icon::new(DuckIcon::Trash2)
-                        .size(extended.icon.md)
-                        .text_color(tokens.colors.destructive),
-                    ButtonVariant::Destructive,
-                    cx,
-                )
-                .on_click(move |_, window, cx| {
-                    let _ = view_delete.update(cx, |this, cx| {
-                        this.delete_connection(&owner_delete, window, cx);
-                    });
-                }),
-            );
+            // 「删除连接」**只留在左栏的右键菜单里**。
+            // 详情面板里放一个红色按钮，等于把「我刚点开这台机器」和
+            // 「永久删掉它」放在同一块 40px 高的区域里 —— 那个误点的代价太大，
+            // 而删除本身又不是一个需要「顺手」的动作。
         }
 
         v_flex()
@@ -322,27 +470,68 @@ impl TerminalPage {
             .child(
                 v_flex()
                     .w_full()
-                    .gap(tokens.spacing.xs)
+                    .gap(tokens.spacing.xxs)
                     .child(caption_heading(tr(cx, "快捷键"), cx))
-                    // 这里只列**真的绑了**的键。此前写的是「新建标签 ⌘T · 关闭标签 ⌘W ·
-                    // 分屏 ⌘D」—— 三个一条都没绑（`app::install` 的 `"Terminal"` 上下文里
-                    // 只有下面这些），等于教用户按三个没反应的键。
-                    // 2026-10-12 补绑 `⌘T` / `⌘W` / `⌘C` / `⌘V` / `⌘A` 之后，
-                    // 这一组与 `app::install` 的 `"Terminal"` 绑定表**逐条对应**。
-                    .child(meta_text(tr(cx, "新建标签 ⌘T · 关闭标签 ⌘W"), cx))
-                    .child(meta_text(
-                        tr(cx, "复制 ⌘C（拖选文字后）· 粘贴 ⌘V · 全选 ⌘A"),
-                        cx,
-                    ))
-                    .child(meta_text(
-                        tr(cx, "清屏 ⌘K · 翻页 Shift+PageUp / Shift+PageDown"),
-                        cx,
-                    ))
-                    .child(meta_text(tr(cx, "分屏 ⌘D（左右各一条独立会话）"), cx))
-                    .child(meta_text(tr(cx, "行首 / 行尾 ⌘← / ⌘→"), cx))
-                    .child(meta_text(tr(cx, "字号 ⌘+ / ⌘- / ⌘0"), cx))
-                    .child(meta_text(tr(cx, "文件：单击选中 · 双击进入目录"), cx)),
+                    // 这一段**从绑定表生成**（`terminal/keys.rs`），这里不写任何键位。
+                    // 此前是六行手写文案，其中「新建标签 ⌘T / 关闭标签 ⌘W / 分屏 ⌘D」
+                    // 三条一条都没绑 —— 教用户按三个没反应的键，比不教更糟。
+                    .children(shortcut_rows(cx)),
             )
             .into_any_element()
     }
+}
+
+/// 右栏的快捷键清单：按上下文分两组，行内「说明 ─ 键位」。
+///
+/// 键位用等宽族、右对齐、次要色：它是**参数**而不是标题，读的时候眼睛扫的是左边
+/// 那列说明。整块内容与绑定表同源，加一条快捷键只需改 `terminal/keys.rs`。
+fn shortcut_rows(cx: &App) -> Vec<AnyElement> {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let mut rows: Vec<AnyElement> = Vec::new();
+    for scope in [KeyScope::Canvas, KeyScope::Page] {
+        rows.push(
+            div()
+                .w_full()
+                .pt(tokens.spacing.xs)
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(tokens.colors.muted_foreground)
+                .child(tr(cx, scope.label()))
+                .into_any_element(),
+        );
+        for shortcut in shortcuts()
+            .iter()
+            .filter(|shortcut| shortcut.scope() == scope && shortcut.shown())
+        {
+            rows.push(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap(tokens.spacing.sm)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(tokens.typography.sm.size)
+                            .line_height(tokens.typography.sm.line_height)
+                            .text_color(tokens.colors.foreground)
+                            .child(tr(cx, shortcut.label())),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(tokens.typography.mono.clone())
+                            .text_size(tokens.typography.xs.size)
+                            .line_height(tokens.typography.xs.line_height)
+                            .text_color(tokens.colors.muted_foreground)
+                            .child(shortcut.display()),
+                    )
+                    .into_any_element(),
+            );
+        }
+    }
+    rows
 }

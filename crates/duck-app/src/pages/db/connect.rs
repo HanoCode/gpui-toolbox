@@ -1782,11 +1782,11 @@ impl DriverPickerView {
             }))
     }
 
-    /// 一张驱动卡（选中态 = 强调色描边；`query` 过滤在调用点已做）。
+    /// 一张驱动卡（选中态 = 强调色描边 + 选中底色 + 名字转强调色；`query` 过滤在调用点已做）。
     fn card(&self, card: &PickerCard, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens().clone();
-        let hover_bg = tokens.colors.muted;
+        let extended = theme.extended().clone();
         let id = card.id();
         let name = card.name(cx);
         let hint = card.hint(cx);
@@ -1797,13 +1797,23 @@ impl DriverPickerView {
         // 「本仓还没接」，不是「这不是一个正经引擎」。
         let supported = card.is_supported();
         let selected = self.selected == Some(id);
+        // 选中底与悬停底分两档：选中卡不再被悬停的 muted 盖掉选中观感。
+        let (normal_bg, hover_bg) = if selected {
+            (extended.colors.nav_selected, extended.colors.nav_selected)
+        } else {
+            (tokens.colors.background, tokens.colors.muted)
+        };
         let name_el = div()
             .truncate()
             .text_size(tokens.typography.sm.size)
             .font_weight(FontWeight::MEDIUM)
             .child(name);
         let name_el = if supported {
-            name_el
+            if selected {
+                name_el.text_color(extended.colors.accent_text)
+            } else {
+                name_el
+            }
         } else {
             name_el.text_color(tokens.colors.muted_foreground)
         };
@@ -1821,7 +1831,7 @@ impl DriverPickerView {
             } else {
                 tokens.colors.border
             })
-            .bg(tokens.colors.background)
+            .bg(normal_bg)
             .cursor_pointer()
             .hover(move |style| style.bg(hover_bg))
             .child(match logo {

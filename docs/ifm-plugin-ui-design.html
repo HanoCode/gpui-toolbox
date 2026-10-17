@@ -1,0 +1,1408 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IFM 工具箱 → 插件 UI 设计稿</title>
+<style>
+*{box-sizing:border-box}
+:root{
+  --bg:#1C1C1E;--surface:#2C2C2E;--surface2:#3A3A3C;--fg:#F5F5F7;--fg2:#A1A1A6;
+  --border:#48484A;--accent:#3B82F6;--hover:rgba(59,130,246,.16);
+  --success:#30D158;--warn:#FFB340;--danger:#EF4444;--sel:#3A3A3C;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+html[data-theme="light"]{
+  --bg:#F8F9FA;--surface:#FFFFFF;--surface2:#F1F3F5;--fg:#09090B;--fg2:#71717A;
+  --border:#E4E4E7;--accent:#3B82F6;--hover:rgba(59,130,246,.10);
+  --success:#1F9D55;--warn:#C77C02;--danger:#DC2626;--sel:#E4E4E7;
+}
+html,body{margin:0;background:var(--bg);color:var(--fg)}
+body{font:13px/1.62 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB",sans-serif;
+  -webkit-font-smoothing:antialiased}
+code,.mono,.wlog{font-family:var(--mono)}
+a{color:inherit;text-decoration:none}
+.layout{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+/* ── 侧栏 ── */
+aside{position:sticky;top:0;height:100vh;overflow:auto;border-right:1px solid var(--border);
+  background:var(--surface);padding:16px 12px 32px}
+.brand{font-size:15px;font-weight:600;letter-spacing:.2px;margin:0 0 2px}
+.brand small{display:block;font:11px/1.5 var(--mono);color:var(--fg2);font-weight:400;margin-top:4px}
+.navgrp{margin-top:14px}
+.navp{display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-radius:6px;
+  font-size:11px;color:var(--fg2);letter-spacing:.3px}
+.navp b{font:10px var(--mono);background:var(--surface2);border-radius:99px;padding:0 6px;color:var(--fg2)}
+.navp:hover{background:var(--hover);color:var(--fg)}
+.navi{display:block;padding:3px 8px 3px 14px;border-radius:6px;font-size:12px;color:var(--fg2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.navi:hover{background:var(--hover);color:var(--fg)}
+.navi.v-drop{opacity:.5}
+.navi.v-drop::after{content:"  ×";color:var(--danger)}
+.navi.v-trim::after{content:"  ~";color:var(--warn)}
+/* ── 主区 ── */
+main{padding:0 40px 120px;max-width:1320px}
+.top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(12px);border-bottom:1px solid var(--border);display:flex;align-items:center;
+  gap:12px;padding:12px 0;margin-bottom:28px}
+.top h1{font-size:17px;margin:0;font-weight:600}
+.top .sub{font-size:12px;color:var(--fg2)}
+.spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--fg2);
+  border:1px solid var(--border);border-radius:99px;padding:3px 10px}
+.pill b{color:var(--fg);font-family:var(--mono)}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+.tbtn{border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;color:var(--fg2)}
+.tbtn:hover{background:var(--hover);color:var(--fg);border-color:transparent}
+h1.hero{font-size:22px;line-height:1.35;margin:0 0 8px;font-weight:600}
+.lede{color:var(--fg2);max-width:78ch;margin:0 0 4px}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 32px}
+h2{font-size:17px;margin:44px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border);font-weight:600}
+h2 span{font:11px var(--mono);color:var(--fg2);margin-left:8px;font-weight:400}
+h3.pkgh{font-size:15px;margin:36px 0 6px;display:flex;align-items:center;gap:10px}
+h3.pkgh code{font-size:11px;color:var(--fg2);background:var(--surface2);padding:2px 7px;border-radius:4px}
+.pkgc{font:10px var(--mono);color:var(--fg2);border:1px solid var(--border);border-radius:99px;padding:1px 7px}
+.pkgd{color:var(--fg2);margin:0 0 16px;max-width:82ch}
+table{border-collapse:collapse;width:100%;font-size:12px;margin:12px 0 20px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--fg2);font-weight:500;font-size:11px;letter-spacing:.3px;background:var(--surface2)}
+tr:hover td{background:var(--hover)}
+.sw{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid var(--border);
+  vertical-align:-2px;margin-right:6px}
+.mut2{color:var(--fg2);font-size:10px}
+/* ── 卡片 ── */
+.cards{display:grid;gap:14px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.chead{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border);
+  background:color-mix(in srgb,var(--surface2) 55%,var(--surface))}
+.idx{font:10px var(--mono);color:var(--fg2);width:18px}
+.chead h4{margin:0;font-size:13px;font-weight:600}
+.tid{font-size:10px;color:var(--fg2)}
+.badge{font:10px var(--mono);padding:1px 7px;border-radius:99px;border:1px solid var(--border);color:var(--fg2)}
+.b-ok{color:var(--success);border-color:color-mix(in srgb,var(--success) 45%,transparent)}
+.b-trim{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.b-drop{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}
+.b-l1{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+.b-l2{color:var(--fg2)}
+.b-merge{color:#A78BFA;border-color:rgba(167,139,250,.45)}
+.cmerge{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;padding:5px 14px;
+  border-bottom:1px solid var(--border);font-size:10px;color:var(--fg2);background:var(--surface)}
+.cmerge span{color:var(--fg)}
+.cmerge code{font-size:9px;opacity:.65}
+.cbody{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0}
+.cwire{padding:14px;border-right:1px solid var(--border)}
+.cspec{padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.cspec dl{margin:0;display:grid;gap:5px}
+.srow{display:grid;grid-template-columns:56px 1fr;gap:8px}
+.srow dt{color:var(--fg2);font-size:11px}
+.srow dd{margin:0;font-size:12px;min-width:0;overflow-wrap:anywhere}
+.note{margin:0;color:var(--fg2);font-size:12px;line-height:1.65;border-left:2px solid var(--border);
+  padding-left:10px}
+.verdict{display:flex;gap:6px;margin-top:auto}
+.verdict button{flex:1;border:1px solid var(--border);border-radius:6px;padding:4px 0;font-size:11px;color:var(--fg2)}
+.verdict button:hover{background:var(--hover);color:var(--fg)}
+.verdict button[aria-pressed="true"][data-v="ok"]{background:color-mix(in srgb,var(--success) 18%,transparent);
+  border-color:var(--success);color:var(--success)}
+.verdict button[aria-pressed="true"][data-v="trim"]{background:color-mix(in srgb,var(--warn) 18%,transparent);
+  border-color:var(--warn);color:var(--warn)}
+.verdict button[aria-pressed="true"][data-v="drop"]{background:color-mix(in srgb,var(--danger) 18%,transparent);
+  border-color:var(--danger);color:var(--danger)}
+.memo{width:100%;background:transparent;border:1px solid transparent;border-radius:6px;color:var(--fg);
+  font:11px/1.6 inherit;padding:4px 6px;resize:vertical;min-height:26px}
+.memo::placeholder{color:var(--fg2)}
+.memo:focus{outline:none;border-color:var(--accent);background:var(--bg)}
+/* ── 线框 ── */
+.wire{background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:11px}
+.wtitle{display:flex;align-items:center;gap:6px;height:26px;padding:0 10px;background:var(--surface2);
+  border-bottom:1px solid var(--border);color:var(--fg2);font-size:10px}
+.wdot{width:6px;height:6px;border-radius:99px;background:var(--border)}
+.wtitle em{font-style:normal;color:var(--fg);font-size:11px;margin-left:2px}
+.wtag{margin-left:auto;font-family:var(--mono);font-size:9px;color:var(--fg2);opacity:.8}
+.wbody{padding:10px;display:grid;gap:8px}
+.wform{display:grid;gap:6px}
+.wf{display:grid;grid-template-columns:88px 1fr;align-items:center;gap:8px}
+.wmore{grid-column:1/-1;font-size:9px;color:var(--fg2);opacity:.75;padding-left:2px}
+.wl{color:var(--fg2);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.win{display:flex;align-items:center;height:22px;padding:0 6px;border:1px solid var(--border);
+  border-radius:3px;background:var(--surface);color:var(--fg2);font-size:10px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.win i{font-style:normal;opacity:.75}
+.wnum{max-width:70px;justify-content:flex-end;font-family:var(--mono)}
+.wpath{justify-content:space-between;gap:6px}
+.wpath b{color:var(--accent);font-weight:400;font-size:10px;flex:none}
+.wsegs{display:flex;gap:2px;background:var(--surface2);border-radius:3px;padding:2px;overflow:hidden}
+.wseg{padding:1px 6px;border-radius:2px;color:var(--fg2);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wseg.on{background:var(--surface);color:var(--fg);box-shadow:0 0 0 1px var(--border)}
+.wtg{width:26px;height:15px;border-radius:99px;background:var(--surface2);position:relative;display:inline-block}
+.wtg i{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:99px;background:var(--fg2)}
+.wtg.on{background:var(--accent)}
+.wtg.on i{left:13px;background:#fff}
+.wrange{display:flex;align-items:center;gap:4px}
+.wrange .win{min-width:0}
+.wrange em{color:var(--fg2);font-style:normal}
+.warea{min-height:34px;border:1px solid var(--border);border-radius:3px;background:var(--surface);
+  padding:5px 6px;color:var(--fg2);font-size:10px;overflow:hidden}
+.wsplit{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.wcol{border:1px solid var(--border);border-radius:6px;background:var(--surface);padding:6px 8px;min-height:52px}
+.wcol.tall{min-height:64px}
+.wcol.wb-in{border-style:dashed;min-height:44px;background:color-mix(in srgb,var(--surface) 70%,transparent)}
+.wcl{color:var(--fg2);font-size:10px;margin-bottom:4px}
+.wghost{color:var(--fg2);opacity:.55;font-size:10px;line-height:1.6;overflow:hidden;max-height:34px}
+.wghost.mono{font-family:var(--mono)}
+.w2col .wform{grid-template-columns:1fr 1fr;gap:6px 10px}
+.w2col .wf{grid-template-columns:1fr;gap:2px;align-items:start}
+.wacts{display:flex;gap:6px;justify-content:flex-end;align-items:center}
+.wbtn{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:6px;
+  background:var(--accent);color:#fff;font-size:10px}
+.wbtn.ghost{background:transparent;border:1px solid var(--border);color:var(--fg2)}
+.wbtn.danger{background:transparent;border:1px solid var(--danger);color:var(--danger)}
+.wbtn.sm{height:18px;padding:0 7px;font-size:9px}
+.wprog{height:4px;border-radius:99px;background:var(--surface2);overflow:hidden}
+.wprog i{display:block;height:100%;background:var(--accent)}
+.wchips{display:flex;gap:5px;flex-wrap:wrap}
+.wchip{font-size:9px;padding:1px 7px;border-radius:99px;background:var(--hover);color:var(--accent);
+  font-family:var(--mono)}
+.wlog{font-family:var(--mono);font-size:9px;line-height:1.65;color:var(--fg2);white-space:pre-wrap;
+  max-height:46px;overflow:hidden}
+.wbar{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.wbar-r{display:flex;gap:4px}
+.wtable{border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.wrow{display:grid;grid-template-columns:1.4fr 1fr .8fr;gap:6px;padding:4px 8px;font-size:10px;
+  color:var(--fg2);border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent)}
+.wrow:last-child{border-bottom:none}
+.wrow.head{background:var(--surface2);color:var(--fg2);font-size:9px}
+.wrow .mut{opacity:.7}
+.callout{border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:6px;
+  padding:10px 14px;background:var(--surface);margin:14px 0;color:var(--fg2);font-size:12px}
+.callout b{color:var(--fg)}
+.foot{margin-top:56px;padding-top:16px;border-top:1px solid var(--border);color:var(--fg2);font-size:11px}
+@media (max-width:1080px){
+  .layout{grid-template-columns:1fr}
+  aside{position:static;height:auto;border-right:none;border-bottom:1px solid var(--border)}
+  main{padding:0 20px 80px}
+  .cbody{grid-template-columns:1fr}
+  .cwire{border-right:none;border-bottom:1px solid var(--border)}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside>
+  <p class="brand">IFM → 插件<small>UI 设计稿 v2 · 47 项</small></p>
+  <div class="navgrp"><a class="navp" href="#p-devkit.text">duck.devkit.text<b>11</b></a><a class="navi v-ok" href="#t-formatter">格式化</a><a class="navi v-trim" href="#t-data-format">数据格式转换</a><a class="navi v-ok" href="#t-case-convert">大小写转换</a><a class="navi v-trim" href="#t-random-gen">随机数据生成</a><a class="navi v-ok" href="#t-timestamp">时间戳工具</a><a class="navi v-ok" href="#t-cron-gen">Cron 表达式</a><a class="navi v-ok" href="#t-number-to-chinese">数字转中文</a><a class="navi v-ok" href="#t-cheat-sheets">命令速查</a><a class="navi v-drop" href="#t-transform-hub">变换枢纽</a><a class="navi v-ok" href="#t-regex-plus">正则测试</a><a class="navi v-drop" href="#t-prompt-optimizer">Prompt 优化</a></div><div class="navgrp"><a class="navp" href="#p-devkit.codec">duck.devkit.codec<b>3</b></a><a class="navi v-trim" href="#t-crypto-bundle">加解密工具包</a><a class="navi v-ok" href="#t-encoding-converter">编码转换</a><a class="navi v-drop" href="#t-protobuf-codec">Protobuf 编解码</a></div><div class="navgrp"><a class="navp" href="#p-devkit.sql">duck.devkit.sql<b>6</b></a><a class="navi v-ok" href="#t-sql-rewrite">SQL 改写</a><a class="navi v-ok" href="#t-sql-merge">SQL 文件合并</a><a class="navi v-ok" href="#t-script-check">脚本检查</a><a class="navi v-ok" href="#t-ddl-generator">DDL 生成 / 分表</a><a class="navi v-ok" href="#t-sql-classifier">SQL 分类抽取</a><a class="navi v-drop" href="#t-storage-estimator">数据库存储估算</a></div><div class="navgrp"><a class="navp" href="#p-ifm.merge">duck.ifm.merge<b>2</b></a><a class="navi v-ok" href="#t-pkg-merge">上线包合并</a><a class="navi v-ok" href="#t-extract-by-manifest">清单提取</a></div><div class="navgrp"><a class="navp" href="#p-ifm.compare">duck.ifm.compare<b>4</b></a><a class="navi v-ok" href="#t-pkg-compare">包比对</a><a class="navi v-ok" href="#t-text-diff">文本对比</a><a class="navi v-ok" href="#t-config-diff">配置对比</a><a class="navi v-ok" href="#t-java-decompiler">Java 反编译</a></div><div class="navgrp"><a class="navp" href="#p-ifm.finance">duck.ifm.finance<b>3</b></a><a class="navi v-drop" href="#t-finance-parser">金融文件解析</a><a class="navi v-ok" href="#t-pdm-reader">PDM 阅读器</a><a class="navi v-ok" href="#t-channel-gateway">渠道网关模型生成</a></div><div class="navgrp"><a class="navp" href="#p-devkit.net">duck.devkit.net<b>4</b></a><a class="navi v-ok" href="#t-http-request">HTTP 请求</a><a class="navi v-ok" href="#t-packet-send">报文调试</a><a class="navi v-ok" href="#t-s3-ftp-checker">S3 / FTP 连通检测</a><a class="navi v-ok" href="#t-hosts-manager">Hosts 管理</a></div><div class="navgrp"><a class="navp" href="#p-devkit.files">duck.devkit.files<b>6</b></a><a class="navi v-ok" href="#t-file-search">文件搜索</a><a class="navi v-ok" href="#t-directory-tree">目录树生成</a><a class="navi v-ok" href="#t-batch-edit">批量改写</a><a class="navi v-drop" href="#t-sensitive-scanner">敏感信息扫描</a><a class="navi v-ok" href="#t-csv-tools">CSV 工具</a><a class="navi v-ok" href="#t-doc-convert">格式转换</a></div><div class="navgrp"><a class="navp" href="#p-devkit.config">duck.devkit.config<b>2</b></a><a class="navi v-ok" href="#t-nginx-generator">Nginx 配置生成</a><a class="navi v-ok" href="#t-s3-manager">S3 管理</a></div><div class="navgrp"><a class="navp" href="#p-devkit.misc">duck.devkit.misc<b>5</b></a><a class="navi v-drop" href="#t-screenshot">截图工具</a><a class="navi v-drop" href="#t-diagram-renderer">Mermaid 渲染</a><a class="navi v-drop" href="#t-drawio-board">draw.io 画板</a><a class="navi v-ok" href="#t-json-schema-validator">JSON Schema 校验</a><a class="navi v-ok" href="#t-git-tools">Git 辅助</a></div><div class="navgrp"><a class="navp" href="#p-—">不迁（单列）<b>1</b></a><a class="navi v-drop" href="#t-device-pool">设备池管理</a></div>
+</aside>
+<main>
+  <div class="top">
+    <h1>插件 UI 设计稿</h1>
+    <span class="sub">按本项目主题令牌绘制 · 待逐项核对</span>
+    <span class="spacer"></span>
+    <span class="pill">已核对 <b id="cnt">0</b>/<b>47</b></span>
+    <button class="tbtn" id="export" aria-label="导出核对结果">导出 JSON</button>
+    <button class="tbtn" id="theme" aria-label="切换明暗主题">明/暗</button>
+  </div>
+
+  <h1 class="hero">每个工具一张设计稿，请逐项核对</h1>
+  <p class="lede">范围已按两条规则收紧：<b>邮件 / 数据库 / Redis / SSH 四域不迁</b>；<b>beta 与 dev 标记的工具一律不迁</b>。
+  <b>2026-10-18 已完成逐卡核对</b>：判定已回填到每张卡（绿=合理、橙=需收窄、红=不迁）。
+  布局统一为<b>操作区置顶 → 结果居中 → 输入框沉底</b>。实施顺序见 <code>ifm-plugin-port-plan.md</code>。</p>
+  <div class="meta">
+    <span class="pill">在册工具 <b>50</b> / 界面 <b>37</b></span>
+    <span class="pill" style="color:var(--success)">合理 <b>34</b></span>
+    <span class="pill" style="color:var(--warn)">需收窄 <b>3</b></span>
+    <span class="pill" style="color:var(--danger)">不迁 <b>10</b></span>
+    <span class="pill">合并 <b>11</b> 组</span>
+    <span class="pill">插件包 <b>10</b></span>
+  </div>
+
+  <h2>零、核对结果<span>2026-10-18 导出 · 47 张全部有判定</span></h2>
+  <div class="callout"><b>已回填：</b>每张卡右上角的判定标签现在是你选的结论，颜色与图例同步。
+  备注框全部为空，因此本表不替你解释理由；需要留档的条目补一句即可。</div>
+  <table>
+    <thead><tr><th>判定</th><th>数量</th><th>口径</th></tr></thead>
+    <tbody>
+      <tr><td>合理</td><td><b>34</b></td><td>按设计稿实现</td></tr>
+      <tr><td>需收窄</td><td><b>3</b></td><td>首版砍掉部分能力（卡片 note 里写了砍什么）</td></tr>
+      <tr><td>不迁</td><td><b>10</b></td><td>移出范围：<code>transform-hub</code> <code>prompt-optimizer</code> <code>protobuf-codec</code> <code>storage-estimator</code> <code>finance-parser</code> <code>sensitive-scanner</code> <code>screenshot</code> <code>diagram-renderer</code> <code>drawio-board</code> <code>device-pool</code> </td></tr>
+    </tbody>
+  </table>
+  <p class="lede">与我初判不同的共 <b>20</b> 条：其中 <b>13</b> 条从「需收窄」改「合理」
+  ⇒ 首版按全量实现，工时上调；<b>7</b> 条从「合理/需收窄」改「不迁」⇒ 移出范围。</p>
+  <table>
+    <thead><tr><th>工具</th><th>id</th><th>我的初判</th><th>你的判定</th><th>影响</th></tr></thead>
+    <tbody><tr><td>命令速查</td><td><code>cheat-sheets</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>Prompt 优化</td><td><code>prompt-optimizer</code></td><td>需收窄</td><td><b>建议不迁</b></td><td>移出范围</td></tr><tr><td>Protobuf 编解码</td><td><code>protobuf-codec</code></td><td>合理</td><td><b>建议不迁</b></td><td>移出范围</td></tr><tr><td>SQL 改写</td><td><code>sql-rewrite</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>数据库存储估算</td><td><code>storage-estimator</code></td><td>合理</td><td><b>建议不迁</b></td><td>移出范围</td></tr><tr><td>配置对比</td><td><code>config-diff</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>Java 反编译</td><td><code>java-decompiler</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>金融文件解析</td><td><code>finance-parser</code></td><td>需收窄</td><td><b>建议不迁</b></td><td>移出范围</td></tr><tr><td>渠道网关模型生成</td><td><code>channel-gateway</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>HTTP 请求</td><td><code>http-request</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>Hosts 管理</td><td><code>hosts-manager</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>文件搜索</td><td><code>file-search</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>目录树生成</td><td><code>directory-tree</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>敏感信息扫描</td><td><code>sensitive-scanner</code></td><td>合理</td><td><b>建议不迁</b></td><td>移出范围</td></tr><tr><td>CSV 工具</td><td><code>csv-tools</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>格式转换</td><td><code>doc-convert</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>S3 管理</td><td><code>s3-manager</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr><tr><td>截图工具</td><td><code>screenshot</code></td><td>需收窄</td><td><b>建议不迁</b></td><td>移出范围</td></tr><tr><td>Mermaid 渲染</td><td><code>diagram-renderer</code></td><td>需收窄</td><td><b>建议不迁</b></td><td>移出范围</td></tr><tr><td>Git 辅助</td><td><code>git-tools</code></td><td>需收窄</td><td><b>合理</b></td><td>首版按全量实现（不做能力裁剪）</td></tr></tbody>
+  </table>
+
+
+  <div class="callout">
+    <b>怎么用：</b>每张卡左边是按真实令牌绘制的界面线框，右边是字段与我的判断。如果你认为某项不该这么做，点「需调整」并在备注里写一句，最后点右上「导出 JSON」把核对结果给我，我按结果改设计再动手。
+  </div>
+
+  <h2>一、设计令牌<span>直接取自 duck-theme，不另造</span></h2>
+  <table>
+    <thead><tr><th>令牌</th><th>暗色</th><th>亮色</th><th>用途</th></tr></thead>
+    <tbody><tr><td><code>--bg</code></td><td><span class="sw" style="background:#1C1C1E"></span>#1C1C1E</td><td><span class="sw" style="background:#F8F9FA"></span>#F8F9FA</td><td>background 页面底</td></tr><tr><td><code>--surface</code></td><td><span class="sw" style="background:#2C2C2E"></span>#2C2C2E</td><td><span class="sw" style="background:#FFFFFF"></span>#FFFFFF</td><td>surface 卡片/面板</td></tr><tr><td><code>--surface2</code></td><td><span class="sw" style="background:#3A3A3C"></span>#3A3A3C</td><td><span class="sw" style="background:#F1F3F5"></span>#F1F3F5</td><td>secondary / muted</td></tr><tr><td><code>--fg</code></td><td><span class="sw" style="background:#F5F5F7"></span>#F5F5F7</td><td><span class="sw" style="background:#09090B"></span>#09090B</td><td>foreground 正文</td></tr><tr><td><code>--fg2</code></td><td><span class="sw" style="background:#A1A1A6"></span>#A1A1A6</td><td><span class="sw" style="background:#71717A"></span>#71717A</td><td>muted_foreground 次要文字</td></tr><tr><td><code>--border</code></td><td><span class="sw" style="background:#48484A"></span>#48484A</td><td><span class="sw" style="background:#E4E4E7"></span>#E4E4E7</td><td>border / input</td></tr><tr><td><code>--accent</code></td><td><span class="sw" style="background:#3B82F6"></span>#3B82F6</td><td><span class="sw" style="background:#3B82F6"></span>#3B82F6</td><td>primary 强调色</td></tr></tbody>
+  </table>
+  <table>
+    <thead><tr><th>维度</th><th>约束</th></tr></thead>
+    <tbody>
+<tr><td>字阶</td><td>只有 12 / 13 / 15 / 17 / 22 五档（line-height 16 / 18 / 20 / 22 / 26）。<b>禁止裸 px 字号</b>，一律取 <code>typography.xs|sm|md|lg|xl</code>。</td></tr>
+<tr><td>间距</td><td>2 / 4 / 8 / 12 / 16 / 24 / 32 七档；卡片内边距 16，字段间距 12，字段内 label→控件 4。</td></tr>
+<tr><td>圆角</td><td>控件 6、卡片 8、弹窗 12。不要出现 4 或 10 这类非令牌值。</td></tr>
+<tr><td>布局铁律</td><td><b>操作区（参数 + 执行按钮）一律置顶，输入框沉底，结果居中</b>——所有形态统一，不加例外；执行后焦点回输入框，结果区自动滚到顶。</td></tr>
+<tr><td>悬停</td><td>一律「强调色薄底」（暗 16% / 亮 10%），选中用 <code>nav_selected</code>；不要用灰度 hover。</td></tr>
+<tr><td>按钮</td><td>主按钮 = <code>primary</code> 底 + <code>primary_foreground</code> 字；次按钮 = 透明底 + 1px border；同一页面主按钮最多一个。</td></tr>
+<tr><td>破坏性</td><td>改名 / 替换 / 写系统文件的确认，一律走主题 <code>Dialog</code>（恒居中），<b>禁用 rfd 同步模态</b>（会 AppKit 重入并 abort）。</td></tr>
+<tr><td>可访问性</td><td>所有可点元素带 <code>role</code> + <code>aria_label</code>；文字可选中走 <code>selectable_text</code>，且 id 逐元素唯一。</td></tr>
+<tr><td>长任务</td><td>必须有进度 + 取消；<code>process</code> 轨带外取消，禁止用「等它跑完」阻塞主线程。</td></tr>
+<tr><td>空态</td><td>不许演示数据。空态 = 一句「做什么 → 得到什么」的操作指引。</td></tr>
+<tr><td>文案</td><td>所有中文串进 <code>locales/&lt;tag&gt;.toml</code>（中文源串作 key）；漏译只有 <code>cargo test -p duck-theme</code> 能拦住。</td></tr>
+<tr><td>截断</td><td>行尾说明文字（路径、版本号）必须 <code>min_w_0().truncate()</code>，否则长路径会把整行撑破。</td></tr>
+</tbody>
+  </table>
+
+  <h2>二、七种页面形态<span>所有工具都由这七种拼出来</span></h2>
+  <table>
+    <thead><tr><th>形态</th><th>结构</th><th>适用</th></tr></thead>
+    <tbody><tr><td><code>split</code></td><td>上操作区 → 中结果 → 下输入框</td><td>用于「文本进、文本出」的即时变换。参数行 + 执行按钮固定在顶部，结果居中，输入框沉底（Codex 式纵向流）。</td></tr><tr><td><code>job</code></td><td>参数 + 进度 + 日志</td><td>用于目录级长任务。操作区（参数 + 执行/取消）在顶部；参数只露前 4 项，其余收进「高级」。</td></tr><tr><td><code>pair</code></td><td>操作区 + A/B 双栏 + 差异统计</td><td>用于比对。操作区置顶，差异统计（新增/删除/修改）固定在底部，不随滚动消失。</td></tr><tr><td><code>conn</code></td><td>操作区 + 应答/日志 + 报文输入</td><td>用于网络联调。发送/格式化置顶，报文输入框沉底；日志区必须能切 Hex / 文本，且默认滚到底。</td></tr><tr><td><code>table</code></td><td>参数 + 结果表</td><td>用于检查/扫描类。工具条上给「共 N 行」与导出，表头可点排序。</td></tr><tr><td><code>form</code></td><td>表单 + 结果预览</td><td>用于配置生成。操作区置顶；右侧预览随输入实时更新，不等「生成」按钮。</td></tr><tr><td><code>preview</code></td><td>结构树 + 详情</td><td>用于解析/浏览类。导出动作随操作区置顶；左侧树固定宽 240。</td></tr></tbody>
+  </table>
+  <div class="callout">
+    这七种形态是<b>声明式 [io] 段</b>要能表达的上限。如果一个工具套不进任何一种，说明它需要真正的自定义界面——那就该考虑「不迁」或「只迁逻辑、宿主另做 UI」，而不是硬塞。
+  </div>
+
+  <h2>三、合并方案<span>11 组 · 减少 13 个入口</span></h2>
+  <p class="lede">合并的判断标准只有一个：<b>两个工具是否共用同一套界面外壳与同一份数据模型</b>。共用就合成一个「模式」开关；只是长得像但数据模型不同（比如 PDM 阅读器与金融文件解析），一律不合并——那种合并会把两个领域硬塞进一个表单，比分开更难用。</p>
+  <table>
+    <thead><tr><th>合并体</th><th>成员</th><th>共用的是什么</th><th>代价与对策</th></tr></thead>
+    <tbody><tr><td><code>random-gen</code><br><span class="mut2">随机数据生成</span></td><td>UUID 生成 + 随机文本生成</td><td>都是「填参数 → 出 N 条」，共用结果列表与复制</td><td>地址 / 客户信息后置；地址生成需另评审敏感数据合成</td></tr><tr><td><code>sql-rewrite</code><br><span class="mut2">SQL 改写</span></td><td>含参 SQL 替换 + SQL 可重复执行改写</td><td>都是「SQL 文本进 → 可执行 SQL 出」，同一个编辑器心智</td><td>幂等改写会落盘 → Dialog 确认 + .bak；参数替换纯内存</td></tr><tr><td><code>script-check</code><br><span class="mut2">脚本检查</span></td><td>SQL 质量检查 + Shell 脚本检查</td><td>输出同构：严重度 / 行号 / 规则 / 建议，共用一张问题表</td><td>SQL 分支多「数据库类型」，按语言显隐</td></tr><tr><td><code>pkg-merge</code><br><span class="mut2">上线包合并</span></td><td>SP 包合并 + 需求单合并 + v6-SEE 合并</td><td>界面契约完全相同：两目录 + 范围 + 开关 + 日志</td><td>客户名称仅 v6-SEE 显示；三条 Rust 路径都保留</td></tr><tr><td><code>pkg-compare</code><br><span class="mut2">包比对</span></td><td>Class 代码比对 + Jar 包比对</td><td>共用 zip 遍历 + class 解析 + 同一张结果表</td><td>Class 粒度多两列 → 可隐藏列，不做第二张表</td></tr><tr><td><code>config-diff</code><br><span class="mut2">配置对比</span></td><td>配置对比 + 配置环境对比</td><td>去 SSH 后只差「粘贴 or 目录」，环境对比是配置对比的超集</td><td>目录模式加「文件」列；忽略规则语法只留一套</td></tr><tr><td><code>packet-send</code><br><span class="mut2">报文调试</span></td><td>TCP 请求 + XML 报文发送 + FIX 报文发送</td><td>共用 transport 与 conn 骨架，差异只在编帧与校验</td><td>FIX 校验和 / XML 格式化作为底部动作，按协议显隐</td></tr><tr><td><code>file-search</code><br><span class="mut2">文件搜索</span></td><td>内容搜索 + 文件名搜索</td><td>「找到那个文件」的两个步骤：先按名、再按内容</td><td>文件名模式改遍历搜索，不做常驻索引守护</td></tr><tr><td><code>batch-edit</code><br><span class="mut2">批量改写</span></td><td>批量重命名 + 批量查找替换</td><td>同一套「预览 → 确认 → 应用 → 可撤销」流程</td><td>重名冲突检测与替换计数各自实现，外壳共用</td></tr><tr><td><code>csv-tools</code><br><span class="mut2">CSV 工具</span></td><td>CSV 表格 + CSV 转图表</td><td>同一个 CSV 解析器与数据预览，先看表再画图</td><td>图表模式多一条 SVG 渲染路径，仍由 JS 直接出</td></tr><tr><td><code>doc-convert</code><br><span class="mut2">格式转换</span></td><td>文档转换 + XLS 批量转换</td><td>都是「选输入 → 选格式 → 转换」，都依赖外部运行时</td><td>运行时检测只做一次；批量模式才有统计条</td></tr></tbody>
+  </table>
+  <div class="callout">
+    合并后<b>原工具名全部保留为别名</b>（manifest 的 <code>keywords</code>），搜索「FIX」「jar 比对」「需求单」仍能直接命中，并在进入后自动切到对应模式。也就是说 <b>发现性不受影响，界面数量减少</b>。
+  </div>
+
+  <h2>四、逐工具设计<span>点卡片右侧按钮标记你的意见</span></h2>
+  <section class="pkg"><h3 class="pkgh" id="p-devkit.text">通用文本 <code>duck.devkit.text</code><span class="pkgc">11</span></h3><p class="pkgd">几乎全是纯函数。这一包是插件框架的试金石：如果它做不顺，说明 [io] 声明式界面这条路走不通。</p><div class="cards"><article class="card" id="t-formatter" data-id="formatter">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>格式化</h4>
+    <code class="tid">formatter</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>格式化</em><span class="wtag">formatter</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">语言</span><span class="wsegs"><span class="wseg on">自动识别</span><span class="wseg">JSON</span><span class="wseg">XML</span><span class="wseg">SQL</span><span class="wseg">YAML</span><span class="wseg">TOML</span><span class="wseg">Properties</span><span class="wseg">Markdown</span><span class="wseg">HTML</span><span class="wseg">CSS</span></span></div><div class="wf"><span class="wl">压缩输出</span><span class="wtg"><i></i></span></div><div class="wf"><span class="wl">语法校验</span><span class="wtg on"><i></i></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">输入</div><div class="wghost">粘贴代码或拖入文件…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>3 项：分段选择、开关、开关</dd></div><div class="srow"><dt>输出</dt><dd>格式化文本（只读代码块 + 复制）+ 语法错误定位</dd></div><div class="srow"><dt>源页面</dt><dd>Formatter.vue 296</dd></div></dl>
+      <p class="note">源页面除编辑器外只有「语言 / 压缩」两个开关，双栏足够。语言默认「自动识别」，失败再让用户手选；错误行必须给出行列号，而不是只弹一句“格式错误”。</p>
+      <div class="verdict" role="group" aria-label="核对 格式化">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="格式化 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-data-format" data-id="data-format">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>数据格式转换</h4>
+    <code class="tid">data-format</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-trim">需收窄</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>数据格式转换</em><span class="wtag">data-format</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">数据文件</span><span class="win wpath"><i>选择 CSV / 定长文件</i><b>浏览</b></span></div><div class="wf"><span class="wl">类型</span><span class="wsegs"><span class="wseg on">CSV</span><span class="wseg">定长</span><span class="wseg">固定分隔符</span></span></div><div class="wf"><span class="wl">分隔符</span><span class="win">,</span></div><div class="wmore">+ 2 项（高级参数，收进折叠区）</div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>5 项：路径选择 + 浏览、分段选择、单行、开关…</dd></div><div class="srow"><dt>输出</dt><dd>解析预览表 + 导出（Markdown / SQL / JSON）</dd></div><div class="srow"><dt>源页面</dt><dd>DataFormat.vue 1,450</dd></div></dl>
+      <p class="note">1,450 行里有大半是「定长配置」「固定分隔符配置」两套持久化配置管理，首版不做：只做「选文件 → 预览 → 导出」。配置复用依赖插件 KV，等 KV 落地后再补。</p>
+      <div class="verdict" role="group" aria-label="核对 数据格式转换">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="数据格式转换 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-case-convert" data-id="case-convert">
+  <header class="chead">
+    <span class="idx">03</span>
+    <h4>大小写转换</h4>
+    <code class="tid">case-convert</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>大小写转换</em><span class="wtag">case-convert</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">目标风格</span><span class="wsegs"><span class="wseg on">camelCase</span><span class="wseg">snake_case</span><span class="wseg">kebab-case</span><span class="wseg">CONSTANT</span><span class="wseg">PascalCase</span></span></div><div class="wf"><span class="wl">多行批量</span><span class="wtg on"><i></i></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">输入</div><div class="wghost">粘贴变量名，支持每行一个…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>2 项：分段选择、开关</dd></div><div class="srow"><dt>输出</dt><dd>转换后文本</dd></div><div class="srow"><dt>源页面</dt><dd>CaseConvert.vue 33</dd></div></dl>
+      <p class="note">33 行纯函数，是整套工具里最适合插件形态的一个。建议顺手加「多行批量」——真实场景是粘贴一列字段名一次转完，而不是一次一个。</p>
+      <div class="verdict" role="group" aria-label="核对 大小写转换">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="大小写转换 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-random-gen" data-id="random-gen">
+  <header class="chead">
+    <span class="idx">04</span>
+    <h4>随机数据生成</h4>
+    <code class="tid">random-gen</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-trim">需收窄</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>UUID 生成</span><code>uuid-gen</code> · <span>随机文本生成</span><code>random-text-generator</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>随机数据生成</em><span class="wtag">random-gen</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">类型</span><span class="wsegs"><span class="wseg on">UUID</span><span class="wseg">姓名</span><span class="wseg">数字</span><span class="wseg">日期</span><span class="wseg">随机串</span></span></div><div class="wf"><span class="wl">数量</span><span class="win wnum">10</span></div><div class="wf"><span class="wl">大写</span><span class="wtg"><i></i></span></div><div class="wf"><span class="wl">语言</span><span class="wsegs"><span class="wseg on">中文</span><span class="wseg">英文</span></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制全部</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wlog">a1b2c3d4-…-9f0e　　[复制]
+7c8d9e0f-…-1234　　[复制]
+3a4b5c6d-…-5678　　[复制]</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>4 项：分段选择、数值、开关、分段选择</dd></div><div class="srow"><dt>输出</dt><dd>结果列表（逐条复制 / 复制全部）</dd></div><div class="srow"><dt>源页面</dt><dd>UuidGen 55 + RandomText 1,418</dd></div></dl>
+      <p class="note">合并 uuid-gen 与 random-text-generator：两者都是「填参数 → 出 N 条」，共用结果列表与复制逻辑，分开会得到两个几乎一样的界面。地址与「个人客户信息」（含身份证、税号）不做——属敏感数据合成，另行评审。别名 uuid / 随机姓名 保留，搜索仍能命中。</p>
+      <div class="verdict" role="group" aria-label="核对 随机数据生成">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="随机数据生成 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-timestamp" data-id="timestamp">
+  <header class="chead">
+    <span class="idx">05</span>
+    <h4>时间戳工具</h4>
+    <code class="tid">timestamp</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>时间戳工具</em><span class="wtag">timestamp</span></div><div class="wbody"><div class="w2col"><div class="wform"><div class="wf"><span class="wl">秒级时间戳</span><span class="win">10 位</span></div><div class="wf"><span class="wl">毫秒级时间戳</span><span class="win">13 位</span></div><div class="wf"><span class="wl">日期时间</span><span class="win">2026-10-17 23:30:00</span></div></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol"><div class="wcl">结果</div><div class="wghost mono">生成结果预览…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>3 项：单行、单行、单行</dd></div><div class="srow"><dt>输出</dt><dd>三向互转结果卡 + 常驻「当前时间」区</dd></div><div class="srow"><dt>源页面</dt><dd>Timestamp.vue 146</dd></div></dl>
+      <p class="note">源页面已是三向同屏，保留。关键改进：顶部固定一条「当前秒/毫秒」实时值（每 100ms 刷新），比让用户复制当前时间再粘贴回来更符合实际操作。</p>
+      <div class="verdict" role="group" aria-label="核对 时间戳工具">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="时间戳工具 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-cron-gen" data-id="cron-gen">
+  <header class="chead">
+    <span class="idx">06</span>
+    <h4>Cron 表达式</h4>
+    <code class="tid">cron-gen</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>Cron 表达式</em><span class="wtag">cron-gen</span></div><div class="wbody"><div class="w2col"><div class="wform"><div class="wf"><span class="wl">分</span><span class="win">0-59</span></div><div class="wf"><span class="wl">时</span><span class="win">0-23</span></div><div class="wf"><span class="wl">日</span><span class="win">1-31</span></div><div class="wf"><span class="wl">月</span><span class="win">1-12</span></div><div class="wf"><span class="wl">周</span><span class="win">0-7</span></div><div class="wf"><span class="wl">预设</span><span class="wsegs"><span class="wseg on">每分钟</span><span class="wseg">每小时</span><span class="wseg">每天 0 点</span><span class="wseg">每周一</span><span class="wseg">每月 1 日</span></span></div></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol"><div class="wcl">结果</div><div class="wghost mono">生成结果预览…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>6 项：单行、单行、单行、单行…</dd></div><div class="srow"><dt>输出</dt><dd>自然语言描述 + 未来 5 次触发时间</dd></div><div class="srow"><dt>源页面</dt><dd>CronGen.vue 163</dd></div></dl>
+      <p class="note">163 行。真正有用的是「未来 5 次触发」而不是自然语言翻译——后者在跨时区/DST 场景经常读着对、跑起来错。要显式标注时区。</p>
+      <div class="verdict" role="group" aria-label="核对 Cron 表达式">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="Cron 表达式 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-number-to-chinese" data-id="number-to-chinese">
+  <header class="chead">
+    <span class="idx">07</span>
+    <h4>数字转中文</h4>
+    <code class="tid">number-to-chinese</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>数字转中文</em><span class="wtag">number-to-chinese</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">人民币格式</span><span class="wtg on"><i></i></span></div><div class="wf"><span class="wl">零元整补全</span><span class="wtg on"><i></i></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">输入数字</div><div class="wghost">如 123456.78</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>2 项：开关、开关</dd></div><div class="srow"><dt>输出</dt><dd>两行结果：人民币大写 / 纯数字大写</dd></div><div class="srow"><dt>源页面</dt><dd>NumberToChinese.vue 209</dd></div></dl>
+      <p class="note">209 行。金额场景必须同屏给两种写法（票据要「壹拾万元整」，报表要「十万」），源页面已如此。边界要覆盖 0、负数、超两位小数、千分位输入。</p>
+      <div class="verdict" role="group" aria-label="核对 数字转中文">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="数字转中文 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-cheat-sheets" data-id="cheat-sheets">
+  <header class="chead">
+    <span class="idx">08</span>
+    <h4>命令速查</h4>
+    <code class="tid">cheat-sheets</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>命令速查</em><span class="wtag">cheat-sheets</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">搜索</span><span class="win">rtk</span></div><div class="wf"><span class="wl">分类</span><span class="wsegs"><span class="wseg on">全部</span><span class="wseg">Git</span><span class="wseg">Docker</span><span class="wseg">K8s</span><span class="wseg">SQL</span><span class="wseg">Shell</span></span></div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>2 项：单行、分段选择</dd></div><div class="srow"><dt>输出</dt><dd>命令详情（代码块 + 复制）</dd></div><div class="srow"><dt>源页面</dt><dd>CheatSheets.vue 363</dd></div></dl>
+      <p class="note">内容型工具，363 行里绝大部分是数据。必须删掉「发送到终端」——那是跨模块直调宿主终端，插件不该有这条通道；只留复制，用户自己粘。</p>
+      <div class="verdict" role="group" aria-label="核对 命令速查">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="命令速查 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-transform-hub" data-id="transform-hub">
+  <header class="chead">
+    <span class="idx">09</span>
+    <h4>变换枢纽</h4>
+    <code class="tid">transform-hub</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>变换枢纽</em><span class="wtag">transform-hub</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl"></span><span class="win"></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">输入</div><div class="wghost">…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>1 项：—</dd></div><div class="srow"><dt>输出</dt><dd>推荐可用变换列表 + 输出</dd></div><div class="srow"><dt>源页面</dt><dd>TransformHub.vue 143</dd></div></dl>
+      <p class="note">它自己没有任何输入输出契约，只是「把内容推荐给别的工具」的路由层。宿主已有命令面板 + 工具搜索，做同样的事。留着会形成第二个导航入口，建议不迁。</p>
+      <div class="verdict" role="group" aria-label="核对 变换枢纽">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="变换枢纽 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-regex-plus" data-id="regex-plus">
+  <header class="chead">
+    <span class="idx">10</span>
+    <h4>正则测试</h4>
+    <code class="tid">regex-plus</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>正则测试</em><span class="wtag">regex-plus</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">正则表达式</span><span class="win">(\w+)</span></div><div class="wf"><span class="wl">flags</span><span class="wsegs"><span class="wseg on">g</span><span class="wseg">i</span><span class="wseg">m</span><span class="wseg">s</span></span></div><div class="wf"><span class="wl">实时匹配</span><span class="wtg on"><i></i></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">测试文本</div><div class="wghost">粘贴要高亮的文本…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>3 项：单行、分段选择、开关</dd></div><div class="srow"><dt>输出</dt><dd>匹配列表 + 高亮文本</dd></div><div class="srow"><dt>源页面</dt><dd>RegexPlus.vue 100</dd></div></dl>
+      <p class="note">100 行。高亮只能用宿主自己的文本渲染，不要为此引入富文本控件。需要明确的：分组捕获要单独列一栏，只给整体匹配对排查没帮助。</p>
+      <div class="verdict" role="group" aria-label="核对 正则测试">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="正则测试 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-prompt-optimizer" data-id="prompt-optimizer">
+  <header class="chead">
+    <span class="idx">11</span>
+    <h4>Prompt 优化</h4>
+    <code class="tid">prompt-optimizer</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>Prompt 优化</em><span class="wtag">prompt-optimizer</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">优化方向</span><span class="wsegs"><span class="wseg on">补结构</span><span class="wseg">补约束</span><span class="wseg">补示例</span><span class="wseg">精简</span></span></div><div class="wf"><span class="wl">差异对比</span><span class="wtg on"><i></i></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">原始 Prompt</div><div class="wghost">粘贴你要优化的 Prompt…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>2 项：分段选择、开关</dd></div><div class="srow"><dt>输出</dt><dd>优化后 Prompt + diff</dd></div><div class="srow"><dt>源页面</dt><dd>PromptOptimizer.vue 236</dd></div></dl>
+      <p class="note">若原实现是调大模型，必须改挂 duck-ai 的模型配置，插件内不许持有 API key（凭据不过二源）。首版可只做规则版：补角色 / 约束 / 输出格式 / 示例四段，并标清「规则生成，非模型」。</p>
+      <div class="verdict" role="group" aria-label="核对 Prompt 优化">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="Prompt 优化 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-devkit.codec">编码与加解密 <code>duck.devkit.codec</code><span class="pkgc">3</span></h3><p class="pkgd">密钥一律进 vault，不进日志、不进历史；私有算法（恒生密钥）先做合规确认。全 JS，无文件、无进程。</p><div class="cards"><article class="card" id="t-crypto-bundle" data-id="crypto-bundle">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>加解密工具包</h4>
+    <code class="tid">crypto-bundle</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-trim">需收窄</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>加解密工具包</em><span class="wtag">crypto-bundle</span></div><div class="wbody"><div class="w2col"><div class="wform"><div class="wf"><span class="wl">功能</span><span class="wsegs"><span class="wseg on">AES 加解密</span><span class="wseg">哈希</span><span class="wseg">JWT 解析</span><span class="wseg">Base64</span><span class="wseg">URL 编解码</span><span class="wseg">Hex</span><span class="wseg">随机串</span></span></div><div class="wf"><span class="wl">算法</span><span class="wsegs"><span class="wseg on">AES-256-CBC</span><span class="wseg">AES-128-CBC</span><span class="wseg">SHA-256</span><span class="wseg">MD5</span></span></div><div class="wf"><span class="wl">密钥</span><span class="win">16/24/32 位</span></div><div class="wf"><span class="wl">IV</span><span class="win">16 位</span></div></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol"><div class="wcl">结果</div><div class="wghost mono">生成结果预览…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>4 项：分段选择、分段选择、单行、单行</dd></div><div class="srow"><dt>输出</dt><dd>输出（Base64 / Hex）+ 复制</dd></div><div class="srow"><dt>源页面</dt><dd>CryptoBundle.vue 681</dd></div></dl>
+      <p class="note">681 行 7 个 tab。首版只留 AES-CBC / 哈希 / JWT 解析 / Base64 四块；「恒生专用密钥」是私有算法，涉及第三方合规，未经确认不进公开插件。密钥输入需可切明文，且不进日志。</p>
+      <div class="verdict" role="group" aria-label="核对 加解密工具包">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="加解密工具包 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-encoding-converter" data-id="encoding-converter">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>编码转换</h4>
+    <code class="tid">encoding-converter</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>编码转换</em><span class="wtag">encoding-converter</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">源编码</span><span class="wsegs"><span class="wseg on">UTF-8</span><span class="wseg">GBK</span><span class="wseg">GB18030</span><span class="wseg">ISO-8859-1</span><span class="wseg">Big5</span></span></div><div class="wf"><span class="wl">目标编码</span><span class="wsegs"><span class="wseg on">GBK</span><span class="wseg">UTF-8</span><span class="wseg">GB18030</span><span class="wseg">Big5</span></span></div><div class="wf"><span class="wl">显示不可映射字符</span><span class="wtg on"><i></i></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">输入</div><div class="wghost">粘贴要转换的内容…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>3 项：分段选择、分段选择、开关</dd></div><div class="srow"><dt>输出</dt><dd>转换结果（含失败字符定位）</dd></div><div class="srow"><dt>源页面</dt><dd>EncodingConverter.vue 260</dd></div></dl>
+      <p class="note">260 行。要能看见「哪些字符转不过去」，而不是静默变成问号——银行老系统的 GBK 文件里经常混 UTF-8 片段，这个反馈是核心价值。</p>
+      <div class="verdict" role="group" aria-label="核对 编码转换">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="编码转换 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-protobuf-codec" data-id="protobuf-codec">
+  <header class="chead">
+    <span class="idx">03</span>
+    <h4>Protobuf 编解码</h4>
+    <code class="tid">protobuf-codec</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>Protobuf 编解码</em><span class="wtag">protobuf-codec</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">模式</span><span class="wsegs"><span class="wseg on">编码</span><span class="wseg">解码</span><span class="wseg">格式化</span></span></div><div class="wf"><span class="wl">格式</span><span class="wsegs"><span class="wseg on">Hex</span><span class="wseg">Base64</span></span></div><div class="wf"><span class="wl">.proto 定义</span><span class="warea">粘贴 message 定义…</span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">报文字节</div><div class="wghost">粘贴 Hex 或 Base64…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>3 项：分段选择、分段选择、多行</dd></div><div class="srow"><dt>输出</dt><dd>JSON / Hex 结果</dd></div><div class="srow"><dt>源页面</dt><dd>ProtobufCodec.vue 175</dd></div></dl>
+      <p class="note">175 行。QuickJS 跑不了 protobuf 运行时，必须走 process 轨。.proto 定义建议做成可保存的片段（插件 KV），联调时反复用同一份。</p>
+      <div class="verdict" role="group" aria-label="核对 Protobuf 编解码">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="Protobuf 编解码 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-devkit.sql">SQL 工程 <code>duck.devkit.sql</code><span class="pkgc">6</span></h3><p class="pkgd">共享「SQL 文本 + 问题表」两种形态。结果表组件应在包内复用；本包是 process 轨第一次真机落地。</p><div class="cards"><article class="card" id="t-sql-rewrite" data-id="sql-rewrite">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>SQL 改写</h4>
+    <code class="tid">sql-rewrite</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>含参 SQL 替换</span><code>sql-replace</code> · <span>SQL 可重复执行改写</span><code>sql-reexec</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>SQL 改写</em><span class="wtag">sql-rewrite</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">模式</span><span class="wsegs"><span class="wseg on">参数替换</span><span class="wseg">幂等改写</span></span></div><div class="wf"><span class="wl">数据库</span><span class="wsegs"><span class="wseg on">Oracle</span><span class="wseg">MySQL</span><span class="wseg">PostgreSQL</span></span></div><div class="wf"><span class="wl">Schema</span><span class="win">可选</span></div><div class="wmore">+ 3 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">输入</div><div class="wghost">…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>6 项：分段选择、分段选择、单行、路径选择 + 浏览…</dd></div><div class="srow"><dt>输出</dt><dd>改写后的可执行 SQL（可保存）</dd></div><div class="srow"><dt>源页面</dt><dd>SqlReplace 365 + SqlReExec 1,093</dd></div></dl>
+      <p class="note">合并依据：都是「输入 SQL 文本 → 输出可执行 SQL」，处在同一个编辑器心智里；分开的代价是用户要判断该开哪个，而判断标准其实很清楚——要不要连库参数。幂等改写会落盘，必须走 Dialog 确认；参数替换是纯内存操作，不用确认。</p>
+      <div class="verdict" role="group" aria-label="核对 SQL 改写">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="SQL 改写 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-sql-merge" data-id="sql-merge">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>SQL 文件合并</h4>
+    <code class="tid">sql-merge</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>SQL 文件合并</em><span class="wtag">sql-merge</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">包目录</span><span class="win wpath"><i>包含多个包目录的父目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">客户编号过滤</span><span class="win">可选</span></div><div class="wf"><span class="wl">数据库类型过滤</span><span class="win">oracle,mysql</span></div><div class="wf"><span class="wl">输出目录</span><span class="win wpath"><i>可选</i><b>浏览</b></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">高级参数</span></div><div class="wprog"><i style="width:62%"></i></div><div class="wchips"><span class="wchip">成功 128</span><span class="wchip">失败 2</span><span class="wchip">跳过 6</span></div><div class="wcol tall"><div class="wcl">日志</div><div class="wlog">[1/136] 载入 SP_2026_10_01.zip … ok
+[2/136] 冲突：upd/sql/ddl.sql → 取最新
+[3/136] 写入结果目录 … 62%</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>4 项：路径选择 + 浏览、单行、单行、路径选择 + 浏览</dd></div><div class="srow"><dt>输出</dt><dd>统计（来源包 / 源文件 / 合并到 / 条数 / 大小）+ 明细表 + 日志</dd></div><div class="srow"><dt>源页面</dt><dd>SqlMerge.vue 620</dd></div></dl>
+      <p class="note">620 行 UI + 2,101 行 Rust。job 布局是唯一正确解：必须能看进度、能取消、结束给「合并了哪些文件」的明细，否则出错无法复核。</p>
+      <div class="verdict" role="group" aria-label="核对 SQL 文件合并">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="SQL 文件合并 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-script-check" data-id="script-check">
+  <header class="chead">
+    <span class="idx">03</span>
+    <h4>脚本检查</h4>
+    <code class="tid">script-check</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>SQL 质量检查</span><code>sql-checker</code> · <span>Shell 脚本检查</span><code>shellcheck</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>脚本检查</em><span class="wtag">script-check</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">语言</span><span class="wsegs"><span class="wseg on">SQL</span><span class="wseg">Shell</span></span></div><div class="wf"><span class="wl">输入</span><span class="win wpath"><i>文件或目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">规则集</span><span class="wsegs"><span class="wseg on">默认</span><span class="wseg">严格</span><span class="wseg">宽松</span></span></div><div class="wmore">+ 1 项（高级参数，收进折叠区）</div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>4 项：分段选择、路径选择 + 浏览、分段选择、分段选择</dd></div><div class="srow"><dt>输出</dt><dd>问题表（严重度 / 行号 / 规则 / 建议）+ 导出 MD</dd></div><div class="srow"><dt>源页面</dt><dd>SQLChecker 409 + ShellCheck 374</dd></div></dl>
+      <p class="note">合并依据：两个工具输出完全同构（严重度 / 行号 / 规则 / 建议），共用一张问题表与一套导出，差异只在解析器。代价：SQL 分支需要数据库类型，Shell 不需要——这是声明式界面里唯一允许的「按语言条件显隐」。</p>
+      <div class="verdict" role="group" aria-label="核对 脚本检查">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="脚本检查 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-ddl-generator" data-id="ddl-generator">
+  <header class="chead">
+    <span class="idx">04</span>
+    <h4>DDL 生成 / 分表</h4>
+    <code class="tid">ddl-generator</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>DDL 生成 / 分表</em><span class="wtag">ddl-generator</span></div><div class="wbody"><div class="w2col"><div class="wform"><div class="wf"><span class="wl">分表数量</span><span class="win wnum">10</span></div><div class="wf"><span class="wl">TA 编码</span><span class="win">可选</span></div><div class="wf"><span class="wl">索引占位符</span><span class="win">${num}</span></div><div class="wf"><span class="wl">TA 占位符</span><span class="win">${ta}</span></div><div class="wf"><span class="wl">生成 UNION VIEW</span><span class="wtg"><i></i></span></div></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol"><div class="wcl">结果</div><div class="wghost mono">生成结果预览…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>5 项：数值、单行、单行、单行…</dd></div><div class="srow"><dt>输出</dt><dd>DDL 文本 + 复制 / 保存</dd></div><div class="srow"><dt>源页面</dt><dd>DdlGenerator.vue 256</dd></div></dl>
+      <p class="note">256 行。页面里已有「涉及表视图创建，需产品部评审」的提示，这条提示必须保留到插件里，不能因为换界面就丢掉。</p>
+      <div class="verdict" role="group" aria-label="核对 DDL 生成 / 分表">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="DDL 生成 / 分表 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-sql-classifier" data-id="sql-classifier">
+  <header class="chead">
+    <span class="idx">05</span>
+    <h4>SQL 分类抽取</h4>
+    <code class="tid">sql-classifier</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>SQL 分类抽取</em><span class="wtag">sql-classifier</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">根目录</span><span class="win wpath"><i>选择源目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">包含 commit 语句</span><span class="wtg"><i></i></span></div><div class="wf"><span class="wl">输出目录</span><span class="win wpath"><i>三份文件输出位置</i><b>浏览</b></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">高级参数</span></div><div class="wprog"><i style="width:62%"></i></div><div class="wchips"><span class="wchip">成功 128</span><span class="wchip">失败 2</span><span class="wchip">跳过 6</span></div><div class="wcol tall"><div class="wcl">日志</div><div class="wlog">[1/136] 载入 SP_2026_10_01.zip … ok
+[2/136] 冲突：upd/sql/ddl.sql → 取最新
+[3/136] 写入结果目录 … 62%</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>3 项：路径选择 + 浏览、开关、路径选择 + 浏览</dd></div><div class="srow"><dt>输出</dt><dd>三份输出文件 + 块级统计 + 日志</dd></div><div class="srow"><dt>源页面</dt><dd>SqlClassifier.vue 435</dd></div></dl>
+      <p class="note">435 行。核心是「混合块按变更标记拆成三个文件」，UI 只需目录进、文件出；关键是边界情况要在结果里列出来（无法归类的块不能静默丢）。</p>
+      <div class="verdict" role="group" aria-label="核对 SQL 分类抽取">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="SQL 分类抽取 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-storage-estimator" data-id="storage-estimator">
+  <header class="chead">
+    <span class="idx">06</span>
+    <h4>数据库存储估算</h4>
+    <code class="tid">storage-estimator</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>数据库存储估算</em><span class="wtag">storage-estimator</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">数据库</span><span class="wsegs"><span class="wseg on">Oracle</span><span class="wseg">MySQL</span><span class="wseg">PostgreSQL</span></span></div><div class="wf"><span class="wl">预估行数</span><span class="win wnum">1000000</span></div><div class="wf"><span class="wl">每日增长</span><span class="win wnum">10000</span></div><div class="wmore">+ 1 项（高级参数，收进折叠区）</div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>4 项：分段选择、数值、数值、开关</dd></div><div class="srow"><dt>输出</dt><dd>每行字节 / 总存储 / 增长预测 + 字段明细表</dd></div><div class="srow"><dt>源页面</dt><dd>StorageEstimator.vue 246</dd></div></dl>
+      <p class="note">246 行。字段定义是「多列可编辑」的典型场景，但首版可以降级为「粘贴 DDL 自动解析字段」，比让用户逐行填更省事。</p>
+      <div class="verdict" role="group" aria-label="核对 数据库存储估算">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="数据库存储估算 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-ifm.merge">上线包合并 <code>duck.ifm.merge</code><span class="pkgc">2</span></h3><p class="pkgd">全部是目录进、文件出、分钟级长任务。job 布局是这一包的唯一形态。</p><div class="cards"><article class="card" id="t-pkg-merge" data-id="pkg-merge">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>上线包合并</h4>
+    <code class="tid">pkg-merge</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 3</span>
+  </header><div class="cmerge">合并自：<span>SP 包合并</span><code>sp-merge</code> · <span>需求单合并</span><code>non-sp-merge</code> · <span>v6-SEE 合并</span><code>ifms6-merge</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>上线包合并</em><span class="wtag">pkg-merge</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">产品线</span><span class="wsegs"><span class="wseg on">SP</span><span class="wseg">需求单</span><span class="wseg">v6-SEE</span></span></div><div class="wf"><span class="wl">包目录</span><span class="win wpath"><i>包含 ZIP 包的目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">结果目录</span><span class="win wpath"><i>合并后输出位置</i><b>浏览</b></span></div><div class="wf"><span class="wl">范围</span><span class="wrange"><span class="win">起始</span><em>~</em><span class="win">截止</span></span></div><div class="wmore">+ 2 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">高级参数</span></div><div class="wprog"><i style="width:62%"></i></div><div class="wchips"><span class="wchip">成功 128</span><span class="wchip">失败 2</span><span class="wchip">跳过 6</span></div><div class="wcol tall"><div class="wcl">日志</div><div class="wlog">[1/136] 载入 SP_2026_10_01.zip … ok
+[2/136] 冲突：upd/sql/ddl.sql → 取最新
+[3/136] 写入结果目录 … 62%</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>6 项：分段选择、路径选择 + 浏览、路径选择 + 浏览、区间…</dd></div><div class="srow"><dt>输出</dt><dd>统计（成功 / 失败 / 跳过）+ 待合并版本列表 + 实时日志</dd></div><div class="srow"><dt>源页面</dt><dd>SpMerge 715 + NonSpMerge 618 + Ifms6Merge 355</dd></div></dl>
+      <p class="note">合并依据：三个工具的界面契约完全相同（两个目录 + 范围 + 若干开关 + 进度日志），差异只在 Rust 侧模块与范围语义。用户心里想的是「这次合什么包」，不是「打开哪个工具」。代价：v6-SEE 才有的客户名称要按产品线显隐；三条 Rust 路径都得保留。别名 sp-merge / 需求单 / ifms6 全部保留。</p>
+      <div class="verdict" role="group" aria-label="核对 上线包合并">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="上线包合并 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-extract-by-manifest" data-id="extract-by-manifest">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>清单提取</h4>
+    <code class="tid">extract-by-manifest</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>清单提取</em><span class="wtag">extract-by-manifest</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">清单文件</span><span class="win wpath"><i>选择清单文件 (.txt)</i><b>浏览</b></span></div><div class="wf"><span class="wl">源目录</span><span class="win wpath"><i>SP 合并输出目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">目标目录</span><span class="win wpath"><i>提取结果输出位置</i><b>浏览</b></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">高级参数</span></div><div class="wprog"><i style="width:62%"></i></div><div class="wchips"><span class="wchip">成功 128</span><span class="wchip">失败 2</span><span class="wchip">跳过 6</span></div><div class="wcol tall"><div class="wcl">日志</div><div class="wlog">[1/136] 载入 SP_2026_10_01.zip … ok
+[2/136] 冲突：upd/sql/ddl.sql → 取最新
+[3/136] 写入结果目录 … 62%</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>3 项：路径选择 + 浏览、路径选择 + 浏览、路径选择 + 浏览</dd></div><div class="srow"><dt>输出</dt><dd>总计 / 未找到的文件清单 + 日志</dd></div><div class="srow"><dt>源页面</dt><dd>ExtractByManifest.vue 245</dd></div></dl>
+      <p class="note">245 行。UI 很轻，但「未找到的文件」必须单独成表并可复制——补包时这张表就是待办清单。</p>
+      <div class="verdict" role="group" aria-label="核对 清单提取">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="清单提取 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-ifm.compare">比对与反编译 <code>duck.ifm.compare</code><span class="pkgc">4</span></h3><p class="pkgd">共享 pair + 结果表两种形态；class/jar 建议合并为一个入口。</p><div class="cards"><article class="card" id="t-pkg-compare" data-id="pkg-compare">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>包比对</h4>
+    <code class="tid">pkg-compare</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>Class 代码比对</span><code>class-compare</code> · <span>Jar 包比对</span><code>jar-compare</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>包比对</em><span class="wtag">pkg-compare</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">粒度</span><span class="wsegs"><span class="wseg on">JAR</span><span class="wseg">Class</span></span></div><div class="wf"><span class="wl">基准环境</span><span class="win wpath"><i>选择基准目录</i><b>浏览</b></span></div><div class="wmore">+ 3 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn">比对</span><span class="wbtn ghost">交换 A/B</span></div><div class="wsplit"><div class="wcol tall"><div class="wcl">A 侧</div><div class="wlog">- old_line_1
++ new_line_1
+  same_line</div></div><div class="wcol tall"><div class="wcl">B 侧</div><div class="wlog">+ new_line_1
+- old_line_1
+  same_line</div></div></div><div class="wchips"><span class="wchip">新增 12</span><span class="wchip">删除 3</span><span class="wchip">修改 8</span></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>5 项：分段选择、路径选择 + 浏览、路径选择 + 浏览、开关…</dd></div><div class="srow"><dt>输出</dt><dd>统计（新增 / 升级 / 回退 / 相同）+ 结果表 + 导出 CSV / Excel</dd></div><div class="srow"><dt>源页面</dt><dd>ClassCompare 630 + JarCompare 510</dd></div></dl>
+      <p class="note">合并依据：共用 zip 遍历 + class 解析 + 同一张结果表（服务 / 路径 / 版本 / 差异），分开要维护两套统计口径与两份 fixture。代价：Class 粒度多「类名 / 包名」两列——用可隐藏列解决，不做两套表。</p>
+      <div class="verdict" role="group" aria-label="核对 包比对">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="包比对 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-text-diff" data-id="text-diff">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>文本对比</h4>
+    <code class="tid">text-diff</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>文本对比</em><span class="wtag">text-diff</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">忽略空白</span><span class="wtg"><i></i></span></div><div class="wf"><span class="wl">忽略大小写</span><span class="wtg"><i></i></span></div><div class="wmore">+ 1 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn">比对</span><span class="wbtn ghost">交换 A/B</span></div><div class="wsplit"><div class="wcol tall"><div class="wcl">A 侧</div><div class="wlog">- old_line_1
++ new_line_1
+  same_line</div></div><div class="wcol tall"><div class="wcl">B 侧</div><div class="wlog">+ new_line_1
+- old_line_1
+  same_line</div></div></div><div class="wchips"><span class="wchip">新增 12</span><span class="wchip">删除 3</span><span class="wchip">修改 8</span></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>3 项：开关、开关、开关</dd></div><div class="srow"><dt>输出</dt><dd>差异结果（新增/删除/修改着色）+ 复制差异</dd></div><div class="srow"><dt>源页面</dt><dd>TextDiff.vue 417</dd></div></dl>
+      <p class="note">417 行。纯前端可做（Myers diff）。行长超过 5,000 行必须切到 process 轨或分块，否则 JS 10s 上限会直接掐断。</p>
+      <div class="verdict" role="group" aria-label="核对 文本对比">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="文本对比 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-config-diff" data-id="config-diff">
+  <header class="chead">
+    <span class="idx">03</span>
+    <h4>配置对比</h4>
+    <code class="tid">config-diff</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>配置对比</span><code>config-diff</code> · <span>配置环境对比</span><code>config-env-diff</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>配置对比</em><span class="wtag">config-diff</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">输入</span><span class="wsegs"><span class="wseg on">粘贴</span><span class="wseg">本地目录</span></span></div><div class="wf"><span class="wl">格式</span><span class="wsegs"><span class="wseg on">Properties</span><span class="wseg">YAML</span><span class="wseg">JSON</span><span class="wseg">XML</span></span></div><div class="wmore">+ 3 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn">比对</span><span class="wbtn ghost">交换 A/B</span></div><div class="wsplit"><div class="wcol tall"><div class="wcl">A 侧</div><div class="wlog">- old_line_1
++ new_line_1
+  same_line</div></div><div class="wcol tall"><div class="wcl">B 侧</div><div class="wlog">+ new_line_1
+- old_line_1
+  same_line</div></div></div><div class="wchips"><span class="wchip">新增 12</span><span class="wchip">删除 3</span><span class="wchip">修改 8</span></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>5 项：分段选择、分段选择、开关、开关…</dd></div><div class="srow"><dt>输出</dt><dd>配置项 / 左值 / 右值 三列表 + 导出 HTML</dd></div><div class="srow"><dt>源页面</dt><dd>ConfigDiff 214 + ConfigEnvDiff 470</dd></div></dl>
+      <p class="note">合并依据：去掉 SSH 分支后，两者只差「输入是粘贴还是目录」，而环境对比本就是配置对比的超集。代价：目录模式要处理多文件配对，结果表需增加「文件」列；忽略规则语法只留一套（glob + key 前缀）。</p>
+      <div class="verdict" role="group" aria-label="核对 配置对比">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="配置对比 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-java-decompiler" data-id="java-decompiler">
+  <header class="chead">
+    <span class="idx">04</span>
+    <h4>Java 反编译</h4>
+    <code class="tid">java-decompiler</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>Java 反编译</em><span class="wtag">java-decompiler</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">输入</span><span class="win wpath"><i>.class / .jar</i><b>浏览</b></span></div><div class="wf"><span class="wl">输出</span><span class="wsegs"><span class="wseg on">源码</span><span class="wseg">字节码</span></span></div><div class="wmore">+ 1 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>3 项：路径选择 + 浏览、分段选择、单行</dd></div><div class="srow"><dt>输出</dt><dd>左树（包/类）+ 右代码视图（行号）</dd></div><div class="srow"><dt>源页面</dt><dd>JavaDecompiler.vue 1,133</dd></div></dl>
+      <p class="note">1,133 行 UI + 1,391 行 Rust。依赖 CFR + JRE：检测不到 JRE 时必须把「开始」按钮置灰并给出安装指引，不能点下去才报错。代码视图只做只读 + 搜索，不做编辑。</p>
+      <div class="verdict" role="group" aria-label="核对 Java 反编译">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="Java 反编译 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-ifm.finance">金融文件 <code>duck.ifm.finance</code><span class="pkgc">3</span></h3><p class="pkgd">预览型界面的主战场。首版一律只读 + 导出，编辑能力后置。</p><div class="cards"><article class="card" id="t-finance-parser" data-id="finance-parser">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>金融文件解析</h4>
+    <code class="tid">finance-parser</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>金融文件解析</em><span class="wtag">finance-parser</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">输入</span><span class="win wpath"><i>文件 / ZIP / 目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">搜索</span><span class="win">搜索表格内容…</span></div><div class="wmore">+ 1 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>3 项：路径选择 + 浏览、单行、分段选择</dd></div><div class="srow"><dt>输出</dt><dd>文件树 + 字段表格（类型/长度/值）+ 导出</dd></div><div class="srow"><dt>源页面</dt><dd>FinanceParser.vue 1,668</dd></div></dl>
+      <p class="note">1,668 行，含就地编辑、撤销(Ctrl+Z)、多标签、字段值改写。首版只做「解析 → 只读表 + 导出」，编辑能力后置——[io] 声明式界面撑不住逐单元格编辑，硬做会变成第二套表格控件。</p>
+      <div class="verdict" role="group" aria-label="核对 金融文件解析">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="金融文件解析 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-pdm-reader" data-id="pdm-reader">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>PDM 阅读器</h4>
+    <code class="tid">pdm-reader</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>PDM 阅读器</em><span class="wtag">pdm-reader</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">PDM 源</span><span class="win wpath"><i>选择 PDM 文件或目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">导出</span><span class="wsegs"><span class="wseg on">HTML</span><span class="wseg">Markdown</span><span class="wseg">Word</span><span class="wseg">PDF</span><span class="wseg">SQL</span></span></div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>2 项：路径选择 + 浏览、分段选择</dd></div><div class="srow"><dt>输出</dt><dd>左：表列表；右：表结构（字段/主键/索引）+ 建表 SQL + 导出</dd></div><div class="srow"><dt>源页面</dt><dd>PdmReader.vue 672</dd></div></dl>
+      <p class="note">672 行 UI + 1,344 行 Rust。预览 + 导出是天然的声明式结构，适合做插件样板。导出 PDF 走「打印视图」，不要内嵌 PDF 引擎。</p>
+      <div class="verdict" role="group" aria-label="核对 PDM 阅读器">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="PDM 阅读器 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-channel-gateway" data-id="channel-gateway">
+  <header class="chead">
+    <span class="idx">03</span>
+    <h4>渠道网关模型生成</h4>
+    <code class="tid">channel-gateway</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>渠道网关模型生成</em><span class="wtag">channel-gateway</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">接口文档</span><span class="win wpath"><i>选择渠道网关接口文档</i><b>浏览</b></span></div><div class="wf"><span class="wl">银行代码</span><span class="win">如 hkb</span></div><div class="wf"><span class="wl">业务域</span><span class="win">可选</span></div><div class="wmore">+ 2 项（高级参数，收进折叠区）</div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>5 项：路径选择 + 浏览、单行、单行、单行…</dd></div><div class="srow"><dt>输出</dt><dd>列映射表（内部字段 / 外部字段 / 类型 / 必填 / 含义）+ 生成结果</dd></div><div class="srow"><dt>源页面</dt><dd>ChannelGateway.vue 1,089</dd></div></dl>
+      <p class="note">1,089 行 UI + 2,360 行 Rust。列映射表是「多列可编辑」的重灾区，首版建议「自动推断 + 只允许改类型/必填两列」，其余只读；模板管理后置。</p>
+      <div class="verdict" role="group" aria-label="核对 渠道网关模型生成">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="渠道网关模型生成 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-devkit.net">网络与联调 <code>duck.devkit.net</code><span class="pkgc">4</span></h3><p class="pkgd">连接类共用 conn 骨架；凭据进 vault，日志必须支持 Hex/文本切换。</p><div class="cards"><article class="card" id="t-http-request" data-id="http-request">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>HTTP 请求</h4>
+    <code class="tid">http-request</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>HTTP 请求</em><span class="wtag">http-request</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">方法</span><span class="wsegs"><span class="wseg on">GET</span><span class="wseg">POST</span><span class="wseg">PUT</span><span class="wseg">DELETE</span><span class="wseg">PATCH</span></span></div><div class="wf"><span class="wl">URL</span><span class="win">https://</span></div><div class="wf"><span class="wl">认证</span><span class="wsegs"><span class="wseg on">无</span><span class="wseg">Bearer</span><span class="wseg">Basic</span><span class="wseg">API Key</span></span></div><div class="wmore">+ 1 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">请求体</div><div class="wghost">{ &quot;key&quot;: &quot;value&quot; }…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>4 项：分段选择、单行、分段选择、分段选择</dd></div><div class="srow"><dt>输出</dt><dd>状态码 / 耗时 / 响应头 / 响应体（格式化）</dd></div><div class="srow"><dt>源页面</dt><dd>HttpRequest.vue 1,519</dd></div></dl>
+      <p class="note">1,519 行，Postman 式集合/环境/导入导出全都在里面。首版只做「单请求 + 最近 20 条历史」，集合与环境不做——那是另一个产品，不该塞进工具箱。</p>
+      <div class="verdict" role="group" aria-label="核对 HTTP 请求">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="HTTP 请求 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-packet-send" data-id="packet-send">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>报文调试</h4>
+    <code class="tid">packet-send</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 3</span>
+  </header><div class="cmerge">合并自：<span>TCP 请求</span><code>tcp-request</code> · <span>XML 报文发送</span><code>xml-send</code> · <span>FIX 报文发送</span><code>fix-send</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>报文调试</em><span class="wtag">packet-send</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">协议</span><span class="wsegs"><span class="wseg on">原始 TCP</span><span class="wseg">XML</span><span class="wseg">FIX</span></span></div><div class="wf"><span class="wl">主机</span><span class="win">host</span></div><div class="wf"><span class="wl">端口</span><span class="win wnum">port</span></div><div class="wmore">+ 4 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn">发送</span><span class="wbtn ghost">格式化</span></div><div class="wsplit"><div class="wcol"><div class="wcl">应答</div><div class="wghost mono">200 OK · 14 ms</div></div><div class="wcol"><div class="wcl">通信日志</div><div class="wlog">&gt;&gt; 3C 3F 78 6D 6C …
+&lt;&lt; 3C 3F 78 6D 6C …</div></div></div><div class="wcol wb-in"><div class="wcl">报文</div><div class="wghost mono">…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>7 项：分段选择、单行、数值、分段选择…</dd></div><div class="srow"><dt>输出</dt><dd>应答结果（按协议格式化）+ 通信日志（Hex / 文本）</dd></div><div class="srow"><dt>源页面</dt><dd>TcpRequest 652 + XmlSend 585 + FixSend 613</dd></div></dl>
+      <p class="note">合并依据：三者共用 transport 层与 conn 骨架（连接参数 / 报文 / 应答 / 通信日志），差异只有「报文怎么编帧、校验怎么算」。分开会得到三份几乎一样的日志与重连逻辑。代价：FIX 的校验和、XML 的格式化各作为一个底部动作，按协议显隐。</p>
+      <div class="verdict" role="group" aria-label="核对 报文调试">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="报文调试 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-s3-ftp-checker" data-id="s3-ftp-checker">
+  <header class="chead">
+    <span class="idx">03</span>
+    <h4>S3 / FTP 连通检测</h4>
+    <code class="tid">s3-ftp-checker</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>S3 / FTP 连通检测</em><span class="wtag">s3-ftp-checker</span></div><div class="wbody"><div class="w2col"><div class="wform"><div class="wf"><span class="wl">协议</span><span class="wsegs"><span class="wseg on">S3</span><span class="wseg">FTP</span><span class="wseg">SFTP</span></span></div><div class="wf"><span class="wl">Endpoint</span><span class="win">https://s3.amazonaws.com</span></div><div class="wf"><span class="wl">Bucket</span><span class="win">my-bucket</span></div><div class="wf"><span class="wl">Access Key</span><span class="win">可选</span></div><div class="wf"><span class="wl">Secret Key</span><span class="win">***</span></div><div class="wf"><span class="wl">主机</span><span class="win">192.168.1.100</span></div><div class="wf"><span class="wl">端口</span><span class="win wnum">21</span></div></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol"><div class="wcl">结果</div><div class="wghost mono">生成结果预览…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>7 项：分段选择、单行、单行、单行…</dd></div><div class="srow"><dt>输出</dt><dd>分步检测结果（DNS / TCP / 认证 / 列目录 / 读写）</dd></div><div class="srow"><dt>源页面</dt><dd>S3FtpChecker.vue 270</dd></div></dl>
+      <p class="note">270 行。价值在「分步」——一步失败要指出是网络不通、凭据错还是权限不足。凭据输入后落 vault，不进日志、不进历史。</p>
+      <div class="verdict" role="group" aria-label="核对 S3 / FTP 连通检测">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="S3 / FTP 连通检测 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-hosts-manager" data-id="hosts-manager">
+  <header class="chead">
+    <span class="idx">04</span>
+    <h4>Hosts 管理</h4>
+    <code class="tid">hosts-manager</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>Hosts 管理</em><span class="wtag">hosts-manager</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">方案名称</span><span class="win">如 张三-联调</span></div><div class="wf"><span class="wl">环境</span><span class="wsegs"><span class="wseg on">SIT</span><span class="wseg">UAT</span><span class="wseg">生产</span></span></div><div class="wmore">+ 1 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>3 项：单行、分段选择、路径选择 + 浏览</dd></div><div class="srow"><dt>输出</dt><dd>合并后的 hosts 内容 + 按方案分组的条目表 + 复制命令</dd></div><div class="srow"><dt>源页面</dt><dd>HostsManager.vue 622</dd></div></dl>
+      <p class="note">622 行，含直接写系统 /etc/hosts、备份、回收站恢复。插件不碰系统文件：只生成合并结果、给出「复制为 sudo tee 命令」，写入由用户自己做。这一条是硬约束，不是简化。</p>
+      <div class="verdict" role="group" aria-label="核对 Hosts 管理">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="Hosts 管理 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-devkit.files">文件批处理 <code>duck.devkit.files</code><span class="pkgc">6</span></h3><p class="pkgd">写盘类（改名/替换）一律「预览 → 确认 → 应用」三步，只读类（搜索/目录树）可直接执行。</p><div class="cards"><article class="card" id="t-file-search" data-id="file-search">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>文件搜索</h4>
+    <code class="tid">file-search</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>内容搜索</span><code>file-search</code> · <span>文件名搜索</span><code>fast-file-search</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>文件搜索</em><span class="wtag">file-search</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">模式</span><span class="wsegs"><span class="wseg on">内容</span><span class="wseg">文件名</span></span></div><div class="wf"><span class="wl">范围</span><span class="win wpath"><i>限定目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">关键词</span><span class="win">支持正则</span></div><div class="wmore">+ 3 项（高级参数，收进折叠区）</div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>6 项：分段选择、路径选择 + 浏览、单行、单行…</dd></div><div class="srow"><dt>输出</dt><dd>结果列表（文件 / 行号 / 命中片段）+ 打开所在位置</dd></div><div class="srow"><dt>源页面</dt><dd>FileSearch 139 + FastFileSearch 459</dd></div></dl>
+      <p class="note">合并依据：用户要的是「找到那个文件」，先按名、再按内容是同一个任务的两步；分成两个工具后搜错地方是常态。代价：文件名模式原本依赖常驻索引（1,582 行守护进程），首版统一走「限定目录 + 深度上限」的遍历，两种模式共用同一份文件清单。</p>
+      <div class="verdict" role="group" aria-label="核对 文件搜索">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="文件搜索 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-directory-tree" data-id="directory-tree">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>目录树生成</h4>
+    <code class="tid">directory-tree</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>目录树生成</em><span class="wtag">directory-tree</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">文件夹</span><span class="win wpath"><i>选择文件夹</i><b>浏览</b></span></div><div class="wf"><span class="wl">深度</span><span class="win wnum">3</span></div><div class="wmore">+ 2 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>4 项：路径选择 + 浏览、数值、开关、开关</dd></div><div class="srow"><dt>输出</dt><dd>目录树文本预览 + 复制 Markdown</dd></div><div class="srow"><dt>源页面</dt><dd>DirectoryTree.vue 332</dd></div></dl>
+      <p class="note">332 行。去掉「导出 PNG」——那是渲染能力，交给宿主统一导出，插件只产出文本/Markdown。</p>
+      <div class="verdict" role="group" aria-label="核对 目录树生成">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="目录树生成 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-batch-edit" data-id="batch-edit">
+  <header class="chead">
+    <span class="idx">03</span>
+    <h4>批量改写</h4>
+    <code class="tid">batch-edit</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>批量重命名</span><code>batch-renamer</code> · <span>批量查找替换</span><code>batch-replace</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>批量改写</em><span class="wtag">batch-edit</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">模式</span><span class="wsegs"><span class="wseg on">重命名</span><span class="wseg">内容替换</span></span></div><div class="wf"><span class="wl">目标</span><span class="win wpath"><i>文件或文件夹</i><b>浏览</b></span></div><div class="wf"><span class="wl">查找</span><span class="win">…</span></div><div class="wmore">+ 3 项（高级参数，收进折叠区）</div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>6 项：分段选择、路径选择 + 浏览、单行、单行…</dd></div><div class="srow"><dt>输出</dt><dd>预览表（原名→新名 / 命中前后）+ 应用</dd></div><div class="srow"><dt>源页面</dt><dd>BatchRenamer 249 + BatchReplace 201</dd></div></dl>
+      <p class="note">合并依据：两者是同一套「预览 → 确认 → 应用 → 可撤销」流程，只有「改文件名还是改内容」不同；分开要写两遍确认弹窗与两套 undo。代价：重命名的重名冲突检测与替换的命中计数各自实现，外壳共用。</p>
+      <div class="verdict" role="group" aria-label="核对 批量改写">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="批量改写 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-sensitive-scanner" data-id="sensitive-scanner">
+  <header class="chead">
+    <span class="idx">04</span>
+    <h4>敏感信息扫描</h4>
+    <code class="tid">sensitive-scanner</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>敏感信息扫描</em><span class="wtag">sensitive-scanner</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">范围</span><span class="win wpath"><i>文件或目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">或粘贴内容</span><span class="warea">粘贴代码/配置…</span></div><div class="wf"><span class="wl">高熵字符串检测</span><span class="wtg"><i></i></span></div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>3 项：路径选择 + 浏览、多行、开关</dd></div><div class="srow"><dt>输出</dt><dd>风险表（高/中/低 / 类型 / 文件 / 行 / 片段）+ 导出</dd></div><div class="srow"><dt>源页面</dt><dd>SensitiveInfoScanner.vue 189</dd></div></dl>
+      <p class="note">189 行。只读扫描，安全。要点：命中片段要脱敏展示（身份证/银行卡只留首尾），否则工具本身成了泄露渠道。</p>
+      <div class="verdict" role="group" aria-label="核对 敏感信息扫描">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="敏感信息扫描 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-csv-tools" data-id="csv-tools">
+  <header class="chead">
+    <span class="idx">05</span>
+    <h4>CSV 工具</h4>
+    <code class="tid">csv-tools</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>CSV 表格</span><code>csv-table-editor</code> · <span>CSV 转图表</span><code>csv-to-chart</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>CSV 工具</em><span class="wtag">csv-tools</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">模式</span><span class="wsegs"><span class="wseg on">表格</span><span class="wseg">图表</span></span></div><div class="wf"><span class="wl">文件</span><span class="win wpath"><i>选择 CSV</i><b>浏览</b></span></div><div class="wf"><span class="wl">分隔符</span><span class="wsegs"><span class="wseg on">,</span></span></div><div class="wmore">+ 3 项（高级参数，收进折叠区）</div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>6 项：分段选择、路径选择 + 浏览、分段选择、~制表符…</dd></div><div class="srow"><dt>输出</dt><dd>表格预览 + 导出（Markdown / JSON / INSERT / SVG）</dd></div><div class="srow"><dt>源页面</dt><dd>CsvTableEditor 213 + CsvToChart 287</dd></div></dl>
+      <p class="note">合并依据：同一个 CSV 解析器、同一块数据预览，用户是「先看表、再画图」；分成两个工具意味着解析两遍、选两次文件。代价：图表模式多一条 SVG 渲染路径——仍由 JS 直接出 SVG，不引图表库。</p>
+      <div class="verdict" role="group" aria-label="核对 CSV 工具">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="CSV 工具 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-doc-convert" data-id="doc-convert">
+  <header class="chead">
+    <span class="idx">06</span>
+    <h4>格式转换</h4>
+    <code class="tid">doc-convert</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span><span class="badge b-merge">合并 2</span>
+  </header><div class="cmerge">合并自：<span>文档转换</span><code>doc-converter</code> · <span>XLS 批量转换</span><code>xls-converter</code></div>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>格式转换</em><span class="wtag">doc-convert</span></div><div class="wbody"><div class="w2col"><div class="wform"><div class="wf"><span class="wl">模式</span><span class="wsegs"><span class="wseg on">单文件</span><span class="wseg">批量 XLS</span></span></div><div class="wf"><span class="wl">输入</span><span class="win wpath"><i>文件或目录</i><b>浏览</b></span></div><div class="wf"><span class="wl">输出格式</span><span class="wsegs"><span class="wseg on">DOCX</span><span class="wseg">PDF</span><span class="wseg">Markdown</span><span class="wseg">HTML</span></span></div><div class="wf"><span class="wl">输出目录</span><span class="win wpath"><i>必填</i><b>浏览</b></span></div></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol"><div class="wcl">结果</div><div class="wghost mono">生成结果预览…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>4 项：分段选择、路径选择 + 浏览、分段选择、路径选择 + 浏览</dd></div><div class="srow"><dt>输出</dt><dd>转换结果 + 打开文件 / 所在位置</dd></div><div class="srow"><dt>源页面</dt><dd>DocConverter 426 + XlsConverter 181</dd></div></dl>
+      <p class="note">合并依据：都是「选输入 → 选格式 → 转换」，且都依赖外部运行时（LibreOffice / JRE）。合并后只做一次运行时检测，把缺失项集中提示，而不是两个工具各弹一次错。代价：批量模式才有「总计 / 成功 / 失败 / 耗时」统计条，单文件模式换成「输出路径 + 打开」。</p>
+      <div class="verdict" role="group" aria-label="核对 格式转换">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="格式转换 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-devkit.config">配置生成 <code>duck.devkit.config</code><span class="pkgc">2</span></h3><p class="pkgd">表单 → 文本，右侧实时预览。</p><div class="cards"><article class="card" id="t-nginx-generator" data-id="nginx-generator">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>Nginx 配置生成</h4>
+    <code class="tid">nginx-generator</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>Nginx 配置生成</em><span class="wtag">nginx-generator</span></div><div class="wbody"><div class="w2col"><div class="wform"><div class="wf"><span class="wl">监听端口</span><span class="win wnum">80</span></div><div class="wf"><span class="wl">Server Name</span><span class="win">_</span></div><div class="wf"><span class="wl">根目录</span><span class="win">/var/www/html</span></div><div class="wf"><span class="wl">Upstream</span><span class="win">127.0.0.1:8080</span></div><div class="wf"><span class="wl">负载策略</span><span class="wsegs"><span class="wseg on">轮询</span><span class="wseg">最少连接</span><span class="wseg">IP Hash</span></span></div><div class="wf"><span class="wl">SSL</span><span class="wtg on"><i></i></span></div><div class="wf"><span class="wl">HSTS</span><span class="wtg"><i></i></span></div><div class="wf"><span class="wl">Gzip</span><span class="wtg on"><i></i></span></div></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol"><div class="wcl">结果</div><div class="wghost mono">生成结果预览…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>8 项：数值、单行、单行、单行…</dd></div><div class="srow"><dt>输出</dt><dd>配置预览（只读代码块）+ 复制 / 下载</dd></div><div class="srow"><dt>源页面</dt><dd>NginxGenerator.vue 477</dd></div></dl>
+      <p class="note">477 行，表单 → 文本，天然适合声明式。建议右侧预览随输入实时更新，而不是点「生成」才出结果——这是配置生成类工具的通用期待。</p>
+      <div class="verdict" role="group" aria-label="核对 Nginx 配置生成">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="Nginx 配置生成 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-s3-manager" data-id="s3-manager">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>S3 管理</h4>
+    <code class="tid">s3-manager</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>S3 管理</em><span class="wtag">s3-manager</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">Endpoint</span><span class="win"></span></div><div class="wf"><span class="wl">Bucket</span><span class="win"></span></div><div class="wf"><span class="wl">Access Key</span><span class="win"></span></div><div class="wmore">+ 1 项（高级参数，收进折叠区）</div></div><div class="wbar"><span class="wchip">共 136 行</span><span class="wbar-r"><span class="wbtn ghost sm">导出</span><span class="wbtn ghost sm">筛选</span></span></div><div class="wtable"><div class="wrow head"><span>名称</span><span>类型</span><span>状态</span></div><div class="wrow"><span>项目 1</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 2</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 3</span><span class="mut">字段</span><span class="mut">通过</span></div><div class="wrow"><span>项目 4</span><span class="mut">字段</span><span class="mut">通过</span></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>4 项：单行、单行、单行、单行</dd></div><div class="srow"><dt>输出</dt><dd>对象列表（Key / 大小 / 修改时间）+ 上传 / 下载</dd></div><div class="srow"><dt>源页面</dt><dd>S3Manager.vue 17</dd></div></dl>
+      <p class="note">源页面只有 17 行，是个壳。真实实现在 s3/（316 行）但入口未确认——建议先核实它到底有没有可用实现，没有就直接砍掉，不要为了凑数迁一个空壳。</p>
+      <div class="verdict" role="group" aria-label="核对 S3 管理">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="S3 管理 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-devkit.misc">杂项 <code>duck.devkit.misc</code><span class="pkgc">5</span></h3><p class="pkgd">形态差异最大，均为只读或低风险工具。</p><div class="cards"><article class="card" id="t-screenshot" data-id="screenshot">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>截图工具</h4>
+    <code class="tid">screenshot</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>截图工具</em><span class="wtag">screenshot</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">模式</span><span class="wsegs"><span class="wseg on">全屏</span><span class="wseg">区域</span><span class="wseg">窗口</span></span></div><div class="wf"><span class="wl">保存格式</span><span class="wsegs"><span class="wseg on">PNG</span><span class="wseg">JPEG</span></span></div><div class="wmore">+ 3 项（高级参数，收进折叠区）</div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>5 项：分段选择、分段选择、路径选择 + 浏览、开关…</dd></div><div class="srow"><dt>输出</dt><dd>截图预览 + 快速操作（复制 / 标注 / 删除）</dd></div><div class="srow"><dt>源页面</dt><dd>ScreenshotTool.vue 486</dd></div></dl>
+      <p class="note">486 行，含 OCR 与设置项。区域截图需要自建全屏 overlay 窗口 + 屏幕录制权限，macOS 上还要处理首次授权的重启提示。首版只做「全屏 / 区域 → 剪贴板 + 保存」，OCR 后置。</p>
+      <div class="verdict" role="group" aria-label="核对 截图工具">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="截图工具 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-diagram-renderer" data-id="diagram-renderer">
+  <header class="chead">
+    <span class="idx">02</span>
+    <h4>Mermaid 渲染</h4>
+    <code class="tid">diagram-renderer</code>
+    <span class="badge b-l1">L1</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>Mermaid 渲染</em><span class="wtag">diagram-renderer</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">主题</span><span class="wsegs"><span class="wseg on">默认</span><span class="wseg">暗色</span><span class="wseg">手绘</span></span></div><div class="wf"><span class="wl">自动渲染</span><span class="wtg on"><i></i></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">Mermaid 语法</div><div class="wghost">graph TD; A--&gt;B;</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>2 项：分段选择、开关</dd></div><div class="srow"><dt>输出</dt><dd>SVG 预览 / 导出 SVG、PNG</dd></div><div class="srow"><dt>源页面</dt><dd>DiagramRenderer.vue 249</dd></div></dl>
+      <p class="note">249 行。QuickJS 没有 DOM，mermaid 官方包跑不起来；要么调本地 mmdc（node+puppeteer），要么只出源码。建议：无 mmdc 时按钮置灰并提示，不要假装能渲染。</p>
+      <div class="verdict" role="group" aria-label="核对 Mermaid 渲染">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="Mermaid 渲染 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-drawio-board" data-id="drawio-board">
+  <header class="chead">
+    <span class="idx">03</span>
+    <h4>draw.io 画板</h4>
+    <code class="tid">drawio-board</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-drop">不迁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>draw.io 画板</em><span class="wtag">drawio-board</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">导入插件包</span><span class="win wpath"><i>选择 .drawio 文件</i><b>浏览</b></span></div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>1 项：路径选择 + 浏览</dd></div><div class="srow"><dt>输出</dt><dd>导出 XML / SVG / PNG</dd></div><div class="srow"><dt>源页面</dt><dd>DrawioBoard.vue 195</dd></div></dl>
+      <p class="note">本质是 draw.io 的 iframe 容器，依赖 webview 与外部「画图工具插件」。本项目 GPUI 自绘、无 webview，承载不了；导出能力 diagram-renderer 已覆盖。建议不迁。</p>
+      <div class="verdict" role="group" aria-label="核对 draw.io 画板">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="draw.io 画板 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-json-schema-validator" data-id="json-schema-validator">
+  <header class="chead">
+    <span class="idx">04</span>
+    <h4>JSON Schema 校验</h4>
+    <code class="tid">json-schema-validator</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>JSON Schema 校验</em><span class="wtag">json-schema-validator</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">实时校验</span><span class="wtg on"><i></i></span></div><div class="wf"><span class="wl">格式化错误路径</span><span class="wtg on"><i></i></span></div></div><div class="wacts"><span class="wbtn">比对</span><span class="wbtn ghost">交换 A/B</span></div><div class="wsplit"><div class="wcol tall"><div class="wcl">A 侧</div><div class="wlog">- old_line_1
++ new_line_1
+  same_line</div></div><div class="wcol tall"><div class="wcl">B 侧</div><div class="wlog">+ new_line_1
+- old_line_1
+  same_line</div></div></div><div class="wchips"><span class="wchip">新增 12</span><span class="wchip">删除 3</span><span class="wchip">修改 8</span></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>2 项：开关、开关</dd></div><div class="srow"><dt>输出</dt><dd>校验通过 / 错误列表（JSON Pointer + 期望类型）</dd></div><div class="srow"><dt>源页面</dt><dd>JsonSchemaValidator.vue 198</dd></div></dl>
+      <p class="note">198 行。左 schema 右实例的双栏是正确布局。校验库建议用 Rust jsonschema（L2），QuickJS 里塞 ajv 体积与性能都不划算。</p>
+      <div class="verdict" role="group" aria-label="核对 JSON Schema 校验">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="JSON Schema 校验 备注"></textarea>
+    </div>
+  </div>
+</article><article class="card" id="t-git-tools" data-id="git-tools">
+  <header class="chead">
+    <span class="idx">05</span>
+    <h4>Git 辅助</h4>
+    <code class="tid">git-tools</code>
+    <span class="badge b-l2">L2</span>
+    <span class="badge b-ok">合理</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>Git 辅助</em><span class="wtag">git-tools</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl">功能</span><span class="wsegs"><span class="wseg on">diff 摘要</span><span class="wseg">commit message</span><span class="wseg">.gitignore</span></span></div><div class="wf"><span class="wl">语言</span><span class="wsegs"><span class="wseg on">中文</span><span class="wseg">英文</span></span></div></div><div class="wacts"><span class="wbtn">执行</span><span class="wbtn ghost">复制</span></div><div class="wcol tall"><div class="wcl">结果</div><div class="wghost mono">格式化后的内容…</div></div><div class="wcol wb-in"><div class="wcl">git diff 输出</div><div class="wghost">粘贴 git diff…</div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>输入</dt><dd>文本域（可拖入文件）</dd></div><div class="srow"><dt>参数</dt><dd>2 项：分段选择、分段选择</dd></div><div class="srow"><dt>输出</dt><dd>生成的文本 + 复制</dd></div><div class="srow"><dt>源页面</dt><dd>GitTools.vue 129</dd></div></dl>
+      <p class="note">129 行。若 commit message 走大模型，必须挂 duck-ai 的模型配置，不能自带 key；纯规则版（按改动文件归类 + 模板）可以先做。.gitignore 生成是纯数据，最该留。</p>
+      <div class="verdict" role="group" aria-label="核对 Git 辅助">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="Git 辅助 备注"></textarea>
+    </div>
+  </div>
+</article></div></section><section class="pkg"><h3 class="pkgh" id="p-—">不迁：<code>device-pool</code></h3><p class="pkgd">这一类不进入任何插件包。理由写在卡片里——不是「难做」，是「不该做」。</p><div class="cards"><article class="card" id="t-device-pool" data-id="device-pool">
+  <header class="chead">
+    <span class="idx">01</span>
+    <h4>设备池管理</h4>
+    <code class="tid">device-pool</code>
+    <span class="badge b-l3">—</span>
+    <span class="badge b-drop">不迁</span><span class="badge b-drop">禁</span>
+  </header>
+  <div class="cbody">
+    <div class="cwire"><div class="wire"><div class="wtitle"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><em>设备池管理</em><span class="wtag">device-pool</span></div><div class="wbody"><div class="wform"><div class="wf"><span class="wl"></span><span class="win"></span></div></div><div class="wacts"><span class="wbtn ghost">导出</span></div><div class="wsplit wide"><div class="wcol tall"><div class="wcl">结构</div><div class="wlog">▾ 表 T_ACCOUNT
+  ▸ 字段 (18)
+  ▸ 索引 (3)
+▸ 表 T_ORDER</div></div><div class="wcol tall"><div class="wcl">详情</div><div class="wghost mono">字段名 / 类型 / 长度 / 注释…</div></div></div></div></div></div>
+    <div class="cspec">
+      <dl><div class="srow"><dt>参数</dt><dd>1 项：—</dd></div><div class="srow"><dt>输出</dt><dd>设备列表（状态 / 健康度 / 使用次数）</dd></div><div class="srow"><dt>源页面</dt><dd>DevicePool.vue 272</dd></div></dl>
+      <p class="note">Cursor 无限重置、OAuth 自动注册、临时邮箱域名池——这是绕过厂商授权与配额的工具，不是开发工具。无论 beta 与否都不进产品，也不建议留在内部仓。</p>
+      <div class="verdict" role="group" aria-label="核对 设备池管理">
+        <button type="button" data-v="ok" aria-label="合理">合理</button>
+        <button type="button" data-v="trim" aria-label="需调整">需调整</button>
+        <button type="button" data-v="drop" aria-label="移除">移除</button>
+      </div>
+      <textarea class="memo" rows="1" placeholder="备注（可不填，自动保存到本地）" aria-label="设备池管理 备注"></textarea>
+    </div>
+  </div>
+</article></div></section>
+
+  <h2>五、这一轮的口径变化<span>核对结果已回填</span></h2>
+  <table>
+    <thead><tr><th>项</th><th>初判稿</th><th>核对结果</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>不迁</td><td>29</td><td><b>38</b></td><td>29（四域 16 + beta/dev 12 + device-pool 1）+ 2（transform-hub、drawio-board）+ 7（核对时新删）</td></tr>
+      <tr><td>在册工具</td><td>57</td><td><b>50</b></td><td>88 − 38 ＝ 50；合并不减少工具数</td></tr>
+      <tr><td>界面数量</td><td>44</td><td><b>37</b></td><td>11 组合并把 24 个入口收成 11 个，少 13 个界面</td></tr>
+      <tr><td>插件包</td><td>10</td><td><b>10</b></td><td>包数不变；<code>devkit.codec</code> 与 <code>devkit.misc</code> 各缩到 2 项</td></tr>
+      <tr><td>L1 / L2</td><td>20 / 37</td><td><b>15 / 22</b></td><td>JS 纯函数占四成，可作为框架试金石</td></tr>
+    </tbody>
+  </table>
+  <p class="lede">核对时新判移除的 7 项：<code>prompt-optimizer</code>、<code>protobuf-codec</code>、<code>storage-estimator</code>、
+  <code>finance-parser</code>、<code>sensitive-scanner</code>、<code>screenshot</code>、<code>diagram-renderer</code>；连同初判稿里
+  <code>transform-hub</code>、<code>drawio-board</code>、<code>device-pool</code> 共 10 项不迁。
+  另有 12 项从「需收窄」改为「合理」⇒ 首版按全量实现，实施计划的工时已相应上调。</p>
+
+  <div class="foot">
+    设计稿按 duck-theme 令牌绘制：字阶 12/13/15/17/22，间距 2/4/8/12/16/24/32，圆角 3/6/8/12。
+    线框为静态示意，不代表最终控件尺寸；实际实现以 GPUI 组件为准。
+  </div>
+</main>
+</div>
+
+<script>
+(function () {
+  var KEY = 'ifm-ui-review-v2';
+  var state = {};
+  try { state = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { state = {}; }
+  var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
+
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+    var n = Object.keys(state).filter(function (k) { return state[k] && (state[k].v || state[k].memo); }).length;
+    document.getElementById('cnt').textContent = n;
+  }
+
+  cards.forEach(function (card) {
+    var id = card.dataset.id;
+    var rec = state[id] || {};
+    var memo = card.querySelector('.memo');
+    if (rec.memo) memo.value = rec.memo;
+    card.querySelectorAll('.verdict button').forEach(function (b) {
+      if (rec.v === b.dataset.v) b.setAttribute('aria-pressed', 'true');
+      b.addEventListener('click', function () {
+        var on = b.getAttribute('aria-pressed') === 'true';
+        card.querySelectorAll('.verdict button').forEach(function (x) { x.removeAttribute('aria-pressed'); });
+        if (!on) b.setAttribute('aria-pressed', 'true');
+        state[id] = state[id] || {};
+        state[id].v = on ? '' : b.dataset.v;
+        save();
+      });
+    });
+    memo.addEventListener('input', function () {
+      state[id] = state[id] || {};
+      state[id].memo = memo.value;
+      save();
+    });
+  });
+
+  document.getElementById('theme').addEventListener('click', function () {
+    var h = document.documentElement;
+    h.dataset.theme = h.dataset.theme === 'dark' ? 'light' : 'dark';
+  });
+
+  document.getElementById('export').addEventListener('click', function () {
+    var out = {};
+    cards.forEach(function (c) {
+      var r = state[c.dataset.id];
+      if (r && (r.v || r.memo)) out[c.dataset.id] = { verdict: r.v || '', memo: r.memo || '',
+        name: c.querySelector('h4').textContent };
+    });
+    var blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'ifm-ui-review.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  save();
+})();
+</script>
+</body>
+</html>

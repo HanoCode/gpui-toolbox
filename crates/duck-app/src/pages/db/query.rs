@@ -436,12 +436,18 @@ impl DatabasePage {
                     let id = SavedQuery::next_id(&this.saved_queries);
                     let target = folder.clone();
                     this.saved_queries.push(SavedQuery {
-                        id,
+                        id: id.clone(),
                         name: file.clone(),
                         folder,
-                        sql,
+                        sql: sql.clone(),
                     });
                     this.persist_saved_queries(cx);
+                    // 显式保存也算「落定」（dbx 的 `markTabClean` 同款）：这张标签
+                    // 从此与新条目链接、基线对齐 —— 关标签不再追问未保存。
+                    if let Some(active) = this.active_tab.clone() {
+                        this.tab_saved_link.insert(active.clone(), id.clone());
+                        this.tab_original_sql.insert(active, sql.clone());
+                    }
                     this.status = match target {
                         Some(folder) => trf(cx, "已保存到 SQL 库「{} › {}」。", &[&folder, &file]),
                         None => trf(cx, "已保存到 SQL 库「{}」。", &[&file]),
@@ -632,15 +638,23 @@ impl DatabasePage {
     /// 把一条已保存查询载入编辑器（左栏点击 / 右键「载入到编辑器」）。
     ///
     /// 只**填**编辑器，不执行：载入之后要不要跑是用户的决定（与「生成 DDL 骨架」
-    /// 同口径——写动作都要过人工审批这一关）。
+    /// 同口径——写动作都要过人工审批这一关）。载入同时把这张标签与该条目**链接**
+    /// 起来、基线置为载入的 SQL（dbx 的 `savedSqlId` 链接 + `originalSql` 同款）：
+    /// 没改过就关标签不追问，「保存」也写回同一条而不是另存一份。
     pub(super) fn load_saved_query(
         &mut self,
         sql: String,
         name: &str,
+        saved_id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.fill_editor(sql, window, cx);
+        self.fill_editor(sql.clone(), window, cx);
+        if let Some(active) = self.active_tab.clone() {
+            self.tab_saved_link
+                .insert(active.clone(), saved_id.to_owned());
+            self.tab_original_sql.insert(active, sql);
+        }
         self.status = trf(cx, "已载入查询「{}」。", &[name]).into();
         cx.notify();
     }
@@ -705,6 +719,7 @@ impl DatabasePage {
             table_page: self.table_page,
             table_rows: self.table_rows.take(),
             table_sort: self.table_sort.take(),
+            table_sort_extra: std::mem::take(&mut self.table_sort_extra),
             table_filters: std::mem::take(&mut self.table_filters),
             table_pk: std::mem::take(&mut self.table_pk),
             table_ddl: self.table_ddl.take(),
@@ -716,8 +731,6 @@ impl DatabasePage {
             table_meta_for: self.table_meta_for.take(),
             structure: self.structure.take(),
             er: self.er.take(),
-            compare: self.compare.take(),
-            transfer: self.transfer.take(),
             query_result: self.query_result.take(),
             query_target: self.query_target.take(),
             query_pk: std::mem::take(&mut self.query_pk),
@@ -727,6 +740,7 @@ impl DatabasePage {
             query_has_more: self.query_has_more,
             query_page: self.query_page,
             query_sort: self.query_sort.take(),
+            query_sort_extra: std::mem::take(&mut self.query_sort_extra),
             result_tabs: std::mem::take(&mut self.result_tabs),
             active_result_tab: self.active_result_tab,
             plan_view: self.plan_view.take(),
@@ -743,6 +757,7 @@ impl DatabasePage {
             result_area_tab: self.result_area_tab,
             exec_log: std::mem::take(&mut self.exec_log),
             hidden_columns: std::mem::take(&mut self.hidden_columns),
+            cells_selection: self.cells_selection.take(),
         };
         SessionEditorState { text, view }
     }
@@ -764,6 +779,7 @@ impl DatabasePage {
         self.table_page = view.table_page;
         self.table_rows = view.table_rows.take();
         self.table_sort = view.table_sort.take();
+        self.table_sort_extra = std::mem::take(&mut view.table_sort_extra);
         self.table_filters = std::mem::take(&mut view.table_filters);
         self.table_pk = std::mem::take(&mut view.table_pk);
         self.table_ddl = view.table_ddl.take();
@@ -775,8 +791,6 @@ impl DatabasePage {
         self.table_meta_for = view.table_meta_for.take();
         self.structure = view.structure.take();
         self.er = view.er.take();
-        self.compare = view.compare.take();
-        self.transfer = view.transfer.take();
         self.query_result = view.query_result.take();
         self.query_target = view.query_target.take();
         self.query_pk = std::mem::take(&mut view.query_pk);
@@ -786,6 +800,7 @@ impl DatabasePage {
         self.query_has_more = view.query_has_more;
         self.query_page = view.query_page;
         self.query_sort = view.query_sort.take();
+        self.query_sort_extra = std::mem::take(&mut view.query_sort_extra);
         self.result_tabs = std::mem::take(&mut view.result_tabs);
         self.active_result_tab = view.active_result_tab;
         self.stmt_queue.clear();
@@ -809,6 +824,7 @@ impl DatabasePage {
         // 渲染入口的 `sync_page_jump` 按新标签的页码回写 —— 清成空再等下一帧
         // 填回来，中间那一眼会看见一个空框。
         self.hidden_columns = std::mem::take(&mut view.hidden_columns);
+        self.cells_selection = view.cells_selection.take();
         // 结果区整体换了一份：把新结果推给数据表组件（表模型 / 行序 / 藏列一次推齐）。
         self.sync_data_table(cx);
     }
@@ -988,6 +1004,12 @@ impl DatabasePage {
     /// 空选区，静默 —— 与系统 `⌘C` 在空选区上的行为一致。要拿整份结果，先全选
     /// （表头勾选框 / `⌘A`）再用右键「复制 ▸」。
     pub(super) fn copy_selected_row(&mut self, cx: &mut Context<Self>) {
+        // 矩形选区优先：拖出一块格子 = 用户明确指了「就这几格」。单选一格时**不**
+        // 走这条 —— 单击本来就落在一格上，若也按格复制，「点一行再 ⌘C」就再也
+        // 拿不到整行了（老口径要保住）。
+        if self.copy_cells_selection(cx) {
+            return;
+        }
         let rows: Vec<usize> = if !self.checked_rows.is_empty() {
             self.checked_rows.iter().copied().collect()
         } else if let Some(index) = self.selected_row {
@@ -1010,6 +1032,30 @@ impl DatabasePage {
             trf(cx, "已复制所选 {} 行。", &[&rows.len().to_string()]).into()
         };
         self.put_on_clipboard(text, note, cx);
+    }
+
+    /// 把**矩形选区**复制成一块矩阵 TSV（粘进表格软件就是对齐的格子）。
+    ///
+    /// 返回「有没有真的复制」：`false` = 没有多格选区（一格 / 没选 / 已越界），
+    /// 调用方据此继续走「整行」那条老路。只取**可见列**（藏起来的列不进来），
+    /// 与底栏「N 格」的读数同一个口径（[`Self::selection_columns`]）。
+    pub(super) fn copy_cells_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(range) = self
+            .active_cells_selection()
+            .filter(|range| range.cell_count() > 1)
+        else {
+            return false;
+        };
+        let Some(result) = self.current_result() else {
+            return false;
+        };
+        let columns = self.selection_columns(result, range);
+        // 格子数按**可见列**重算：底色画的是整块矩形，但复制 / 读数只算看得见的列。
+        let cells = selection_stats(&result.rows, range, &columns).cells;
+        let text = selection_as_tsv(&result.rows, range, &columns);
+        let note: SharedString = trf(cx, "已复制选区 {} 格。", &[&cells.to_string()]).into();
+        self.put_on_clipboard(text, note, cx);
+        true
     }
 
     /// 把当前**选区**（dbx 同款：勾选行 > 单击选中行 > 整份结果）按 `format` 复制到剪贴板。
@@ -2230,12 +2276,7 @@ impl DatabasePage {
             // 实例信息页没有可编辑的单元格（它不是结果集，是服务器事实）。
             // 仪表板同理：面板里那些行是**读出来给人看的**，不是可改的暂存区。
             // 结构编辑器改的是定义，不是行数据，同理。
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => None,
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => None,
         }
     }
 
@@ -2258,12 +2299,7 @@ impl DatabasePage {
             }
             // 实例信息页不可编辑，也就没有「重载来源」这回事；仪表板面板同理。
             // 结构标签改完列的落库动作走自己的「应用变更」，不进这条重载。
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => {}
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => {}
         }
     }
 
@@ -2797,6 +2833,9 @@ impl DatabasePage {
     /// 结果集一换，旧的勾选就指向别的行了。
     pub(super) fn clear_checked_rows(&mut self) {
         self.checked_rows.clear();
+        // 矩形选区同一条理由（它也是「当前结果集里的下标」）：勾选与选区一起清，
+        // 免得出现「行都换了一批，底栏还在报上一批的合计」。
+        self.cells_selection = None;
     }
 
     /// 勾选行的主键定位值；任一行定位不了（无主键 / 下标越界）返回 `None`。
@@ -3165,16 +3204,36 @@ impl DatabasePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 整表范围复用**已有的整表导出**（重新 `SELECT *`，受 `EXPORT_ROW_CAP` 约束）：
+        // 表浏览的分页只把一页装在内存里，想导全表就得再读一遍——手里没有的东西
+        // 不该假装有。
+        if self.export_scope == ExportScope::WholeTable {
+            let target = (self.active.clone(), self.selected_table.clone());
+            if let (true, (Some(conn), Some(table))) = (self.mode == Mode::Table, target) {
+                self.export_table_data_as(&conn, table, format, cx);
+                return;
+            }
+            let hint = if self.mode == Mode::Table {
+                tr(cx, "请先选中一张表，再导整表。")
+            } else {
+                tr(cx, "整表导出只在表浏览模式可用。")
+            };
+            notify::info(hint, window, cx);
+            return;
+        }
+        let scope = self.export_scope;
         // 渲染与「借 `result`」都收在这个块里，块一结束借用就还回去 —— 后面那次
         // 异步的保存面板才拿得到 `&mut self`。
         let payload = {
-            let Some(result) = self.current_result() else {
+            // 范围裁切在这里做：`export_subset` 给的是**这一档该装的行与列**，
+            // 各格式的渲染器不必知道「范围」这回事。
+            let Some(result) = self.export_subset() else {
                 notify::info(tr(cx, "当前没有可导出的结果。"), window, cx);
                 return;
             };
             if format.is_binary() {
                 // 原始字节档走字节路径：它不是文本，不能过 `write(&path, text)` 那道口子。
-                match format.render_bytes(result) {
+                match format.render_bytes(&result) {
                     Some(bytes) => ExportPayload::Bytes(bytes),
                     None => {
                         notify::info(
@@ -3191,7 +3250,7 @@ impl DatabasePage {
                 // 这里再挡一次，避免别处调进来产出坏 SQL。
                 let insert = self.insert_context();
                 let rendered = format.render(
-                    result,
+                    &result,
                     insert
                         .as_ref()
                         .map(|(table, quote)| (table.as_str(), *quote)),
@@ -3205,9 +3264,9 @@ impl DatabasePage {
                 }
             }
         };
-        let file_name = format.file_name();
+        let file_name = scoped_file_name(format, scope);
         let note = format.done_note(cx);
-        crate::file_dialogs::save_file(cx, file_name, move |path, this, cx| {
+        crate::file_dialogs::save_file(cx, &file_name, move |path, this, cx| {
             this.spawn_db(
                 cx,
                 move || payload.write(&path),
@@ -3222,6 +3281,72 @@ impl DatabasePage {
                 },
             );
         });
+    }
+
+    /// 按当前 [`ExportScope`] 裁出要导出的结果集。
+    ///
+    /// 裁的是**内存里这一份结果**，不再查库（整表那一档在 [`Self::export_result`]
+    /// 开头就分流走了）。三条细则：
+    ///
+    /// 1. 「选中行」优先用勾选集 —— 勾选本来就是为了「这批一起处理」；一个都没勾时
+    ///    退回单击选中行；再没有就退回整页（点了导出却什么都拿不到，比多导几行
+    ///    更让人困惑）。
+    /// 2. 「选区」行列都裁，`columns` 也跟着裁 —— 导出的 CSV 只该有选区里那几列，
+    ///    否则「选 3 列导出」会得到一张 20 列的表。
+    /// 3. 下标一律夹到现有范围内：选区 / 勾选记的是**上一份**结果的位置，结果集
+    ///    换小之后可能越界。
+    fn export_subset(&self) -> Option<ResultSet> {
+        let result = self.current_result()?;
+        match self.export_scope {
+            ExportScope::Page | ExportScope::WholeTable => Some(result.clone()),
+            ExportScope::Selected => {
+                let mut indexes: Vec<usize> = self.checked_rows.iter().copied().collect();
+                if indexes.is_empty() {
+                    indexes.extend(self.selected_row);
+                }
+                if indexes.is_empty() {
+                    return Some(result.clone());
+                }
+                let rows = indexes
+                    .iter()
+                    .filter_map(|index| result.rows.get(*index).cloned())
+                    .collect();
+                Some(ResultSet {
+                    columns: result.columns.clone(),
+                    rows,
+                    truncated: false,
+                })
+            }
+            ExportScope::Selection => {
+                let Some(range) = self.active_cells_selection() else {
+                    return Some(result.clone());
+                };
+                let (row_start, row_end, col_start, col_end) = range.bounds();
+                let col_end = col_end.min(result.columns.len().saturating_sub(1));
+                if col_start > col_end {
+                    return Some(result.clone());
+                }
+                let columns = result.columns[col_start..=col_end].to_vec();
+                let rows = if row_start < result.rows.len() {
+                    let row_end = row_end.min(result.rows.len() - 1);
+                    result.rows[row_start..=row_end]
+                        .iter()
+                        .map(|row| {
+                            (col_start..=col_end)
+                                .map(|index| row.get(index).cloned().unwrap_or(Value::Null))
+                                .collect()
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Some(ResultSet {
+                    columns,
+                    rows,
+                    truncated: false,
+                })
+            }
+        }
     }
 
     /// 渲染 INSERT 草稿需要的额外入参：表引用文本 + 引擎的引号字符。
@@ -3242,12 +3367,7 @@ impl DatabasePage {
         let table = match self.mode {
             Mode::Table => self.selected_table.as_ref(),
             Mode::Query => self.query_target.as_ref(),
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => None,
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => None,
         };
         table
             .and_then(|table| quote_qualified(table, quote).ok())
@@ -3267,9 +3387,9 @@ impl DatabasePage {
             notify::info(tr(cx, "有数据库操作正在进行，请稍候。"), window, cx);
             return;
         }
-        let Some(session) = self.active_session() else {
+        if self.active_session().is_none() {
             return;
-        };
+        }
         // 导入目标与改格 / 删行同源：表浏览的当前表，或可编辑 SELECT 背后的表。
         let Some(table) = self.edit_source().map(|source| source.table.clone()) else {
             notify::info(
@@ -3279,51 +3399,15 @@ impl DatabasePage {
             );
             return;
         };
-        let conn = session.conn.clone();
+        let conn_id = self.active.clone().unwrap_or_default();
         crate::file_dialogs::open_file(
             cx,
             tr(cx, "选择要导入的 CSV 文件"),
             move |path, this, cx| {
-                this.status = tr(cx, "正在导入 CSV…").into();
-                cx.notify();
-                this.spawn_db(
-                    cx,
-                    move || -> Result<u64, String> {
-                        let text = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
-                        let mut rows = parse_csv(&text);
-                        if rows.is_empty() {
-                            return Err("file is empty".into());
-                        }
-                        let header = rows.remove(0);
-                        let columns: Vec<String> = header
-                            .into_iter()
-                            .map(|cell| cell.unwrap_or_default())
-                            .collect();
-                        if columns.iter().any(String::is_empty) {
-                            return Err("header contains an empty column name".into());
-                        }
-                        let mut guard = conn.lock().expect("连接锁不应中毒");
-                        guard
-                            .insert_rows(&table, &columns, &rows)
-                            .map_err(|error| error.to_string())
-                    },
-                    |this, inserted, window, cx| match inserted {
-                        Ok(count) => {
-                            notify::success(
-                                trf(cx, "已导入 {} 行。", &[&count.to_string()]),
-                                window,
-                                cx,
-                            );
-                            // 行数变了：表级元信息（行数）也跟着重取。
-                            this.table_meta_for = None;
-                            this.reload_edit_source(window, cx);
-                        }
-                        Err(error) => {
-                            this.status = trf(cx, "导入失败：{}", &[&error]).into();
-                            notify::error(trf(cx, "导入失败：{}", &[&error]), window, cx);
-                        }
-                    },
-                );
+                // 选完文件**先看预览**（[`Self::open_csv_import`]）：首行是不是表头、
+                // 空串算不算 NULL、哪几列对不上，都在这一步定下来。原来这里直接
+                // `insert_rows` —— 列名错了要等错误回执才知道。
+                this.open_csv_import(conn_id.clone(), table.clone(), path, cx);
             },
         );
     }
@@ -3669,5 +3753,21 @@ impl DatabasePage {
         // ——「加载更多」不该把人拽回最左列）。展示行序随后按新行数重推。
         self.sync_data_table(cx);
         cx.notify();
+    }
+}
+
+/// 按范围给落盘文件名加后缀（`result.csv` → `result.selection.csv`）。
+///
+/// 只在「选中行 / 选区」两档加：同一次会话连着导两档时不至于互相覆盖，也让人
+/// 一眼看出这份文件装的是哪一块。整页与整表保持原名（那是默认预期）。
+fn scoped_file_name(format: ResultFormat, scope: ExportScope) -> String {
+    let base = format.file_name();
+    let suffix = scope.suffix();
+    if suffix.is_empty() {
+        return base.to_owned();
+    }
+    match base.rsplit_once('.') {
+        Some((stem, extension)) => format!("{stem}{suffix}.{extension}"),
+        None => format!("{base}{suffix}"),
     }
 }

@@ -1123,6 +1123,33 @@ impl MssqlConnection {
         ))
     }
 
+    /// 存储过程 / 函数的定义原文（`OBJECT_DEFINITION`）。
+    ///
+    /// 取不到（不存在 / 无 VIEW DEFINITION 权限）返回 `Ok(None)`。
+    pub fn routine_definition(
+        &mut self,
+        kind: TableKind,
+        namespace: Option<&str>,
+        name: &str,
+    ) -> Result<Option<String>, DbError> {
+        if !matches!(kind, TableKind::Procedure | TableKind::Function) {
+            return Ok(None);
+        }
+        let schema = self.resolve_schema(namespace);
+        let qualified = format!("{schema}.{name}");
+        let (_, rows, _) = self.select(
+            "SELECT OBJECT_DEFINITION(OBJECT_ID(@P1))",
+            &[&qualified.as_str()],
+            usize::MAX,
+        )?;
+        for row in &rows {
+            if let Some(Value::Text(text)) = row.first() {
+                return Ok(Some(text.clone()));
+            }
+        }
+        Ok(None)
+    }
+
     /// 改一格：按主键定位行（主键值按 `CONVERT(NVARCHAR, x)` 文本比较，全参数化）。
     pub fn update_cell(
         &mut self,

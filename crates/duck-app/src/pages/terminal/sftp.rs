@@ -82,10 +82,12 @@ impl TerminalPage {
         self.tabs.push(SessionTab {
             id,
             title,
+            subtitle: None,
             kind: TabKind::Sftp,
             status: entry.status,
             split: None,
             split_owner: None,
+            dormant: false,
         });
         self.active = self.tabs.len() - 1;
         // 记住这条连接：面板关掉之后，工具条那个图标还得知道该给谁开面板
@@ -122,6 +124,57 @@ impl TerminalPage {
         open_directory_dialog(window, cx, side, current, move |path, _, cx| {
             let _ = view.update(cx, |this, cx| this.navigate(side, path, cx));
         });
+    }
+
+    /// 路径栏进入**内联编辑**（`⌘L`）。
+    ///
+    /// 为什么必须有：跳到 `/var/log/nginx` 之前只有一条路 —— 打开「打开目录」弹窗，
+    /// 里面是一个空输入框。而路径栏本身就在屏幕上、就在指针下面，却不可编辑。
+    /// 访达（`⇧⌘G`）、浏览器（`⌘L`）都是「就地改」。
+    ///
+    /// ⏎ 跳转、失焦放弃；空串对远端是合法输入（= 家目录，见 `PaneState::navigate`）。
+    pub(super) fn start_path_edit(
+        &mut self,
+        side: Side,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((input, _)) = &self.panes[side.index()].path_edit {
+            // 已经在编辑：只把焦点还给输入框，不清掉用户敲了一半的内容。
+            let handle = input.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+            return;
+        }
+        let current = self.panes[side.index()].path.clone();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(tr(cx, "输入路径…"))
+                .default_value(current)
+        });
+        let subscriptions = vec![cx.subscribe(
+            &input,
+            move |this: &mut Self, _input: Entity<InputState>, event: &InputEvent, cx| match event {
+                InputEvent::PressEnter { .. } => {
+                    let Some((input, _)) = this.panes[side.index()].path_edit.take() else {
+                        return;
+                    };
+                    let value = input.read(cx).value().to_string();
+                    this.navigate(side, value, cx);
+                }
+                // 失焦 = 放弃编辑：这是「临时看一眼路径」最自然的收尾，
+                // 不必再多按一次 Esc。
+                InputEvent::Blur => {
+                    if this.panes[side.index()].path_edit.take().is_some() {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Change | InputEvent::Focus => {}
+            },
+        )];
+        let handle = input.read(cx).focus_handle(cx);
+        self.panes[side.index()].path_edit = Some((input, subscriptions));
+        window.focus(&handle, cx);
+        cx.notify();
     }
 
     /// 跳到指定目录并重列举。
@@ -231,17 +284,21 @@ impl TerminalPage {
         };
         match result {
             Ok(listing) => {
+                self.panes[remote].failed = false;
                 let mut rows: Vec<DirEntry> = listing
                     .entries
                     .into_iter()
                     .map(|entry| DirEntry {
                         name: entry.name,
                         size: entry.size.map_or_else(|| "—".to_owned(), format_bytes),
+                        size_bytes: entry.size,
                         modified: entry.modified.unwrap_or_else(|| "—".to_owned()),
                         dir: entry.dir,
                     })
                     .collect();
-                data::sort_entries(&mut rows);
+                // 按面板自己的列头选择排 —— 重列 / 进目录不重置用户的排序。
+                let sort = self.panes[remote].sort;
+                data::sort_entries(&mut rows, sort);
                 self.panes[remote].entries = rows;
                 // 截断了就说一句：不说的话用户会以为目录里就这么多东西。
                 self.panes[remote].notice = listing
@@ -250,6 +307,7 @@ impl TerminalPage {
             }
             Err(error) => {
                 self.panes[remote].entries.clear();
+                self.panes[remote].failed = true;
                 // ssh 的原文（`Permission denied`、`No such file or directory`）
                 // 直接给用户看：它比任何我们转述的说法都准确，也指得出下一步。
                 // 只有外壳文案是我们自己的，那一层要跟随语言。
@@ -260,15 +318,105 @@ impl TerminalPage {
         cx.notify();
     }
 
-    /// 点击文件行：单击选中，双击目录进入、双击文件先给个说明。
+    /// 重新列举远端当前目录（失败后「重试」按钮的落点，也是 `⌘R` 的语义）。
+    ///
+    /// 三行状态一起复位再走正常通道：`loaded = false` 是**触发条件**
+    ///（`ensure_remote_listing` 只在没加载过时动手），`failed`/`notice` 先清掉，
+    /// 免得重试期间屏幕上还挂着上一轮的错误 —— 那会让人以为「点了没反应」。
+    pub(super) fn refresh_remote_listing(&mut self, cx: &mut Context<Self>) {
+        let remote = Side::Remote.index();
+        self.panes[remote].loaded = false;
+        self.panes[remote].failed = false;
+        self.panes[remote].notice = None;
+        self.ensure_remote_listing(cx);
+        cx.notify();
+    }
+
+    /// 点击列头：换列或翻转方向，然后**就地**重排。
+    ///
+    /// 不重新列举 —— 排序是纯前端的事，走一趟 `ssh` 只会让一次点击等上几百毫秒。
+    /// 两侧各存各的 `SortState`：按时间排远端、按名称排本地互不干扰。
+    pub(super) fn set_sort(&mut self, side: Side, key: SortKey, cx: &mut Context<Self>) {
+        let pane = &mut self.panes[side.index()];
+        pane.sort = pane.sort.toggled(key);
+        let sort = pane.sort;
+        data::sort_entries(&mut pane.entries, sort);
+        cx.notify();
+    }
+
+    /// 文件列表的键盘操作（`↑` / `↓` / `⏎` / `⌫`）。
+    ///
+    /// 挂在面板自己的焦点句柄上：没有它，文件列表只能用鼠标 —— 而 SFTP 恰恰是
+    /// 「翻一堆目录找那个文件」的场景，键盘比鼠标快一个数量级。
+    pub(super) fn pane_key(
+        &mut self,
+        side: Side,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.keystroke.key.as_str() {
+            "up" => self.move_selection(side, -1, cx),
+            "down" => self.move_selection(side, 1, cx),
+            // `⏎` = 双击（目录进、文件传）：与鼠标同一个落点。
+            "enter" => {
+                if let Some(name) = self.pane(side).selected.clone() {
+                    self.click_entry(side, name, true, false, window, cx);
+                }
+            }
+            // `⌫` = 上一级（访达 / WinSCP 的同一个手势）。
+            "backspace" => {
+                let path = self.pane(side).path.clone();
+                if let Some(parent) = data::parent(&path) {
+                    self.navigate(side, parent, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 上下移动选中项（到头/到尾就停住，不环绕 —— 环绕会让人误以为列表没了边界）。
+    pub(super) fn move_selection(&mut self, side: Side, delta: isize, cx: &mut Context<Self>) {
+        let pane = &self.panes[side.index()];
+        if pane.entries.is_empty() {
+            return;
+        }
+        let current = pane
+            .selected
+            .as_deref()
+            .and_then(|name| pane.entries.iter().position(|entry| entry.name == name));
+        let last = pane.entries.len() as isize - 1;
+        let next = match current {
+            Some(index) => (index as isize + delta).clamp(0, last) as usize,
+            // 还没选中过：向下从第一项起，向上从最后一项起。
+            None if delta > 0 => 0,
+            None => last as usize,
+        };
+        let name = pane.entries[next].name.clone();
+        self.panes[side.index()].selected = Some(name);
+        cx.notify();
+    }
+
+    /// 点击文件行：单击选中，双击目录进入、双击文件做「该侧最自然的那件事」。
+    ///
+    /// 双击的语义**两侧对称**，都是「把这一项送到对面」：
+    /// - 本地文件 → **上传**到远端当前目录（曾经是「在访达里显示」—— 那一侧的
+    ///   传输入口因此要靠先单击选中再点按钮，双击与单击的心智模型对不上）；
+    /// - 远端文件 → **下载**到本地当前目录。
+    ///
+    /// 想「看一眼这个本地文件」仍然有出口：按住 `⌘` 双击 = 在访达里显示，
+    /// 右键菜单里也有一条同样的。
     pub(super) fn click_entry(
         &mut self,
         side: Side,
         name: String,
         double: bool,
+        reveal: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 任何一次点击都算「这一侧被激活」：`⌘L` / `⌘⇧N` / `⌘⌫` 都作用在这一侧。
+        self.focused_side = side;
         if !double {
             self.panes[side.index()].selected = Some(name);
             cx.notify();
@@ -285,15 +433,18 @@ impl TerminalPage {
                 let path = data::join(&self.pane(side).path, &name);
                 self.navigate(side, path, cx);
             }
-            // 双击文件：
-            // - 本地面板 → 在访达里显示（`open -R`），这是「看一眼这个文件」最直接的落地；
-            // - 远端面板 → 下载到本地面板的当前目录（复用同一条传输通道）。
             Some(false) => {
                 if side.is_local() {
-                    let path = PathBuf::from(&self.pane(Side::Local).path).join(&name);
-                    // 平台层不返回结果：`open -R` 失败没什么可补救的
-                    //（文件被删了 / 没有 Finder），弹一个错误框反而是噪音。
-                    duck_platform::reveal_in_finder(&path);
+                    if reveal {
+                        let path = PathBuf::from(&self.pane(Side::Local).path).join(&name);
+                        // 平台层不返回结果：`open -R` 失败没什么可补救的
+                        //（文件被删了 / 没有 Finder），弹一个错误框反而是噪音。
+                        duck_platform::reveal_in_finder(&path);
+                    } else {
+                        // 选中它再走同一条传输通道：双击与「选中 + 点上传」是同一件事。
+                        self.panes[Side::Local.index()].selected = Some(name);
+                        self.queue_transfer(true, window, cx);
+                    }
                 } else {
                     self.panes[Side::Remote.index()].selected = Some(name);
                     self.queue_transfer(false, window, cx);
@@ -311,6 +462,63 @@ impl TerminalPage {
             return None;
         }
         Some(data::join(&dir, name))
+    }
+
+    /// 右键菜单「上传到远端」（本地面板）。
+    ///
+    /// 走的是与双击 / 工具栏按钮**同一条**通道：先把这一行选中，再 `queue_transfer`。
+    /// 菜单点的是「我点的这一行」，不该依赖用户先前是不是已经选中过它。
+    pub(super) fn upload_named(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focused_side = Side::Local;
+        self.panes[Side::Local.index()].selected = Some(name);
+        self.queue_transfer(true, window, cx);
+    }
+
+    /// 右键菜单「下载到本地」（远端面板）。同上，先选中再传。
+    pub(super) fn download_named(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focused_side = Side::Remote;
+        self.panes[Side::Remote.index()].selected = Some(name);
+        self.queue_transfer(false, window, cx);
+    }
+
+    /// 右键菜单「在访达中显示」（仅本地面板）。
+    ///
+    /// 平台层不返回结果：`open -R` 失败没什么可补救的（文件被删了 / 没有 Finder），
+    /// 弹一个错误框反而是噪音。
+    pub(super) fn reveal_local(&mut self, name: String) {
+        let path = PathBuf::from(&self.pane(Side::Local).path).join(&name);
+        duck_platform::reveal_in_finder(&path);
+    }
+
+    /// 右键菜单「复制路径」：两侧都能用，复制的是**这一条**的完整路径。
+    ///
+    /// 与 `⌘⌥C`（复制当前目录）互补：那个复制「我在哪」，这个复制「这一项在哪」
+    /// —— 粘到终端里 `cd` / `cat` 的都是后者。
+    pub(super) fn copy_entry_path(
+        &mut self,
+        side: Side,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dir = self.pane(side).path.clone();
+        if dir.trim().is_empty() {
+            notify::warning(tr(cx, "远端目录尚未确定，请先浏览一次远端。"), window, cx);
+            return;
+        }
+        let path = data::join(&dir, &name);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.clone()));
+        notify::success(trf(cx, "已复制路径：{}", &[&path]), window, cx);
     }
 
     /// 打开「新建远端目录」弹窗。

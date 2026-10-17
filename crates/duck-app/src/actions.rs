@@ -30,6 +30,8 @@ pub mod ids {
     pub const ROUTE_REDIS: &str = "route.redis";
     /// 切到项目管理页。
     pub const ROUTE_PROJECTS: &str = "route.projects";
+    /// 在项目管理页新建一条任务（命令面板动作：切页 + 直接开 Spotlight）。
+    pub const PROJECT_NEW_TASK: &str = "project.new-task";
     /// 切到 AI 助手页。
     pub const ROUTE_ASSISTANT: &str = "route.assistant";
     /// 切到邮箱页。
@@ -97,6 +99,27 @@ pub mod ids {
 
 /// 登记全部动作元数据。
 pub fn declare_all(cx: &mut App) {
+    // —— 动作（会改数据，不只是切页）——
+    //
+    // 与「导航」分开成一组：从命令面板直接建一条任务，比「先切到项目页、再按 N」
+    // 少两次决策。捕获的价值全在「不打断」，多一步就多一次放弃的机会。
+    duck_command::declare(
+        cx,
+        ActionMeta {
+            id: ids::PROJECT_NEW_TASK,
+            label: |cx| SharedString::from(tr(cx, "新建任务")),
+            keywords: &["new task", "task", "todo", "新建", "任务"],
+            group: Some("动作"),
+            icon: Some(|_| Icon::new(DuckIcon::Plus)),
+            icon_color: None,
+            // 只进命令面板：`⌘N` 已经归项目页自己的「新建任务」，全局再绑一次
+            // 会在别的页面把 `⌘N` 抢过来（那里按下应该什么都不发生）。
+            slots: &[ActionSlot::Palette],
+            menu: None,
+            keys: &[],
+        },
+    );
+
     // —— 视图 ——
     duck_command::declare(
         cx,
@@ -109,7 +132,10 @@ pub fn declare_all(cx: &mut App) {
             icon_color: None,
             slots: &[ActionSlot::Palette, ActionSlot::Menu],
             menu: Some(("视图", None)),
-            keys: &["$mod-k", "$mod-shift-p"],
+            // 只有 `⌘⇧P`。`⌘K` **让位给终端清屏**（Terminal.app / iTerm 的同一个键）：
+            // 一个键在同一页里同时意味着「清屏」和「打开命令面板」，用户每次按下去
+            // 都在赌自己现在在哪个上下文 —— 这类「不报错的坏」最难被发现。
+            keys: &["$mod-shift-p"],
         },
     );
     duck_command::declare(
@@ -481,7 +507,7 @@ pub fn declare_all(cx: &mut App) {
         ActionMeta {
             id: ids::TERMINAL_NEW_CONNECTION,
             label: |cx| SharedString::from(tr(cx, "新建连接")),
-            keywords: &["new", "connection", "ssh", "host"],
+            keywords: &["new", "connection", "ssh", "host", "direct", "user@host"],
             group: Some("终端"),
             icon: Some(|_| Icon::new(DuckIcon::Server)),
             icon_color: None,
@@ -609,6 +635,26 @@ pub fn install_shell_handlers(cx: &mut App, shell: &gpui::Entity<duck_shell::She
     install_handler(cx, ids::ROUTE_DATABASE, navigate("database"));
     install_handler(cx, ids::ROUTE_REDIS, navigate("redis"));
     install_handler(cx, ids::ROUTE_PROJECTS, navigate("projects"));
+    // 「新建任务」：切到项目页，再让页面把 Spotlight 打开。
+    //
+    // 页面拿的是 `route_view` + `downcast` —— 命令面板与菜单都没有页面实体，
+    // 而弹窗必须挂在页面的 `Context` 上（它要订阅输入框、要拿页面的「今天」）。
+    // 切页先做：用户按下去的第一反馈应该是「到了那一页」。
+    install_handler(cx, ids::PROJECT_NEW_TASK, {
+        let weak = weak.clone();
+        move |window, cx| {
+            let Some(shell) = weak.upgrade() else {
+                return;
+            };
+            shell.update(cx, |shell, cx| shell.navigate_by_id("projects", cx));
+            let Some(view) = shell.read_with(cx, |shell, _| shell.route_view("projects")) else {
+                return;
+            };
+            if let Ok(page) = view.downcast::<crate::pages::ProjectsPage>() {
+                page.update(cx, |page, cx| page.open_spotlight(window, cx));
+            }
+        }
+    });
     install_handler(cx, ids::ROUTE_ASSISTANT, navigate("assistant"));
     install_handler(cx, ids::ROUTE_EMAIL, navigate("email"));
 
@@ -693,7 +739,10 @@ pub fn install_terminal_handlers(cx: &mut App, terminal: &gpui::WeakEntity<Termi
         move |window, cx| {
             crate::app::navigate_to(cx, crate::pages::SSH_ROUTE);
             if let Some(page) = terminal.upgrade() {
-                page.update(cx, |page, cx| page.open_new_connection(window, cx));
+                // 与 `+` / `⌘N` 同一个落点：命令面板里的「新建连接」也是**先给选择器**，
+                // 完整表单是选择器底部那一行。三个入口弹两个不同的东西是最容易
+                // 让人以为「命令面板那个坏了」的那种不一致。
+                page.update(cx, |page, cx| page.open_quick_connect(window, cx));
             }
         }
     });

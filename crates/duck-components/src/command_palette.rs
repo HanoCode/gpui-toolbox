@@ -13,8 +13,10 @@
 //! 加同样的圆角与统一底色，双保险。
 
 use gpui::{
-    AnyElement, App, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, Role, StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    AnyElement, App, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
+    InteractiveElement as _, IntoElement, KeyDownEvent, LayoutId, MouseButton, ParentElement,
+    Pixels, Refineable as _, Role, StatefulInteractiveElement as _, Style, StyleRefinement, Styled,
+    Window, div, px,
 };
 use gpui_component::{Icon, h_flex, v_flex};
 
@@ -23,11 +25,129 @@ use duck_theme::{active_theme, tr, trf};
 use crate::DuckIcon;
 
 /// 面板最大宽度。
-const PALETTE_MAX_WIDTH: f32 = 560.;
+const PALETTE_MAX_WIDTH: f32 = 640.;
 /// 面板距窗口顶部的距离（偏上更贴近命令面板习惯）。
 const PALETTE_TOP_INSET: f32 = 88.;
 /// 右上角关闭按钮的边长。
 const CLOSE_BUTTON_SIZE: f32 = 24.;
+
+/// 面板内部的 rem 基准。默认 16，提到 18（≈1.125×）：面板的行文字 / 组标题 /
+/// 行距内距全部来自上游 `Command` 的 rem 相对尺寸（`text_sm` / `px_2` …），没有
+/// 逐项的字号入口，唯一能整体放大的口子就是 rem 基准本身。见 [`RemScale`]。
+const PALETTE_REM: f32 = 18.;
+
+/// 以**局部 rem 基准**渲染子树的透传包装元素。
+///
+/// gpui 没有 style 级的字号级联，而面板条目的字号与内距都钉在上游 `Command`
+/// 的 rem 相对档上（行 `text_sm`、组标题 `text_xs`），宿主给不出逐行的字号覆盖。
+/// [`Window::with_rem_size`] 可以在布局 / 绘制期替换 rem 基准，但它只在
+/// 元素绘制阶段可达——所以包一层自定义 [`Element`]：请求布局、prepaint、paint
+/// 三个阶段都把基准抬到 [`PALETTE_REM`] 再放行子树。卡片（[`palette_card`]）
+/// 用它包住面板内容，两种挂载方式（主窗浮层 / 独立弹窗）就一起放大。
+///
+/// 透传语义与 gpui 自带的 `ImageCacheElement` 同构：自身不加盒模型语义，
+/// 只按 refinement 建一个布局节点，把子元素的布局 id 挂在下面。
+struct RemScale {
+    rem: Pixels,
+    style: StyleRefinement,
+    children: Vec<AnyElement>,
+}
+
+impl RemScale {
+    fn new(rem: Pixels) -> Self {
+        Self {
+            rem,
+            style: StyleRefinement::default(),
+            children: Vec::new(),
+        }
+    }
+}
+
+impl ParentElement for RemScale {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(elements);
+    }
+}
+
+impl Styled for RemScale {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl IntoElement for RemScale {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for RemScale {
+    type RequestLayoutState = Vec<LayoutId>;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        window.with_rem_size(Some(self.rem), |window| {
+            let child_layout_ids = self
+                .children
+                .iter_mut()
+                .map(|child| child.request_layout(window, cx))
+                .collect::<Vec<_>>();
+            let mut style = Style::default();
+            style.refine(&self.style);
+            let layout_id = window.request_layout(style, child_layout_ids.iter().copied(), cx);
+            (layout_id, child_layout_ids)
+        })
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        window.with_rem_size(Some(self.rem), |window| {
+            for child in &mut self.children {
+                child.prepaint(window, cx);
+            }
+        })
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_rem_size(Some(self.rem), |window| {
+            for child in &mut self.children {
+                child.paint(window, cx);
+            }
+        })
+    }
+}
 
 /// 把命令面板内容包进**遮罩 + 居中卡片**（主窗内的浮层用）。
 ///
@@ -133,6 +253,16 @@ pub fn palette_card(
             }
         })
         .child(Icon::new(DuckIcon::X).size(extended.icon.sm));
+
+    // 内容整体抬到面板的 rem 基准里再渲染（见 `RemScale`）：浮层挂载时父高自动，
+    // `flex_1` 回落为不生效；弹窗挂载时卡片 `h_full`，它撑满搜索行以下、底条以上的
+    // 全部剩余空间——与未包装前 `Command` 自己 `flex_1` 的行为一致，只是多了一层。
+    let inner = RemScale::new(px(PALETTE_REM))
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .child(inner);
 
     v_flex()
         .relative()

@@ -8,6 +8,7 @@
 //!（与 `pages::terminal` 同一口径）；类型定义仍在 `mod.rs`。
 
 use super::*;
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 
 impl DatabasePage {
     /// 创建页面：读连接档案、展开左栏。
@@ -30,6 +31,11 @@ impl DatabasePage {
                 // 自动换行：默认关（长语句横向滚动，与主流 SQL 工具一致），
                 // 工具条上的开关与设置页共用同一个键。
                 .soft_wrap(db_prefs(cx).editor_word_wrap)
+                // 查找替换面板（`⌘F` / `⇧⌘F`）：面板由 `gpui-component` 的
+                // `SearchPanel` 画（编辑器元素自带），内核的搜索会话负责命中集与
+                // 滚动到命中。**不开这个开关连 ⌘F 都不会有** —— `searchable` 默认是
+                // 关的，`gpui-base` 把不开时的 `⌘F` 让给祖先（那里接的是结果区搜索）。
+                .searchable(true)
         });
         // 结果区搜索框：命中集是**展示行序**的输入，变了就重推一次给数据表组件
         //（见 `sync_data_table_rows`）。
@@ -50,6 +56,16 @@ impl DatabasePage {
         sql.update(cx, |state, _cx| {
             state.lsp_mut().completion_provider =
                 Some(Rc::new(SqlCompletionProvider::new(page.downgrade())));
+        });
+        // 导航三件套共用同一个解析器：Cmd+悬停表名 → 下划线（`DefinitionProvider`），
+        // Cmd+点击 → 打开那张表的**结构**标签（`show_document` 钩子），普通悬停 → 列清单
+        //（`HoverProvider`）。见 [`editor_nav`]。
+        let navigator = Rc::new(SqlNavigator::new(page.downgrade()));
+        sql.update(cx, |state, _cx| {
+            state.lsp_mut().definition_provider = Some(navigator.clone());
+            state.lsp_mut().hover_provider = Some(navigator.clone());
+            state.lsp_mut().show_document =
+                Some(jump_handler(page.downgrade(), navigator.target()));
         });
         let mut subscriptions = Vec::new();
         // 可搜索下拉的确认事件：过滤列 / 批量列直接落草稿；命名空间切换要
@@ -174,6 +190,10 @@ impl DatabasePage {
             tab_kind: HashMap::new(),
             tab_seq: 0,
             active_tab: None,
+            tab_mru: Vec::new(),
+            tab_original_sql: HashMap::new(),
+            tab_saved_link: HashMap::new(),
+            pending_close_tabs: Vec::new(),
             active: None,
             mode: Mode::Query,
             instance_data: InstanceData::default(),
@@ -184,6 +204,7 @@ impl DatabasePage {
             table_page: 0,
             table_rows: None,
             table_sort: None,
+            table_sort_extra: Vec::new(),
             query_result: None,
             query_target: None,
             query_pk: Vec::new(),
@@ -193,6 +214,7 @@ impl DatabasePage {
             query_has_more: false,
             query_page: 0,
             query_sort: None,
+            query_sort_extra: Vec::new(),
             result_tabs: Vec::new(),
             active_result_tab: 0,
             result_replace_active: false,
@@ -203,12 +225,19 @@ impl DatabasePage {
             plan_next: false,
             browse_open_pending: false,
             plan_flat: false,
+            auto_refresh_secs: None,
             data_table,
             columns_mode_widths: COLUMNS_MODE_DEFAULT_WIDTHS,
             columns_mode_resize: None,
             results_visible: true,
             editor_visible: true,
             hidden_columns: BTreeSet::new(),
+            cells_selection: None,
+            export_scope: ExportScope::default(),
+            quick_open: None,
+            pending_quick_open: None,
+            csv_import: None,
+            goto_line: None,
             sql_diagnostics: Vec::new(),
             selected_row: None,
             checked_rows: BTreeSet::new(),
@@ -246,9 +275,12 @@ impl DatabasePage {
             structure_grid_y_scroll: ScrollHandle::new(),
             result_columns_x_scroll: ScrollHandle::new(),
             result_columns_y_scroll: ScrollHandle::new(),
+            tab_strip_x_scroll: ScrollHandle::new(),
+            result_tabs_x_scroll: ScrollHandle::new(),
+            global_actions_x_scroll: ScrollHandle::new(),
+            editor_toolbar_x_scroll: ScrollHandle::new(),
             er: None,
-            compare: None,
-            transfer: None,
+            transfer_dialog: None,
             copy_fields: None,
             structure_comment: None,
             structure_copy_names: false,
@@ -367,6 +399,32 @@ impl DatabasePage {
         let view = self.view.clone();
         let has_session = self.active_session().is_some();
 
+        // 还没有后端的入口：**保留灰显**，但外层挂一句说明（禁用态按钮自己不产 hover
+        // 事件，`tooltip` 必须挂在外层容器上，挂到 `Button` 上永远不触发）。
+        //
+        // 这三个入口在全局条上常驻，用户每天都会看到；不给解释就等于「坏了」。
+        let soon_entry = |id: &'static str,
+                          label: &'static str,
+                          icon: DuckIcon,
+                          tip: SharedString,
+                          cx: &App|
+         -> AnyElement {
+            div()
+                .id(SharedString::from(format!("{id}-soon")))
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .child(
+                    icon_text_button(
+                        id,
+                        label,
+                        Icon::new(icon).size(extended.icon.sm),
+                        ButtonVariant::Ghost,
+                        cx,
+                    )
+                    .disabled(true),
+                )
+                .into_any_element()
+        };
+
         // 下拉 / 按钮文案先按当前语言取好：菜单构建闭包是 `'static`，进不去 `&App`。
         let new_connection_label = tr(cx, "新建连接");
         let new_query_label = tr(cx, "新建查询");
@@ -388,15 +446,19 @@ impl DatabasePage {
             None => tr(cx, "未连接").into(),
         };
 
-        h_flex()
-            .w_full()
-            .flex_none()
+        // 左组动作**可横向滚动**（`overflow_x_scroll` 前先 `.id(...)`；滚动条由
+        // 下方宿主叠加 —— gpui 不画系统滚动条）：窄窗口放不下时横向滚，右组的
+        // AI 入口 / 连接读数始终留在屏内，不跟着一起被挤出窗口。
+        let mut actions = h_flex()
+            .id("db-global-actions")
+            .flex_1()
+            .min_w_0()
             .items_center()
             .gap(tokens.spacing.xxs)
-            .px(tokens.spacing.sm)
-            .py(tokens.spacing.xxs)
-            .border_b(extended.stroke.thin)
-            .border_color(extended.colors.hairline)
+            .overflow_x_scroll()
+            .restrict_scroll_to_axis()
+            .track_scroll(&self.global_actions_x_scroll);
+        actions = actions
             // 左组（设计稿 globalbar 同款文字按钮，dbx `AppToolbar` 同序）。
             .child(
                 icon_text_button(
@@ -475,8 +537,8 @@ impl DatabasePage {
                 }),
             )
             // dbx `AppToolbar` 同款的五件工具（顺序照 dbx 的菜单）：执行 SQL 文件 →
-            // 比较架构 → 比较数据 → 数据库备份 → MCP 设置。有后端的三件直接接上；
-            // 还没有后端的（比较架构 / 数据库备份 / MCP 设置）按「灰显 = 无后端」
+            // 比较架构 → 比较数据 → 数据库备份 → MCP 设置。有后端的三件（含两个比较，
+            // 都是弹窗）直接接上；还没有后端的（数据库备份 / MCP 设置）按「灰显 = 无后端」
             // 的口径摆禁用态：看得见入口、点不动，不冒充功能（P3-6 判据）。
             .child(
                 icon_text_button(
@@ -504,7 +566,15 @@ impl DatabasePage {
                     ButtonVariant::Ghost,
                     cx,
                 )
-                .disabled(true),
+                .disabled(!has_session)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.open_compare_from_active(CompareScope::Schema, window, cx);
+                        });
+                    }
+                }),
             )
             .child(
                 icon_text_button(
@@ -519,31 +589,33 @@ impl DatabasePage {
                     let view = view.clone();
                     move |_, window, cx| {
                         let _ = view.update(cx, |this, cx| {
-                            this.open_compare_from_active(window, cx);
+                            this.open_compare_from_active(CompareScope::Data, window, cx);
                         });
                     }
                 }),
             )
-            .child(
-                icon_text_button(
-                    "db-global-backup",
-                    backup_label,
-                    Icon::new(DuckIcon::Archive).size(extended.icon.sm),
-                    ButtonVariant::Ghost,
+            .child(soon_entry(
+                "db-global-backup",
+                backup_label,
+                DuckIcon::Archive,
+                tr(
                     cx,
+                    "计划备份与恢复尚未接入（计划中）；可先用表右键「导出数据 / 导出表结构」备份。",
                 )
-                .disabled(true),
-            )
-            .child(
-                icon_text_button(
-                    "db-global-mcp",
-                    mcp_label,
-                    Icon::new(DuckIcon::Settings).size(extended.icon.sm),
-                    ButtonVariant::Ghost,
+                .into(),
+                cx,
+            ))
+            .child(soon_entry(
+                "db-global-mcp",
+                mcp_label,
+                DuckIcon::Settings,
+                tr(
                     cx,
+                    "MCP 服务尚未接入（计划中）；当前可用右栏「AI」分段做只读查询与修错。",
                 )
-                .disabled(true),
-            )
+                .into(),
+                cx,
+            ))
             .child(
                 icon_text_button(
                     "db-global-refresh",
@@ -560,9 +632,31 @@ impl DatabasePage {
                     }
                 }),
             )
-            // 中间弹性带。
-            .child(div().flex_1().min_w_0())
-            // 右组（设计稿 globalbar right）：AI 助手 + 连接状态读数。
+            // 右组（设计稿 globalbar right）：AI 助手 + 连接状态读数 —— **不进滚动
+            // 区**，窄窗口下也要一眼可见。左组宿主是相对容器，承托横向滚动条轨道
+            //（标签条 / 结果网格同款形态；无溢出时 Scrollbar 自己隐藏）。
+            ;
+        h_flex()
+            .w_full()
+            .flex_none()
+            .items_center()
+            .gap(tokens.spacing.xxs)
+            .px(tokens.spacing.sm)
+            .py(tokens.spacing.xxs)
+            .border_b(extended.stroke.thin)
+            .border_color(extended.colors.hairline)
+            .child(
+                h_flex().flex_1().min_w_0().relative().child(actions).child(
+                    div().absolute().inset_0().child(
+                        Scrollbar::horizontal(&self.global_actions_x_scroll)
+                            .id("db-global-actions-x-scrollbar")
+                            // **悬停才现身**（用户实测反馈：常驻太吵）；拖到
+                            // 滚动区 / 滑块上才出现，平时只剩动作钮。
+                            .mode(ScrollbarMode::Hover)
+                            .viewport_from_layout(),
+                    ),
+                ),
+            )
             .child({
                 // 高亮 = 「右栏开着 **且** 停在 AI 分段」，与工具条那个「历史」按钮同口径：
                 // 只看 `right_dock` 的话，用户从顶栏收起右栏后按钮还会一直亮着。
@@ -620,21 +714,21 @@ impl DatabasePage {
             .clone()
             .or_else(|| session.databases.first().cloned())
             .unwrap_or_default();
-        // 表清单 = 源命名空间下的全部基础表（与连接菜单那条口径一致：只搬基础表）。
-        let tables: Vec<TableRef> = session
-            .catalog
-            .iter()
-            .filter(|entry| entry.kind == TableKind::Table)
-            .filter(|entry| entry.schema.as_deref() == Some(namespace.as_str()))
-            .map(|entry| entry.table_ref())
-            .collect();
-        self.open_transfer_tab(&conn, &namespace, tables, window, cx);
+        // 弹窗里默认全选源库的基础表吗？不 —— 对象清单由弹窗从源目录现取，
+        // 用户在「传输对象」里自己勾；这里只把源连接 + 源库带进去。
+        self.open_transfer_dialog(&conn, &namespace, Vec::new(), window, cx);
     }
 
-    /// 顶栏「比较数据」：源 = **当前会话** + 它的命名空间（目标在页面上选）。
+    /// 顶栏「比较架构 / 比较数据」：源 = **当前会话** + 它的命名空间（目标在弹窗里选）。
     ///
-    /// 入口逻辑与 [`Self::open_transfer_from_active`] 相同，只是比较不需要表清单。
-    pub(super) fn open_compare_from_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 入口逻辑与 [`Self::open_transfer_from_active`] 相同，只是比较不需要表清单
+    /// （弹窗里默认「全部表」，从表右键进入时才会带单张）。
+    pub(super) fn open_compare_from_active(
+        &mut self,
+        scope: CompareScope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.active_session() else {
             return;
         };
@@ -644,7 +738,7 @@ impl DatabasePage {
             .clone()
             .or_else(|| session.databases.first().cloned())
             .unwrap_or_default();
-        self.open_compare_tab(&conn, &namespace, Vec::new(), window, cx);
+        self.open_compare_dialog(scope, &conn, &namespace, Vec::new(), window, cx);
     }
 
     /// 连接切换下拉（编辑器工具条右端，dbx 同款）。
@@ -918,16 +1012,10 @@ impl DatabasePage {
         if matches!(self.mode, Mode::Structure(_)) {
             return self.render_structure_page(window, cx);
         }
-        // ER 关系图 / 比较数据 / 数据传输三张页面同理：各自一整块正文，
-        // 不产「当前结果集」，塞进结果区只会让人以为查询返回了这些。
+        // ER 关系图页面同理：一整块正文，不产「当前结果集」，塞进结果区只会
+        // 让人以为查询返回了这些。（数据传输已改成弹窗，不再占标签位。）
         if let Mode::Er { .. } = self.mode {
             return self.render_er_page(cx);
-        }
-        if matches!(self.mode, Mode::Compare(_)) {
-            return self.render_compare_page(cx);
-        }
-        if matches!(self.mode, Mode::Transfer(_)) {
-            return self.render_transfer_page(cx);
         }
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -1342,13 +1430,13 @@ impl Render for DatabasePage {
         // 四个可搜索下拉的选项 / 选中值按指纹同步（换结果集 / 换标签 / 右键预选后
         // 把新状态推进 `SelectState`；指纹没变就不动，见 `sync_select_pickers`）。
         self.sync_select_pickers(window, cx);
-        // 比较 / 传输页的目标连接与目标库两个下拉同一时机同步（它们的状态
-        // 按标签存在 `compare` / `transfer` 里，活动标签才有实体在）。
-        self.sync_compare_pickers(window, cx);
-        self.sync_transfer_pickers(window, cx);
         // 页码框是受控显示（页码是状态、框只是它的显示）：改页码的路径散在各处且
         // 大多拿不到窗口，统一在这里同步一次，见 `sync_page_jump`。
         self.sync_page_jump(window, cx);
+        // 快速打开里按下的回车：订阅闭包没有窗口，只能在这里落地（同
+        // `pending_namespace_pick` 那一类）。必须在渲染浮层**之前**执行 ——
+        // 动作里会关面板，晚一步就会画出已经该消失的那一帧。
+        self.apply_pending_quick_open(window, cx);
         // 连接的新建 / 编辑走弹窗子页（`open_edit_dialog`），主区始终是
         // 「全局操作组 + 标签条 + 编辑器 / 结果」——不再有「主区变身表单」这一态。
         //
@@ -1416,9 +1504,38 @@ impl Render for DatabasePage {
             .on_action(cx.listener(|this, _: &StopQuery, window, cx| {
                 this.stop_running(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &CloseActiveTab, window, cx| {
+                if let Some(tab) = this.active_tab.clone() {
+                    this.close_tab(&tab, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NewQueryTab, window, cx| {
+                if let Some(conn) = this.active.clone() {
+                    this.open_tab(&conn, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &FocusResultSearch, window, cx| {
+                let handle = this.result_search.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }))
+            .on_action(cx.listener(|this, event: &SwitchTabAt, window, cx| {
+                if let Some(tab) = this.tabs.get(event.index).cloned() {
+                    this.activate(&tab, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenQuickOpen, window, cx| {
+                this.open_quick_open(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToLine, window, cx| {
+                this.open_goto_line(window, cx);
+            }))
             .child(div().flex_1().min_h_0().min_w_0().child(panel))
             .child(self.render_status_bar(cx))
             // 浮层放最后：绝对定位、贴在根容器（默认 `relative`）的状态栏上沿。
+            // 快速打开在 toast 之前 —— 它自带全屏遮罩，压在提示条下面才对。
+            .children(self.render_quick_open(cx))
+            .children(self.render_csv_import(cx))
+            .children(self.render_goto_line(cx))
             .children(self.render_toast(cx))
     }
 }

@@ -49,6 +49,20 @@ source files are retained from the published package.
   scrolling, history, styles, Unicode, DEC charset, insert mode, and wide-cell
   overlap.
 
+- `src/event_loop.rs` adds an optional **byte preprocessor** hook
+  (`Preprocessor` + `EventLoop::with_preprocessor`): PTY reads are passed through
+  it before `vte` parses them, through a reusable scratch buffer. It exists so a
+  consumer can transcode a non-UTF-8 stream (GB18030 / GBK) before the parser,
+  without teaching the parser about charsets. Unset = zero extra copies on the
+  hot path; no parsing semantics change.
+
+- `src/event.rs` + `src/term/mod.rs`: `Event::ShellMark` carries the cursor
+  **column** (`column: u16`) alongside the anchor. Columns are scroll-invariant
+  by nature, so no anchor bookkeeping is needed; `B` marks give the first input
+  column and `C` marks the column just past the submitted command, which lets a
+  host reconstruct the exact input line without guessing prompt widths. Parsing
+  and forwarding only — semantics stay with the consumer.
+
 Do not expand this fork into a replacement grid or scrollback implementation.
 Its only local responsibility is the proven common-case ASCII write path, plus
 forwarding shell integration marks (again forwarding, not semantics).

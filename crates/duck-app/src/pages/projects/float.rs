@@ -322,13 +322,48 @@ impl FloatState {
     }
 
     /// 在「待办」里新建一条任务（悬浮窗的新增行）。
-    pub(crate) fn create(&mut self, title: &str) -> duck_project::Result<()> {
+    ///
+    /// 与主窗的 Spotlight 走**同一套记号**（`#标签` / `@项目` / `!P0` / `明天 18:00`）：
+    /// 这一窗是「随手记」的地方，只收标题等于让最常用的入口丢掉一半信息 ——
+    /// 同一句话在两个入口落成两种任务，用户没法形成肌肉记忆。
+    ///
+    /// 返回落库后的**标题**（剥掉记号的那一句），调用方拿它做回执：回执显示原文
+    /// 会让人以为「记号和文字一起进了标题」。
+    pub(crate) fn create(&mut self, text: &str) -> duck_project::Result<String> {
+        let parsed = super::quickparse::parse(text, self.today);
+        if parsed.title.is_empty() {
+            return Ok(parsed.title);
+        }
         let Some(store) = &self.store else {
-            return Ok(());
+            return Ok(parsed.title);
         };
-        store.create_task(NewTask::new(title))?;
+        // 项目按名字匹配（`@Alpha`）：这一窗没有「当前范围」，匹配不上就归收集箱。
+        let project_id = parsed.project.as_ref().and_then(|name| {
+            self.projects
+                .iter()
+                .find(|project| project.name.eq_ignore_ascii_case(name))
+                .map(|project| project.id)
+        });
+        let mut tag_ids = Vec::new();
+        for name in &parsed.tags {
+            tag_ids.push(store.ensure_tag(name, duck_project::DEFAULT_PROJECT_COLOR)?);
+        }
+        let mut new = NewTask::new(parsed.title.clone()).tags(tag_ids);
+        if let Some(project_id) = project_id {
+            new = new.project(project_id);
+        }
+        if let Some(priority) = parsed.priority {
+            new = new.priority(priority);
+        }
+        if parsed.due.is_some() {
+            new = new.dates(None, parsed.due);
+        }
+        if let Some(time) = &parsed.due_time {
+            new = new.due_time(time.clone());
+        }
+        store.create_task(new)?;
         self.reload();
-        Ok(())
+        Ok(parsed.title)
     }
 }
 
@@ -454,12 +489,12 @@ impl FloatWindow {
             return;
         }
         match self.state.create(&title) {
-            Ok(()) => {
+            Ok(created) => {
                 if let Some(draft) = &self.draft {
                     draft.update(cx, |draft, cx| draft.set_value("", window, cx));
                 }
                 bus::notify(cx);
-                self.show_hint(trf(cx, "已新建「{}」。", &[&title]), false, cx);
+                self.show_hint(trf(cx, "已新建「{}」。", &[&created]), false, cx);
             }
             Err(error) => {
                 self.show_hint(trf(cx, "新建失败：{}", &[&error.to_string()]), true, cx);
@@ -1069,12 +1104,19 @@ fn footer(this: &FloatWindow, view: &WeakEntity<FloatWindow>, cx: &App) -> AnyEl
         .on_click({
             let view = view.clone();
             move |_, _, cx| {
-                // 抬主窗 + 跳到项目管理页：从「随手看」点过去，目的就是看那一条。
+                // 先把「当前展开的是哪条」取出来：`reveal_main_window` 之后主窗会
+                // 抢走焦点，这一窗的展开态随时可能被收起，事后再读就不可靠了。
+                // `WeakEntity::update` 返回 `Result`（视图可能已经不在）；这里要的是
+                // 「有没有展开某一条」，所以把 `Result` 与 `Option` 两层一起摊平。
+                let target = view.update(cx, |this, _| this.state.open).ok().flatten();
                 let _ = view.update(cx, |this, cx| {
                     crate::app::reveal_main_window(cx);
-                    // 主窗还没开时 `reveal_main_window` 会**同步**建好视图，
-                    // 所以紧接着的跳转能落到地方（见 `app::open_main_window`）。
                     crate::app::navigate_to(cx, crate::pages::PROJECTS_ROUTE);
+                    // 带上 id：主窗落到这一页之后把这条摆进右栏。没有展开任何一条时
+                    // 只跳页（与旧行为一致）。
+                    if let Some(id) = target {
+                        bus::focus_task(cx, id);
+                    }
                     // 自己收起来 —— 主窗已经把这一页摊开了，留着小窗只会挡路。
                     this.hide(cx);
                 });

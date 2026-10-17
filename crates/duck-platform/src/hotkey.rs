@@ -100,6 +100,17 @@ pub const CALENDAR_SPEC: &str = if cfg!(target_os = "macos") {
     "control+alt+KeyC"
 };
 
+/// 快速捕获窗（`quick_capture` 槽）的默认键位。
+///
+/// 与前三者同一套直觉：「一个字母 + 两个修饰键」。`N` = new，是这一窗唯一要做的事。
+/// - macOS：`alt+super+KeyN`（`⌥⌘N`）。系统与常见输入法都不占。
+/// - Windows / Linux：`Ctrl+Alt+N`（`super+KeyN` 在两端都太容易撞上输入法）。
+pub const QUICK_CAPTURE_SPEC: &str = if cfg!(target_os = "macos") {
+    "alt+super+KeyN"
+} else {
+    "control+alt+KeyN"
+};
+
 /// 键表：`(gpui 键名, 注册库键名, 给人看的名字)`。
 ///
 /// gpui 的 `Keystroke::key` 是「键帽上印的字符」的小写形式（`space` / `f1` / `a`），
@@ -737,22 +748,25 @@ fn label_of(code: Code) -> String {
 mod tests {
     use super::{
         CALENDAR_SPEC, Code, FLOAT_SPEC, HotKey, Hotkey, HotkeyError, KEYS, LAUNCHER_SPEC,
-        ModifierState, Modifiers, has_real_modifier, is_modifier_key_name, label_of, spec_owner,
+        ModifierState, Modifiers, QUICK_CAPTURE_SPEC, has_real_modifier, is_modifier_key_name,
+        label_of, spec_owner,
     };
     use std::collections::{HashMap, HashSet};
 
     #[test]
     fn the_default_specs_round_trip() {
-        // 两个默认键位都必须是「规范形」：常量与存档要是同一个形状，否则重启后
+        // 每个默认键位都必须是「规范形」：常量与存档要是同一个形状，否则重启后
         // 读档会得到一个「看起来设过了、其实登记不上」的键位。
-        for spec in [LAUNCHER_SPEC, FLOAT_SPEC, CALENDAR_SPEC] {
+        for spec in [LAUNCHER_SPEC, FLOAT_SPEC, CALENDAR_SPEC, QUICK_CAPTURE_SPEC] {
             let parsed = Hotkey::parse(spec).unwrap_or_else(|error| {
                 panic!("默认键位 {spec} 必须可登记：{error}");
             });
             assert_eq!(parsed.spec(), spec, "默认串本身就是规范形");
         }
-        // 两个槽位的默认键位不能撞（`bind` 会拒，但撞了就是出厂即报错）。
-        assert_ne!(LAUNCHER_SPEC, FLOAT_SPEC);
+        // 槽位的默认键位不能撞（`bind` 会拒，但撞了就是出厂即报错）。
+        let specs = [LAUNCHER_SPEC, FLOAT_SPEC, CALENDAR_SPEC, QUICK_CAPTURE_SPEC];
+        let unique: std::collections::HashSet<_> = specs.iter().collect();
+        assert_eq!(unique.len(), specs.len(), "默认键位撞了：{specs:?}");
     }
 
     /// 槽位判重是 `bind` 的前置闸门。跨槽撞键在 macOS 上**不会**被系统拒绝

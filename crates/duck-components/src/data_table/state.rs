@@ -43,6 +43,11 @@ pub struct DataTableState {
     offsets: Vec<f32>,
     /// 藏起来的列（原始下标；口径与宿主「字段筛选」一致 —— 只影响显示）。
     hidden: BTreeSet<usize>,
+    /// 列的**展示顺序**（原始下标的排列；恒为全排列，`new` / `set_model` 里重置）。
+    ///
+    /// 只影响显示：行数据、列宽、藏列都按**原始下标**存 —— 拖列头改的只是
+    /// 「先画哪一列」，不搬数据（搬了会让宿主侧按列名做的格式 / 编辑全部错位）。
+    order: Vec<usize>,
     /// 列宽拖拽中（`None` = 没在拖）。
     resize: Option<ResizeDrag>,
     /// 横向滚动句柄（表头与行区共用；滚动条从它读位置）。
@@ -58,6 +63,7 @@ impl DataTableState {
     pub fn new(model: Arc<TableModel>) -> Self {
         let widths = model.estimated_widths();
         let offsets = column_offsets(&widths);
+        let order = (0..model.columns().len()).collect();
         Self {
             model,
             view_rows: Vec::new(),
@@ -65,6 +71,7 @@ impl DataTableState {
             widths,
             offsets,
             hidden: BTreeSet::new(),
+            order,
             resize: None,
             h_scroll: ScrollHandle::default(),
             v_scroll: UniformListScrollHandle::new(),
@@ -89,6 +96,9 @@ impl DataTableState {
             self.widths = self.model.estimated_widths();
             self.offsets = column_offsets(&self.widths);
             self.hidden.clear();
+            // 列集换了：旧列序按原始下标记，套到新列上只会错位 —— 回原序，
+            // 宿主的落盘布局随后用**列名**重新套一次（`set_order_names`）。
+            self.order = (0..self.model.columns().len()).collect();
             self.h_scroll
                 .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
         }
@@ -155,13 +165,118 @@ impl DataTableState {
         &self.v_scroll
     }
 
-    /// 可见列：`(原始下标, 列)`。藏起来的列不进列头也不进行。
+    /// 可见列：`(原始下标, 列)`，按**展示顺序**给。藏起来的列不进列头也不进行。
     pub fn visible_columns(&self) -> impl Iterator<Item = (usize, &super::model::ColumnSpec)> {
-        self.model
-            .columns()
+        self.order
             .iter()
-            .enumerate()
-            .filter(|(index, _)| !self.hidden.contains(index))
+            .filter(|index| !self.hidden.contains(index))
+            .filter_map(|index| {
+                self.model
+                    .columns()
+                    .get(*index)
+                    .map(|column| (*index, column))
+            })
+    }
+
+    /// 列**展示顺序**里的列名（含藏起来的列）—— 宿主落盘用。
+    ///
+    /// 按名字而不是下标存：结果集 / 表的列集换一次，下标就全错位了，而名字还能
+    /// 对上（对不上的在 [`Self::set_order_names`] 里被忽略）。
+    #[must_use]
+    pub fn order_names(&self) -> Vec<String> {
+        self.order
+            .iter()
+            .filter_map(|index| self.model.columns().get(*index))
+            .map(|column| column.name.to_string())
+            .collect()
+    }
+
+    /// 按列名套一份展示顺序（宿主读回落盘布局时调）。
+    ///
+    /// 只认**当前列集里有的名字**，且按给定顺序排；没提到的列按原始序接在后面 ——
+    /// 结果集换了之后布局文件里多几列 / 少几列都不会把网格弄坏。没变就不重绘。
+    pub fn set_order_names(&mut self, names: &[String], cx: &mut Context<Self>) {
+        if names.is_empty() {
+            let identity: Vec<usize> = (0..self.model.columns().len()).collect();
+            if identity != self.order {
+                self.order = identity;
+                cx.notify();
+            }
+            return;
+        }
+        let mut order: Vec<usize> = Vec::with_capacity(self.model.columns().len());
+        for name in names {
+            if let Some(index) = self
+                .model
+                .columns()
+                .iter()
+                .position(|column| column.name.as_ref() == name.as_str())
+            {
+                if !order.contains(&index) {
+                    order.push(index);
+                }
+            }
+        }
+        for index in 0..self.model.columns().len() {
+            if !order.contains(&index) {
+                order.push(index);
+            }
+        }
+        if order != self.order {
+            self.order = order;
+            cx.notify();
+        }
+    }
+
+    /// 拖列头重排：`from` / `to` 是**可见列序**里的位置（藏列不画、也不算落点）。
+    ///
+    /// 报一条 [`DataTableEvent::ColumnOrderChanged`] 让宿主落盘 —— 列序是「这一屏我
+    /// 想怎么看」，切标签 / 重启后应当还在。
+    pub fn move_column(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if from == to {
+            return;
+        }
+        let visible: Vec<usize> = self.visible_columns().map(|(index, _)| index).collect();
+        let (Some(&source), Some(&target)) = (visible.get(from), visible.get(to)) else {
+            return;
+        };
+        let Some(source_at) = self.order.iter().position(|index| *index == source) else {
+            return;
+        };
+        self.order.remove(source_at);
+        let Some(target_at) = self.order.iter().position(|index| *index == target) else {
+            return;
+        };
+        // 往右拖 = 插到目标列的**后面**，往左拖 = 插到它前面。
+        let insert = if from < to { target_at + 1 } else { target_at };
+        self.order.insert(insert.min(self.order.len()), source);
+        cx.notify();
+        cx.emit(DataTableEvent::ColumnOrderChanged);
+    }
+
+    /// 相对移动：把 `col` 在**可见列序**里左 / 右挪 `delta` 位（右键菜单「左移 / 右移」）。
+    pub fn nudge_column(&mut self, col: usize, delta: isize, cx: &mut Context<Self>) {
+        let visible: Vec<usize> = self.visible_columns().map(|(index, _)| index).collect();
+        let Some(from) = visible.iter().position(|index| *index == col) else {
+            return;
+        };
+        let last = visible.len().saturating_sub(1);
+        let to = from.saturating_add_signed(delta).min(last);
+        self.move_column(from, to, cx);
+    }
+
+    /// 移到最左 / 最右（右键菜单「移到最左 / 移到最右」）。
+    pub fn send_column_to_edge(&mut self, col: usize, right: bool, cx: &mut Context<Self>) {
+        let visible: Vec<usize> = self.visible_columns().map(|(index, _)| index).collect();
+        let Some(from) = visible.iter().position(|index| *index == col) else {
+            return;
+        };
+        let to = if right {
+            visible.len().saturating_sub(1)
+        } else {
+            0
+        };
+        self.move_column(from, to, cx);
     }
 
     /// 可见列的宽度合计（含行号列与多选列）—— 横向滚动的内容宽度。

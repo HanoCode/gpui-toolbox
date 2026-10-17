@@ -30,9 +30,10 @@ use duck_components::{
 use duck_project::{ArchivedProject, ArchivedTask, now_seconds};
 use duck_theme::{UnderMinute, active_theme, tr, tr_relative_time, trf, trn};
 
+use super::ARCHIVE_KEY_CONTEXT;
 use super::ProjectsPage;
 use super::state::{ArchiveRow, ProjectsState};
-use super::view::count_badge;
+use super::view::{chip, count_badge};
 
 /// 归档中心搜索框的宽度（几何量，与工具条快速新建同源，故留裸值）。
 const SEARCH_WIDTH: f32 = 220.;
@@ -105,6 +106,11 @@ pub(crate) fn render_archive_center(
         .size_full()
         .min_h_0()
         .min_w_0()
+        // 归档区自成一个键位上下文：`Esc` 在这一块里**无论焦点在不在搜索框**都能出去。
+        // 页面级的 `esc` 绑定带 `!Input`（见 `KEY_CONTEXT_BARE`），焦点进了搜索框就
+        // 不匹配 —— 而「翻旧账」这个动作十有八九是先点搜索框。返回按钮是鼠标出口，
+        // 这一条是键盘出口，两条都得有（原先只有页面级那一条，等于没有）。
+        .key_context(ARCHIVE_KEY_CONTEXT)
         .child(
             h_flex()
                 .flex_none()
@@ -114,6 +120,29 @@ pub(crate) fn render_archive_center(
                 .py(tokens.spacing.xs)
                 .border_b(extended.stroke.thin)
                 .border_color(extended.colors.hairline)
+                .child(
+                    // 标题行最左的出口：归档中心是**整块换掉主区**的，不点左栏就没有
+                    // 别的可见退路。放在标题左边而不是右上角，是因为它读作
+                    // 「回到上一层」，不是「关闭这个面板」。
+                    chip(
+                        "projects-archive-back",
+                        Some(
+                            Icon::new(DuckIcon::ChevronLeft)
+                                .size(extended.icon.sm)
+                                .text_color(tokens.colors.muted_foreground)
+                                .into_any_element(),
+                        ),
+                        SharedString::from(tr(cx, "返回")),
+                        false,
+                        cx,
+                    )
+                    .on_click({
+                        let view = view.clone();
+                        move |_, _window, cx| {
+                            let _ = view.update(cx, |page, cx| page.leave_archive(cx));
+                        }
+                    }),
+                )
                 .child(
                     div()
                         .flex_none()

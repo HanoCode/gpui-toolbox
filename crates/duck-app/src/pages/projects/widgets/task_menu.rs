@@ -30,9 +30,9 @@ use gpui_component::{
 
 use duck_components::DuckIcon;
 use duck_project::{BoardColumn, Priority, Project, Quadrant, Task, TaskStatus};
-use duck_theme::tr;
+use duck_theme::{tr, trf};
 
-use super::super::ProjectsPage;
+use super::super::{ProjectsPage, QUICK_LOG_MINUTES, hours_display};
 use super::column_title;
 use super::priority_dot::priority_label;
 use super::quadrant_label;
@@ -155,6 +155,12 @@ pub(crate) fn task_menu(
     menu = menu.item(
         PopupMenuItem::submenu(tr(cx, "四象限…"), quadrant_submenu(task, view, window, cx))
             .icon(Icon::new(DuckIcon::Columns2)),
+    );
+    // 记工时与上面四个「改字段」的子菜单并列：它改的也是任务属性，只是量是三档固定
+    // 增量。右栏收起时这是唯一的一步入口（右键 → 档位，共两下）。
+    menu = menu.item(
+        PopupMenuItem::submenu(tr(cx, "记工时…"), hours_submenu(task, view, window, cx))
+            .icon(Icon::new(DuckIcon::Clock)),
     );
 
     // ---- 收尾：复制（本仓口径：真建一条新任务）+ 归档 + 删除（不可逆，走二次确认）----
@@ -359,6 +365,39 @@ fn quadrant_submenu(
                             move |_, _, cx| {
                                 let _ =
                                     view.update(cx, |page, cx| page.set_quadrant(id, quadrant, cx));
+                            }
+                        }),
+                )
+            })
+    })
+}
+
+/// 「记工时…」子菜单：三档增量与右栏「工时」下的快记按钮同源
+/// （`QUICK_LOG_MINUTES`），标题行先报当前累计 —— 记完想知道「现在一共多少」，
+/// 菜单收起来就看不见右栏那行了。
+fn hours_submenu(
+    task: &Task,
+    view: &WeakEntity<ProjectsPage>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> Entity<PopupMenu> {
+    let id = task.id;
+    let current = task.actual_hours.unwrap_or(0.);
+    let view = view.clone();
+    let heading = SharedString::from(trf(cx, "当前 {} h", &[&hours_display(current)]));
+    PopupMenu::build(window, cx, move |menu, _, cx| {
+        QUICK_LOG_MINUTES
+            .iter()
+            .fold(menu.label(heading.clone()), |menu, (minutes, label)| {
+                let minutes = *minutes;
+                menu.item(
+                    PopupMenuItem::new(tr(cx, label))
+                        .icon(Icon::new(DuckIcon::Clock))
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view
+                                    .update(cx, |page, cx| page.log_actual_hours(id, minutes, cx));
                             }
                         }),
                 )

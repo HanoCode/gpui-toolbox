@@ -2526,10 +2526,13 @@ impl<T: EventListener> Handler for Term<T> {
         };
 
         // Anchor the mark now, at parse time: this is the only moment at which the cursor is
-        // still standing on the line the shell meant.
+        // still standing on the line the shell meant. The column travels along — it never
+        // shifts with scrolling, so no anchor conversion is needed on the host side.
         let anchor = self.grid.anchor(self.grid.cursor.point.line);
+        let column = self.grid.cursor.point.column.0 as u16;
 
-        self.event_proxy.send_event(Event::ShellMark { anchor, mark });
+        self.event_proxy
+            .send_event(Event::ShellMark { anchor, column, mark });
     }
 }
 

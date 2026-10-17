@@ -29,6 +29,12 @@ pub struct ExtendedColors {
     pub row_hover: Hsla,
     /// 侧栏与顶栏等「退后」区域的底色（比内容区 `surface` 低一个层级）。
     pub chrome: Hsla,
+    /// 凹陷容器底色：看板列这类「容器要托住里面的卡片」的区域。
+    ///
+    /// 浅色下比 `chrome` 深一整档（取 `muted`）—— `chrome` 与页面底色只差两三个
+    /// 色阶，列与画布分不开，白卡片也浮不起来；深色下 `chrome` 本身已落在
+    /// `background` 与 `surface` 之间，够分层，直接沿用。
+    pub well: Hsla,
     /// `chrome` 上导航项的悬停底色。
     pub nav_hover: Hsla,
     /// 悬停底色（强调色薄层）：按钮、列表行、标签、可点文字的悬停反馈统一用它。

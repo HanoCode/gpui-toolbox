@@ -27,6 +27,19 @@ impl Render for ColumnsModeResizeDrag {
 /// 语义变成「按这段文本的开头过滤」—— 短值下与「按整个值过滤」完全一样。
 const SEARCH_VALUE_MAX_CHARS: usize = 256;
 
+/// 右键列头调**列序**的四种动作：都是显示顺序上的相对移动，不动数据。
+///
+/// 为什么用菜单而不是拖列头：列头文字是**可拖选 / 可 ⌘C** 的（`selectable_text`，
+/// 见 `tests/column_header_detail_copy.rs`），在同一个元素上再挂一个拖拽源会与
+/// 文本选择抢同一次「按下 + 移动」。菜单零手势冲突，且一眼能看出结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColumnNudge {
+    Left,
+    Right,
+    First,
+    Last,
+}
+
 /// 单元格右键菜单在**弹出那一刻**读齐的事实。
 ///
 /// 菜单构建闭包是 `Fn`（每次右键 rebuild 一次），拿不到 `&DatabasePage`：弹出时
@@ -46,6 +59,8 @@ struct CellMenuFacts {
     row_text: String,
     /// 「复制 ▸」父项文案（跟着选区走，见菜单里的说明）。
     submenu_label: SharedString,
+    /// 拖出多格选区时的「复制选区 N 格」文案；`None` = 只有一格 / 没选区。
+    selection_label: Option<SharedString>,
     /// 结果集可写 → 「复制 ▸」里的 INSERT 档可用（与
     /// [`ResultFormat::exportable`] 的第二个入参同源）。
     can_insert: bool,
@@ -181,7 +196,18 @@ impl DatabasePage {
             // 点了也不该换（`current_result()` 那时给的是表行）。
             .when(has_tabs, |bar| {
                 let multi = self.result_tabs.len() > 1;
-                let mut tabs = h_flex().flex_none().items_center().gap(tokens.spacing.xxs);
+                // 标签区可**横向滚动**：一条 SQL 一个标签，跑多了必然放不下。
+                // `overflow_x_scroll` 前先 `.id(...)`；滚动条由外层相对容器叠加
+                //（gpui 不画系统滚动条，不叠就没有可拖动的东西）。
+                let mut tabs = h_flex()
+                    .id("db-result-tabs")
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .gap(tokens.spacing.xxs)
+                    .overflow_x_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&self.result_tabs_x_scroll);
                 for index in 0..self.result_tabs.len() {
                     let active = index == self.active_result_tab;
                     let view = self.view.clone();
@@ -246,7 +272,19 @@ impl DatabasePage {
                             ),
                     );
                 }
-                bar.child(tabs).child(
+                bar.child(
+                    // 标签区宿主：相对容器承托横向滚动条轨道（顶部标签条 / 结果
+                    // 网格同款形态）；**悬停才现身**（与标签条同口径：常驻太吵）。
+                    h_flex().flex_1().min_w_0().relative().child(tabs).child(
+                        div().absolute().inset_0().child(
+                            Scrollbar::horizontal(&self.result_tabs_x_scroll)
+                                .id("db-result-tabs-x-scrollbar")
+                                .mode(ScrollbarMode::Hover)
+                                .viewport_from_layout(),
+                        ),
+                    ),
+                )
+                .child(
                     div()
                         .w(px(1.))
                         .h(px(14.))
@@ -272,29 +310,51 @@ impl DatabasePage {
             // ⚠️ 只在**这一列真的还在结果里**时读数：客户端排序是**按列名**记的
             //（`query_sort`），同一标签里换一条语句重跑之后，旧列名可能已经不存在
             // —— 那时排序根本没生效，读数却还挂着「按 X 升序」，是一句假话。
+            // 排序读数：多级排序时按优先级列出（`A 升序 · B 降序`），
+            // 只列**当前结果里真的还有这一列**的键 —— 换语句重跑后旧列名可能
+            // 已经不存在，那时排序没生效，读数也不能挂着。
             .when_some(
                 self.current_result().and_then(|result| {
-                    self.active_sort().filter(|spec| {
-                        result
-                            .columns
-                            .iter()
-                            .any(|column| column.name == spec.column)
-                    })
+                    let keys: Vec<String> = self
+                        .sort_keys_spec()
+                        .into_iter()
+                        .filter(|spec| {
+                            result
+                                .columns
+                                .iter()
+                                .any(|column| column.name == spec.column)
+                        })
+                        .map(|spec| {
+                            format!(
+                                "{} {}",
+                                spec.column,
+                                if spec.descending {
+                                    tr(cx, "降序")
+                                } else {
+                                    tr(cx, "升序")
+                                }
+                            )
+                        })
+                        .collect();
+                    (!keys.is_empty()).then(|| keys.join(" · "))
                 }),
-                |bar, spec| {
+                |bar, keys| {
                     bar.child(neutral_tag(
-                        SharedString::from(trf(
-                            cx,
-                            "按 {} {}",
-                            &[&spec.column, if spec.descending { "降序" } else { "升序" }],
-                        )),
+                        SharedString::from(trf(cx, "按 {}", &[keys.as_str()])),
                         cx,
                     ))
                 },
             )
             // 弹性带把读数与右端入口分开；来源语句 chip 已撤（摘要「执行过程」
-            // 里的语句可复制，历史与右栏详情也能看全文）。
-            .child(div().flex_1().min_w_0())
+            // 里的语句可复制，历史与右栏详情也能看全文）。⚠️ 有结果标签行时
+            // 标签区自己就是 `flex_1`（放不下就横向滚动）—— 这里再给一个
+            // `flex_1` 会跟它**对半分宽**，标签区最多只能占半条栏；所以这一档
+            // 退成零宽占位，只有「没有标签行」时才需要它撑开。
+            .child(if has_tabs {
+                div().min_w_0()
+            } else {
+                div().flex_1().min_w_0()
+            })
             // 字段筛选 / 跳转列已并入 tab 栏动作组（回滚之后）。
             // DDL 入口（原对象头条迁来）：只在表浏览且当前表取到了 DDL 时出现，
             // 与右栏 DDL 卡的「修改表结构」同一条 `open_structure_tab` 路径 ——
@@ -339,6 +399,52 @@ impl DatabasePage {
     /// 全部是「这一次结果」的**常驻**事实——工具条中部那份 status 是易逝的操作
     /// 反馈，翻完页 / 切完标签就没了；这里跟结果共存亡。来源语句挪去了读数条
     /// （设计稿位置），脚注只留读数与动作。
+    /// 表浏览工具条的「自动刷新」下拉（5 / 10 / 30 / 60 / 300 秒，或关闭）。
+    ///
+    /// 文案走「{}s 自动刷新」而不是只显示秒数：这排按钮全是动作，只写 `30s`
+    /// 看不出它是开关还是读数。关闭态写「自动刷新」，一眼知道这里能开。
+    pub(super) fn auto_refresh_dropdown(&self, cx: &App) -> AnyElement {
+        let theme = active_theme(cx);
+        let extended = theme.extended();
+        let view = self.view.clone();
+        let current = self.auto_refresh_secs;
+        let label: SharedString = match current {
+            Some(secs) => SharedString::from(trf(cx, "{}s 自动刷新", &[&secs.to_string()])),
+            None => tr(cx, "自动刷新").into(),
+        };
+        toolbar_text_dropdown_button(
+            "db-auto-refresh",
+            label,
+            Icon::new(DuckIcon::Clock).size(extended.icon.md),
+            Anchor::TopRight,
+            move |menu, _, cx| {
+                let view_off = view.clone();
+                let mut menu = menu.item(
+                    PopupMenuItem::new(tr(cx, "关闭自动刷新"))
+                        .checked(current.is_none())
+                        .on_click(move |_, _, cx| {
+                            let _ = view_off.update(cx, |this, cx| this.set_auto_refresh(None, cx));
+                        }),
+                );
+                for secs in Self::AUTO_REFRESH_CHOICES {
+                    let view_on = view.clone();
+                    let item = SharedString::from(trf(cx, "{} 秒", &[&secs.to_string()]));
+                    menu = menu.item(
+                        PopupMenuItem::new(item)
+                            .checked(current == Some(secs))
+                            .on_click(move |_, _, cx| {
+                                let _ = view_on.update(cx, |this, cx| {
+                                    this.set_auto_refresh(Some(secs), cx);
+                                });
+                            }),
+                    );
+                }
+                menu
+            },
+            cx,
+        )
+    }
+
     pub(super) fn render_result_footer(&self, cx: &Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -346,6 +452,30 @@ impl DatabasePage {
         let result = self.current_result();
         let rows = result.as_ref().map(|result| result.rows.len()).unwrap_or(0);
         let count = trf(cx, "{} 行", &[&rows.to_string()]);
+        // 矩形选区的读数（dbx grid-foot 同款）：格子数，有数值就补合计 / 平均。
+        // 只在真拖出选区时算 —— 一格都没有时这一段不占位。
+        let selection_note: Option<SharedString> = self
+            .active_cells_selection()
+            .zip(result)
+            .filter(|(range, _)| range.cell_count() > 1)
+            .map(|(range, result)| {
+                let columns = self.selection_columns(result, range);
+                let stats = selection_stats(&result.rows, range, &columns);
+                let cells = stats.cells.to_string();
+                if stats.numeric == 0 {
+                    // 全是文本 / NULL：只报格子数（合计 0 会让人以为数据是 0）。
+                    trf(cx, "选中 {} 格", &[&cells]).into()
+                } else {
+                    let sum = format_number(stats.sum);
+                    let average = format_number(stats.average);
+                    trf(
+                        cx,
+                        "选中 {} 格 · 合计 {} · 平均 {}",
+                        &[&cells, &sum, &average],
+                    )
+                    .into()
+                }
+            });
 
         h_flex()
             .w_full()
@@ -360,6 +490,7 @@ impl DatabasePage {
             // 再读行数 / 耗时这些读数。
             .child(self.result_view_switch(cx))
             .child(meta_text(count, cx))
+            .when_some(selection_note, |bar, note| bar.child(meta_text(note, cx)))
             .when_some(self.query_elapsed_ms, |bar, ms| {
                 bar.child(meta_text(
                     SharedString::from(trf(cx, "{} ms", &[&ms.to_string()])),
@@ -454,9 +585,7 @@ impl DatabasePage {
                     Mode::Instance(_)
                     | Mode::Dashboard(_)
                     | Mode::Structure(_)
-                    | Mode::Er { .. }
-                    | Mode::Compare(_)
-                    | Mode::Transfer(_) => {}
+                    | Mode::Er { .. } => {}
                 });
             }
         };
@@ -489,12 +618,9 @@ impl DatabasePage {
                     .map(|count| count.value().div_ceil(page_size as u64).max(1) as usize);
                 (self.table_page, pages, Some(can_next))
             }
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => (0, Some(1), Some(false)),
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => {
+                (0, Some(1), Some(false))
+            }
         };
         let can_prev = page > 0;
         let can_next = can_next.unwrap_or_else(|| pages.is_some_and(|pages| page + 1 < pages));
@@ -602,12 +728,7 @@ impl DatabasePage {
                 self.query_page.min(pages - 1)
             }
             Mode::Table => self.table_page,
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => 0,
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => 0,
         }
     }
 
@@ -810,6 +931,7 @@ impl DatabasePage {
     pub(super) fn toggle_column_hidden(&mut self, column: &str, cx: &mut Context<Self>) {
         if self.hidden_columns.remove(column) {
             self.sync_data_table_rows(cx);
+            self.store_grid_layout(cx);
             cx.notify();
             return;
         }
@@ -824,6 +946,7 @@ impl DatabasePage {
         }
         self.hidden_columns.insert(column.to_owned());
         self.sync_data_table_rows(cx);
+        self.store_grid_layout(cx);
         cx.notify();
     }
 
@@ -1749,6 +1872,22 @@ impl DatabasePage {
             .map(|format| (*format, format.export_label(cx)))
             .collect();
         let import_label = tr(cx, "导入 CSV…");
+        // 导出范围（[`ExportScope`]）：与格式正交的第二根轴。摆成子菜单而不是在
+        // 每个格式后面再乘一遍——10 档格式 × 4 档范围会变成 40 项。
+        let scope = self.export_scope;
+        let table_mode = self.mode == Mode::Table;
+        let has_selected = !self.checked_rows.is_empty() || self.selected_row.is_some();
+        let has_selection = self.active_cells_selection().is_some();
+        let scope_items: Vec<(ExportScope, &'static str)> = [
+            ExportScope::Page,
+            ExportScope::Selected,
+            ExportScope::Selection,
+            ExportScope::WholeTable,
+        ]
+        .iter()
+        .map(|choice| (*choice, choice.label(cx)))
+        .collect();
+        let scope_label: SharedString = trf(cx, "范围：{}", &[scope.label(cx)]).into();
         // 文字按钮（设计稿「⤓ 导出 ∨」）：纯图标版让人猜这个下载箭头是干嘛的。
         let title = tr(cx, "导出 / 导入");
         toolbar_text_dropdown_button(
@@ -1757,17 +1896,38 @@ impl DatabasePage {
             Icon::new(DuckIcon::Download).size(extended.icon.sm),
             Anchor::TopRight,
             move |menu, _, _| {
-                let menu = export_items.iter().fold(menu, |menu, (format, label)| {
-                    let enabled = format.exportable(has_result, can_insert, has_raw);
-                    menu.item(PopupMenuItem::new(*label).disabled(!enabled).on_click({
-                        let view = view.clone();
-                        let format = *format;
-                        move |_, window, cx| {
-                            let _ =
-                                view.update(cx, |this, cx| this.export_result(format, window, cx));
-                        }
-                    }))
+                // 范围四档平铺在顶部（勾选态 = 当前档），再做一节分隔：菜单里
+                // 第 1 节是「装哪些行」，第 2 节才是「装成什么格式」。首项是禁用的
+                // 分区标题，写清当前范围——不然只看勾选态得自己数。
+                let menu = menu.item(PopupMenuItem::new(scope_label.clone()).disabled(true));
+                let menu = scope_items.iter().fold(menu, |menu, item| {
+                    let range_view = view.clone();
+                    let (choice, label) = *item;
+                    menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(choice == scope)
+                            .disabled(!choice.available(table_mode, has_selected, has_selection))
+                            .on_click(move |_, _, cx| {
+                                let _ = range_view.update(cx, |this, cx| {
+                                    this.export_scope = choice;
+                                    cx.notify();
+                                });
+                            }),
+                    )
                 });
+                let menu = export_items
+                    .iter()
+                    .fold(menu.separator(), |menu, (format, label)| {
+                        let enabled = format.exportable(has_result, can_insert, has_raw);
+                        menu.item(PopupMenuItem::new(*label).disabled(!enabled).on_click({
+                            let view = view.clone();
+                            let format = *format;
+                            move |_, window, cx| {
+                                let _ = view
+                                    .update(cx, |this, cx| this.export_result(format, window, cx));
+                            }
+                        }))
+                    });
                 let import_view = view.clone();
                 menu.separator().item(
                     PopupMenuItem::new(import_label)
@@ -2020,6 +2180,11 @@ impl DatabasePage {
             // 动作同一排；读数条只留事实读数。词不进快照，仍是临时态。
             .child(self.result_search_box(cx))
             .child(refresh)
+            // 自动刷新只对表浏览出现：查询结果没有「重新取一页」——
+            // 定时重跑语句会改结果集、冲掉撤销栈，是用户没要求过的行为。
+            .when(self.mode == Mode::Table, |bar| {
+                bar.child(self.auto_refresh_dropdown(cx))
+            })
             .child(self.export_dropdown(cx))
             .child(
                 act("db-area-insert-row", tr(cx, "新增行"), DuckIcon::Plus)
@@ -2675,6 +2840,46 @@ impl DatabasePage {
         panel.into_any_element()
     }
 
+    /// 当前**有效**的矩形选区：越界就当没有（结果集换了、行变少、翻页之后）。
+    ///
+    /// 选区存的是**当前结果集里的下标**，换结果集 / 翻页都可能让旧下标指向别的
+    /// 数据。渲染、底栏读数、选区复制**一律经这里取**，三处口径才不会各走各的
+    ///（否则会出现「格子没高亮，但底栏还在报合计」这种自相矛盾的画面）。
+    pub(super) fn active_cells_selection(&self) -> Option<CellRange> {
+        let range = self.cells_selection?;
+        let result = self.current_result()?;
+        let (_, row_end, _, col_end) = range.bounds();
+        (row_end < result.rows.len() && col_end < result.columns.len()).then_some(range)
+    }
+
+    /// 选区统计 / 复制要用的列：**可见列里落在选区列区间内的那些下标**。
+    ///
+    /// 隐藏列不参与：用户看不见它，却让「N 格」多出两格、合计里多出两列数，
+    /// 只会让人以为读数算错了。
+    pub(super) fn selection_columns(&self, result: &ResultSet, range: CellRange) -> Vec<usize> {
+        let (_, _, col_start, col_end) = range.bounds();
+        visible_column_indexes(&result.columns, &self.hidden_columns)
+            .into_iter()
+            .filter(|col| (col_start..=col_end).contains(col))
+            .collect()
+    }
+
+    /// 右键列头调列序：交给组件改展示顺序（它自己会报 `ColumnOrderChanged`，
+    /// 这里再顺手落一次盘 —— 事件是异步回来的，但 `store_grid_layout` 幂等）。
+    fn reorder_column(&mut self, col: usize, nudge: ColumnNudge, cx: &mut Context<Self>) {
+        self.data_table.update(cx, |state, cx| match nudge {
+            ColumnNudge::Left => state.nudge_column(col, -1, cx),
+            ColumnNudge::Right => state.nudge_column(col, 1, cx),
+            ColumnNudge::First => state.send_column_to_edge(col, false, cx),
+            ColumnNudge::Last => state.send_column_to_edge(col, true, cx),
+        });
+    }
+
+    /// 只有一个可见列时列序无从可调（菜单据此置灰）。
+    fn has_multiple_columns(&self, cx: &App) -> bool {
+        self.data_table.read(cx).visible_columns().nth(1).is_some()
+    }
+
     /// 结果网格主体：把宿主的展示态交给**公共数据表组件**
     ///（`duck_components::data_table`）。
     ///
@@ -2713,6 +2918,7 @@ impl DatabasePage {
             sort_descending: sort.is_some_and(|spec| spec.descending),
             editing: editing.map(|editor| CellPos::new(editor.row, editor.col)),
             editing_input: editing.map(|editor| editor.input.clone()),
+            selection: self.active_cells_selection(),
             empty_hint: self.result_empty_hint(cx),
         };
         let labels = self.data_table_labels(cx);
@@ -2815,6 +3021,16 @@ impl DatabasePage {
                     } else {
                         tr(cx, "复制为").into()
                     };
+                    // 多格选区单独给一项：「复制 ▸」的几档按**行**作用域走，拖出来的
+                    // 那块格子得有自己的出口（否则只能 ⌘C，菜单里找不到）。
+                    let selection_label: Option<SharedString> = page
+                        .active_cells_selection()
+                        .filter(|range| range.cell_count() > 1)
+                        .map(|range| {
+                            let columns = page.selection_columns(result, range);
+                            let cells = selection_stats(&result.rows, range, &columns).cells;
+                            SharedString::from(trf(cx, "复制选区 {} 格", &[&cells.to_string()]))
+                        });
                     CellMenuFacts {
                         column: result
                             .columns
@@ -2823,6 +3039,7 @@ impl DatabasePage {
                         cell_text,
                         row_text,
                         submenu_label,
+                        selection_label,
                         can_insert: page.insert_context().is_some(),
                         editable: page.edit_source().is_some(),
                         deletable: page.pk_values_for_row(pos.row).is_some(),
@@ -2836,6 +3053,7 @@ impl DatabasePage {
                     cell_text,
                     row_text,
                     submenu_label,
+                    selection_label,
                     can_insert,
                     editable,
                     deletable,
@@ -2938,6 +3156,19 @@ impl DatabasePage {
                 // 共享一份 `String` 就得让先建的那个改成借用，反而绕。
                 let copy_cell_text = cell_text.clone();
                 let cell_view = view.clone();
+                // 多格选区在**最前面**：「复制这几格」是对当前选区最直接的那件事，
+                // 排在逐格 / 整行复制之前才顺手。
+                if let Some(label) = selection_label {
+                    let selection_view = view.clone();
+                    items.push(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                        let Some(entity) = selection_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| {
+                            this.copy_cells_selection(cx);
+                        });
+                    }));
+                }
                 items.push(
                     PopupMenuItem::new(copy_cell_label).on_click(move |_, _, cx| {
                         let Some(entity) = cell_view.upgrade() else {
@@ -3119,7 +3350,7 @@ impl DatabasePage {
                     };
                     // 弹出这一刻一次读齐（与单元格菜单同一条纪律）：列名、模式、
                     // 当前排序、藏列集合都只读一次，之后只借克隆。
-                    let (name, table_mode, sort) = {
+                    let (name, table_mode, sort, multi_column) = {
                         let page = entity.read(cx);
                         let Some(result) = page.current_result() else {
                             return menu;
@@ -3129,6 +3360,7 @@ impl DatabasePage {
                                 column.name.clone(),
                                 page.mode == Mode::Table,
                                 page.active_sort().cloned(),
+                                page.has_multiple_columns(cx),
                             ),
                             None => return menu,
                         }
@@ -3214,6 +3446,40 @@ impl DatabasePage {
                                 entity.update(cx, |this, cx| this.clear_sort(cx));
                             },
                         ));
+                    }
+                    // ── 列顺序（显示顺序，不动数据）─────────────────────────
+                    // 用菜单而不是「拖列头」：列头文字是可拖选 / 可 ⌘C 的，同一元素
+                    // 上再挂拖拽源会与文本选择抢同一次「按下 + 移动」（见
+                    // [`ColumnNudge`] 的说明）。只有一个可见列时整组不画。
+                    if multi_column {
+                        let order_label = tr(cx, "列顺序");
+                        let left_label = tr(cx, "左移一列");
+                        let right_label = tr(cx, "右移一列");
+                        let first_label = tr(cx, "移到最左");
+                        let last_label = tr(cx, "移到最右");
+                        let order_menu = PopupMenu::build(_window, cx, move |menu, _, _| {
+                            [
+                                (left_label, ColumnNudge::Left),
+                                (right_label, ColumnNudge::Right),
+                                (first_label, ColumnNudge::First),
+                                (last_label, ColumnNudge::Last),
+                            ]
+                            .into_iter()
+                            .fold(menu, |menu, (label, nudge)| {
+                                let view = view.clone();
+                                menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                    let Some(entity) = view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.reorder_column(col, nudge, cx);
+                                    });
+                                }))
+                            })
+                        });
+                        menu = menu
+                            .separator()
+                            .item(PopupMenuItem::submenu(order_label, order_menu));
                     }
                     menu
                 });
@@ -3443,6 +3709,9 @@ impl DatabasePage {
         self.data_table
             .update(cx, |state, cx| state.set_model(model, cx));
         self.sync_data_table_rows(cx);
+        // 新结果落地后恢复这张表上次的列宽 / 隐藏列（查询模式下 key 为 `None`，
+        // 这一步是空操作）。
+        self.apply_grid_layout(cx);
     }
 
     /// 推「展示哪些行」和「藏了哪些列」给组件。
@@ -3472,13 +3741,76 @@ impl DatabasePage {
         match self.mode {
             Mode::Table => self.table_sort.as_ref(),
             Mode::Query => self.query_sort.as_ref(),
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => None,
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => None,
         }
+    }
+
+    /// 当前生效的**全部**排序键（主键在前，追加键按加入顺序）。
+    ///
+    /// 只给「真的要用多键」的两处用：表浏览拼 `ORDER BY`、查询结果重排展示序。
+    /// 列头箭头 / 右键 checked / 读数条仍读 [`Self::active_sort`]（只关心主排序）。
+    pub(super) fn active_sort_keys(&self) -> Vec<(String, bool)> {
+        self.sort_keys_spec()
+            .into_iter()
+            .map(|spec| (spec.column, spec.descending))
+            .collect()
+    }
+
+    /// [`Self::active_sort_keys`] 的 `SortSpec` 版（写回 / 轮转的中间形态）。
+    pub(super) fn sort_keys_spec(&self) -> Vec<SortSpec> {
+        let (main, extra) = match self.mode {
+            Mode::Table => (self.table_sort.as_ref(), &self.table_sort_extra),
+            Mode::Query => (self.query_sort.as_ref(), &self.query_sort_extra),
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => {
+                return Vec::new();
+            }
+        };
+        main.cloned()
+            .into_iter()
+            .chain(extra.iter().cloned())
+            .collect()
+    }
+
+    /// 写回排序键：第一键进 `*_sort`，其余进 `*_sort_extra`，然后按模式刷新。
+    ///
+    /// 作废口径沿用单键时代的规矩：排序换了 → 行号含义变了 → 勾选 / 选中 / 行编辑器
+    /// 一并作废（矩形选区同理：那块格子按行下标记，重排之后就指向别的数据了），
+    /// 表浏览回第 1 页并重取（查询结果只重排展示序，不重跑语句）。
+    pub(super) fn set_sort_keys(&mut self, keys: Vec<SortSpec>, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Table => {
+                let mut rest = keys.into_iter();
+                self.table_sort = rest.next();
+                self.table_sort_extra = rest.collect();
+                self.checked_rows.clear();
+                self.selected_row = None;
+                self.row_editor = None;
+                self.cells_selection = None;
+                self.table_page = 0;
+                self.load_table_page(cx);
+            }
+            Mode::Query => {
+                let mut rest = keys.into_iter();
+                self.query_sort = rest.next();
+                self.query_sort_extra = rest.collect();
+                self.cells_selection = None;
+                self.query_page = 0;
+                self.sync_data_table_rows(cx);
+                cx.notify();
+            }
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => {}
+        }
+    }
+
+    /// 列头三态轮转（普通点击 = 替换，`Shift+点击` = 追加一级）。
+    ///
+    /// 两套落地见 [`Self::set_sort_keys`]：表浏览 = 服务器侧重取一页（数据真的换了
+    /// 序），SQL 结果集 = 只把**已到手的行**重排一遍（不必、也不该重新查库）。
+    /// 点列头与右键定序是同一个动作的两种入口，都汇到这里，免得哪一天漂开。
+    pub(super) fn toggle_sort_key(&mut self, column: &str, additive: bool, cx: &mut Context<Self>) {
+        let mut keys = self.sort_keys_spec();
+        toggle_sort_keys_in(&mut keys, column, additive);
+        self.set_sort_keys(keys, cx);
     }
 
     /// 右键定序：**直接指定方向**（不像点列头那样三态轮转），两套落地按模式分派。
@@ -3486,62 +3818,32 @@ impl DatabasePage {
     /// 点列头（[`Self::on_data_table_event`] 的 `SortRequested`）与右键菜单是同一个
     /// 动作的两种入口 —— 都在这里汇合，免得「右键按升序」和「点头一次」哪一天漂开。
     pub(super) fn sort_by(&mut self, column: &str, descending: bool, cx: &mut Context<Self>) {
-        match self.mode {
-            Mode::Table => self.sort_table_by(column, descending, cx),
-            Mode::Query => {
-                self.query_sort = Some(SortSpec {
-                    column: column.to_owned(),
-                    descending,
-                });
-                // 与 [`Self::toggle_query_sort`] 同一条：排序换了，同一页码下的内容
-                // 整体换了一批，回第 1 页。
-                self.query_page = 0;
-                self.sync_data_table_rows(cx);
-                cx.notify();
-            }
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => {}
-        }
+        // 右键「按此列升 / 降序」是**替换**语义：清掉追加键，只留这一列。
+        self.set_sort_keys(
+            vec![SortSpec {
+                column: column.to_owned(),
+                descending,
+            }],
+            cx,
+        );
     }
 
     /// 取消当前排序（右键「清除排序」）。
     ///
-    /// 表浏览那一支的作废集合与翻页口径必须与 [`Self::sort_table_by`] 完全一致：
-    /// 取消排序同样是「行号的含义变了」，只清 `table_sort` 会把勾选 / 选中行留在
-    /// 旧行号上，下一次删行就删错。
+    /// 善后**复用** [`Self::set_sort_keys`]（空键表 = 不排序）：取消排序同样是「行号
+    /// 的含义变了」，勾选 / 选中行 / 行编辑器 / 矩形选区一套作废、页码回第一页 ——
+    /// 只清 `table_sort` 会把它们留在旧行号上，下一次删行就删错。这里只多一句
+    /// 「本来就没排序就别白跑一次取数」。
     pub(super) fn clear_sort(&mut self, cx: &mut Context<Self>) {
-        match self.mode {
-            Mode::Table => {
-                if self.table_sort.is_none() {
-                    return;
-                }
-                self.table_sort = None;
-                self.checked_rows.clear();
-                self.selected_row = None;
-                self.row_editor = None;
-                self.table_page = 0;
-                self.load_table_page(cx);
-            }
-            Mode::Query => {
-                if self.query_sort.is_none() {
-                    return;
-                }
-                self.query_sort = None;
-                self.query_page = 0;
-                self.sync_data_table_rows(cx);
-                cx.notify();
-            }
-            Mode::Instance(_)
-            | Mode::Dashboard(_)
-            | Mode::Structure(_)
-            | Mode::Er { .. }
-            | Mode::Compare(_)
-            | Mode::Transfer(_) => {}
+        let sorted = match self.mode {
+            Mode::Table => self.table_sort.is_some() || !self.table_sort_extra.is_empty(),
+            Mode::Query => self.query_sort.is_some() || !self.query_sort_extra.is_empty(),
+            Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => false,
+        };
+        if !sorted {
+            return;
         }
+        self.set_sort_keys(Vec::new(), cx);
     }
 
     /// 把藏起来的列全部放出来（工具条「字段筛选」与右键菜单「全部显示」共用）。
@@ -3551,6 +3853,7 @@ impl DatabasePage {
         }
         self.hidden_columns.clear();
         self.sync_data_table_rows(cx);
+        self.store_grid_layout(cx);
         cx.notify();
     }
 
@@ -3740,22 +4043,6 @@ impl DatabasePage {
         cx.notify();
     }
 
-    /// 点列头：升序 → 降序 → 取消（SQL 结果集的**客户端**排序）。
-    ///
-    /// 与表浏览的 [`Self::toggle_table_sort`] 是同一套三态轮转、两套落地：
-    /// 表浏览重发一次带 `ORDER BY` 的取数（服务器侧），这里只是把**已到手的行**
-    /// 重排一遍（`sync_data_table_rows` 重算展示行序）—— 不必、也不该重新查库。
-    ///
-    /// 勾选 / 选中行都不动：它们记的是**原始行下标**，而排序只改展示顺序
-    ///（`visible_row_indexes` 里排的是展示下标），两者的对应关系不受影响。
-    pub(super) fn toggle_query_sort(&mut self, column: &str, cx: &mut Context<Self>) {
-        self.query_sort = SortSpec::next(self.query_sort.as_ref(), column);
-        // 排序变了，页码的含义也变了（同一页码下的内容整体换了一批）：回第 1 页。
-        self.query_page = 0;
-        self.sync_data_table_rows(cx);
-        cx.notify();
-    }
-
     /// 当前应在网格里显示的行：`(原始行下标, 行号起点)`；没有结果时 `None`。
     fn visible_row_indexes(&self, cx: &App) -> Option<(Vec<usize>, usize)> {
         let result = self.current_result()?;
@@ -3788,13 +4075,23 @@ impl DatabasePage {
         }
         // 客户端排序夹在「搜索命中」与「分页切片」之间：先定序、再切片，
         // 否则每一页各自排序，「第 2 页」就成了第 1 页的重排（表浏览那条注释同款）。
-        if let Some(spec) = self.query_sort.as_ref()
-            && let Some(column) = result
-                .columns
-                .iter()
-                .position(|column| column.name == spec.column)
-        {
-            sort_row_indexes(&result.rows, &mut matched, column, spec.descending);
+        // 多级排序：主键 + 追加键逐级比较。列名认不出的键跳过（结果集换了列后，
+        // 旧排序键自然失效，不在这里报错）。
+        let sort_columns: Vec<(usize, bool)> = self
+            .query_sort
+            .iter()
+            .cloned()
+            .chain(self.query_sort_extra.iter().cloned())
+            .filter_map(|spec| {
+                result
+                    .columns
+                    .iter()
+                    .position(|column| column.name == spec.column)
+                    .map(|position| (position, spec.descending))
+            })
+            .collect();
+        if !sort_columns.is_empty() {
+            sort_row_indexes_multi(&result.rows, &mut matched, &sort_columns);
         }
         if self.mode != Mode::Query {
             // 表浏览 = 服务器侧分页，整页即一页。
@@ -3823,6 +4120,20 @@ impl DatabasePage {
                 self.cell_detail = Some((pos.row, pos.col));
                 cx.notify();
             }
+            // 拖选一块矩形选区：起选落锚点，之后只挪焦点（往回拖也是同一块，
+            // [`CellRange::bounds`] 会规整方向）。
+            DataTableEvent::SelectionStarted(pos) => {
+                self.cells_selection = Some(CellRange::new(*pos, *pos));
+                cx.notify();
+            }
+            DataTableEvent::SelectionExtended(pos) => {
+                // 拖动事件在**任何**按下-移动里都会来（包括拖列宽 / 拖滚动条）：
+                // 没有起选就没有选区可延展，静默丢掉。
+                if let Some(range) = self.cells_selection {
+                    self.cells_selection = Some(CellRange::new(range.anchor, *pos));
+                    cx.notify();
+                }
+            }
             DataTableEvent::RowCheckedToggled { row, checked } => {
                 // 事件带的是**目标态**（不是「翻一下」）：勾选集合按它直接写，免得
                 // 与组件那一刻画出来的态出现一帧偏差。
@@ -3838,18 +4149,17 @@ impl DatabasePage {
                 //（`ToggleAllChecked` 也走它）。
                 self.toggle_all_checked(cx);
             }
-            DataTableEvent::SortRequested { column } => {
+            DataTableEvent::SortRequested { column, additive } => {
                 // 同一个动作、两套落地（见 [`Self::active_sort`] 的说明）。
+                // `additive` = 按着 Shift：追加一级排序而不是替换。
                 let name = column.to_string();
-                if self.mode == Mode::Table {
-                    self.toggle_table_sort(&name, cx);
-                } else {
-                    self.toggle_query_sort(&name, cx);
-                }
+                self.toggle_sort_key(&name, *additive, cx);
             }
-            // 列宽由组件自管（拖拽 / 双击自适应都在组件里）。这条事件是「将来要把
-            // 列宽落盘」的接缝，目前没有第二真源要同步。
-            DataTableEvent::ColumnResized { .. } => {}
+            // 列宽由组件自管（拖拽 / 双击自适应都在组件里）；这条事件是列宽
+            // **落盘**的接缝：收尾时把整份布局写回 kv（含隐藏列）。
+            DataTableEvent::ColumnResized { .. } => self.store_grid_layout(cx),
+            // 列序变了同理：整份布局（宽度 + 藏列 + 列序）一次写回 kv。
+            DataTableEvent::ColumnOrderChanged => self.store_grid_layout(cx),
             DataTableEvent::CellEditSubmitRequested(_) => self.commit_cell_edit(cx),
             DataTableEvent::CellDetailRequested(pos) => {
                 self.open_cell_detail(pos.row, pos.col, cx);
@@ -4275,4 +4585,117 @@ fn plan_tree(nodes: Vec<PlanNode>, cx: &App) -> AnyElement {
                 .into_any_element()
         }))
         .into_any_element()
+}
+
+// ── 网格布局持久化（列宽 / 隐藏列）──────────────────────────────────────────
+
+/// 单张表的网格布局：列宽与隐藏列。
+///
+/// **键 = 连接 + 限定的表名**，只对表浏览生效。查询结果不落盘：同一标签重跑
+/// 另一条语句后列集合会整批换掉，存下来的宽度下次一列都对不上（而且查询结果的
+/// 列宽更像「这一屏我想怎么看」的临时调整，见 `columns_mode_widths` 的同款理由）。
+///
+/// 全部字段 `#[serde(default)]`：以后加字段时旧存档照样能读。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(super) struct GridLayout {
+    /// 列名 → 宽度（像素）。按**列名**存而不是下标：表加了一列之后下标会整体错位。
+    columns: std::collections::BTreeMap<String, f32>,
+    /// 隐藏的列名。
+    hidden: Vec<String>,
+    /// 列的**展示顺序**（列名序列；空 = 原序）。结果集的列集换过之后，对不上的
+    /// 名字在组件里被忽略、新列按原序接在后面（见 `set_order_names`）。
+    order: Vec<String>,
+}
+
+impl DatabasePage {
+    /// 当前表浏览的布局键；不是表浏览 / 没有选中表时 `None`。
+    fn grid_layout_key(&self) -> Option<String> {
+        if self.mode != Mode::Table {
+            return None;
+        }
+        let table = self.selected_table.as_ref()?;
+        let conn = self.active.as_ref()?;
+        let qualified = match &table.schema {
+            Some(schema) => format!("{schema}.{}", table.name),
+            None => table.name.clone(),
+        };
+        Some(format!("db_grid_layout:{conn}:{qualified}"))
+    }
+
+    fn load_grid_layout(&self, cx: &App) -> GridLayout {
+        self.grid_layout_key()
+            .and_then(|key| duck_store::kv_get(cx, &key))
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// 把组件当前的列宽 + 页面当前的藏列写回 kv。
+    ///
+    /// 写的是**全量**而不是单个被拖的列：组件里所有列都有宽度（估算值也算），
+    /// 一起存下来最省事，恢复时也不必猜「哪几列是用户拖过的」。
+    pub(super) fn store_grid_layout(&self, cx: &App) {
+        let Some(key) = self.grid_layout_key() else {
+            return;
+        };
+        let state = self.data_table.read(cx);
+        let model = state.model();
+        let mut layout = GridLayout {
+            hidden: self.hidden_columns.iter().cloned().collect(),
+            order: state.order_names(),
+            ..GridLayout::default()
+        };
+        for (index, column) in model.columns().iter().enumerate() {
+            layout
+                .columns
+                .insert(column.name.to_string(), state.column_width(index));
+        }
+        if let Ok(text) = serde_json::to_string(&layout) {
+            duck_store::kv_put(cx, key, text);
+        }
+    }
+
+    /// 恢复当前表的布局（换表 / 新结果落地后调用一次）。
+    ///
+    /// 先设宽度再设藏列：`set_hidden_names` 只影响可见列集合，与宽度互不依赖；
+    /// 顺序反过来也不会错，只是这里按「先几何、后可见性」读起来顺。
+    pub(super) fn apply_grid_layout(&mut self, cx: &mut Context<Self>) {
+        let layout = self.load_grid_layout(cx);
+        if layout.columns.is_empty() && layout.hidden.is_empty() && layout.order.is_empty() {
+            return;
+        }
+        // 列序先套：它是「先画哪一列」，与宽度 / 藏列互不依赖，但先摆好列序，
+        // 后面按名字查宽度那一步读起来才不别扭。
+        if !layout.order.is_empty() {
+            let order = layout.order.clone();
+            self.data_table
+                .update(cx, |state, cx| state.set_order_names(&order, cx));
+        }
+        let column_indexes: Vec<(usize, f32)> = {
+            let state = self.data_table.read(cx);
+            state
+                .model()
+                .columns()
+                .iter()
+                .enumerate()
+                .filter_map(|(index, column)| {
+                    layout
+                        .columns
+                        .get(column.name.as_ref())
+                        .map(|width| (index, *width))
+                })
+                .collect()
+        };
+        if !column_indexes.is_empty() {
+            self.data_table.update(cx, |state, cx| {
+                for (index, width) in column_indexes {
+                    state.set_width(index, width, cx);
+                }
+            });
+        }
+        if !layout.hidden.is_empty() {
+            self.hidden_columns = layout.hidden.into_iter().collect();
+            self.sync_data_table_rows(cx);
+        }
+    }
 }

@@ -50,7 +50,7 @@ use gpui_component::{
 use crate::view::{PaletteEmptySource, PaletteGroupsSource};
 
 /// 面板卡片的目标尺寸；也就是浮窗本身的尺寸。
-const CARD_SIZE: Size<Pixels> = size(px(620.), px(420.));
+const CARD_SIZE: Size<Pixels> = size(px(720.), px(500.));
 
 /// 浮窗纵向位置：屏高的这个比例处（偏上，贴近 Spotlight 的习惯而不在正中央）。
 const VERTICAL_BIAS: f32 = 0.28;

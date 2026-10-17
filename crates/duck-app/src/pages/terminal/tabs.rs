@@ -2,26 +2,77 @@
 
 use super::*;
 
+use duck_term::Encoding;
+
 impl TerminalPage {
     /// 激活某个标签。
     ///
-    /// 切走时会**撤销别的会话的自动重连计时**：用户已经看向另一个标签，后台不该还在
-    /// 按退避起 `ssh`。保留的只有新活动标签自己的会话（含它的分屏窗格）。
+    /// **不再撤销其他标签的自动重连**。此前这里会调 `retain_reconnect_only`，
+    /// 把「非当前标签」的重连计时全部清掉 —— 依据是「用户已经切走，后台不该还在
+    /// 起 `ssh`」。这条依据在有了退避与上限之后不成立了：
+    ///
+    /// - 后台重连是**有界**的（次数上限 + 指数退避），不会形成风暴；
+    /// - 它的目的恰恰是「切走的这段时间自己长回来」，一撤销就永远长不回来；
+    /// - 断开的是**后台标签**，用户看不见，撤销之后也没有任何提示 ——
+    ///   切回来看到的是一个停在「已断开」的标签，还得手动点一次重连。
+    ///
+    /// 轮询任务（`pages::terminal_canvas::start_terminal_poller`）本来就遍历
+    /// **全部**会话，与哪个标签在前台无关，所以这里删掉之后后台确实会继续重连。
     pub(super) fn activate(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.active != index {
+        // 唤醒：恢复出来的标签在被点之前不连（见 [`SessionTab::dormant`]）。
+        // 放在「下标没变也执行」的位置：点当前标签同样是「我要连上」。
+        //
+        // ⚠️ 唤醒本身**也要** `notify`：会话是在 `render` 里由 `ensure_sessions` 起的，
+        // 而点「当前这个休眠标签」不改 `active` —— 不重绘就永远轮不到那一帧，
+        // 表现是「按钮点了没反应」。
+        let woke = self
+            .tabs
+            .get_mut(index)
+            .is_some_and(|tab| std::mem::replace(&mut tab.dormant, false));
+        if self.active != index || woke {
             self.active = index;
-            let keep: Vec<String> = self
-                .tabs
-                .get(index)
-                .map(|tab| {
-                    std::iter::once(tab.id.clone())
-                        .chain(tab.split.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            self.retain_reconnect_only(&keep);
             cx.notify();
         }
+    }
+
+    /// 按方向切标签（`⌃Tab` / `⌃⇧Tab` / `⌘⇧[` / `⌘⇧]`）。
+    ///
+    /// 环形走：在最后一个标签上按「下一个」回到第一个（iTerm / 浏览器一致）。
+    /// 只切到「存在」的标签上，所以 `delta` 用取模而不是钳制。
+    pub(super) fn step_tab(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let len = self.tabs.len();
+        if len < 2 {
+            return;
+        }
+        let len = len as isize;
+        let next = (self.active as isize + delta).rem_euclid(len) as usize;
+        self.activate(next, cx);
+    }
+
+    /// 切换某条标签的会话编码（标签右键菜单「编码」）。
+    ///
+    /// 作用域是**标签**而不是单条会话：分屏的两半同属一条标签，用户在这个菜单里
+    /// 改的是「这条标签怎么显示」，两半一起切才符合预期。会话句柄里的
+    /// `EncodingHandle` 是唯一状态 —— 这里只负责把新值写进去（热切，不重开会话）。
+    /// 重连走 [`Self::reconnect_session`] 时会从旧会话读出编码沿用，不会回落到设置默认。
+    pub(super) fn set_tab_encoding(
+        &mut self,
+        tab_id: &str,
+        encoding: Encoding,
+        cx: &mut Context<Self>,
+    ) {
+        let keys: Vec<String> = match self.tabs.iter().find(|tab| tab.id == tab_id) {
+            Some(tab) => std::iter::once(tab.id.clone())
+                .chain(tab.split.clone())
+                .collect(),
+            None => return,
+        };
+        for key in keys {
+            if let Some(live) = self.sessions.get(&key) {
+                live.set_encoding(encoding);
+            }
+        }
+        cx.notify();
     }
 
     /// 关闭第 `index` 个标签；关的是当前标签时优先落到原位置的下一个。
@@ -33,6 +84,16 @@ impl TerminalPage {
             return;
         }
         let tab = self.tabs.remove(index);
+        // 记进「重开栈」：`⌘⇧Z` 用它把刚关掉的那个再拉回来（先进后出，封顶
+        // `CLOSED_TAB_CAPACITY` —— 栈太长等于没有栈，用户不会往回翻第 10 个）。
+        self.closed_tabs.push(ClosedTab {
+            id: tab.id.clone(),
+            title: tab.title.clone(),
+            kind: tab.kind,
+        });
+        if self.closed_tabs.len() > CLOSED_TAB_CAPACITY {
+            self.closed_tabs.remove(0);
+        }
         // 会话随标签一起丢：`Session::drop` 给事件循环发 `Shutdown`，PTY master 关闭，
         // 子 shell 收到 `SIGHUP` —— 不会留下孤儿进程。
         self.sessions.remove(&tab.id);
@@ -52,6 +113,58 @@ impl TerminalPage {
         } else if self.active >= index {
             self.active = self.active.saturating_sub(1).min(self.tabs.len() - 1);
         }
+        cx.notify();
+    }
+
+    /// `⌘⇧Z`：重开最近关掉的那个标签。
+    ///
+    /// 重开 = **重新建一条会话**（旧进程已经随标签销毁），所以状态从「连接中」起，
+    /// 与点连接同一个起点。标签 id 尽量沿用原来的：沿用才能让左栏那一行重新高亮；
+    /// 原 id 已被占用（比如同名连接又开了一条）时退化成 `~n` 副本。
+    pub(super) fn reopen_last_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(closed) = self.closed_tabs.pop() else {
+            notify::info(tr(cx, "没有可重开的标签。"), window, cx);
+            return;
+        };
+        // 档案被删了就没得重开：说清楚，而不是开一条注定起不来的标签。
+        if closed.kind != TabKind::Local && self.profile(&closed.id).is_none() {
+            notify::warning(tr(cx, "这条连接的档案已被删除，无法重开。"), window, cx);
+            return;
+        }
+        if closed.kind == TabKind::Sftp {
+            let owner = data::tab_owner(&closed.id).to_owned();
+            self.open_sftp_tab(&owner, window, cx);
+            return;
+        }
+        let id = if self.tabs.iter().any(|tab| tab.id == closed.id) {
+            // 原 id 被占了：找一个 `~n` 空位，语义与 `⌘T` 的第二条会话一致。
+            let owner = data::tab_owner(&closed.id).to_owned();
+            let mut n = 2_u32;
+            loop {
+                let candidate = data::duplicate_tab_id(&owner, n);
+                if !self.tabs.iter().any(|tab| tab.id == candidate) {
+                    break candidate;
+                }
+                n += 1;
+                if n >= 100 {
+                    notify::warning(tr(cx, "同一主机的会话已经开太多了。"), window, cx);
+                    return;
+                }
+            }
+        } else {
+            closed.id.clone()
+        };
+        self.tabs.push(SessionTab {
+            id,
+            title: closed.title,
+            subtitle: None,
+            kind: closed.kind,
+            status: LinkStatus::Connecting,
+            split: None,
+            split_owner: None,
+            dormant: false,
+        });
+        self.active = self.tabs.len() - 1;
         cx.notify();
     }
 
@@ -152,8 +265,17 @@ impl TerminalPage {
     }
 
     /// 按 id 找连接档案（内置本地 shell 不在档案表里，返回 `None`）。
+    ///
+    /// `id` 可以是标签 id（带 `/sftp` 或 `~n` 后缀），这里统一剥到档案 id ——
+    /// 这是**唯一**的剥离点，上层调用方不必各自记得剥。
     pub(super) fn profile(&self, id: &str) -> Option<&StoredProfile> {
-        self.profiles.iter().find(|profile| profile.id == id)
+        let id = data::tab_owner(id);
+        // 临时连接（`user@host:port` 直接连出来的）只活在 `ad_hoc` 里：
+        // 回落到这里，连接 / 重连 / 右栏详情 / SFTP 就全都「不必知道它是临时的」。
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .or_else(|| self.ad_hoc.get(id))
     }
 
     /// 工具条上「清屏」这类动作该落在哪条会话上。
@@ -171,13 +293,15 @@ impl TerminalPage {
     /// 某个连接当前的会话状态。
     ///
     /// 事实来源只有 `sessions` 一张表：有会话且没退出 = 已连接；会话在但已退出 = 已断开；
-    /// 没有会话 = 已断开（`ensure_sessions` 会在本帧把它补上）。
+    /// 没有会话时再看**这个连接有没有开过标签** —— 开过（会话还没补上 / 已经死掉）算
+    /// 已断开，从没开过只是「未连接」。
     /// **不从存档读**，也不在点击时「乐观置为已连接」—— 那正是演示数据的做法。
     pub(super) fn link_status(&self, id: &str) -> LinkStatus {
         match self.sessions.get(id) {
             Some(live) if live.is_exited() => LinkStatus::Disconnected,
             Some(_) => LinkStatus::Connected,
-            None => LinkStatus::Disconnected,
+            None if self.tabs.iter().any(|tab| tab.id == id) => LinkStatus::Disconnected,
+            None => LinkStatus::Idle,
         }
     }
 
@@ -215,6 +339,64 @@ impl TerminalPage {
         }
     }
 
+    /// `⌘T`：在**同一台主机**上再开一条会话；没有远程标签时退化成新开本地终端。
+    ///
+    /// 为什么不是「永远开本地终端」：用户在一台机器上连着，按 `⌘T` 想要的通常是
+    /// 「这台机器上再开一个 shell」（iTerm / Terminal.app 都是这个语义），
+    /// 而不是「回到本机」。真要本机有 `⌘⇧T`。
+    pub(super) fn new_tab_for_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let owner = self.active_tab().and_then(|tab| {
+            (tab.kind == TabKind::Ssh).then(|| data::tab_owner(&tab.id).to_owned())
+        });
+        let Some(owner) = owner else {
+            self.new_local_tab(cx);
+            return;
+        };
+        self.open_second_session(&owner, window, cx);
+    }
+
+    /// 在某条连接上再开一条会话标签（`⌘T` 与标签右键「再开一条会话」共用）。
+    ///
+    /// 找第一个 `~n` 空位（`~2`、`~3`…）。上限 99 只是防呆：正常用不到。
+    /// 档案被删了：退回本地终端，而不是开一条注定起不来的标签。
+    pub(super) fn open_second_session(
+        &mut self,
+        owner: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 调用方传的可能是带 `~n` 后缀的标签 id（标签右键菜单）：
+        // 统一剥到档案 id，`~n` 空位才从 2 起算。
+        let owner = data::tab_owner(owner).to_owned();
+        let Some(entry) = self.connection_entry(&owner) else {
+            self.new_local_tab(cx);
+            return;
+        };
+        let mut n = 2_u32;
+        while n < 100 {
+            let id = data::duplicate_tab_id(&owner, n);
+            if !self.tabs.iter().any(|tab| tab.id == id) {
+                let title = format!("{} ({n})", entry.label);
+                self.tabs.push(SessionTab {
+                    id,
+                    title,
+                    subtitle: None,
+                    kind: TabKind::Ssh,
+                    // 与「点连接」同一个起点：真实状态由下一轮轮询改写。
+                    status: LinkStatus::Connecting,
+                    split: None,
+                    split_owner: None,
+                    dormant: false,
+                });
+                self.active = self.tabs.len() - 1;
+                cx.notify();
+                return;
+            }
+            n += 1;
+        }
+        notify::warning(tr(cx, "同一主机的会话已经开太多了。"), window, cx);
+    }
+
     /// 新开一条本地终端标签。
     ///
     /// 第一个标签用**固定 id**（[`data::LOCAL_SHELL_ID`]），因为左栏的内置入口
@@ -245,10 +427,12 @@ impl TerminalPage {
                 self.tabs.push(SessionTab {
                     id,
                     title,
+                    subtitle: None,
                     kind: TabKind::Local,
                     status: LinkStatus::Connected,
                     split: None,
                     split_owner: None,
+                    dormant: false,
                 });
                 break;
             }

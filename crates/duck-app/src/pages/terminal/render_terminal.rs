@@ -3,133 +3,200 @@
 use super::*;
 
 impl TerminalPage {
-    /// 终端工具条：会话信息 + 真实的字号控制与清屏。
+    /// 终端工具条（**浮层**）：字号控制 + 清屏 + 钉住。
+    ///
+    /// 只放「画布上无处可点、又不能只靠快捷键」的动作。**不放标题与主机**：
+    /// 标签上已经有标题、状态栏上已经有主机，同一件事说三遍的代价是永久吃掉 24px
+    ///（见 `ssh-terminal-ui-review.md` §1 的分带账本）。
+    ///
+    /// 宽度只包住按钮（`flex_none` + 右对齐），这样它压在画布右上方时遮住的是
+    /// 右上角那片通常是空白的区域，而不是左起第一列的提示符。
     pub(super) fn render_terminal_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let extended = theme.extended();
         let view = self.view.clone();
-        let tab = self.active_tab();
-        let title = tab.map_or_else(|| "—".to_owned(), |tab| tab.title.clone());
-        let host = tab
-            .and_then(|tab| self.connection_entry(&tab.id))
-            .map_or_else(|| "localhost".to_owned(), |item| item.endpoint());
-        let disabled_down = self.terminal_font_size <= *FONT_SIZE_RANGE.start();
-        let disabled_up = self.terminal_font_size >= *FONT_SIZE_RANGE.end();
+        let view_pin = self.view.clone();
+        let font_size = self.font_size(cx);
+        let disabled_down = font_size <= *FONT_SIZE_RANGE.start() as f32;
+        let disabled_up = font_size >= *FONT_SIZE_RANGE.end() as f32;
+        let pinned = self.toolbar_pinned;
 
         h_flex()
-            .w_full()
-            .h(theme.density().section_header)
-            .flex_none()
+            .absolute()
+            .top(px(TOOLBAR_HOTZONE))
+            .right(tokens.spacing.sm)
             .items_center()
-            .justify_between()
-            .gap(tokens.spacing.sm)
-            .px(tokens.spacing.sm)
+            .gap(tokens.spacing.xxs)
+            .px(tokens.spacing.xs)
+            .py(px(2.))
+            .rounded(tokens.radius.md)
             .bg(extended.colors.chrome)
-            .border_b(extended.stroke.thin)
+            .border_1()
             .border_color(extended.colors.hairline)
             .child(
-                h_flex()
-                    .min_w_0()
-                    .items_center()
-                    .gap(tokens.spacing.sm)
-                    .child(
-                        Icon::new(tab.map_or(DuckIcon::SquareTerminal, |tab| tab.kind.icon()))
-                            .size(extended.icon.md)
-                            .text_color(tokens.colors.muted_foreground),
-                    )
-                    .child(body_text(title, cx))
-                    .child(meta_text(host, cx)),
+                toolbar_action_button(
+                    "terminal-font-smaller",
+                    tr(cx, "减小字号"),
+                    Icon::new(DuckIcon::Minus).size(extended.icon.md),
+                    false,
+                    disabled_down,
+                    cx,
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| this.nudge_font_size(-1., cx));
+                    }
+                }),
             )
             .child(
-                h_flex()
+                div()
                     .flex_none()
-                    .items_center()
-                    .gap(tokens.spacing.xxs)
-                    .child(
-                        toolbar_action_button(
-                            "terminal-font-smaller",
-                            tr(cx, "减小字号"),
-                            Icon::new(DuckIcon::Minus).size(extended.icon.md),
-                            false,
-                            disabled_down,
-                            cx,
-                        )
-                        .on_click({
-                            let view = view.clone();
-                            move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| this.nudge_font_size(-1., cx));
-                            }
-                        }),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(READOUT_WIDTH))
-                            .text_size(tokens.typography.xs.size)
-                            .line_height(tokens.typography.xs.line_height)
-                            .font_features(tabular_numbers())
-                            .text_color(tokens.colors.muted_foreground)
-                            .text_center()
-                            .child(selectable_text(format!(
-                                "{:.0} px",
-                                self.terminal_font_size
-                            ))),
-                    )
-                    .child(
-                        toolbar_action_button(
-                            "terminal-font-larger",
-                            tr(cx, "增大字号"),
-                            Icon::new(DuckIcon::Plus).size(extended.icon.md),
-                            false,
-                            disabled_up,
-                            cx,
-                        )
-                        .on_click({
-                            let view = view.clone();
-                            move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| this.nudge_font_size(1., cx));
-                            }
-                        }),
-                    )
-                    .child(
-                        toolbar_action_button(
-                            "terminal-clear",
-                            tr(cx, "清屏"),
-                            Icon::new(DuckIcon::Trash2).size(extended.icon.md),
-                            false,
-                            false,
-                            cx,
-                        )
-                        .on_click({
-                            let view = view.clone();
-                            move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| this.clear_active(cx));
-                            }
-                        }),
-                    ),
+                    .w(px(READOUT_WIDTH))
+                    .text_size(tokens.typography.xs.size)
+                    .line_height(tokens.typography.xs.line_height)
+                    .font_features(tabular_numbers())
+                    .text_color(tokens.colors.muted_foreground)
+                    .text_center()
+                    .child(selectable_text(format!("{font_size:.0} px"))),
             )
+            .child(
+                toolbar_action_button(
+                    "terminal-font-larger",
+                    tr(cx, "增大字号"),
+                    Icon::new(DuckIcon::Plus).size(extended.icon.md),
+                    false,
+                    disabled_up,
+                    cx,
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| this.nudge_font_size(1., cx));
+                    }
+                }),
+            )
+            .child(
+                toolbar_action_button(
+                    "terminal-clear",
+                    tr(cx, "清屏"),
+                    Icon::new(DuckIcon::Trash2).size(extended.icon.md),
+                    false,
+                    false,
+                    cx,
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| this.clear_active(cx));
+                    }
+                }),
+            )
+            .child({
+                // 「钉住」是这一条工具条唯一的**状态**开关：`Flag` = 还没钉（点它钉住），
+                // `Minimize2` = 已钉（点它收起）。文案说的是「点下去会发生什么」，
+                // 与工具栏按钮的 aria 惯例一致。
+                let icon = if pinned {
+                    DuckIcon::Minimize2
+                } else {
+                    DuckIcon::Flag
+                };
+                let label = if pinned {
+                    "取消固定"
+                } else {
+                    "固定工具条"
+                };
+                toolbar_action_button(
+                    "terminal-toolbar-pin",
+                    tr(cx, label),
+                    Icon::new(icon).size(extended.icon.md),
+                    pinned,
+                    false,
+                    cx,
+                )
+                .on_click(move |_, _, cx| {
+                    let _ = view_pin.update(cx, |this, cx| {
+                        this.toolbar_pinned = !this.toolbar_pinned;
+                        // 钉住期间指针离开不该把它收起来，所以两态一起落定。
+                        this.toolbar_hovered = false;
+                        cx.notify();
+                    });
+                })
+            })
             .into_any_element()
     }
 
-    /// 终端内容区：工具条 + 画布。
+    /// 终端内容区：画布 + （浮出的）工具条 + （浮出的）查找条。
     ///
-    /// 画布这一层要**先**取出来（它需要 `&mut Context`），`active_theme` 返回的是
-    /// 全局主题的引用（不是拷贝），一旦借上就借到函数末尾，两者不能重叠。
+    /// # 为什么两条都是浮层
+    ///
+    /// 竖向空间是终端页最稀缺的资源：固定 chrome（标题 40 + 标签 36 + 工具条 24 +
+    /// 状态 28）在 14px 等宽字号下等于 **7.6 行**输出。工具条与查找条又是那种
+    /// 「十分钟用一次、一次三秒」的东西，让它们常驻 24px 是拿最贵的资源换最少的便利。
+    ///
+    /// 浮层还顺带解决一个正确性问题：查找条此前在**布局里**，一开就触发 PTY 重排
+    ///（`TIOCSWINSZ`，`SIGWINCH`）—— 终端里的 `vim` / `htop` 会整屏重画，看起来像
+    /// 「一按 ⌘F 程序就抽了一下」。绝对定位不改变画布尺寸，也就不发窗口变更。
     pub(super) fn render_terminal(&self, cx: &mut Context<Self>) -> AnyElement {
-        let toolbar = self.render_terminal_toolbar(cx);
-        let find_bar = self.render_find_bar(cx);
         let canvas = self.render_terminal_canvas(cx);
+        let find_bar = self.render_find_bar(cx);
+        let show_toolbar = self.toolbar_pinned || self.toolbar_hovered;
+        // 工具条先建：它要 `&mut Context`，而 `active_theme` 借出的是 `&App` ——
+        // 顺序反了就是一条「可变借用与不可变借用重叠」。
+        let toolbar = self.render_terminal_toolbar(cx);
         let theme = active_theme(cx);
         let tokens = theme.tokens();
+        let view_hover = self.view.clone();
 
-        v_flex()
+        div()
+            .relative()
             .size_full()
             .min_h_0()
             .bg(tokens.colors.background)
-            .child(toolbar)
-            .when_some(find_bar, |this, bar| this.child(bar))
             .child(canvas)
+            // 查找条：右上角浮层，标称 420 宽、被窗口压住时收到内容宽度 ——
+            // `max_w(relative(1.))` 以画布宽为上限，窄窗口不再向左溢出。
+            .when_some(find_bar, |this, bar| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(tokens.spacing.xs)
+                        .right(tokens.spacing.sm)
+                        .w(px(FIND_BAR_WIDTH))
+                        .max_w(relative(1.))
+                        .min_w_0()
+                        .child(bar),
+                )
+            })
+            // 工具条：顶部 6px 的**热区** + 悬停/钉住时展开。
+            //
+            // 热区必须单独存在：工具条隐藏时整块高度为 0，没有它就没有任何东西
+            // 接收 `on_hover`，指针永远唤不出工具条。
+            .child(
+                v_flex()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .child(
+                        div()
+                            .id("terminal-toolbar-hotzone")
+                            .w_full()
+                            .h(px(TOOLBAR_HOTZONE))
+                            .flex_none()
+                            .on_hover(move |hovered: &bool, _, cx| {
+                                let hovered = *hovered;
+                                let _ = view_hover.update(cx, |this, cx| {
+                                    if this.toolbar_hovered != hovered {
+                                        this.toolbar_hovered = hovered;
+                                        cx.notify();
+                                    }
+                                });
+                            }),
+                    )
+                    .when(show_toolbar, |this| this.child(toolbar)),
+            )
             .into_any_element()
     }
 
@@ -163,21 +230,25 @@ impl TerminalPage {
             h_flex()
                 .id(SharedString::from("terminal-find-bar"))
                 .w_full()
-                .flex_none()
                 .items_center()
                 .gap(tokens.spacing.sm)
                 .px(tokens.spacing.sm)
                 .py(tokens.spacing.xs)
-                .bg(extended.colors.chrome)
-                .border_b(extended.stroke.thin)
+                // 浮层形态：四边圆角 + 一圈细边，像一张压在内容上的卡片 ——
+                // 只有下边框会让它看起来仍是「布局里的一条」。
+                .rounded(tokens.radius.md)
+                .border_1()
                 .border_color(extended.colors.hairline)
+                .bg(extended.colors.chrome)
                 .child(
                     Icon::new(DuckIcon::Search)
                         .size(extended.icon.md)
                         .text_color(tokens.colors.muted_foreground),
                 )
                 .child(
-                    div().w(px(FIND_INPUT_WIDTH)).flex_none().min_w_0().child(
+                    // 输入框吃剩余宽度（封顶 176）：查找条被窗口压窄时先收输入框，
+                    // 计数与三个按钮保持完整。
+                    div().flex_1().min_w_0().max_w(px(FIND_INPUT_WIDTH)).child(
                         Input::new(&find.input)
                             .appearance(false)
                             .with_size(Size::Small)
@@ -186,7 +257,12 @@ impl TerminalPage {
                             .w_full(),
                     ),
                 )
-                .child(meta_text(SharedString::from(counter), cx))
+                .child(
+                    div()
+                        .flex_none()
+                        .min_w_0()
+                        .child(meta_text(SharedString::from(counter), cx)),
+                )
                 .child(
                     toolbar_action_button(
                         "terminal-find-prev",
@@ -272,7 +348,9 @@ impl TerminalPage {
             return self.with_split_drop_target(&tab_id, pane, cx);
         };
         // 隔离线：与 SFTP 双栏同一条发丝线（见 [`Self::render_pane_divider`]），
-        // 只是套了条可拖动的命中带。
+        // 只是套了条可拖动的命中带。右窗格不再有自己的名牌 —— 它以一枚窗格标签
+        // 住进顶部标签栏的右分区（`render_tabs` 分屏分支 + `render_pane_tab`），
+        // 与左半的会话标签保持一行。
         let left = self.render_terminal_pane(&tab_id, kind, false, cx);
         let right = self.render_terminal_pane(&split, split_kind, true, cx);
         h_flex()
@@ -281,6 +359,8 @@ impl TerminalPage {
             .min_w_0()
             // 左栏宽度 = 记忆占比（默认各半）；右栏 `flex_1` 吃剩余空间。
             // 拖隔离栏改占比，两块画布各自按新宽度重排（`apply_canvas_bounds`）。
+            // 标签栏分屏分支用**同一套弹性结构**（同比例左区 + 同宽隔条占位 +
+            // `flex_1` 右区），窗格标签因此与右窗格上下对齐。
             .child(
                 div()
                     .h_full()
@@ -303,57 +383,5 @@ impl TerminalPage {
                 }
             }))
             .into_any_element()
-    }
-
-    /// SSH 断开后的提示条：一句话 + 「重新连接」。
-    ///
-    /// 不做自动重连：认证失败、主机密钥不匹配这类原因**重连一百次也不会好**，
-    /// 自动重试只会把真实错误刷出屏幕，还可能在账号被锁时雪上加霜。
-    pub(super) fn render_reconnect_bar(&self, tab_id: &str, cx: &mut Context<Self>) -> AnyElement {
-        let theme = active_theme(cx);
-        let tokens = theme.tokens();
-        let extended = theme.extended();
-        let view = self.view.clone();
-        let id = tab_id.to_owned();
-
-        h_flex()
-            .w_full()
-            .flex_none()
-            .items_center()
-            .justify_between()
-            .gap(tokens.spacing.sm)
-            .px(tokens.spacing.sm)
-            .py(tokens.spacing.xs)
-            .bg(extended.colors.chrome)
-            .border_t(extended.stroke.thin)
-            .border_color(extended.colors.hairline)
-            .child(meta_text(tr(cx, "连接已断开。"), cx))
-            .child(
-                toolbar_action_button(
-                    "terminal-reconnect",
-                    tr(cx, "重新连接"),
-                    Icon::new(DuckIcon::RotateCw).size(extended.icon.md),
-                    false,
-                    false,
-                    cx,
-                )
-                .on_click(move |_, _, cx| {
-                    let id = id.clone();
-                    let _ = view.update(cx, |this, cx| this.reconnect(&id, cx));
-                }),
-            )
-            .into_any_element()
-    }
-
-    /// 重新建立一条断开的 SSH 会话。
-    ///
-    /// 先把旧会话从表里摘掉：`ensure_sessions` 只看「表里有没有这个 id」，
-    /// 不摘掉的话它会认为「已经起过了」，什么都不会做。
-    pub(super) fn reconnect(&mut self, tab_id: &str, cx: &mut Context<Self>) {
-        self.sessions.remove(tab_id);
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            tab.status = LinkStatus::Connecting;
-        }
-        cx.notify();
     }
 }

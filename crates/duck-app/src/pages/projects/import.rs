@@ -33,7 +33,7 @@
 
 use std::fmt;
 
-use duck_project::{CalendarDate, Priority, Quadrant, TaskStatus};
+use duck_project::{CalendarDate, NewTask, Priority, Quadrant, TaskStatus};
 
 use super::import_aliases;
 use super::quickparse;
@@ -288,6 +288,43 @@ pub(crate) fn parse(
 /// 标题的比对键：trim + 转小写。去重（库里已有的 / 批内重复的）都用它。
 pub(crate) fn title_key(title: &str) -> String {
     title.trim().to_lowercase()
+}
+
+/// 一行 → 待落库的 [`NewTask`]（项目与标签已由调用方解析成 id）。
+///
+/// 「文件对话框导入」与「收件箱」两条路都走它：同一份 JSON 从哪儿进来，落库字段
+/// 必须一个不差。各写一遍的话，以后加一个字段只改一边，另一条路就会静默丢数据。
+pub(crate) fn new_task(row: &Row, project_id: Option<i64>, tag_ids: Vec<i64>) -> NewTask {
+    let mut new = NewTask::new(row.title.clone())
+        .status(row.resolved_status())
+        .progress(row.resolved_progress())
+        .starred(row.starred)
+        .tags(tag_ids);
+    if let Some(project_id) = project_id {
+        new = new.project(project_id);
+    }
+    if let Some(priority) = row.priority {
+        new = new.priority(priority);
+    }
+    if let Some(quadrant) = row.quadrant {
+        new = new.quadrant(quadrant);
+    }
+    if row.start.is_some() || row.due.is_some() {
+        new = new.dates(row.start, row.due);
+    }
+    if let Some(time) = &row.due_time {
+        new = new.due_time(time.clone());
+    }
+    if row.estimate_hours.is_some() || row.actual_hours.is_some() {
+        new = new.hours(row.estimate_hours, row.actual_hours);
+    }
+    if let Some(description) = &row.description {
+        new = new.description(description.clone());
+    }
+    if let Some(note) = &row.note {
+        new = new.note(note.clone());
+    }
+    new
 }
 
 /// 按「库里已有的标题」把行分成 `(要导入的, 跳过的条数)`。

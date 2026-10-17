@@ -37,6 +37,17 @@ use crate::{SshError, which};
 /// 单次命令输出的上限：远端命令打出一部电影也不该把宿主内存吃光。
 const MAX_OUTPUT: usize = 4 * 1024 * 1024;
 
+/// 一次远端命令的**总时限**。
+///
+/// 为什么要有它：`ConnectTimeout`（在 `Target::common_argv` 里）只覆盖「建立连接」，
+/// 管不到两种情况 —— ① 复用一条**已经挂死但没断**的 master（`ssh` 会排在它的队列里，
+/// 一直等），② 远端命令自己不再输出也不再退出。这两种在界面上都表现为「永久转圈」，
+/// 用户唯一能做的就是杀掉整个应用。
+///
+/// 30 秒：列举一个上万文件的目录、`du` 一个小树都在这个量级以内；
+/// 再长就说明连接确实出问题了，早点报错比让他继续等有用。
+const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// 等待传输进程退出的轮询间隔（waitpid 式轮询，见 [`TransferHandle::wait`]）。
 ///
 /// 50ms 是「取消手感」与「空转开销」的折中：取消后最坏 50ms 内界面就能落定，
@@ -102,22 +113,20 @@ pub fn exec(target: &Target, socket_dir: Option<&Path>, command: &str) -> Result
     argv.push(command.to_owned());
 
     let helper = askpass_helper(target, socket_dir);
-    let output = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(&argv)
         .envs(target.env(helper.as_deref()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| SshError::Spawn {
-            message: error.to_string(),
-        })?;
+        .stderr(Stdio::piped());
+    let (status, stdout, stderr) = run_with_timeout(command, EXEC_TIMEOUT)?;
 
-    let (stdout, truncated) = truncate(String::from_utf8_lossy(&output.stdout).into_owned());
+    let (stdout, truncated) = truncate(String::from_utf8_lossy(&stdout).into_owned());
     let result = Output {
-        status: output.status.code(),
+        status: status.code(),
         stdout,
-        stderr: first_line(String::from_utf8_lossy(&output.stderr).trim()),
+        stderr: first_line(String::from_utf8_lossy(&stderr).trim()),
         truncated,
     };
     if result.success() {
@@ -128,6 +137,114 @@ pub fn exec(target: &Target, socket_dir: Option<&Path>, command: &str) -> Result
             stderr: result.stderr,
         })
     }
+}
+
+/// 跑一个子进程并读到 EOF，**超过 `limit` 就杀掉**。
+///
+/// 与 `Command::output()` 的差别只有两点，但两点都关键：
+/// ① 有截止时间（见 [`EXEC_TIMEOUT`] 的注释：这是「永久转圈」的唯一出口）；
+/// ② 进程在 `kill` 之后**仍会被 `wait` 回收**，不留僵尸。
+///
+/// 输出用两条独立线程读：`ssh` 的 stderr 与 stdout 都可能超过管道缓冲（64 KiB），
+/// 边等边读才不会互相堵死 —— 单线程「先读 stdout 再读 stderr」在输出大的目录上
+/// 会死锁，这个坑在 `Command::output()` 里由标准库替我们避过了，自己实现就得自己避。
+fn run_with_timeout(
+    mut command: Command,
+    limit: Duration,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), SshError> {
+    let mut child = command.spawn().map_err(|error| SshError::Spawn {
+        message: error.to_string(),
+    })?;
+    let stdout = child.stdout.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = pipe.read_to_end(&mut buffer);
+            buffer
+        })
+    });
+    let stderr = child.stderr.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = pipe.read_to_end(&mut buffer);
+            buffer
+        })
+    });
+
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                // 查不到状态的进程按「孤儿」处理：杀掉，别让它继续挂在后台。
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SshError::Spawn {
+                    message: error.to_string(),
+                });
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // 读线程会因为管道 EOF 自行结束；这里不等它们 —— 已经被 kill 的进程
+            // 不会再有输出，join 只是徒增等待。
+            return Err(SshError::TimedOut {
+                secs: limit.as_secs(),
+            });
+        }
+        thread::sleep(TRANSFER_POLL);
+    };
+
+    let collect = |handle: Option<thread::JoinHandle<Vec<u8>>>| {
+        handle
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default()
+    };
+    Ok((status, collect(stdout), collect(stderr)))
+}
+
+/// 关掉这台主机当前的连接复用 master（`ssh -O exit`）。
+///
+/// # 为什么需要显式关
+///
+/// `ControlPath` 是按**连接参数**哈希出来的（见 [`control_path`]），参数变了就会
+/// 落到另一个 socket 上 —— 新连接自然是新的。但真正会咬人的是**反过来**：
+/// 参数只改了一点点（比如只改转发），哈希变了、新 socket 也建了，**旧 master 却还在**
+/// 按原来的 `ControlPersist=300` 活 5 分钟，占着本地转发端口、也让用户的
+/// `ps` 里多一条看不懂的 `ssh -M`。同理，删除档案之后没有任何人负责收尾。
+///
+/// 所以：改档案、删档案时各调一次。**best-effort**：失败不算错误（socket 早就没了
+/// 是最常见的情形，`ssh -O exit` 会返回非零），这里只回报「有没有真的关掉」，
+/// 供调用方决定是否记日志 —— 绝不因为清理失败而挡住用户的操作。
+pub fn close_master(target: &Target, socket_dir: &Path) -> bool {
+    let Some(program) = which("ssh") else {
+        return false;
+    };
+    let socket = crate::target::control_path(socket_dir, target);
+    // socket 不在就没什么可关的：直接返回，省一次进程启动。
+    if !socket.exists() {
+        return false;
+    }
+    // 值要带引号，与 `common_argv` 同一个原因：`-o` 的值会被再拆一次词。
+    let argv = [
+        "-O".to_owned(),
+        "exit".to_owned(),
+        "-p".to_owned(),
+        target.port.to_string(),
+        "-o".to_owned(),
+        format!("ControlPath=\"{}\"", socket.to_string_lossy()),
+        target.destination(),
+    ];
+    let mut command = Command::new(program);
+    command
+        .args(argv)
+        .envs(target.env(askpass_helper(target, Some(socket_dir)).as_deref()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // 3 秒：`-O exit` 只是给本地 master 进程发一个控制消息，不该等。
+    run_with_timeout(command, Duration::from_secs(3)).is_ok()
 }
 
 /// 用给定目标探一次活，成功时返回远端的身份说明（`uname -srm` 的结果）。

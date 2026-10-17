@@ -25,6 +25,7 @@ use alacritty_terminal::term::{Config as TermConfig, Term, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Handler, Rgb};
 
+use crate::encoding::{Encoding, EncodingHandle, OutputDecoder, encode_input};
 use crate::palette::{COLOR_COUNT, Palette};
 
 /// 一次轮询最多取走的事件数：防止某个刷屏进程把 UI 线程卡在事件处理里。
@@ -68,6 +69,12 @@ pub struct SpawnOptions {
     pub env: Vec<(String, String)>,
     /// 回滚缓冲行数。0 表示不留历史。
     pub scrollback: usize,
+    /// 会话编码（输出解码 + 输入编码）。默认 Auto：按字节流特征自动判别
+    /// UTF-8 / GB18030（见 `duck_term::Encoding`）。
+    ///
+    /// 起会话时定初值，之后可用 [`Session::set_encoding`] 热切 —— 半截字符的
+    /// 跨块状态由解码器自己带着，切换时丢弃。
+    pub encoding: Encoding,
 }
 
 impl Default for SpawnOptions {
@@ -85,6 +92,7 @@ impl Default for SpawnOptions {
                 ("COLORTERM".to_owned(), "truecolor".to_owned()),
             ],
             scrollback: 10_000,
+            encoding: Encoding::default(),
         }
     }
 }
@@ -164,6 +172,9 @@ pub enum ShellMark {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StoredShellMark {
     anchor: i64,
+    /// 发生标记那一刻的光标列。列天生不随滚动漂移，无需锚点换算；
+    /// `B` 的列 = 输入区第一列，`C` 的列 = 已提交命令的结束列。
+    column: u16,
     mark: ShellMark,
 }
 
@@ -319,10 +330,15 @@ impl EventListener for EventProxy {
 
             // shell 集成标记**不进** `SessionEvent`：它没有「只有 UI 线程才知道答案」的
             // 成分，直接落进共享表即可（表本身就是为这条跨线程通道建的）。
-            Event::ShellMark { anchor, mark } => {
+            Event::ShellMark {
+                anchor,
+                column,
+                mark,
+            } => {
                 if let Ok(mut marks) = self.shell_marks.lock() {
                     marks.push_back(StoredShellMark {
                         anchor,
+                        column,
                         mark: map_shell_mark(mark),
                     });
                     while marks.len() > SHELL_MARK_LIMIT {
@@ -427,8 +443,13 @@ pub struct Session {
     pending_clipboard: Arc<Mutex<HashMap<u64, ClipboardFormatter>>>,
     /// 回滚缓冲行数。构造后不变，`resize` 重建 `Dims` 时要带上它。
     scrollback: usize,
+    /// 会话编码的共享开关：读侧解码器与写侧输入都读它（热切换）。
+    encoding: EncodingHandle,
     /// shell 集成标记（`OSC 133`），与 [`EventProxy`] 共享同一份表。
     shell_marks: Arc<Mutex<VecDeque<StoredShellMark>>>,
+    /// 已采集到哪条命令（`D` 标记的最大锚点）。`drain_commands` 的去重水位；
+    /// 标记表本身会截断旧行号，所以水位必须按锚点记，不能按条数记。
+    last_command_anchor: Mutex<Option<i64>>,
 }
 
 impl Session {
@@ -442,6 +463,7 @@ impl Session {
             cwd,
             env,
             scrollback,
+            encoding,
         } = options;
 
         let (events_tx, events_rx) = mpsc::channel();
@@ -485,6 +507,18 @@ impl Session {
         )?;
 
         let event_loop = EventLoop::new(event_term, proxy.clone(), pty, false, false)?;
+        // 编码层：解码器跟着事件线程走（半截字符的跨块状态在它里面），
+        // 但「当前用哪个编码」读的是与 UI 侧共享的原子量 —— 用户切编码不用重启
+        // 会话。Auto 档探测判给 GB 时把结果写回把手：显示与输入一起黏住。
+        let encoding_handle = EncodingHandle::new(encoding);
+        let decode_encoding = encoding_handle.clone();
+        let mut decoder = OutputDecoder::default();
+        let event_loop =
+            event_loop.with_preprocessor(Box::new(move |raw: &[u8], out: &mut Vec<u8>| {
+                if let Some(detected) = decoder.push(raw, decode_encoding.get(), out) {
+                    decode_encoding.set(detected);
+                }
+            }));
         let sender = event_loop.channel();
         *proxy.sender.lock().expect("proxy sender lock") = Some(sender.clone());
         // 线程分离：`JoinHandle` 丢掉，事件循环靠 `Msg::Shutdown` 收尾。
@@ -499,13 +533,41 @@ impl Session {
             dark,
             pending_clipboard,
             scrollback,
+            encoding: encoding_handle,
             shell_marks,
+            last_command_anchor: Mutex::new(None),
         })
     }
 
+    /// 当前会话编码。
+    pub fn encoding(&self) -> Encoding {
+        self.encoding.get()
+    }
+
+    /// 热切换编码：读侧下一条输出就按新编码解释，写侧下一次输入就按新编码转字节。
+    ///
+    /// 屏幕上**已经画出来**的内容不会回溯重排（那需要一条字节级历史，
+    /// 代价远大于收益）；用户按一下 `⌃L` 让程序重画即可。
+    pub fn set_encoding(&self, encoding: Encoding) {
+        self.encoding.set(encoding);
+    }
+
     /// 把按键 / 粘贴产生的字节写进 PTY。
+    ///
+    /// **输入方向也按会话编码转**：GBK 程序只认 GB 字节，直接把 UTF-8 喂过去会乱码。
+    /// 传进来的都是我们自己拼的字节块（转义序列 + 文本），转义序列是纯 ASCII，
+    /// 在各种编码下逐字节相同，所以整块转码是安全的；Auto 档在探测出 GB 之前按
+    /// UTF-8 发（探测判给 GB 后把手已切走，自然转 GB）。万一遇到非 UTF-8 的原始
+    /// 字节，原样送出 —— 绝不让转码失败成为「键盘失灵」。
     pub fn write(&self, bytes: &[u8]) {
-        self.send(Msg::Input(Cow::Owned(bytes.to_vec())));
+        let payload = match self.encoding() {
+            Encoding::Gb18030 => match std::str::from_utf8(bytes) {
+                Ok(text) => encode_input(text, Encoding::Gb18030),
+                Err(_) => bytes.to_vec(),
+            },
+            Encoding::Auto | Encoding::Utf8 => bytes.to_vec(),
+        };
+        self.send(Msg::Input(Cow::Owned(payload)));
     }
 
     /// 往事件循环投一条消息。事件循环已退出时静默丢弃（关标签页的正常竞态）。
@@ -513,7 +575,7 @@ impl Session {
         let _ = self.sender.lock().expect("session sender lock").send(msg);
     }
 
-    /// 把一段文本当作用户输入写进 PTY（会自动转成 UTF-8 字节）。
+    /// 把一段文本当作用户输入写进 PTY（按**当前会话编码**转成字节）。
     pub fn write_str(&self, text: &str) {
         self.write(text.as_bytes());
     }
@@ -821,20 +883,84 @@ impl Session {
     /// 因此渲染层可以直接拿它跟 `display_iter` 吐出来的行号比。
     #[must_use]
     pub fn shell_marks_in(&self, term: &Term<EventProxy>) -> Vec<(i32, ShellMark)> {
-        let base = term.grid().anchor_base();
-        let top = Dimensions::topmost_line(term).0;
-        let marks = self.shell_marks.lock().expect("shell marks lock");
-        marks
-            .iter()
-            .filter_map(|entry| {
-                let line = entry.anchor.saturating_sub(base);
-                // 锚点若落在回滚缓冲之外（配置改过、或被截断过），那一行已经不存在了。
-                (line >= i64::from(top))
-                    .then(|| i32::try_from(line).ok())
-                    .flatten()
-                    .map(|line| (line, entry.mark))
-            })
+        mark_points(term, &self.shell_marks)
+            .into_iter()
+            .map(|(line, _column, mark)| (line, mark))
             .collect()
+    }
+
+    /// 重建**当前输入行**：从提示符结束的位置到光标之间的网格文本。
+    ///
+    /// 智能提示的第一性问题 —— PTY 是字节透传，应用看不到用户正在打的字，
+    /// 只能从网格把回显读回来。两档判定：
+    ///
+    /// 1. **shell 集成标记优先**（`OSC 133`）：最后一条落在光标之前的相关标记是
+    ///    `B`（提示符结束）→ 从它的列读到光标；是 `C` / `D` → 命令在跑，没有输入行；
+    /// 2. **没有标记则启发式**：光标必须落在屏幕底部 4 行之内，且当前行里光标之前
+    ///    能找到提示符结尾图案（`$ ` / `# ` / `> ` / `❯ ` / `% `）——
+    ///    找不到就宁可漏弹，绝不拿整行（含提示符）去凑建议。
+    ///
+    /// 另两个硬条件：光标必须停在**空白格**上（在行中间编辑不给建议）；
+    /// 备用屏（vim / top）直接 `None`。拿不到网格锁（事件循环正在灌输出）也返回
+    /// `None` —— 调用方下一帧再试，宁可这帧不弹。
+    #[must_use]
+    pub fn input_line(&self) -> Option<InputLine> {
+        self.try_with_term(|term| input_line_in(term, &self.shell_marks))
+            .flatten()
+    }
+
+    /// 取走**自上次以来新完成**的命令文本（`OSC 133` 的 `C`→`D` 区间）。
+    ///
+    /// 命令历史的数据源：shell 只要装了任何 `OSC 133` 集成（starship / WezTerm
+    /// 集成脚本 / 本工具注入的脚本……），每条提交过的命令都会被原样摘回来 ——
+    /// 不需要 shell 自己开 `HISTFILE`，也不用猜。没装集成的会话这里恒为空。
+    ///
+    /// 去重水位按**锚点**记（标记表会截断，行号会漂，条数不可靠）；返回顺序即
+    /// 提交顺序。调用点在 UI 线程（要拿网格锁摘文本）。
+    #[must_use]
+    pub fn drain_commands(&self) -> Vec<CapturedCommand> {
+        self.with_term(|term| {
+            let points = mark_points_with_anchor(term, &self.shell_marks);
+            let mut watermark = self
+                .last_command_anchor
+                .lock()
+                .expect("command watermark lock");
+            let mut start: Option<(i32, u16)> = None;
+            let mut pending: Option<String> = None;
+            let mut out = Vec::new();
+            let mut max_anchor = watermark.unwrap_or(i64::MIN);
+            for (anchor, line, column, mark) in points {
+                max_anchor = max_anchor.max(anchor);
+                if watermark.is_some_and(|seen| anchor <= seen) {
+                    continue;
+                }
+                match mark {
+                    // `A` 只兜底（有的集成只发 A 不发 B 的提示符段先不认），
+                    // `B` 一到就覆盖成更准的输入起点。
+                    ShellMark::PromptStart => {
+                        if start.is_none() {
+                            start = Some((line, column));
+                        }
+                    }
+                    ShellMark::PromptEnd => start = Some((line, column)),
+                    ShellMark::OutputStart => {
+                        if let Some(from) = start.take() {
+                            let text = capture_text(term, from, (line, column));
+                            pending = Some(text);
+                        }
+                    }
+                    ShellMark::CommandFinished(exit) => {
+                        if let Some(command) = pending.take() {
+                            if !command.is_empty() {
+                                out.push(CapturedCommand { command, exit });
+                            }
+                        }
+                    }
+                }
+            }
+            *watermark = Some(max_anchor);
+            out
+        })
     }
 
     /// 整块网格（含回滚区）里**有没有**命中一段正则 —— **阻塞加锁**版。
@@ -942,6 +1068,180 @@ impl Session {
             cell_height: packed as u16,
         }
     }
+}
+
+
+
+/// 一条被 [`Session::drain_commands`] 摘回来的已提交命令。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedCommand {
+    /// 命令文本（多行输入按空格拼接；首尾空白已削）。
+    pub command: String,
+    /// 退出码（`D;<exit>` 报了才有；`None` = shell 没报）。
+    pub exit: Option<i32>,
+}
+
+/// [`Session::input_line`] 的产物：光标之前的输入区文本。
+///
+/// `text` 只含**用户输入区**（提示符已被标记列或启发式切掉），
+/// 光标停在文本末尾是 `Some` 的前提之一，所以没有单独的光标偏移字段。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputLine {
+    pub text: String,
+}
+
+/// 把共享标记表换算成 `(网格行, 列, 标记)`（升序按行）。
+fn mark_points(
+    term: &Term<EventProxy>,
+    marks: &Mutex<VecDeque<StoredShellMark>>,
+) -> Vec<(i32, u16, ShellMark)> {
+    mark_points_with_anchor(term, marks)
+        .into_iter()
+        .map(|(_, line, column, mark)| (line, column, mark))
+        .collect()
+}
+
+/// 同 [`mark_points`]，但带原始锚点（[`Session::drain_commands`] 的去重水位要用）。
+fn mark_points_with_anchor(
+    term: &Term<EventProxy>,
+    marks: &Mutex<VecDeque<StoredShellMark>>,
+) -> Vec<(i64, i32, u16, ShellMark)> {
+    let base = term.grid().anchor_base();
+    let top = Dimensions::topmost_line(term).0;
+    let marks = marks.lock().expect("shell marks lock");
+    let mut points: Vec<(i64, i32, u16, ShellMark)> = marks
+        .iter()
+        .filter_map(|entry| {
+            let line = entry.anchor.saturating_sub(base);
+            // 锚点若落在回滚缓冲之外（配置改过、或被截断过），那一行已经不存在了。
+            (line >= i64::from(top))
+                .then(|| i32::try_from(line).ok())
+                .flatten()
+                .map(|line| (entry.anchor, line, entry.column, entry.mark))
+        })
+        .collect();
+    points.sort_by_key(|(anchor, _, _, _)| *anchor);
+    points
+}
+
+/// 提示符结尾图案（启发式档）：输入区从匹配处之后开始。
+const PROMPT_END_PATTERNS: [&str; 5] = ["$ ", "# ", "> ", "❯ ", "% "];
+
+/// [`Session::input_line`] 的纯函数核心。
+fn input_line_in(
+    term: &Term<EventProxy>,
+    marks: &Mutex<VecDeque<StoredShellMark>>,
+) -> Option<InputLine> {
+    // 备用屏里没有「输入行」这回事：vim / top 的光标是应用摆的，不是 shell 的。
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return None;
+    }
+    let columns = term.columns();
+    let cursor = term.grid().cursor.point;
+    // 光标必须停在空白格上 —— 停在字符上说明正在行中间编辑，建议会插错位置。
+    if term.grid()[cursor.line][cursor.column].c != ' ' {
+        return None;
+    }
+    let points = mark_points(term, marks);
+    let start: (i32, u16) = {
+        let last = points
+            .iter()
+            .copied()
+            .filter(|(line, _, _)| *line <= cursor.line.0)
+            .max_by_key(|(line, _, _)| *line);
+        match last {
+            Some((line, column, ShellMark::PromptEnd)) => (line, column),
+            // `A` 之后 `B` 还没到是瞬态（微秒级）；`C` / `D` 之后命令在跑。
+            // 三种情况都不重建 —— 宁可漏弹，不可错位。
+            Some((_, _, ShellMark::PromptStart | ShellMark::OutputStart))
+            | Some((_, _, ShellMark::CommandFinished(_))) => return None,
+            None => heuristic_start(term, cursor, columns)?,
+        }
+    };
+    if start.0 > cursor.line.0 {
+        return None;
+    }
+    Some(InputLine {
+        text: capture_text(term, start, (cursor.line.0, u16::try_from(cursor.column.0).ok()?)),
+    })
+}
+
+/// 启发式档的输入起点：光标行内找提示符结尾图案。
+///
+/// 找不到返回 `None`（宁可漏弹）。仅扫光标所在行 —— 折行的提示符极罕见，
+/// 而跨行启发式的误判率会失控。
+fn heuristic_start(
+    term: &Term<EventProxy>,
+    cursor: Point,
+    columns: usize,
+) -> Option<(i32, u16)> {
+    let screen = i32::try_from(term.screen_lines()).ok()?;
+    // 输入行几乎总在屏幕底部：只认底部 4 行，其余一概不猜。
+    if cursor.line.0 < screen - 4 {
+        return None;
+    }
+    let mut text = String::new();
+    for col in 0..columns {
+        let cell = &term.grid()[cursor.line][Column(col)];
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+        text.push(cell.c);
+    }
+    // 只看光标之前的文本；列按字符数对齐（宽字符已剔除 spacer，正好一一对应）。
+    let before: String = text.chars().take(cursor.column.0).collect();
+    // 各图案**最后一次**出现里最靠后的那个：提示符自身可能包含多个候选图案
+    //（`user@host:~$ ` 里 `$ ` 唯一，但 `[main] $ ` 里 `] $ ` 也含 `$ `），
+    // 取最后一个才是输入区的真正起点。
+    let mut best: Option<usize> = None;
+    for pattern in PROMPT_END_PATTERNS {
+        if let Some(at) = before.rfind(pattern) {
+            best = Some(best.map_or(at, |seen| seen.max(at)));
+        }
+    }
+    let at = best?;
+    let matched = PROMPT_END_PATTERNS
+        .iter()
+        .find(|pattern| before[at..].starts_with(*pattern))?;
+    let column = before[..at].chars().count() + matched.chars().count();
+    u16::try_from(column)
+        .ok()
+        .map(|column| (cursor.line.0, column))
+}
+
+/// 从网格摘 `[from, to)` 区间的文本（行可跨多行；`to` 行只取到 `to` 列为止）。
+///
+/// 多行输入（软换行 / 续行）按空格拼接 —— 历史匹配的对象是「一行命令」，
+/// 换行在这条数据里没有意义。行号越界（回滚区被截掉）自动钳到现存范围。
+fn capture_text(term: &Term<EventProxy>, from: (i32, u16), to: (i32, u16)) -> String {
+    let columns = term.columns();
+    let top = Dimensions::topmost_line(term).0;
+    let from_line = from.0.max(top);
+    if from_line > to.0 {
+        return String::new();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for line in from_line..=to.0 {
+        let col_begin = usize::from(if line == from_line { from.1 } else { 0 });
+        let col_end = if line == to.0 {
+            usize::from(to.1)
+        } else {
+            columns
+        };
+        let mut row = String::new();
+        for col in col_begin..col_end.min(columns) {
+            let cell = &term.grid()[Line(line)][Column(col)];
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            row.push(cell.c);
+        }
+        let trimmed = row.trim();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_owned());
+        }
+    }
+    parts.join(" ")
 }
 
 impl Drop for Session {
@@ -1187,6 +1487,24 @@ mod tests {
         }
     }
 
+    /// 与 [`wait_for_text`] 同一套轮询，但比对前抹掉空格。
+    ///
+    /// 宽字符在网格里占**两格**：`grid_text` 逐格读 `cell.c`，尾格是空的，于是
+    /// 「中文」在网格里呈现为「中 文」。断言 CJK 文本时要先抹掉这些占位空格。
+    fn wait_for_text_squashed(session: &Session, needle: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let _ = session.drain_events(|_| {});
+            if grid_text(session).replace(' ', "").contains(needle) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// 端到端：真起 PTY、真跑子进程、真解析 ANSI，网格里应当有它的输出。
     ///
     /// 子进程刻意用 `sleep` 撑住不退出 —— `sh -c 'printf …'` 会在输出还没被读走时就消失，
@@ -1230,6 +1548,83 @@ mod tests {
         assert!(
             wait_for_text(&session, "round-trip", Duration::from_secs(10)),
             "写进 PTY 的内容应被 cat 吐回，实际内容：{:?}",
+            grid_text(&session)
+        );
+    }
+
+    /// GBK / GB2312 字节在**默认的 Auto 档**里要显示成中文，而不是一串替换符。
+    #[test]
+    fn gbk_output_is_decoded_in_auto_sessions() {
+        let session = Session::spawn(SpawnOptions {
+            // 「中文」的 GBK 字节（D6 D0 CE C4），用 `printf` 的八进制写法直接写进 PTY。
+            shell: Some((
+                "/bin/sh".to_owned(),
+                vec![
+                    "-c".to_owned(),
+                    "printf '\\326\\320\\316\\304\\n'; sleep 5".to_owned(),
+                ],
+            )),
+            ..SpawnOptions::default()
+        })
+        .expect("PTY 应当能起来");
+
+        assert!(
+            wait_for_text_squashed(&session, "中文", Duration::from_secs(10)),
+            "GBK 字节应被 Auto 档判别并解码成中文，实际内容：{:?}",
+            grid_text(&session)
+        );
+        assert_eq!(
+            session.encoding(),
+            Encoding::Gb18030,
+            "探测判给 GB 后要黏住（输入方向随之切换）"
+        );
+    }
+
+    /// UTF-8 输出在 Auto 档里原样显示 —— 合法 UTF-8 流必须零改动直通。
+    #[test]
+    fn utf8_output_reaches_the_grid_in_auto_sessions() {
+        let session = Session::spawn(SpawnOptions {
+            shell: Some((
+                "/bin/sh".to_owned(),
+                vec!["-c".to_owned(), "printf '生产管理\\n'; sleep 5".to_owned()],
+            )),
+            ..SpawnOptions::default()
+        })
+        .expect("PTY 应当能起来");
+
+        assert!(
+            wait_for_text_squashed(&session, "生产管理", Duration::from_secs(10)),
+            "UTF-8 输出应原样显示，实际内容：{:?}",
+            grid_text(&session)
+        );
+        assert_eq!(
+            session.encoding(),
+            Encoding::Auto,
+            "合法 UTF-8 流不该被判成 GB"
+        );
+    }
+
+    /// 输入方向同样按会话编码转：UTF-8 文本进 GB18030 会话后，`cat` 回显仍是中文
+    ///（写侧转成 GB 字节、读侧再解回 UTF-8 —— 闭环两端都过编码层）。
+    #[test]
+    fn typed_text_is_encoded_for_gb18030_sessions() {
+        let session = Session::spawn(SpawnOptions {
+            shell: Some((
+                "/bin/sh".to_owned(),
+                vec!["-c".to_owned(), "cat; sleep 5".to_owned()],
+            )),
+            encoding: Encoding::Gb18030,
+            ..SpawnOptions::default()
+        })
+        .expect("PTY 应当能起来");
+
+        // 等 `cat` 起来再写，避免字节落在 shell 的启动窗口里。
+        std::thread::sleep(Duration::from_millis(300));
+        session.write_str("中文\n");
+
+        assert!(
+            wait_for_text_squashed(&session, "中文", Duration::from_secs(10)),
+            "写进去的中文应按 GB18030 编码送出、再解回来，实际内容：{:?}",
             grid_text(&session)
         );
     }
@@ -1659,6 +2054,76 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// 输入行重建走完整条链路：`B` 标记的**列**切掉提示符，光标前的回显文本
+    /// 原样摘回来。printf 把 A/B 标记与输入文本打在同一行 —— A 之后是提示符
+    /// `user@host$ `（11 列），B 就落在第 11 列，随后是用户打了一半的 `git st`。
+    #[test]
+    fn input_line_picks_up_after_the_prompt_end_mark() {
+        let session = session_printing(
+            "printf '\\033]133;A\\007user@host$ \\033]133;B\\007git st'; sleep 5".to_owned(),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match session.input_line() {
+                Some(line) => {
+                    assert_eq!(line.text, "git st", "输入区从 B 标记列开始");
+                    break;
+                }
+                // 光标还没走到输入末尾（printf 未完成）→ 下一轮再试。
+                None if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                None => panic!("10 秒内没能重建出输入行"),
+            }
+        }
+    }
+
+    /// 没有任何 shell 集成标记的裸输出：启发式不猜 —— 「宁可漏弹」。
+    #[test]
+    fn input_line_without_marks_declines_to_guess_mid_screen() {
+        // 输出打在屏幕第 0 行，光标离底部 4 行远得多的位置（24 行的网格）。
+        let session = session_printing("printf 'plain output no prompt'; sleep 5".to_owned());
+        assert!(wait_for_text(&session, "prompt", Duration::from_secs(10)));
+        assert_eq!(session.input_line(), None, "没有标记也没有底部提示符图案");
+    }
+
+    /// 命令采集走完整条链路：`B..C` 之间的网格文本 = 提交的命令，`D` 带退出码；
+    /// 水位保证同一条命令不会被摘两次。
+    #[test]
+    fn drain_commands_captures_each_submitted_command_once() {
+        let session = session_printing(
+            "printf '\\033]133;A\\007\\033]133;B\\007cargo test\\033]133;C\\007\\nrunning 2 tests\\n\\033]133;D;0\\007\\n\\033]133;A\\007\\033]133;B\\007echo done\\033]133;C\\007\\n\\033]133;D\\007'; sleep 5"
+                .to_owned(),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let drained = session.drain_commands();
+            if drained.len() >= 2 {
+                assert_eq!(
+                    drained,
+                    vec![
+                        CapturedCommand {
+                            command: "cargo test".to_owned(),
+                            exit: Some(0),
+                        },
+                        CapturedCommand {
+                            command: "echo done".to_owned(),
+                            exit: None,
+                        },
+                    ],
+                    "第二条没报退出码 = None，不是成功"
+                );
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("10 秒内只采到 {drained:?}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // 水位：再摘一次应当什么都没有。
+        assert!(session.drain_commands().is_empty(), "同一条命令不能采两次");
     }
 
     #[test]

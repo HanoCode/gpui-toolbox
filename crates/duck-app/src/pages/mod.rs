@@ -41,13 +41,9 @@ pub(crate) use projects::bind_keys as bind_projects_keys;
 pub use redis::RedisPage;
 pub use settings::{open_settings, open_settings_at};
 pub use terminal::TerminalPage;
-// 键位注册在 `app::install`（`cx.bind_keys`），动作类型要从这里跨出去给 app.rs 用。
-pub(crate) use terminal_canvas::{
-    Clear, CloseTab, CopySelection, DeleteToLineEnd, DeleteToLineStart, DeleteWordForward, Find,
-    MoveToLineEnd, MoveToLineStart, NewTab, PasteFromClipboard, ScrollLineDown, ScrollLineUp,
-    ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, SelectAll, SendCtrlC, SendTab,
-    SendTabPrev, SplitPane, ZoomIn, ZoomOut, ZoomReset,
-};
+// 终端页的快捷键表：绑定（`app::install`）与右栏说明（`render_status`）都从它读，
+// 两处只留一份 —— 否则「说明里写着的键按下去没反应」这类错会再犯一次。
+pub(crate) use terminal::keys::shortcut_bindings;
 pub use toolbox::ToolboxPage;
 
 /// 命令面板的「设置」分组用：分类清单与 key 还原（见 `palette_tools`）。

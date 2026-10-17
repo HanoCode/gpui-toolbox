@@ -557,25 +557,19 @@ fn binary_format_enables_only_for_raw_payloads() {
 }
 
 /// 结构管理的骨架：有 DDL 的引擎给语句，MongoDB / Elasticsearch 一律 `None`
-/// （界面据此**不给入口**，而不是给了再报错）。建表已改道结构编辑器，这里只钉
-/// 改表 / 删表两条。
+/// （界面据此**不给入口**，而不是给了再报错）。建表 / 改表都已改道结构编辑器，
+/// 这里只钉删表一条。
 #[test]
 fn ddl_templates_cover_sql_engines_only() {
     for engine in DatabaseKind::ALL {
-        let alter = alter_table_template(engine, "t");
         let drop = drop_table_template(engine, "t");
         if supports_ddl(engine) {
-            let alter = alter.expect("有 DDL 的引擎必须给改表骨架");
-            assert!(
-                alter.starts_with("ALTER TABLE t ADD COLUMN"),
-                "{engine:?}: {alter}"
-            );
             assert_eq!(
                 drop.expect("有 DDL 的引擎必须给删表骨架"),
                 "DROP TABLE IF EXISTS t;"
             );
         } else {
-            assert!(alter.is_none() && drop.is_none(), "{engine:?}");
+            assert!(drop.is_none(), "{engine:?}");
         }
     }
 }
@@ -2167,4 +2161,271 @@ fn picker_card_names_are_unique(cx: &mut TestAppContext) {
             }
         }
     });
+}
+
+/// 多键排序的三态轮转：普通点击「替换 + 三态」，`Shift+点击`「追加 + 三态」。
+///
+/// 两条语义最容易写混：普通点击**必须**清掉追加键（点另一列意味着重新排），
+/// `Shift+点击` 同列第三次点击**移除**该键（而不是变成空排序）。
+#[test]
+fn sort_keys_rotate_and_append() {
+    let mut keys: Vec<SortSpec> = Vec::new();
+
+    toggle_sort_keys_in(&mut keys, "a", false);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].column, "a");
+    assert!(!keys[0].descending);
+
+    toggle_sort_keys_in(&mut keys, "a", false);
+    assert!(keys[0].descending);
+
+    toggle_sort_keys_in(&mut keys, "a", false);
+    assert!(keys.is_empty(), "第三次普通点击应取消排序");
+
+    // 普通点击另一列：替换并清空追加键。
+    toggle_sort_keys_in(&mut keys, "a", false);
+    toggle_sort_keys_in(&mut keys, "b", true);
+    assert_eq!(keys.len(), 2);
+    toggle_sort_keys_in(&mut keys, "c", false);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].column, "c");
+    assert!(!keys[0].descending);
+
+    // `Shift+点击`：追加 → 切方向 → 移除。
+    toggle_sort_keys_in(&mut keys, "b", true);
+    assert_eq!(keys.len(), 2);
+    assert!(keys[1].column == "b" && !keys[1].descending);
+    toggle_sort_keys_in(&mut keys, "b", true);
+    assert!(keys[1].descending);
+    toggle_sort_keys_in(&mut keys, "b", true);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].column, "c");
+}
+
+/// `ORDER BY` 组装：用户键按优先级在前，主键兜底，重复键只认第一次。
+#[test]
+fn page_order_keys_puts_user_keys_first_and_dedupes() {
+    let keys = vec![("name".to_owned(), false), ("age".to_owned(), true)];
+    let order = page_order_keys(&keys, &["id".to_owned()]);
+    let columns: Vec<&str> = order.iter().map(|item| item.column.as_str()).collect();
+    assert_eq!(columns, ["name", "age", "id"]);
+    assert!(order[1].descending);
+    assert!(!order[2].descending);
+
+    // 主键已经在用户键里：不重复追加，方向跟随用户键。
+    let keys = vec![("id".to_owned(), true)];
+    let order = page_order_keys(&keys, &["id".to_owned()]);
+    assert_eq!(order.len(), 1);
+    assert!(order[0].descending);
+
+    // 同一个列出现两次（防手滑）：只留第一次。
+    let keys = vec![("a".to_owned(), false), ("a".to_owned(), true)];
+    let order = page_order_keys(&keys, &[]);
+    assert_eq!(order.len(), 1);
+    assert!(!order[0].descending);
+}
+
+/// 多列客户端排序：第一列同值时看第二列，方向各自独立。
+#[test]
+fn multi_sort_uses_second_key_when_first_ties() {
+    let rows = vec![
+        vec![Value::Int(1), Value::Text("b".into())],
+        vec![Value::Int(1), Value::Text("a".into())],
+        vec![Value::Int(2), Value::Text("a".into())],
+    ];
+    let mut indexes = vec![0, 1, 2];
+    sort_row_indexes_multi(&rows, &mut indexes, &[(0, false), (1, false)]);
+    assert_eq!(indexes, vec![1, 0, 2]);
+
+    let mut indexes = vec![0, 1, 2];
+    sort_row_indexes_multi(&rows, &mut indexes, &[(0, true), (1, false)]);
+    assert_eq!(indexes, vec![2, 1, 0]);
+}
+
+/// 选区统计：**只有数值族**参与合计，NULL / 文本 / 布尔只算格子数。
+///
+/// 边界三条：非数值格不计入平均的分母（否则「3 个数字 + 10 个 NULL」会被摊薄）；
+/// 越界行列按现有数据夹住而不 panic；全非数值时 `numeric == 0`（界面据此不显示平均）。
+#[test]
+fn selection_stats_counts_only_numeric_cells() {
+    let rows = vec![
+        vec![
+            Value::Int(2),
+            Value::Text("x".into()),
+            Value::Text("t".into()),
+        ],
+        vec![
+            Value::Null,
+            Value::Decimal("1.5".into()),
+            Value::Text("u".into()),
+        ],
+        vec![
+            Value::Float(0.5),
+            Value::Bool(true),
+            Value::Text("v".into()),
+        ],
+    ];
+    // 前两列整块：数值 = 2 / 0.5 / 1.5（共 3 个），文本 / NULL / 布尔只算格子数。
+    let stats = selection_stats(
+        &rows,
+        CellRange::new(CellPos::new(0, 0), CellPos::new(2, 1)),
+        &[0, 1],
+    );
+    assert_eq!(stats.cells, 6);
+    assert_eq!(stats.numeric, 3);
+    assert!((stats.sum - 4.0).abs() < 1e-9);
+    assert!((stats.average - 4.0 / 3.0).abs() < 1e-9);
+
+    // 只选第一列：2 + NULL + 0.5 = 2.5，NULL 不进分母。
+    let stats = selection_stats(
+        &rows,
+        CellRange::new(CellPos::new(0, 0), CellPos::new(2, 0)),
+        &[0],
+    );
+    assert_eq!((stats.cells, stats.numeric), (3, 2));
+    assert!((stats.sum - 2.5).abs() < 1e-9);
+    assert!((stats.average - 1.25).abs() < 1e-9);
+
+    // 越界（行号超出）：夹到现有的行，不 panic。
+    let stats = selection_stats(
+        &rows,
+        CellRange::new(CellPos::new(2, 0), CellPos::new(99, 0)),
+        &[0],
+    );
+    assert_eq!(stats.cells, 1);
+
+    // 全非数值（第三列全是文本）：没有合计也没有平均。
+    let stats = selection_stats(
+        &rows,
+        CellRange::new(CellPos::new(0, 2), CellPos::new(2, 2)),
+        &[2],
+    );
+    assert_eq!((stats.cells, stats.numeric), (3, 0));
+    assert_eq!(stats.average, 0.0);
+}
+
+/// 选区复制：只取选区里的**可见列**，行内 `\t`、行间 `\n`，NULL 渲染成 `NULL`。
+#[test]
+fn selection_tsv_keeps_visible_columns_only() {
+    let rows = vec![
+        vec![Value::Int(1), Value::Text("a\tb".into()), Value::Null],
+        vec![Value::Int(2), Value::Text("c".into()), Value::Int(3)],
+    ];
+    // 三列全选：制表符要转义（否则粘进表格软件会多出一列）。
+    let text = selection_as_tsv(
+        &rows,
+        CellRange::new(CellPos::new(0, 0), CellPos::new(1, 2)),
+        &[0, 1, 2],
+    );
+    assert_eq!(text, "1\t\"a\tb\"\tNULL\n2\tc\t3");
+
+    // 藏掉中间那列（下标 1）：只出首尾两列。
+    let text = selection_as_tsv(
+        &rows,
+        CellRange::new(CellPos::new(0, 0), CellPos::new(1, 2)),
+        &[0, 2],
+    );
+    assert_eq!(text, "1\tNULL\n2\t3");
+}
+
+/// 合计 / 平均的展示文本：整数不带小数点，小数去尾随零，浮点尾巴不糊到界面上。
+#[test]
+fn format_number_trims_float_noise() {
+    assert_eq!(format_number(42.0), "42");
+    assert_eq!(format_number(-7.0), "-7");
+    assert_eq!(format_number(0.3), "0.3");
+    assert_eq!(format_number(0.1 + 0.2), "0.3");
+    assert_eq!(format_number(1.25), "1.25");
+    assert_eq!(format_number(f64::NAN), "NaN");
+}
+
+/// `CHECK` 约束解析：嵌套括号、引号里的 `CHECK` 字样、约束名只在同一项内认。
+#[test]
+fn parse_check_constraints_reads_nested_parens_and_names() {
+    let ddl = "CREATE TABLE t (\n  id integer CONSTRAINT t_pkey PRIMARY KEY,\n  age integer CONSTRAINT age_ok CHECK (age >= 0 AND age < 200),\n  status text CHECK (status IN ('a', 'b')),\n  note text CHECK (note <> 'CHECK (x)')\n)";
+    let checks = parse_check_constraints(ddl);
+    // 三条真约束；字符串里的 `CHECK (x)` 不算（否则会多一条假约束）。
+    assert_eq!(checks.len(), 3);
+    assert_eq!(checks[0].0, "age_ok");
+    assert_eq!(checks[0].1, "age >= 0 AND age < 200");
+    assert_eq!(checks[1].0, "");
+    assert_eq!(checks[1].1, "status IN ('a', 'b')");
+    assert_eq!(checks[2].1, "note <> 'CHECK (x)'");
+}
+
+/// 分区子句：MySQL 的表选项之后与 PG 的列清单之后都能认；没有就是 `None`。
+#[test]
+fn parse_partition_clause_finds_mysql_and_pg_forms() {
+    let mysql = "CREATE TABLE t (id int) ENGINE=InnoDB PARTITION BY RANGE (id) (PARTITION p0 VALUES LESS THAN (10))";
+    assert_eq!(
+        parse_partition_clause(mysql).expect("MySQL 分区"),
+        "PARTITION BY RANGE (id) (PARTITION p0 VALUES LESS THAN (10))"
+    );
+    let pg = "CREATE TABLE t (id int) PARTITION BY RANGE (id);";
+    assert_eq!(
+        parse_partition_clause(pg).expect("PG 分区"),
+        "PARTITION BY RANGE (id)"
+    );
+    assert!(parse_partition_clause("CREATE TABLE t (id int)").is_none());
+}
+
+/// 光标下的标识符路径：命中段、跨点号、以及在标点/空白上「没有词」的三档。
+///
+/// 这条链路的失败方式都是**静默**的（悬停不出卡片、Cmd+点击没反应），所以边界
+/// 得钉住：光标在词中间、在词尾、在限定名的前一段，得到的都该是同一个路径。
+#[test]
+fn identifier_path_at_reads_qualified_names_and_stops_at_punctuation() {
+    let sql = "SELECT * FROM public.users WHERE users.id = 1;";
+    // 光标落在 `public.users` 的两段上，结果一致（含点号的范围）。
+    let start = sql.find("public").expect("public");
+    let (range, path) = identifier_path_at(sql, start + 2).expect("光标在 public 中间");
+    assert_eq!(path, "public.users");
+    assert_eq!(&sql[range], "public.users");
+    let id = sql.find("users.id").expect("users.id");
+    let (range, path) = identifier_path_at(sql, id + 7).expect("光标在 users 段上");
+    assert_eq!(path, "users.id");
+    assert_eq!(&sql[range], "users.id");
+
+    // 词尾（紧跟空格）：仍是这个词，不把后面的关键字带进来。
+    let from = sql.find("FROM").expect("FROM");
+    let (_, path) = identifier_path_at(sql, from).expect("光标在词首");
+    assert_eq!(path, "FROM");
+    let (_, path) = identifier_path_at(sql, from + "FROM".len()).expect("光标在词尾");
+    assert_eq!(path, "FROM");
+
+    // 标点上（`*` 两侧都是空白）：没有候选词，别硬猜一个出来。
+    assert!(identifier_path_at(sql, sql.find('*').expect("*")).is_none());
+    // 数字算标识符（`WHERE 1` 的 `1`），光标落在句末分号前的数字上仍是它。
+    let (_, path) = identifier_path_at(sql, sql.len() - 1).expect("数字");
+    assert_eq!(path, "1");
+
+    // 中文标识符也成一个词（全角判定靠 `is_alphanumeric` 的 Unicode 口径）。
+    let cjk = "SELECT * FROM 用户 WHERE 1";
+    let at = cjk.find("用户").expect("用户") + 3;
+    let (_, path) = identifier_path_at(cjk, at).expect("中文表名");
+    assert_eq!(path, "用户");
+
+    // 越界 / 半个字符：返回 `None` 而不是 panic。
+    assert!(identifier_path_at("ab", 9).is_none());
+    let emoji = "a😀b";
+    assert!(identifier_path_at(emoji, 2).is_none());
+}
+
+/// 关标签的「未保存」判据（dbx 的 `isTabDirty` 同口径）：空文本不问、原样未动
+/// 不问、写过字或改了载入的内容才算脏。
+#[test]
+fn unsaved_sql_is_dirty_only_when_text_left_the_baseline() {
+    use super::helpers::sql_is_dirty;
+
+    // 新开的空标签：不问。
+    assert!(!sql_is_dirty("", None));
+    assert!(!sql_is_dirty("   \n  ", None));
+    // 写过字：问。
+    assert!(sql_is_dirty("SELECT 1;", None));
+    // 载入后原样没动：不问；改了一个字：问。
+    let loaded = "SELECT * FROM orders;";
+    assert!(!sql_is_dirty(loaded, Some(loaded)));
+    assert!(sql_is_dirty("SELECT * FROM orders LIMIT 10;", Some(loaded)));
+    // 基线是空串（开标签时的初值）与缺失等价。
+    assert!(sql_is_dirty("SELECT 1;", Some("")));
 }

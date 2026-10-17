@@ -1,0 +1,237 @@
+{
+  "formatter": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "格式化"
+  },
+  "data-format": {
+    "verdict": "trim",
+    "memo": "",
+    "name": "数据格式转换"
+  },
+  "case-convert": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "大小写转换"
+  },
+  "random-gen": {
+    "verdict": "trim",
+    "memo": "",
+    "name": "随机数据生成"
+  },
+  "timestamp": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "时间戳工具"
+  },
+  "cron-gen": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "Cron 表达式"
+  },
+  "number-to-chinese": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "数字转中文"
+  },
+  "cheat-sheets": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "命令速查"
+  },
+  "transform-hub": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "变换枢纽"
+  },
+  "regex-plus": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "正则测试"
+  },
+  "prompt-optimizer": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "Prompt 优化"
+  },
+  "crypto-bundle": {
+    "verdict": "trim",
+    "memo": "",
+    "name": "加解密工具包"
+  },
+  "encoding-converter": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "编码转换"
+  },
+  "protobuf-codec": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "Protobuf 编解码"
+  },
+  "sql-rewrite": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "SQL 改写"
+  },
+  "sql-merge": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "SQL 文件合并"
+  },
+  "script-check": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "脚本检查"
+  },
+  "ddl-generator": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "DDL 生成 / 分表"
+  },
+  "sql-classifier": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "SQL 分类抽取"
+  },
+  "storage-estimator": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "数据库存储估算"
+  },
+  "pkg-merge": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "上线包合并"
+  },
+  "extract-by-manifest": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "清单提取"
+  },
+  "pkg-compare": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "包比对"
+  },
+  "text-diff": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "文本对比"
+  },
+  "config-diff": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "配置对比"
+  },
+  "java-decompiler": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "Java 反编译"
+  },
+  "finance-parser": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "金融文件解析"
+  },
+  "pdm-reader": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "PDM 阅读器"
+  },
+  "channel-gateway": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "渠道网关模型生成"
+  },
+  "http-request": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "HTTP 请求"
+  },
+  "packet-send": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "报文调试"
+  },
+  "s3-ftp-checker": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "S3 / FTP 连通检测"
+  },
+  "hosts-manager": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "Hosts 管理"
+  },
+  "file-search": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "文件搜索"
+  },
+  "directory-tree": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "目录树生成"
+  },
+  "batch-edit": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "批量改写"
+  },
+  "sensitive-scanner": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "敏感信息扫描"
+  },
+  "csv-tools": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "CSV 工具"
+  },
+  "doc-convert": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "格式转换"
+  },
+  "nginx-generator": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "Nginx 配置生成"
+  },
+  "s3-manager": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "S3 管理"
+  },
+  "screenshot": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "截图工具"
+  },
+  "diagram-renderer": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "Mermaid 渲染"
+  },
+  "drawio-board": {
+    "verdict": "drop",
+    "memo": "",
+    "name": "draw.io 画板"
+  },
+  "json-schema-validator": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "JSON Schema 校验"
+  },
+  "git-tools": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "Git 辅助"
+  },
+  "device-pool": {
+    "verdict": "ok",
+    "memo": "",
+    "name": "设备池管理"
+  }
+}

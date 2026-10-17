@@ -110,6 +110,7 @@
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -130,8 +131,9 @@ use duck_theme::{Lang, active_theme, bytes, datetime_full, datetime_short, tr, t
 use gpui::{
     Anchor, AnyElement, App, AppContext, ClickEvent, Context, Entity, FontWeight,
     InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled, Subscription, Task, WeakEntity, Window,
-    actions, div, prelude::FluentBuilder as _, px,
+    SharedString, StatefulInteractiveElement as _, Styled, Subscription, Task,
+    UniformListScrollHandle, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
+    uniform_list,
 };
 use gpui_component::{
     Icon, WindowExt as _,
@@ -500,6 +502,12 @@ pub struct MailPage {
     /// 本地草稿（`drafts_meta`）。**只在选中草稿箱时才拉**——草稿的 `folder_id`
     /// 是 NULL，不属于任何 IMAP 文件夹，所以它们不在 `messages` 里，另行置顶渲染。
     drafts: Vec<DraftSummary>,
+    /// 邮件列表的滚动句柄（虚拟列表 [`Self::render_list`] 的）。
+    ///
+    /// ⚠️ 句柄是**共享状态**，挂接动作本身不持有它：每帧都要
+    /// `.track_scroll(&self.list_scroll)` 挂回，滚动位置才能跨帧持久
+    /// （同 `RedisPage::json_tree_scroll` 的口径）。
+    list_scroll: UniformListScrollHandle,
     /// 本地草稿**条数**。与 `drafts` 分开存：`drafts` 只在选中草稿箱时才拉，而侧栏
     /// 「草稿」行的角标要在**任何**文件夹下都对（草稿的 `folder_id` 是 NULL，落不进
     /// `folders` 的未读计数，照那个显示会永远是 0）。
@@ -593,6 +601,7 @@ impl MailPage {
             search_query: None,
             messages: Vec::new(),
             drafts: Vec::new(),
+            list_scroll: UniformListScrollHandle::new(),
             local_drafts: 0,
             selected: None,
             detail: None,
@@ -5039,20 +5048,41 @@ impl MailPage {
             )
             .into_any_element()
         } else {
-            // 草稿箱：本地草稿**置顶**，其后是该文件夹里已同步的邮件。
-            let mut rows: Vec<AnyElement> = Vec::new();
-            if showing_drafts {
-                rows.extend(self.drafts.iter().map(|draft| self.draft_row(draft, cx)));
-            }
-            rows.extend(self.messages.iter().map(|m| self.message_row(m, cx)));
-            v_flex()
-                .id("mail-list-scroll")
-                .flex_1()
-                .w_full()
-                .min_h_0()
-                .overflow_y_scroll()
-                .children(rows)
-                .into_any_element()
+            // 虚拟化（`uniform_list`，同数据库结果网格 / Redis 键列表）：每帧只把
+            // **可见行**物化成元素。这里之前是普通滚动容器全量铺 `children`——
+            // 几百封邮件就是每帧几千个节点的构建与排版，滚动因此发卡。
+            //
+            // 行闭包是 `'static` 的，拿不到借自 `cx` 的页面状态，照 Redis 平铺键列表
+            // 的做法把行数据**快照成 `Arc`** 带进去；选中态是 `Copy`，比对在闭包里做，
+            // 不烘进快照（点击换选中只触发重渲染，快照重建只是浅拷贝行结构体）。
+            //
+            // 进入这一分支的前提是 `messages` 非空（空态都在上面拦了），所以
+            // `total` 恒 ≥ 1，不必像 `grid.rs` 那样 `.max(1)` 兜底。
+            let drafts = Arc::new(self.drafts.clone());
+            let messages = Arc::new(self.messages.clone());
+            let draft_count = drafts.len();
+            let total = draft_count + messages.len();
+            let view = self.view.clone();
+            let selected = self.selected;
+            uniform_list("mail-list", total, move |range, _window, cx| {
+                range
+                    .map(|index| {
+                        // 行序与旧全量铺法一致：草稿置顶，其后是已同步邮件。
+                        if index < draft_count {
+                            Self::draft_row(&view, &drafts[index], cx)
+                        } else {
+                            Self::message_row(&view, selected, &messages[index - draft_count], cx)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            // ⚠️ 句柄是共享状态，挂接动作本身不持有它：每帧（也就是这里）都要
+            // `.track_scroll` 挂回，滚动位置才能跨帧持久。
+            .track_scroll(&self.list_scroll)
+            .flex_1()
+            .w_full()
+            .min_h_0()
+            .into_any_element()
         };
 
         v_flex()
@@ -5070,8 +5100,17 @@ impl MailPage {
             .into_any_element()
     }
 
-    /// 一封邮件的列表行：发件人 + 时间 / 主题 / 摘要。
-    fn message_row(&self, message: &MessageSummary, cx: &App) -> AnyElement {
+    /// 一封邮件的列表行。
+    ///
+    /// 是**关联函数**而不是方法：行闭包跑在 `uniform_list` 的 `'static` 作用域里
+    /// （见 [`Self::render_list`]），带不进 `&self`，所以页面状态（自引用、选中主键）
+    /// 由调用方显式传入。
+    fn message_row(
+        view: &WeakEntity<Self>,
+        selected: Option<i64>,
+        message: &MessageSummary,
+        cx: &App,
+    ) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let extended = theme.extended();
@@ -5080,7 +5119,7 @@ impl MailPage {
         let ring = tokens.colors.ring;
 
         let id = message.id;
-        let view = self.view.clone();
+        let view = view.clone();
         let unknown = tr(cx, "(未知发件人)");
         let no_subject = tr(cx, "(无主题)");
         let sender = SharedString::from(
@@ -5105,7 +5144,7 @@ impl MailPage {
             (false, true) => trf(cx, "未读邮件：{}，来自 {}，{}（已加旗标）", &args),
         }
         .into();
-        let selected = self.selected == Some(message.id);
+        let selected = selected == Some(message.id);
         let unread = !message.is_read;
         let has_attachments = message.has_attachments;
 
@@ -5215,7 +5254,10 @@ impl MailPage {
     /// 「删除」做成行内**兄弟节点**，而不是套在那块可点击区域里面：草稿行的主体整块是
     /// 一个按钮（点开撰写弹窗），往按钮里再塞一个按钮，两次点击谁先拿到就交给事件冒泡
     /// 去决定了——「点了删除却打开了弹窗」这种错在这一层不值得赌。
-    fn draft_row(&self, draft: &DraftSummary, cx: &App) -> AnyElement {
+    ///
+    /// 与 [`Self::message_row`] 同理是**关联函数**：行闭包是 `'static` 的，带不进
+    /// `&self`，自引用由调用方传入。
+    fn draft_row(view: &WeakEntity<Self>, draft: &DraftSummary, cx: &App) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let extended = theme.extended();
@@ -5224,8 +5266,8 @@ impl MailPage {
         let ring = tokens.colors.ring;
 
         let id = draft.id;
-        let open_view = self.view.clone();
-        let delete_view = self.view.clone();
+        let open_view = view.clone();
+        let delete_view = view.clone();
         let recipients = draft.recipients_display();
         let recipients: SharedString = if recipients.trim().is_empty() {
             tr(cx, "(无收件人)").into()

@@ -63,23 +63,25 @@ use std::time::{Duration, Instant};
 use anyhow::anyhow;
 use duck_ai::ProviderProfile;
 use duck_components::{
-    ButtonVariant, CheckState, ConfirmHandler, DROPDOWN_MIN_WIDTH, DatabaseLogo, DuckIcon,
-    SidebarPanel, SidebarState, body_text, button, caption_heading, card, check_mark, check_row,
+    ActionHandler, ButtonVariant, CheckState, ConfirmHandler, DROPDOWN_MIN_WIDTH, DatabaseLogo,
+    DuckIcon, SidebarPanel, SidebarState, body_text, button, caption_heading, card, check_mark,
+    check_row,
     content::{
         accent_tag, description_list, description_row, empty_state, neutral_tag, progress_bar,
     },
     dialog_footer, dialog_top_offset, dropdown_select, field_hint, field_label, form_gap,
     icon_button, icon_button_tip, icon_text_button, meta_text, modal_drag, modal_drag_area,
     modal_offset, modal_title_row, notify, segmented_tabs, selectable_text,
-    selectable_text_with_id, sidebar_navigation_button, tabular_numbers, title_text,
-    toolbar_action_button, toolbar_dropdown_button, toolbar_text_dropdown_button,
+    selectable_text_with_id, sidebar_navigation_button, switch_control, tabular_numbers,
+    title_text, toolbar_action_button, toolbar_dropdown_button, toolbar_text_dropdown_button,
 };
 // 结果网格的行模式：公共数据表组件（行虚拟化 + 固定列头 + 列宽拖拽 + 就地编辑槽）。
 // 列宽 / 藏列 / 展示行序 / 滚动句柄归组件；选中 / 勾选 / 排序 / 编辑器实体留在页面
 // （见 `duck_components::data_table` 模块文档的「归属边界」）。
 use duck_components::data_table::{
-    CellKind, CellPos, CellValue, ColumnSpec, DataTableEvent, DataTableHooks, DataTableLabels,
-    DataTableState, DataTableView, HeaderMenuHook, RowData, TableModel, data_table,
+    CellKind, CellPos, CellRange, CellValue, ColumnSpec, DataTableEvent, DataTableHooks,
+    DataTableLabels, DataTableState, DataTableView, HeaderMenuHook, RowData, TableModel,
+    data_table,
 };
 use duck_db::ai::{AiAction, build_action_prompt};
 use duck_db::config::{
@@ -109,7 +111,7 @@ use duck_db::{
     PlanTree, ProxyConfig, ProxyKind, ProxyTunnel, ProxyTunnelSpec, ResultSet, RowCount,
     SqlFileError, SqlFileOptions, SshTunnel, SshTunnelSpec, SsmConfig, SsmTunnel, SsmTunnelSpec,
     SwitchOutcome, TableFilter, TableForeignKey, TableIndex, TableKind, TableRef, TableTrigger,
-    Value, covers_columns, edit_target, execute_sql_file, fingerprint, parse_csv, parse_plan,
+    Value, covers_columns, edit_target, execute_sql_file, fingerprint, parse_plan,
     quote_identifier, quote_qualified, run_hook, run_phase, tsv_field,
 };
 use duck_drivers::registry::DriverRegistry;
@@ -187,7 +189,9 @@ mod charts_plot;
 mod compare;
 mod completion;
 mod connect;
+mod csv_import;
 mod drivers;
+mod editor_nav;
 mod er;
 mod grid;
 mod helpers;
@@ -196,6 +200,7 @@ mod instance;
 mod objects;
 mod profiles;
 mod query;
+mod quick_open;
 mod render_editor;
 mod render_sidebar;
 mod render_tabs;
@@ -216,6 +221,7 @@ use self::charts::*;
 use self::charts_plot::*;
 use self::compare::*;
 use self::connect::*;
+use self::csv_import::CsvImport;
 use self::drivers::*;
 use self::er::*;
 use self::helpers::*;
@@ -223,6 +229,12 @@ use self::hooks::*;
 use self::instance::*;
 use self::objects::*;
 use self::profiles::*;
+// 只转出两个类型：这两个名字要出现在本文件的字段声明里（方法都在 `impl` 块中，
+// 不需要 import）。用显式清单而不是 glob —— 那个子模块自己 `use super::*`，
+// 两边互相 glob 会给出一串歧义警告。
+use self::quick_open::{QuickAction, QuickOpen};
+// 跳行浮层的状态与编辑器导航的 LSP 侧类型（表名跳转 / 悬停看结构）。
+use self::editor_nav::{GotoLine, SqlNavigator, jump_handler};
 use self::transfer::*;
 use self::tunnel::*;
 
@@ -432,8 +444,31 @@ actions!(
         PasteIntoSelectedCell,
         /// 中止正在跑的查询（`⌘.`）；没有查询在跑时是空操作。
         StopQuery,
+        /// 关闭当前标签（`⌘W`）。语义与点标签上的 ✕ 完全一致 —— 最后一张标签
+        /// 关闭即断开该连接，不另造一套「只藏不关」。
+        CloseActiveTab,
+        /// 在当前连接下新建查询标签（`⌘T`）；没有活跃连接时是空操作。
+        NewQueryTab,
+        /// 聚焦结果区搜索框（`⌘F`）。焦点在 SQL 编辑器里时更深上下文先命中，
+        /// 走编辑器自己的查找面板 —— 这正是期望：谁在前台，⌘F 就找谁。
+        FocusResultSearch,
+        /// 快速打开（`⌘P`）：搜连接 / 库 / 表 / 已保存查询，回车直达。
+        OpenQuickOpen,
+        /// 跳行（`⌘⌥G`）：弹出一个小输入框，输入行号回车把光标送过去。
+        GoToLine,
     ]
 );
+
+/// 切到第 N 张标签（`⌘1`..`⌘9`；越界是空操作）。
+///
+/// 用带字段的 action 而不是九条无参 action：键位表与处理器都只写一遍，
+/// 新增标签数量不用同步改九个地方。
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = db, no_json)]
+pub struct SwitchTabAt {
+    /// 从 0 开始的标签下标。
+    pub index: usize,
+}
 
 /// 绑定数据库页的键位（由 `app::install` 调一次）。
 ///
@@ -494,7 +529,35 @@ pub(crate) fn bind_keys(cx: &mut App) {
             RedoPendingEdits,
             Some(KEY_CONTEXT),
         ),
+        // 标签：`⌘W` 关当前、`⌘T` 新建查询、`⌘1..9` 定位。
+        // ⚠️ `⌘W` 在 `Root` 上通常绑「关窗口」，本页上下文更深，标签有焦点时先命中这里
+        //（关掉最后一张标签 → 断开连接，与点 ✕ 同语义）。
+        KeyBinding::new(&format!("{modifier}-w"), CloseActiveTab, Some(KEY_CONTEXT)),
+        KeyBinding::new(&format!("{modifier}-t"), NewQueryTab, Some(KEY_CONTEXT)),
+        // 结果搜索：焦点在网格上时由页面接管；在编辑器里时编辑器自己的 `⌘F`
+        // 更深，先命中它的查找面板。
+        KeyBinding::new(
+            &format!("{modifier}-f"),
+            FocusResultSearch,
+            Some(KEY_CONTEXT),
+        ),
+        // 快速打开：`⌘P`。与 `⌘F` 同一条分层逻辑 —— 焦点在编辑器里时编辑器若有同键
+        // 绑定会先命中；`gpui-base` 的编辑器没有 `⌘P`，所以这条在编辑器里也照样生效
+        // （这正是想要的：任何时候按 ⌘P 都能跳走）。
+        KeyBinding::new(&format!("{modifier}-p"), OpenQuickOpen, Some(KEY_CONTEXT)),
+        // 跳行：`⌘⌥G`（与 VS Code / JetBrains 的「跳到行」是同一个手势）。
+        // `⌘L` 不用：DB 客户端里它通常留给「锁屏/清屏」一类动作，且 `⌘⇧L` 在部分
+        // 输入法下是切换键 —— `⌘⌥G` 在编辑器上下文里没有既有归属。
+        KeyBinding::new(&format!("{modifier}-alt-g"), GoToLine, Some(KEY_CONTEXT)),
     ]);
+    // `⌘1`..`⌘9`：按下标顺序派发。九条一次写完，新增/删除标签不必改这里。
+    for index in 0..9 {
+        cx.bind_keys([KeyBinding::new(
+            &format!("{modifier}-{}", index + 1),
+            SwitchTabAt { index },
+            Some(KEY_CONTEXT),
+        )]);
+    }
 }
 
 // ── 驱动选择器（dbx 同形：分类侧栏 + 品牌卡片网格）────────────────────────────
@@ -1091,10 +1154,6 @@ enum Mode {
     Instance(InstanceTab),
     /// ER 关系图：一个库的表卡片 + 外键关系（dbx 对位；带的是库名 / schema）。
     Er { namespace: String },
-    /// 比较数据：源库 vs 目标连接 + 库（规格带在变体里，结果在 `compare` 字段）。
-    Compare(CompareSpec),
-    /// 数据传输：源库 → 目标连接 + 库（规格带在变体里，结果在 `transfer` 字段）。
-    Transfer(TransferSpec),
     /// 用户仪表板（12 栏网格；带的是仪表板 id，见 [`Dashboard::id`]）。
     Dashboard(u32),
 }
@@ -1347,6 +1406,65 @@ enum DashboardJob {
     Sql(String),
     /// 取一张实例检查器表。
     Inspector(InstanceView),
+}
+
+/// 导出范围：这一次要把**哪一部分行**落盘。
+///
+/// 与 [`ResultFormat`] 正交 —— 格式管「长什么样」，范围管「装哪些行」。两者以前
+/// 只有 `Page` 一档（整份结果集直落），于是「只要勾选的那 12 行」只能先粘到表格软件
+/// 里再删。四档的取舍：
+///
+/// - [`Self::Page`]：表浏览 = 这一页；SQL 结果 = 已到手的全部行（本来就是一份）。
+/// - [`Self::Selected`]：勾选行 / 选中行。两者都空时**退回整页**（不报错：点了导出
+///   却什么都没有，比多导几行更让人困惑）。
+/// - [`Self::Selection`]：矩形选区，行列都裁（`ResultSet` 的列也跟着裁）。
+/// - [`Self::WholeTable`]：整表。只有表浏览给得出 —— 那一档要走一遍
+///   `SELECT * FROM …`，见 [`DatabasePage::export_table_data_as`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ExportScope {
+    /// 当前页 / 当前结果集全量。
+    #[default]
+    Page,
+    /// 勾选行（或选中行）。
+    Selected,
+    /// 矩形单元格选区。
+    Selection,
+    /// 整表（仅表浏览）。
+    WholeTable,
+}
+
+impl ExportScope {
+    /// 菜单里的文案。
+    fn label(self, cx: &App) -> &'static str {
+        match self {
+            Self::Page => tr(cx, "当前页"),
+            Self::Selected => tr(cx, "选中行"),
+            Self::Selection => tr(cx, "选区"),
+            Self::WholeTable => tr(cx, "整表"),
+        }
+    }
+
+    /// 这一档此刻能不能选：`Selected` 要有勾选 / 选中行，`Selection` 要有选区，
+    /// `WholeTable` 要真的在表浏览。
+    fn available(self, table_mode: bool, has_rows: bool, has_selection: bool) -> bool {
+        match self {
+            Self::Page => true,
+            Self::Selected => has_rows,
+            Self::Selection => has_selection,
+            Self::WholeTable => table_mode,
+        }
+    }
+
+    /// 落盘文件名里的范围后缀（`result.csv` / `result.selected.csv`）：同一次会话
+    /// 连着导两档时不至于互相覆盖，也让人一眼看出这份文件装的是什么。
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Page => "",
+            Self::Selected => ".selected",
+            Self::Selection => ".selection",
+            Self::WholeTable => "",
+        }
+    }
 }
 
 /// 结果集的文本格式。
@@ -1910,43 +2028,8 @@ enum TabKind {
     Instance(InstanceTab),
     /// ER 关系图标签：一个库一张（同连接同库复用），标题 = `ER 库名`。
     Er { namespace: String },
-    /// 比较数据标签：一对规格一张（同规格复用），标题 = `比较 源→目标`。
-    Compare(CompareSpec),
-    /// 数据传输标签：一对规格一张（同规格复用），标题 = `传输 源→目标`。
-    Transfer(TransferSpec),
     /// 仪表板标签：一块用户自建仪表板一个（同连接同板复用），标题 = 板名。
     Dashboard(u32),
-}
-
-/// 比较数据的两侧规格：源 / 目标各是「连接 + 命名空间」。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CompareSpec {
-    /// 源连接（打开菜单所在的连接）。
-    source_conn: String,
-    /// 源命名空间。
-    source_ns: String,
-    /// 目标连接（页面上选，默认另一条已连接会话）。
-    target_conn: String,
-    /// 目标命名空间（页面上选）。
-    target_ns: String,
-    /// 只比较这些表（表节点右键「比较数据」带单张；**空 = 全库**，库级入口
-    /// 与工具条按钮都不带 —— 与 `TransferSpec::tables` 同一条口径）。
-    tables: Vec<TableRef>,
-}
-
-/// 数据传输的规格：源连接 + 源命名空间的若干表 → 目标连接 + 目标命名空间。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TransferSpec {
-    /// 源连接。
-    source_conn: String,
-    /// 源命名空间。
-    source_ns: String,
-    /// 要搬的表（打开时按源目录定死；比较页的「传输此表」传单张）。
-    tables: Vec<TableRef>,
-    /// 目标连接（页面上选）。
-    target_conn: String,
-    /// 目标命名空间（页面上选）。
-    target_ns: String,
 }
 
 /// 结果区视图三档（对齐 dbflux 的「网格 / 记录 / JSON」）。
@@ -2110,8 +2193,13 @@ struct SessionView {
     table_page: usize,
     /// 表页数据。
     table_rows: Option<ResultSet>,
-    /// 表页排序。
+    /// 表页排序（主键）。
     table_sort: Option<SortSpec>,
+    /// 表页排序的**追加键**（`Shift+点列头` 加进来的第 2..N 级）。
+    ///
+    /// 与 `table_sort` 分开存而不是合成 `Vec`：列头箭头、右键菜单的 checked 态、
+    /// 读数条都只关心「主排序」，合并成 Vec 会让那二十来处逐个改成 `first()`。
+    table_sort_extra: Vec<SortSpec>,
     /// 表页过滤条件（**服务器侧** WHERE；空 = 不过滤）。
     ///
     /// 与 `table_sort` 同为「按表页生效的查询参数」，所以同样按标签存：切回来还在。
@@ -2141,10 +2229,6 @@ struct SessionView {
     ///
     /// 按标签存：两个 ER 标签各看各的库，切回来原样。
     er: Option<ErData>,
-    /// 比较数据的状态（`Mode::Compare` 的数据源；`None` = 还没开跑）。
-    compare: Option<CompareState>,
-    /// 数据传输的状态（`Mode::Transfer` 的数据源；`None` = 还没开跑）。
-    transfer: Option<TransferState>,
     /// SQL 结果展示态。
     query_result: Option<QueryView>,
     /// SQL 结果可编辑时的目标表。
@@ -2167,6 +2251,8 @@ struct SessionView {
     /// 数据本身换了序），这边结果已整批在手，排的是**展示顺序**（同「结果内搜索」
     /// 「客户端分页」一层语义 —— 导出 / 编辑 / 多选仍按原始行集走）。
     query_sort: Option<SortSpec>,
+    /// 查询结果客户端排序的追加键（`Shift+点列头`；语义同 `table_sort_extra`）。
+    query_sort_extra: Vec<SortSpec>,
     /// 结果标签（一条语句一个）；`query_result` 恒等于激活标签的视图。
     result_tabs: Vec<ResultTab>,
     /// 激活的结果标签下标。
@@ -2213,6 +2299,12 @@ struct SessionView {
     /// 只影响**显示**：导出 / 复制 / 编辑仍按完整列集走。隐藏是「我不想看」，
     /// 不是「这列不存在」。
     hidden_columns: BTreeSet<String>,
+    /// 结果网格里的**矩形单元格选区**（拖选出来的那块；见 [`CellRange`]）。
+    ///
+    /// 与 [`Self::checked_rows`] 是两套选区：勾选 = 「整行批处理」，矩形 = 「这几格
+    /// 的数据」（复制矩阵 / 底栏合计）。跟着标签走（每个结果集各一份），结果集一换
+    /// 就清空（行号是当前结果集里的下标，换了就指向别的数据）。
+    cells_selection: Option<CellRange>,
 }
 
 /// 单元格详情的**值编辑器**（右栏「单元格」分段）。
@@ -2394,10 +2486,11 @@ struct CopyFieldsDraft {
 
 /// 表结构编辑器的标签（dbx `TableStructureEditor` 的 Tabs 对位）。
 ///
-/// 按内核内省能力只开五个：约束、分区内核没有对应读取，**不冒充**（dbx 同款：
-/// 能力之外的标签直接不显示）。字段 / 索引 / 外键三个标签都能编辑（各自生成
-/// 引擎支持的 DDL）；DDL 与触发器只读——触发器没有生成 DDL 的能力，
-/// 摆一个改不动的编辑器只会让人误会。
+/// 七个：DDL / 字段 / 索引 / 外键 / 约束 / 分区 / 触发器。字段 / 索引 / 外键三个能编辑
+///（各自生成引擎支持的 DDL）；约束与分区是**只读总览** —— 它们从字段草稿、索引草稿与
+/// 建表 DDL 里投影出来，不新造内省：主键与唯一本来就在索引里，检查约束与分区子句
+/// 只在 DDL 里有（内核没有 `list_constraints`，硬编一份只会在各引擎上长歪）。
+/// DDL 与触发器同样只读。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StructureTab {
     /// 只读展示打开时读到的建表 DDL + 复制入口。
@@ -2408,6 +2501,14 @@ enum StructureTab {
     Indexes,
     /// 外键卡片（内联编辑 + 新增 / 删除）。
     ForeignKeys,
+    /// 约束总览（只读）：主键 / 唯一 / 检查 / 外键四类收在一页。
+    ///
+    /// 与索引 / 外键两页的关系是**视图与编辑器**：那两页负责改，这一页负责「一眼看全
+    /// 这张表有哪些硬约束」。主键与唯一从字段 / 索引草稿投影；检查约束从建表 DDL 里
+    /// 解析 —— 内核没有 `list_constraints`，硬编一份只会在各引擎上长歪。
+    Constraints,
+    /// 分区信息（只读）：从建表 DDL 里解析 `PARTITION BY …`。
+    Partitions,
     /// 只读触发器清单。
     Triggers,
 }
@@ -3077,24 +3178,6 @@ struct SortSpec {
     descending: bool,
 }
 
-impl SortSpec {
-    /// 点一次列头的下一步（升 → 降 → 取消）。
-    #[must_use]
-    fn next(current: Option<&Self>, column: &str) -> Option<Self> {
-        match current {
-            Some(spec) if spec.column == column && !spec.descending => Some(Self {
-                column: column.to_owned(),
-                descending: true,
-            }),
-            Some(spec) if spec.column == column => None,
-            _ => Some(Self {
-                column: column.to_owned(),
-                descending: false,
-            }),
-        }
-    }
-}
-
 /// 单类候选的条数上限（表 / 关键字 / 函数**各算一份**）。
 ///
 /// 分类限额而不是只给总量：词表按引擎展开之后光「关键字」就有一百多条，按总量
@@ -3271,6 +3354,26 @@ pub struct DatabasePage {
     tab_seq: usize,
     /// 当前激活的标签 id。
     active_tab: Option<String>,
+    /// 标签的**活跃历史**（最近使用序，队首 = 刚才；元素是标签 id）。
+    ///
+    /// 关闭当前标签后跳「上一个活跃的」而不是「第一个」—— 浏览器同款 MRU：
+    /// 用户在 A、B 间来回切时关掉 A，期望看到的是 B，而不是标签条最左边那张。
+    /// 只在内存里，不持久化（标签本身也不持久化）。
+    tab_mru: Vec<String>,
+    /// 每个查询标签的**已落定文本**基线（dbx 的 `originalSql` 同款）：开标签时置
+    /// 空串、载入已保存查询时置载入的 SQL、保存后置当前文本。编辑器里的文本与它
+    /// 不同（且非空）= 有未保存的更改，关标签前要问一道。
+    ///
+    /// 与 [`Self::tab_kind`] 同款按标签 id 记、**不进编辑区快照** —— 基线是
+    /// 「参照物」，不随切标签变（快照只管「文本 + 结果区」的搬运）。
+    tab_original_sql: HashMap<String, String>,
+    /// 查询标签关联的「已保存查询」id（键 = 标签 id）：从 SQL 库载入的标签，
+    /// 保存时**写回同一条**而不是另存一份（dbx 的 `savedSqlId` 链接同款）。
+    /// 标签关闭时随标签移除。
+    tab_saved_link: HashMap<String, String>,
+    /// 待确认关闭的标签（有未保存的更改、确认弹窗挂着）：「保存 / 不保存 / 取消」
+    /// 三个答案落地之前，这些标签原地不动。
+    pending_close_tabs: Vec<String>,
     /// 当前激活的连接 id（随 [`Self::active_tab`] 派生；页面其余逻辑按连接语义读它）。
     active: Option<String>,
     /// 主区模式与数据。
@@ -3295,9 +3398,12 @@ pub struct DatabasePage {
     table_rows: Option<ResultSet>,
     /// 表浏览的列头排序；`None` = 只按主键的稳定序。
     ///
-    /// 点列头来回切「升 → 降 → 取消」（[`SortSpec::next`]）；排序走**服务器侧
-    /// ORDER BY**（不是只排当前页，那会让「第 2 页」变成第一页的重排）。
+    /// 点列头来回切「升 → 降 → 取消」（实现见 `toggle_sort_keys_in`：`Shift+点击`
+    /// 追加下一级）；排序走**服务器侧 ORDER BY**（不是只排当前页，那会让「第 2 页」
+    /// 变成第一页的重排）。
     table_sort: Option<SortSpec>,
+    /// 表浏览排序的追加键（`Shift+点列头`；见 [`SessionView::table_sort_extra`]）。
+    table_sort_extra: Vec<SortSpec>,
     query_result: Option<QueryView>,
     /// 当前 SQL 结果可编辑时的目标表（[`duck_db::edit_target`] 判定 + 主键覆盖核验）。
     query_target: Option<TableRef>,
@@ -3318,6 +3424,8 @@ pub struct DatabasePage {
     /// 与 `table_sort` 是**两套**：表浏览那套是服务器侧 `ORDER BY`（改的是取数），
     /// 这套只重排**已到手的这批行**（同「结果内搜索」「客户端分页」一层）。
     query_sort: Option<SortSpec>,
+    /// 查询结果客户端排序的追加键（`Shift+点列头`；语义同 `table_sort_extra`）。
+    query_sort_extra: Vec<SortSpec>,
     /// 结果标签（一条语句一个）；`query_result` 恒等于激活标签的视图。
     result_tabs: Vec<ResultTab>,
     /// 激活的结果标签下标。
@@ -3358,6 +3466,12 @@ pub struct DatabasePage {
     /// 上一次结果是 EXPLAIN，但结构**没解析出来**（状态栏要如实说一句；
     /// 输出仍在网格里，只是没被整理成树）。
     plan_flat: bool,
+    /// 表浏览的自动刷新间隔（秒）；`None` = 关闭。
+    ///
+    /// 只作用于 `Mode::Table`：刷新 = 重取当前页（与手点「刷新当前页」同一条路径）。
+    /// 有暂存改动 / 有数据库操作在跑时**跳过这一轮**而不是关掉定时器 —— 用户改完
+    /// 提交后自动刷新应当自己恢复，不需要再去菜单里重新开一次。
+    auto_refresh_secs: Option<u64>,
     /// 结果网格的**组件状态**：表模型（`Arc<TableModel>`）、列宽 + 前缀和、藏列、
     /// 展示行序（搜索命中 + 客户端分页）、两个滚动句柄、列宽拖拽态。
     ///
@@ -3390,6 +3504,28 @@ pub struct DatabasePage {
     /// 结果网格里被隐藏的列名（见 [`SessionView::hidden_columns`]：按标签存，
     /// 只影响显示）。渲染时推进 [`Self::data_table`] 的 `set_hidden_names`。
     hidden_columns: BTreeSet<String>,
+    /// 结果网格里的矩形单元格选区（见 [`SessionView::cells_selection`]：按标签存）。
+    ///
+    /// 渲染时推给组件画底色，交互经 [`DataTableEvent::SelectionStarted`] /
+    /// [`DataTableEvent::SelectionExtended`] 回来；底栏合计与选区复制都读它。
+    /// **一律经 [`Self::active_cells_selection`] 取**：那个会挡住「结果集换了行数
+    /// 变少」之后的越界选区。
+    cells_selection: Option<CellRange>,
+    /// 导出范围（[`ExportScope`]）。页面级、不进标签快照：它是「这一阵子怎么导」
+    /// 的操作偏好，不是某张表的视图状态（列宽 / 列序那类才按表存）。
+    export_scope: ExportScope,
+    /// 快速打开面板（`⌘P`；见 [`quick_open`] 模块）。`Some` = 面板开着。
+    quick_open: Option<QuickOpen>,
+    /// 面板里按了回车、还没落地的动作。
+    ///
+    /// 输入框的 `PressEnter` 订阅闭包拿不到窗口，而目标动作全都要（开表 / 载查询），
+    /// 所以只记意图、由渲染入口 [`Self::apply_pending_quick_open`] 执行 —— 与
+    /// `pending_namespace_pick` 同一套办法。
+    pending_quick_open: Option<QuickAction>,
+    /// CSV 导入向导（[`csv_import`] 模块）。`Some` = 浮层开着。
+    csv_import: Option<CsvImport>,
+    /// 跳行浮层（`⌘⌥G`；见 [`editor_nav`] 模块）。`Some` = 浮层开着。
+    goto_line: Option<GotoLine>,
     /// SQL 语义诊断结果（编辑器内容变化时重算；见 [`duck_db::sqldiag`]）。
     sql_diagnostics: Vec<duck_db::SqlDiagnostic>,
     /// 选中行（两种模式共用一份索引）。
@@ -3479,12 +3615,22 @@ pub struct DatabasePage {
     /// 偏移、拖得出位置。
     result_columns_x_scroll: ScrollHandle,
     result_columns_y_scroll: ScrollHandle,
+    /// 顶部连接标签条 / 结果区结果标签行的横向滚动句柄：口径同
+    /// [`Self::result_columns_x_scroll`] —— 标签多到放不下时给一条**可拖动**的
+    /// 滚动条（gpui 的滚动容器不画系统滚动条，必须自己叠 `Scrollbar`）。
+    tab_strip_x_scroll: ScrollHandle,
+    result_tabs_x_scroll: ScrollHandle,
+    /// 全局操作条 / 编辑器工具条的横向滚动句柄：口径同
+    /// [`Self::tab_strip_x_scroll`] —— 窄窗口下动作钮放不下时横向滚动并给一条
+    /// **可拖动**的滚动条，右组关键控件（AI / 连接读数 / Tx / 连接下拉）不跟着
+    /// 被挤出屏幕。
+    global_actions_x_scroll: ScrollHandle,
+    editor_toolbar_x_scroll: ScrollHandle,
     /// ER 关系图的数据（当前标签的那一份；`None` = 还没取回）。按标签存。
     er: Option<ErData>,
-    /// 比较数据的状态（当前标签的那一份；`None` = 不是比较标签）。按标签存。
-    compare: Option<CompareState>,
-    /// 数据传输的状态（当前标签的那一份；`None` = 不是传输标签）。按标签存。
-    transfer: Option<TransferState>,
+    /// 数据传输弹窗（开着才有；后台每传完一张表经它把结论落到弹窗视图上）。
+    /// 不随标签走：弹窗浮在页面层，关掉即清。
+    transfer_dialog: Option<Entity<TransferDialogView>>,
     /// 「复制其他表字段」弹窗的草稿（`None` = 没开；见 [`CopyFieldsDraft`]）。
     /// **不随标签走**：弹窗是一次「从源表挑字段追加进当前草稿」的临时态。
     copy_fields: Option<CopyFieldsDraft>,

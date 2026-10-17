@@ -13,18 +13,18 @@
 
 按影响排序的十条（详细论证见后文）：
 
-| # | 差距 | 现状一句话 | 等级 |
-|---|---|---|---|
-| 1 | **无矩形单元格选区** | 只有「整行勾选 + 单格选中」，没有拖拽选区、没有选区 SUM/AVG/单元格数 | P0 |
-| 2 | **排序只有单列** | `SortSpec` 单值，无多列优先级、无「仅当前页排序 / 数据库排序」区分、无排序构建器 | P0 |
-| 3 | **无列冻结 / 列重排** | 列宽可拖、可隐藏、可重置，但首列不冻结、列序不可拖 | P0 |
-| 4 | **网格布局不落盘** | 列宽、密度、隐藏列、树展开态都是「这一次看库」的会话态，重启回默认 | P0 |
-| 5 | **无自动刷新** | 表浏览只能手点刷新；DBX 为 5/10/30/60/300s + 环形倒计时 | P1 |
-| 6 | **导入只有 CSV 直落库** | 无预览、无列映射、无编码选择、无类型推断；DBX 支持 8 种格式 + 多文件批量建表 | P1 |
-| 7 | **表结构缺「约束 / 分区」两页** | 五标签：DDL / 字段 / 索引 / 外键 / 触发器；字段级缺生成列、枚举列表、SRID、标识列 | P1 |
-| 8 | **三个常驻灰按钮** | 「比较架构 / 数据库备份 / MCP 设置」`disabled(true)`，无解释（`shell.rs:507/535/545`） | P1 |
-| 9 | **编辑器缺导航类交互** | 无查找替换面板、无跳行、无 Ctrl+Click 表名跳转、无表结构 peek、无拖表入编辑器、无执行目标选择器 | P1 |
-| 10 | **标签与快捷键面窄** | 10 条键位；标签不可拖拽/拆分/独立窗口/固定；无 ⌘1..9 / ⌘W / ⌘F / ⌘P | P2 |
+| # | 差距 | 现状一句话 | 等级 | 落地 |
+|---|---|---|---|---|
+| 1 | **无矩形单元格选区** | 只有「整行勾选 + 单格选中」，没有拖拽选区、没有选区 SUM/AVG/单元格数 | P0 | ✅ 见 §11.1 |
+| 2 | **排序只有单列** | `SortSpec` 单值，无多列优先级、无「仅当前页排序 / 数据库排序」区分、无排序构建器 | P0 | ✅ 见 §11.2 |
+| 3 | **无列冻结 / 列重排** | 列宽可拖、可隐藏、可重置，但首列不冻结、列序不可拖 | P0 | ⚠️ 列序可调（菜单式）；横向冻结列未做（§11.3 说明原因） |
+| 4 | **网格布局不落盘** | 列宽、密度、隐藏列、树展开态都是「这一次看库」的会话态，重启回默认 | P0 | ✅ 列宽 / 藏列 / 列序按表落 kv（§11.4） |
+| 5 | **无自动刷新** | 表浏览只能手点刷新；DBX 为 5/10/30/60/300s + 环形倒计时 | P1 | ✅ 见 §11.5 |
+| 6 | **导入只有 CSV 直落库** | 无预览、无列映射、无编码选择、无类型推断；DBX 支持 8 种格式 + 多文件批量建表 | P1 | ✅ CSV 导入向导（§12.1）；XLSX / 多文件批量仍缺 |
+| 7 | **表结构缺「约束 / 分区」两页** | 五标签：DDL / 字段 / 索引 / 外键 / 触发器；字段级缺生成列、枚举列表、SRID、标识列 | P1 | ✅ 两页已补（§12.2）；字段级生成列 / 枚举 / SRID 仍缺 |
+| 8 | **三个常驻灰按钮** | 「比较架构 / 数据库备份 / MCP 设置」`disabled(true)`，无解释 | P1 | ✅ 保留灰显 + 悬停说明（§11.6） |
+| 9 | **编辑器缺导航类交互** | 无查找替换面板、无跳行、无 Ctrl+Click 表名跳转、无表结构 peek、无拖表入编辑器、无执行目标选择器 | P1 | ✅ 查找替换 / 跳行 / Cmd+点击跳表 / 悬停看结构（§12.3）；拖表入编辑器未做 |
+| 10 | **标签与快捷键面窄** | 10 条键位；标签不可拖拽/拆分/独立窗口/固定；无 ⌘1..9 / ⌘W / ⌘F / ⌘P | P2 | ✅ 键位 + 拖拽重排（§11.7）+ ⌘P 快速打开（§12.4）；左右拆分未做（§12.6 说明原因） |
 
 ---
 
@@ -284,3 +284,212 @@ DBX 另有（本仓无）：`⌘W` 关标签、`⌘T` 新查询、`⌘1..9` 定�
 | ER | `er.rs:125-469` | `components/diagram/*` |
 | 语义诊断 | `render_editor.rs:19-102` | `useQueryEditorDiagnostics.ts` |
 | 设计文档 | `docs/database-design.md` §4.4–§4.23 | `docs/content/docs/*.cn.mdx` |
+
+---
+
+## 11. 本轮落地记录（P0 全量 + P1 两项）
+
+> 门禁：`cargo check -p duck-app -p duck-components`（0 error，仅 2 条**改前就有**的
+> dead-code 警告）、`cargo test -p duck-app --bin duck pages::db::tests`（**73 passed**）、
+> `cargo test -p duck-theme`（**40 passed**，i18n 守卫）、`cargo test -p duck-components`
+> （全绿）、10 个改动文件单文件 `rustfmt`（`skip_children=true`）。
+> 新增界面文案 **12 条**全部进了 `crates/duck-theme/locales/en.toml` 并跑了
+> `scripts/i18n_en_toml.py`。
+
+### 11.1 矩形单元格选区（P0-1）
+
+- **组件侧**（`duck-components/src/data_table`）：`CellRange { anchor, focus }`
+  （`bounds` / `contains` / `cell_count`，存**模型行下标**）、`DataTableView.selection`、
+  选区底色（`tokens.colors.selection`，编辑中的那一格让位给编辑态视觉）、
+  `DataTableEvent::{SelectionStarted, SelectionExtended}`、`CellDrag` 拖载荷。
+- **宿主侧**（`duck-app/src/pages/db`）：`cells_selection`（按标签存进 `SessionView`）、
+  `active_cells_selection()`（越界即失效，挡住「结果集换小之后的高亮/读数错位」）、
+  `selection_columns()`（只算**可见列**）、`selection_stats()` / `selection_as_tsv()` /
+  `format_number()`（`helpers.rs`，纯函数带单测）。
+- **界面落点**：底栏「选中 N 格 · 合计 X · 平均 Y」（全非数值时只报格子数）；
+  `⌘C` 多格选区复制成矩阵 TSV（**一格时仍按行复制**，保住「点一行再 ⌘C」的老口径）；
+  单元格右键新增「复制选区 N 格」；勾选清空 / 翻页 / 换表 / 重排 / 过滤都连带清选区。
+- **口径**：合计只认数据库数值族（Int / UInt / Float / Decimal），**不认**文本里的数字
+  字面量（电话号码求和只会是离谱结果）；NULL 与非数值格不进平均的分母。
+
+### 11.2 多列排序（P0-2）
+
+- 键表：`table_sort_extra` / `query_sort_extra`（`SessionView` 同字段一起存），
+  `sort_keys_spec()` 拼成 `[主键, ...追加键]`，`toggle_sort_keys_in()` 做三态轮转
+  （普通点击 = 替换；`Shift+点击` = 追加 → 切方向 → 移除）。
+- 两套落地：表浏览把多键拼成一条 `ORDER BY`（`page_order_keys()`，用户键在前、
+  主键兜底去重、方向跟随用户键）；SQL 结果集走客户端 `sort_row_indexes_multi()`
+  （逐键按方向 `cmp`，全等返回 `Equal` ⇒ 稳定排序保持原序）。
+- 读数条改为 `按 A 升序 · B 降序`；列头事件带 `additive`（`event.modifiers().shift`）。
+
+### 11.3 列重排（P0-3 的一半）与**列冻结为什么没做**
+
+- 已做：`DataTableState.order`（展示顺序全排列，不影响行数据 / 列宽 / 藏列的原始下标
+  口径）、`move_column` / `nudge_column` / `send_column_to_edge` /
+  `set_order_names` / `order_names`，右键列头「列顺序 ▸ 左移 / 右移 / 移到最左 / 移到最右」，
+  列序随 `GridLayout` 落盘（按**列名**存，列集换过之后对不上的名字被忽略）。
+- **用菜单而不是拖列头**：列头文字是**可拖选 / 可 ⌘C** 的（`selectable_text`，见
+  `tests/column_header_detail_copy.rs`），同一元素上再挂一个拖拽源会与文本选择抢同一次
+  「按下 + 移动」。
+- **横向冻结列没做**，原因是架构而非时间：当前网格是**单层横向滚动容器**（表头与行
+  区同在 `overflow_x_scroll` 里，共用一份横向偏移）+ `uniform_list` 竖向虚拟化。
+  要做真冻结得叠一层「不吃横向偏移」的固定层，而 `uniform_list` 的 items 闭包只在
+  **可见行区间变化**时重跑 —— 横向滚动不改变行区间，固定层拿不到逐帧的偏移，会跟着
+  内容一起滑走。可行路径是给组件加「双层滚动 + 偏移广播」，属于网格内核改造，
+  不该在没有画面复核的情况下盲改。
+
+### 11.4 网格布局持久化（P0-4）
+
+- `GridLayout { columns: BTreeMap<列名, 宽度>, hidden: Vec<列名>, order: Vec<列名> }`，
+  键 `db_grid_layout:{连接}:{schema.table}`，只在**表浏览**模式生效（查询结果集没有稳定
+  身份，键无从落）。
+- 写入点：列宽定稿（`ColumnResized`）、列序变化（`ColumnOrderChanged`）、藏列 / 全部显示。
+  读取点：`sync_data_table` 收尾的 `apply_grid_layout`（先列序、再宽度、最后藏列）。
+
+### 11.5 自动刷新（P1-1）
+
+- 5 / 10 / 30 / 60 / 300 秒五档，工具条下拉；`cx.spawn` + `background_executor().timer`
+  循环，每轮**比对档位**决定退休（改档 / 关闭即刻失效，不会留下幽灵定时器）。
+- 忙（`busy`）或有未提交改动（`pending_total() > 0`）时**只跳过本轮**，不关定时器；
+  非表浏览模式同样只跳过。
+
+### 11.6 三个灰按钮给了交代（P1-8）
+
+保留灰显（用户选择），外层 `div().tooltip(..)` 包住 `disabled(true)` 的按钮 ——
+禁用态元素自己不产 hover 事件，tooltip 必须挂外层。三条说明各自给出**当下可用的替代
+路径**（结构比对 → 比较数据；备份 → 表右键导出；MCP → 右栏 AI）。
+
+### 11.7 标签与键位（P1-10 的一半）
+
+`⌘W` 关闭标签 / `⌘T` 新建查询 / `⌘F` 聚焦结果搜索 / `⌘1..9` 切标签
+（`SwitchTabAt { index }` 带字段 action，一次绑九条）；标签**拖拽重排**
+（`TabDrag` 按 id 而非下标，`move_tab_to` 现查 from）。左右并排拆分未做 —— 不是没排上，
+是当前状态模型撑不住，原因与改造清单见 §12.6。
+
+### 11.8 仍未做（按建议顺序）
+
+| 项 | 为什么放到下一批 |
+|---|---|
+| CSV 导入向导（P1-6） | 需要「预览 → 列映射 → 空串/NULL 策略 → 批大小」的向导弹窗 + 回执，且 XLSX 要新增依赖（仓内当前**无** xlsx / calamine / rust_xlsxwriter） |
+| 表结构「约束 / 分区」两页 + 字段级生成列/枚举/SRID（P1-7） | 一半工作量在**内核内省**（`duck-db` 要按引擎给约束与分区元信息），不是纯界面 |
+| 编辑器导航（P1-9） | 查找替换 / 跳行要 `gpui-base` 编辑器暴露接口；Ctrl+Click 跳转与 peek 要跨「编辑器 ↔ 右栏 ↔ 对象树」 |
+| 横向冻结列（P0-3 另一半） | 见 §11.3：需要网格内核改成双层滚动，属结构性改造 |
+
+> 11.8 表里除「横向冻结列」外，其余四项已在 §12 落地；本表保留作当时的判断留痕。
+
+---
+
+## 12. 2026-10-17 落地记录（P1 剩余：6 项里 5 项，标签拆分留下）
+
+> 门禁：`cargo check -p duck-app -p duck-theme`（0 error，仅 2 条**改前就有**的
+> dead-code 警告：`helpers::table_cell` / `objects::alter_table_template`）、
+> `cargo test -p duck-app --bin duck`（**501 passed**）、`cargo test -p duck-theme`
+> （**40 passed**，i18n 守卫）、改动文件单文件 `rustfmt`（`skip_children=true`）。
+> 本轮新增的界面文案（导出范围 / 快速打开 / CSV 向导 / 约束与分区 / 跳行与悬停/editor_nav）
+> 全部进了 `crates/duck-theme/locales/en.toml` 并跑了 `scripts/i18n_en_toml.py`
+>（现 **3649** 条；该文件同期也收了别的页面的条目，所以「新增条数」以 diff 为准，
+> 不在这里记一个会过期的数字）。
+
+### 12.1 CSV 导入向导（P1-6）
+
+原来「导入 CSV」是**选完文件直接落库**：列序错位、空串变空字符串、首行表头被当成数据，
+三个坑都在用户看不见的地方。现在选完文件先进页面内浮层（`csv_import.rs`）：
+
+- 预览前 50 行 × 全列，列头上直接标 `→ 列名` 或 `（忽略）` —— 对齐结论**先看见再执行**；
+- 两个开关：首行是表头（默认开）、空串按 NULL（默认开），拨一下重算一次预览；
+- 只按**列名**对齐（不做手动拖拽映射）：`guard.insert_rows` 本来就要列名，让用户再把
+  列名对一遍属于重复劳动；对不上任何一列时给红字结论而不是「导入 0 行」；
+- 摘要行「将导入 N 行 · 命中 M 列 · 忽略 K 列」，确认后单事务落库 + 回执 toast。
+
+为什么浮层画在页面上、不进 `window.open_dialog`：弹窗正文的闭包由**窗口层**驱动重绘，
+页面 `cx.notify()` 不保证让它重跑，勾选开关改预览会不刷新（与 `dialog.rs` 那套
+「正文闭包只跑一次」是同一条约束）。
+
+### 12.2 表结构「约束 / 分区」两页（P1-7 的一半）
+
+标签从五档变七档（DDL / 字段 / 索引 / 外键 / 触发器 / **约束** / **分区**）。
+两页都是**只读总览**，数据全部从手边已有的东西投影，没有新增内核内省：
+
+| 页 | 数据来源 |
+|---|---|
+| 约束 | 主键（字段页的 `primary` 标记）+ 唯一索引（索引页）+ `CHECK(...)`（建表 DDL）+ 外键（外键页） |
+| 分区 | 建表 DDL 的 `PARTITION BY …` 段原样贴出 |
+
+为什么不加 `list_constraints`：七条驱动（SQLite / MySQL / PG / MSSQL / Oracle / DuckDB /
+ClickHouse）各要写一份 `information_schema` / `pg_constraint` / `sys.check_constraints` 查询，
+而建表 DDL 本来就在 DDL 页显示。`parse_check_constraints` 三条口径：词边界判 `CHECK`
+（`CHECKSUM` 不算）、括号按**深度配对**（`a IN (1,2)` 不提前收尾）、约束名只在同一个
+逗号项里往前找。两条纯函数单测钉住（`parse_check_constraints_reads_nested_parens_and_names`
+/ `parse_partition_clause_finds_mysql_and_pg_forms`）。
+
+### 12.3 编辑器导航（P1-9 的五分之四）
+
+**查找替换**：没有自己画面板 —— `gpui-base` 的搜索会话（命中集 / 循环 / 替换 / 滚动到
+命中）已经在编辑器里，`gpui-component` 的 `SearchPanel` 也已经挂在编辑器元素上，缺的
+只是 `EditorState::searchable(true)`（默认关，关着时 `⌘F` 会**让给祖先**，也就是结果区
+搜索）。一条开关换来：`⌘F` 查找、`⇧⌘F` 替换、匹配计数、大小写开关、上下跳、全部替换。
+配套把 `gpui_component::set_locale` 跟本仓语言绑在一起（`duck-theme/manager.rs`），
+否则那两条按钮文案永远是英文 —— 那是组件自己的 `rust_i18n` 实例，本仓的 en.toml 碰不到。
+
+**跳行**（`⌘⌥G`）：`GoToLine` 浮层，输入行号回车 → `set_selected_range` 把光标送过去
+（内核的 `move_to` 自带 `scroll_to`，不用手调滚动句柄）。越界夹到末行；`Esc` / 失焦都收起。
+
+**Cmd+点击表名跳转**：`DefinitionProvider` 在 **Cmd+悬停**时才被问（普通悬停走
+`HoverProvider`，两条通道内核已分好），命中后编辑器给符号画下划线 + 挂可点 hitbox；
+落地走 `show_document` 钩子 —— 那是宿主唯一能在「跳转」上插手的口子（`GoToDefinition` 的
+默认行为是**在本文件内**移光标，对表名毫无意义）。跳转目标不进 URI（`lsp_types::Uri` 是
+`fluent_uri`，表名里的空格 / `#` / `?` 得自己转义），存在 `Rc` 里由 hover→click 两段
+交互接力。
+
+**悬停看表结构**：`HoverProvider` 返回 markdown，由组件自带的 `HoverPopover` 渲染成卡片
+（表名 + 列数 + 每列一行「名 / 类型 / 注释」+ 一句「⌘ 点击打开这张表」）。列元信息走
+后台线程 + 会话内缓存，悬停反复划过不会反复往返。
+
+标识符取词是纯函数 `identifier_path_at`（`helpers.rs`）：左右按标识符字符扩、点号两边
+都是标识符才吃进来（`users.` 停在 `users`）、落在标点上返回 `None` 而不是硬猜。
+限定名解析先按 `(schema, name)` 精确对，再逐段退让（`users.name` 里的 `users` 也算）。
+
+**没做**：拖表入编辑器（要 `on_drag` + 编辑器区的 `on_drop` 插入点，且「插入到光标处」
+要 `insert` 与光标位置都对上，留作下一批）。
+
+### 12.4 快速打开（P1-11）
+
+`⌘P` 打开命令面板（`quick_open.rs`）：候选四类 —— 连接 / 命名空间 / 表 / 已保存查询，
+多词按「与」匹配（空格分词，每词都要出现在 `连接 · 库 · 表` 的串里）。回车走
+「订阅记意图 → 渲染入口执行」那一套（输入框的 `PressEnter` 订阅拿不到 `&mut Window`，
+而开表 / 载查询都要）。
+
+### 12.5 导出范围（P1-6 的邻项）
+
+导出菜单顶上加了四档范围：本页 / 勾选行 / 选中区域 / 整表（重新 `SELECT *`，受
+`EXPORT_ROW_CAP` 限制）。文件名带后缀（`result.selection.csv`），免得两次导出互相覆盖；
+不可用的档位按当前模式灰掉（整表只在表浏览里可用）。
+
+### 12.6 仍然没做：标签左右拆分（以及为什么）
+
+不是排期问题，是**状态模型撑不住**：`sessions_views` 是「标签 id → 一份
+`SessionEditorState` 快照」，切标签 = 把当前编辑区 **take 走**、把目标那份 install 回来；
+`self.sql` 是**全页唯一**的编辑器实体，`query_result` / `result_tabs` / `table_rows` /
+`mode` 也是页面级单份。于是：
+
+- 两个标签同时可见 ⇒ 需要两个 `EditorState` 与**两套结果区状态**（不是两份快照）；
+- 所有动作（执行、格式化、补全、查找替换、跳行、读结构…）都要按「当前聚焦的分栏」路由，
+  `self.sql` 的 24 处引用全部要改成 `self.pane(focused).sql`；
+- 结果网格要能同时渲染两份（`DataTableState` 是 `Entity`，可渲染，但渲染路径目前直接读
+  `self.*`）。
+
+真实工作量在 `activate` / `install_editor_state` / `take_editor_state` 三处加上**两套
+`SessionView`**，属结构性改造（和 §11.3 的横向冻结列同一量级）。硬做半套（右栏只显示
+编辑器、没有结果）会得到一个「看起来能并排、实际不能比对数据」的功能 —— 那正是这份
+文档开篇反对的东西，所以留下而不是凑数。
+
+### 12.7 仍未做（更新后的清单）
+
+| 项 | 现在的判断 |
+|---|---|
+| 标签左右拆分 | 见 §12.6：要两套 `SessionView` + 动作路由，结构性改造 |
+| 横向冻结列 | 见 §11.3：网格内核要改成双层滚动 |
+| 拖表入编辑器 | 需要 `on_drag` 载荷 + 编辑器区 `on_drop` 落点与光标定位 |
+| XLSX / 多文件批量导入 | 仓内无 xlsx 依赖（calamine / rust_xlsxwriter 都要新增） |
+| 字段级生成列 / 枚举列表 / SRID | 内核 `Column` 没有这些字段，要先扩内省 |
+| P2 整批（ER 可编辑画布 / Schema Diff / 备份恢复 / 字段血缘 / 文档笔记 / 慢查询 / kill 会话 / 数据生成） | 见 §10 的 P2 分组，各自都是独立工作面 |

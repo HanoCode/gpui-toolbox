@@ -905,6 +905,39 @@ impl PostgresConnection {
         ))
     }
 
+    /// 存储过程 / 函数的定义原文（`pg_get_functiondef`）。
+    ///
+    /// PG 允许同名重载，所以可能返回多份：按 `oid` 排序后用空行拼成一份，
+    /// **顺序稳定**才能拿来做文本对比。取不到返回 `Ok(None)`。
+    pub fn routine_definition(
+        &mut self,
+        kind: TableKind,
+        namespace: Option<&str>,
+        name: &str,
+    ) -> Result<Option<String>, DbError> {
+        let prokind = match kind {
+            TableKind::Procedure => "p",
+            TableKind::Function => "f",
+            _ => return Ok(None),
+        };
+        let rows = self.client.query(
+            "SELECT pg_get_functiondef(p.oid) \
+             FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+             WHERE p.proname = $1 AND n.nspname = COALESCE($2, current_schema()) \
+               AND p.prokind::text = $3 \
+             ORDER BY p.oid",
+            &[&name, &namespace, &prokind],
+        )?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let definitions = rows
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>();
+        Ok(Some(definitions.join("\n\n")))
+    }
+
     /// 一张表上的外键：`pg_constraint`（`contype = 'f'`）+ 两侧
     /// `unnest(...) WITH ORDINALITY` 对齐列序（复合外键的 `conkey` / `confkey`
     /// 等长、按序号一一对应）；动作码经 [`pg_fk_action`] 翻成标准文案。

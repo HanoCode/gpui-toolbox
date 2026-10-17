@@ -58,6 +58,24 @@ pub(crate) fn notify(cx: &mut App) {
     bus.update(cx, |_, cx| cx.emit(ProjectChanged));
 }
 
+/// 「把主窗定位到这条任务」—— 浮窗跳主窗时带上的上下文。
+///
+/// 与 [`ProjectChanged`] 分开成两种事件：那个的语义是「重读一遍」，载荷为空；
+/// 这个要带 `id`，而且**只有主窗**该消费（浮窗自己不必理会自己发出的定位请求）。
+/// 混成一个事件就得让每个订阅者去判「这条是不是给我的」。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FocusTask(pub(crate) i64);
+
+impl EventEmitter<FocusTask> for ProjectBus {}
+
+/// 请求主窗把某条任务摆到右栏。调用方自己负责把主窗抬起来、切到项目页 ——
+/// 这里只发信号，不碰窗口（副窗调 `reveal_main_window` 会把焦点抢走，
+/// 顺序该由调用方决定）。
+pub(crate) fn focus_task(cx: &mut App, id: i64) {
+    let bus = handle(cx);
+    bus.update(cx, |_, cx| cx.emit(FocusTask(id)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ProjectBus, handle, install, notify};
@@ -81,9 +99,14 @@ mod tests {
             let bus = handle(cx);
             let hits = Rc::new(Cell::new(0));
             let seen = hits.clone();
-            let subscription = cx.subscribe(&bus, move |_this, _bus, _event, _cx| {
-                seen.set(seen.get() + 1);
-            });
+            // 事件类型要写出来：`ProjectBus` 现在是两种事件的宿主
+            // （`ProjectChanged` 与 `FocusTask`），不标注推不出来订的是哪一种。
+            let subscription = cx.subscribe(
+                &bus,
+                move |_this, _bus, _event: &super::ProjectChanged, _cx| {
+                    seen.set(seen.get() + 1);
+                },
+            );
             Self {
                 hits,
                 _subscription: subscription,

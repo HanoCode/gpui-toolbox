@@ -18,13 +18,16 @@
 use std::rc::Rc;
 
 use duck_components::{
-    ButtonVariant, body_text, button, dropdown_select, option_row, settings_section, switch_control,
+    ButtonVariant, DuckIcon, body_text, button, dropdown_select, icon_button, notify, option_row,
+    settings_section, switch_control,
 };
+use duck_term::Encoding;
 use duck_theme::{active_theme, tr, trf};
 use gpui::{
-    AnyElement, App, Div, ElementId, IntoElement, ParentElement, SharedString, Styled, Window,
+    AnyElement, App, Div, ElementId, Font, FontFeatures, FontStyle, FontWeight, IntoElement,
+    ParentElement, SharedString, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
-use gpui_component::{h_flex, v_flex};
+use gpui_component::{Icon, h_flex, v_flex};
 
 use super::status_support::{NumberConfirm, TextConfirm, open_number_prompt, open_text_prompt};
 
@@ -42,8 +45,12 @@ const KV_PROJECTS: &str = "projects.settings";
 /// 字号下拉里「跟随主题」项的值。
 const FONT_FOLLOW_THEME: &str = "theme";
 
-/// 终端字号的可选档位（与终端页工具条 ± / 快捷键共用同一区间）。
-const TERMINAL_FONT_SIZES: std::ops::RangeInclusive<u32> = 10..=20;
+/// 终端字号的取值区间。
+///
+/// **唯一一份**：设置页的下拉、画布工具条的 ± 与 `⌘+` / `⌘-` 的钳位都读它。
+/// 以前有两个区间（设置 10..=20、画布 10.0..=20.0，单位还不同），调完一边另一边
+/// 会把值夹回去，表现为「怎么调都跳回 20」。
+pub(crate) const TERMINAL_FONT_SIZE_RANGE: std::ops::RangeInclusive<u32> = 9..=32;
 
 /// 回滚行数的可选档位。
 const SCROLLBACK_CHOICES: [u32; 4] = [1_000, 10_000, 50_000, 100_000];
@@ -88,10 +95,68 @@ pub(crate) struct TerminalSettings {
     pub reconnect_backoff_secs: u32,
     /// 字体族；`None` = 跟随主题的等宽字体。
     pub font_family: Option<String>,
+    /// 字体回退链（逗号分隔的族名）；空 = 交给系统级联。
+    ///
+    /// 主字体里没有的字形（汉字、Nerd 图标、特殊符号）按这个顺序找替补。
+    /// 缺省**空**是刻意的：macOS 的 Menlo / SF Mono 本来就会级联到中日韩字体，
+    /// 替用户预置一串族名只会在装了其中某一个的机器上悄悄改变现有观感。
+    /// 只有在系统级联选错（典型：CJK 用了一个比例字体，宽窄对不上两列）时，
+    /// 用户才需要在这里点名。
+    pub font_fallbacks: String,
     /// 行高（字号百分比）；`None` = 用主题的等宽行高比。
     pub line_height_percent: Option<u32>,
     /// 画布四周留白（逻辑像素）；`None` = 用主题的常规留白。
     pub padding: Option<u32>,
+    /// 粘贴前是否确认（见 [`PasteConfirm`]）。
+    pub paste_confirm: PasteConfirm,
+    /// 新会话的编码（`"utf-8"` / `"gb18030"`）；`None` = UTF-8。
+    ///
+    /// 存字符串而不是内核枚举：偏好文件是可读 JSON，未知值要能原样读进来再由
+    /// 调用点回落（`Encoding::from_value` 返回 `None` 即回落），不因一个坏值炸掉整份设置。
+    /// GBK / GB2312 不看这一项就分不出「同一串字节是哪种中文」—— GB18030 是两者超集。
+    pub encoding: Option<String>,
+    /// 智能提示总开关：输入时按历史 / 内置命令 / 路径候选给建议（弹层 +
+    /// `→`/`Tab` 接受）。关闭时按键路径与从前完全一致。
+    pub suggest: bool,
+    /// 会话空闲在提示符处时注入 shell 集成脚本（给裸 bash / zsh 补发
+    /// `OSC 133` 标记，让提示符判定与命令采集精确化）。默认关 —— 它会往
+    /// 用户的 shell 里发一行初始化命令，属于「明确同意才做」的事。
+    pub suggest_shell_integration: bool,
+}
+
+/// 粘贴确认的三档。
+///
+/// 分成三档而不是一个开关，是因为「单行粘贴」和「多行粘贴」的风险差一个数量级：
+/// 多行里的每个换行都会**立刻执行**，单行不会。默认「仅多行」正好卡在这条线上。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PasteConfirm {
+    /// 总是问（单行也问）。
+    Always,
+    /// 只在文本含换行时问。
+    #[default]
+    Multiline,
+    /// 从不问，直接粘。
+    Never,
+}
+
+impl PasteConfirm {
+    /// 全部档位（下拉项顺序）。
+    pub(crate) const ALL: [Self; 3] = [Self::Always, Self::Multiline, Self::Never];
+
+    /// 持久化用的值。
+    const fn value(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Multiline => "multiline",
+            Self::Never => "never",
+        }
+    }
+
+    /// 由持久化值还原；未知值返回 `None`（调用点据此回落默认，不猜）。
+    fn from_value(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.value() == value)
+    }
 }
 
 impl Default for TerminalSettings {
@@ -105,9 +170,50 @@ impl Default for TerminalSettings {
             reconnect_backoff_secs: super::terminal_canvas::RECONNECT_BACKOFF_START.as_secs()
                 as u32,
             font_family: None,
+            font_fallbacks: String::new(),
             line_height_percent: None,
             padding: None,
+            paste_confirm: PasteConfirm::default(),
+            encoding: None,
+            suggest: true,
+            suggest_shell_integration: false,
         }
+    }
+}
+
+/// 字体的「等宽与否」实测：`(是否等宽, 宽窄比)`。
+///
+/// **不读字体元数据**：`FixedPitch` 这个标记大量字体没写或写错（不少等宽字体的
+/// 打包版就缺），读它等于信一个不可靠的字段。直接量 `i` 与 `M` 的推进量 ——
+/// 相等才是等宽；不相等时把宽窄比一并给出，用户能据此判断「要不要换」。
+fn font_monospace_ratio(window: &Window, family: &SharedString, size: f32) -> Option<(bool, f32)> {
+    let text_system = window.text_system();
+    let font = Font {
+        family: family.clone(),
+        features: FontFeatures::default(),
+        fallbacks: None,
+        weight: FontWeight::NORMAL,
+        style: FontStyle::Normal,
+    };
+    let id = text_system.resolve_font(&font);
+    let narrow = text_system.layout_width(id, px(size), 'i').to_f64() as f32;
+    let wide = text_system.layout_width(id, px(size), 'M').to_f64() as f32;
+    if narrow <= 0. || wide <= 0. {
+        return None;
+    }
+    // 半个像素以内算「相等」：不同后端在亚像素取整上会有微差。
+    Some(((wide - narrow).abs() < 0.5, wide / narrow))
+}
+
+/// 编码档位的展示名。
+///
+/// 编码名（UTF-8 / GB18030）是专名不进翻译表；「自动」在这里落翻译 ——
+/// 内核 `duck-term` 不接翻译表，展示名只有 UI 这一层需要。
+pub(super) fn encoding_label(cx: &App, encoding: Encoding) -> SharedString {
+    match encoding {
+        Encoding::Auto => tr(cx, "自动").into(),
+        Encoding::Utf8 => "UTF-8".into(),
+        Encoding::Gb18030 => "GB18030".into(),
     }
 }
 
@@ -116,9 +222,89 @@ pub(super) fn terminal_settings(cx: &App) -> TerminalSettings {
     load(cx, KV_TERMINAL)
 }
 
+/// 智能提示总开关（建议弹层 + 历史采集）。
+pub(crate) fn terminal_suggest(cx: &App) -> bool {
+    terminal_settings(cx).suggest
+}
+
+/// shell 集成注入开关（L2：给裸 bash / zsh 补发 `OSC 133` 标记）。
+pub(crate) fn terminal_shell_integration(cx: &App) -> bool {
+    terminal_settings(cx).suggest_shell_integration
+}
+
+/// 把设置里的回退链解析成 GPUI 的 `Font::fallbacks`。
+///
+/// 逗号（中英文都收）分隔，逐项削空白、丢空项。**不校验是否已安装**：未安装的族名
+/// 会被字体系统直接跳过，而「预先检查一遍」还要一次 `all_font_names()` 的分配。
+/// 全空时返回 `None`（不是 `Some(vec![])`）：`None` 才是「按系统默认级联」，
+/// 空 vec 会让某些后端干脆不做任何回退 —— 汉字全变成豆腐块。
+pub(crate) fn font_fallbacks(settings: &TerminalSettings) -> Option<gpui::FontFallbacks> {
+    let families: Vec<String> = settings
+        .font_fallbacks
+        .split([',', '，'])
+        .map(str::trim)
+        .filter(|family| !family.is_empty())
+        .map(str::to_owned)
+        .collect();
+    (!families.is_empty()).then(|| gpui::FontFallbacks::from_fonts(families))
+}
+
+/// 画布实际生效的字号：设了就用它，否则跟随主题的等宽正文档。
+///
+/// 纯函数，取 `theme_size` / `ui_scale` 而不是 `&App`：画布每帧都要算一次，
+/// 让它自己去读主题只会多一次全局查找，也挡住单测。
+///
+/// **界面缩放（`ui_scale`）要乘在「显式字号」上、不能乘在主题档上**：
+/// 主题档（`theme_size`）本来就是 `font_size × ui_scale` 的合成结果（见
+/// `duck_theme::tokens::scale_typography`），再乘一次就成了平方。而显式字号是用户
+/// 在界面 100% 时挑的值，界面放大到 150% 后它必须跟着放大 —— 否则「界面上所有字都大了，
+/// 只有终端还是原来那么小」，那是用户最先注意到的那种不一致。
+pub(crate) fn effective_font_size(
+    settings: &TerminalSettings,
+    theme_size: f32,
+    ui_scale: f32,
+) -> f32 {
+    let (min, max) = (
+        *TERMINAL_FONT_SIZE_RANGE.start() as f32,
+        *TERMINAL_FONT_SIZE_RANGE.end() as f32,
+    );
+    match settings.font_size {
+        // 钳位在**用户填的那个数**上（区间描述的是下拉里能选什么），之后再缩放。
+        Some(size) => {
+            size.clamp(
+                *TERMINAL_FONT_SIZE_RANGE.start(),
+                *TERMINAL_FONT_SIZE_RANGE.end(),
+            ) as f32
+                * ui_scale.max(0.1)
+        }
+        None => theme_size.clamp(min, max),
+    }
+}
+
+/// 改终端字号（`None` = 跟随主题），立刻落盘并重绘所有窗口。
+///
+/// **字号只留一份**：画布的 `±` / `⌘0` 与设置页的下拉都走这里，真源是
+/// `kv: terminal.settings`。`TerminalPage` 不再自己存一个 `f32` ——
+/// 存了必然出现「设置里改了、终端里没变」和它的反向版本。
+pub(crate) fn set_terminal_font_size(cx: &mut App, size: Option<u32>) {
+    let clamped = size.map(|value| {
+        value.clamp(
+            *TERMINAL_FONT_SIZE_RANGE.start(),
+            *TERMINAL_FONT_SIZE_RANGE.end(),
+        )
+    });
+    let mut next = terminal_settings(cx);
+    if next.font_size == clamped {
+        return;
+    }
+    next.font_size = clamped;
+    save(cx, KV_TERMINAL, &next);
+}
+
 /// 终端偏好页的正文。
-pub(super) fn terminal_body(cx: &mut App) -> Div {
+pub(super) fn terminal_body(window: &mut Window, cx: &mut App) -> Div {
     let tokens = active_theme(cx).tokens().clone();
+    let ui_scale = active_theme(cx).appearance().ui_scale.max(0.1);
     let settings = terminal_settings(cx);
 
     // ── 显示 ──
@@ -126,7 +312,7 @@ pub(super) fn terminal_body(cx: &mut App) -> Div {
         SharedString::from(FONT_FOLLOW_THEME),
         SharedString::from(tr(cx, "跟随主题")),
     ))
-    .chain(TERMINAL_FONT_SIZES.map(|size| {
+    .chain(TERMINAL_FONT_SIZE_RANGE.map(|size| {
         let text = SharedString::from(size.to_string());
         (text.clone(), text)
     }))
@@ -137,7 +323,6 @@ pub(super) fn terminal_body(cx: &mut App) -> Div {
             .map_or_else(|| FONT_FOLLOW_THEME.to_owned(), |size| size.to_string()),
     );
     let font_row = {
-        let settings = settings.clone();
         option_row(
             tr(cx, "终端字号"),
             Some(tr(cx, "画布文字的字号。跟随主题时随界面字号一起变。").into()),
@@ -146,11 +331,10 @@ pub(super) fn terminal_body(cx: &mut App) -> Div {
                 font_options,
                 font_current,
                 move |value: SharedString, _, cx| {
-                    let mut next = settings.clone();
-                    next.font_size = (value.as_ref() != FONT_FOLLOW_THEME)
+                    let size = (value.as_ref() != FONT_FOLLOW_THEME)
                         .then(|| value.as_ref().parse().ok())
                         .flatten();
-                    save(cx, KV_TERMINAL, &next);
+                    set_terminal_font_size(cx, size);
                 },
                 cx,
             ),
@@ -159,8 +343,12 @@ pub(super) fn terminal_body(cx: &mut App) -> Div {
         .into_any_element()
     };
 
+    // 字体族：**只收本机装了的**。填一个没装的族名，画布会静默回退到主题等宽字体 ——
+    // 用户看到的是「改了但没变」，比明确拒绝保存难查一个数量级。
+    let installed: Rc<Vec<String>> = Rc::new(window.text_system().all_font_names());
     let font_family_row = {
         let settings = settings.clone();
+        let installed = Rc::clone(&installed);
         let shown: SharedString = settings
             .font_family
             .clone()
@@ -170,33 +358,134 @@ pub(super) fn terminal_body(cx: &mut App) -> Div {
             cx,
             "duck-settings-term-font-family",
             "字体族",
-            Some("等宽字体的族名。留空 = 跟随主题。"),
+            Some("必须是本机已安装的族名；留空 = 跟随主题。填了没装的会拒绝保存。"),
             shown,
             "例如：JetBrains Mono",
             "留空并确定即恢复「跟随主题」。",
-            move |value, cx| {
-                let mut next = settings.clone();
+            move |value, window, cx| {
                 let trimmed = value.trim();
+                if !trimmed.is_empty()
+                    && !installed
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(trimmed))
+                {
+                    notify::warning(
+                        trf(cx, "本机没有安装「{}」，未保存。", &[trimmed]),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                let mut next = settings.clone();
                 next.font_family = (!trimmed.is_empty()).then(|| trimmed.to_owned());
                 save(cx, KV_TERMINAL, &next);
             },
         )
     };
 
+    // 回退链：主字体没有的字形（汉字 / Nerd 图标）按这个顺序找替补。
+    // 缺省留空 = 交给系统级联，所以这一行默认显示「跟随系统」，不是某个族名。
+    let font_fallbacks_row = {
+        let settings = settings.clone();
+        let shown: SharedString = if settings.font_fallbacks.trim().is_empty() {
+            tr(cx, "跟随系统").into()
+        } else {
+            SharedString::from(settings.font_fallbacks.clone())
+        };
+        text_setting_row(
+            cx,
+            "duck-settings-term-font-fallbacks",
+            "回退字体",
+            Some(
+                "主字体里没有的字形（汉字、图标）按这个顺序找替补，逗号分隔。留空 = 交给系统级联。",
+            ),
+            shown,
+            "例如：Sarasa Mono SC, PingFang SC",
+            "留空并确定即恢复「跟随系统」。未安装的族名会被自动跳过。",
+            move |value, _window, cx| {
+                let mut next = settings.clone();
+                next.font_fallbacks = value.trim().to_owned();
+                save(cx, KV_TERMINAL, &next);
+            },
+        )
+    };
+
+    // 字体预览：样例按**真实族名 + 真实字号**画，等宽与否是量出来的。
+    // 这一块替代了「填个族名然后去终端里看效果」的来回：改完当场就能看清。
+    let font_preview = {
+        let theme = active_theme(cx);
+        let extended = theme.extended();
+        let hairline = extended.colors.hairline;
+        let chrome = extended.colors.chrome;
+        let family = super::terminal_canvas::mono_family(&settings, tokens.typography.mono.clone());
+        // 预览要与画布**同一个口径**：字号一样（含界面缩放），看到的等宽结论才作数。
+        let size = effective_font_size(
+            &settings,
+            tokens.typography.mono_md.size.to_f64() as f32,
+            ui_scale,
+        );
+        // 预览字号封顶 20：32pt 的样例会把整页顶开，而那一档用户在终端里已经在看。
+        let preview_size = size.min(20.);
+        let verdict = font_monospace_ratio(window, &family, preview_size).map(|(mono, ratio)| {
+            if mono {
+                tr(cx, "等宽：是").to_owned()
+            } else {
+                trf(cx, "等宽：否（宽窄比 1 : {}）", &[&format!("{ratio:.2}")])
+            }
+        });
+        v_flex()
+            .w_full()
+            .gap(tokens.spacing.xs)
+            .rounded(tokens.radius.md)
+            .border_1()
+            .border_color(hairline)
+            .bg(chrome)
+            .px(tokens.spacing.md)
+            .py(tokens.spacing.sm)
+            .child(
+                // 样例刻意混入窄字（`i l . ,`）与宽字（`M W 0 9`）：等宽字体下它们
+                // 应当严格落在同一列，非等宽字体一眼就能看出被挤歪。
+                div()
+                    .font_family(family)
+                    .text_size(px(preview_size))
+                    .text_color(tokens.colors.foreground)
+                    .child("illegal 1lI0O ~ user@host:~$ ls -la MMMM 0123456789"),
+            )
+            .when_some(verdict, |this, verdict| {
+                this.child(
+                    div()
+                        .text_size(tokens.typography.xs.size)
+                        .line_height(tokens.typography.xs.line_height)
+                        .text_color(tokens.colors.muted_foreground)
+                        .child(verdict),
+                )
+            })
+            .into_any_element()
+    };
+
     let line_height_row = {
         let settings = settings.clone();
         let value = settings.line_height_percent.map_or(0, i64::from);
-        number_setting_row(
+        let shown: SharedString = if value == 0 {
+            tr(cx, "跟随主题").into()
+        } else {
+            format!("{value} %").into()
+        };
+        stepper_row(
             cx,
             "duck-settings-term-line-height",
             "行高",
-            Some("行高占字号的百分比。0 = 跟随主题。"),
-            "%",
+            Some("行高占字号的百分比，5% 一档。0 = 跟随主题（字越紧，一屏装得越多）。"),
+            shown,
             value,
-            0,
+            // 90% 以下会把字压在一起；200% 以上一屏只剩几行 —— 两端都不给。
+            // 0 是「跟随主题」这个特殊档，所以区间从 0 起、步进时直接跳到 100。
+            0..=200,
+            5,
             move |value, cx| {
+                let percent = if (1..90).contains(&value) { 100 } else { value };
                 let mut next = settings.clone();
-                next.line_height_percent = (value > 0).then_some(value as u32);
+                next.line_height_percent = (percent > 0).then_some(percent as u32);
                 save(cx, KV_TERMINAL, &next);
             },
         )
@@ -205,14 +494,21 @@ pub(super) fn terminal_body(cx: &mut App) -> Div {
     let padding_row = {
         let settings = settings.clone();
         let value = settings.padding.map_or(0, i64::from);
-        number_setting_row(
+        let shown: SharedString = if value == 0 {
+            tr(cx, "跟随主题").into()
+        } else {
+            trf(cx, "{} 像素", &[&value.to_string()]).into()
+        };
+        stepper_row(
             cx,
             "duck-settings-term-padding",
             "内边距",
-            Some("画布四周的留白。0 = 跟随主题。"),
-            tr(cx, "像素"),
+            Some("画布四周的留白，2px 一档。0 = 跟随主题。"),
+            shown,
             value,
-            0,
+            // 上限 24：再大就是拿留白换列数，终端里没人这么用。
+            0..=24,
+            2,
             move |value, cx| {
                 let mut next = settings.clone();
                 next.padding = (value > 0).then_some(value as u32);
@@ -221,9 +517,31 @@ pub(super) fn terminal_body(cx: &mut App) -> Div {
         )
     };
 
+    let display_reset = reset_row(
+        cx,
+        "duck-settings-term-reset-display",
+        "恢复本节的默认值",
+        |cx| {
+            let mut next = terminal_settings(cx);
+            let defaults = TerminalSettings::default();
+            next.font_size = defaults.font_size;
+            next.font_family = defaults.font_family;
+            next.line_height_percent = defaults.line_height_percent;
+            next.padding = defaults.padding;
+            save(cx, KV_TERMINAL, &next);
+        },
+    );
     let display_section = settings_section(
         Some(tr(cx, "显示").into()),
-        [font_row, font_family_row, line_height_row, padding_row],
+        [
+            font_row,
+            font_family_row,
+            font_fallbacks_row,
+            font_preview,
+            line_height_row,
+            padding_row,
+            display_reset,
+        ],
         cx,
     );
 
@@ -321,17 +639,196 @@ pub(super) fn terminal_body(cx: &mut App) -> Div {
         )
     };
 
+    let encoding_options: Vec<(SharedString, SharedString)> = Encoding::ALL
+        .iter()
+        .map(|encoding| {
+            (
+                SharedString::from(encoding.value()),
+                encoding_label(cx, *encoding),
+            )
+        })
+        .collect();
+    let encoding_current = SharedString::from(
+        settings
+            .encoding
+            .as_deref()
+            .and_then(Encoding::from_value)
+            .unwrap_or_default()
+            .value(),
+    );
+    let encoding_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "编码"),
+            Some(
+                tr(
+                    cx,
+                    "自动档按字节流特征在 UTF-8 与 GB18030（GBK / GB2312 通吃）之间判别，也可强制指定。对新会话生效，当前会话可在标签右键菜单里立刻切换。",
+                )
+                .into(),
+            ),
+            dropdown_select(
+                "duck-settings-term-encoding",
+                encoding_options,
+                encoding_current,
+                move |value: SharedString, _, cx| {
+                    let Some(encoding) = Encoding::from_value(value.as_ref()) else {
+                        return;
+                    };
+                    let mut next = settings.clone();
+                    next.encoding = Some(encoding.value().to_owned());
+                    save(cx, KV_TERMINAL, &next);
+                },
+                cx,
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let suggest_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "智能提示"),
+            Some(
+                tr(
+                    cx,
+                    "输入时按本机历史、内置命令与本地路径给建议，→ 或 Tab 接受。按 host 隔离历史，SSH 与本地互不串。",
+                )
+                .into(),
+            ),
+            switch_control(
+                "duck-settings-term-suggest",
+                settings.suggest,
+                move |on: &bool, _, cx| {
+                    let mut next = settings.clone();
+                    next.suggest = *on;
+                    save(cx, KV_TERMINAL, &next);
+                },
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let shell_integration_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "注入 shell 集成脚本"),
+            Some(
+                tr(
+                    cx,
+                    "给没装 shell 集成的 bash / zsh 补发命令边界标记，让提示符判定与历史采集更精确。会在会话开始时发送一行初始化命令，默认关。",
+                )
+                .into(),
+            ),
+            switch_control(
+                "duck-settings-term-shell-integration",
+                settings.suggest_shell_integration,
+                move |on: &bool, _, cx| {
+                    let mut next = settings.clone();
+                    next.suggest_shell_integration = *on;
+                    save(cx, KV_TERMINAL, &next);
+                },
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let session_reset = reset_row(
+        cx,
+        "duck-settings-term-reset-session",
+        "恢复本节的默认值",
+        |cx| {
+            let mut next = terminal_settings(cx);
+            let defaults = TerminalSettings::default();
+            next.scrollback = defaults.scrollback;
+            next.auto_reconnect = defaults.auto_reconnect;
+            next.reconnect_max_attempts = defaults.reconnect_max_attempts;
+            next.reconnect_backoff_secs = defaults.reconnect_backoff_secs;
+            next.encoding = defaults.encoding;
+            next.suggest = defaults.suggest;
+            next.suggest_shell_integration = defaults.suggest_shell_integration;
+            save(cx, KV_TERMINAL, &next);
+        },
+    );
     let session_section = settings_section(
         Some(tr(cx, "会话").into()),
-        [scrollback_row, reconnect_row, attempts_row, backoff_row],
+        [
+            scrollback_row,
+            reconnect_row,
+            attempts_row,
+            backoff_row,
+            encoding_row,
+            suggest_row,
+            shell_integration_row,
+            session_reset,
+        ],
         cx,
     );
+
+    // ── 输入 ──
+    let paste_options: Vec<(SharedString, SharedString)> = PasteConfirm::ALL
+        .iter()
+        .map(|mode| {
+            let text = match mode {
+                PasteConfirm::Always => tr(cx, "总是确认").to_owned(),
+                PasteConfirm::Multiline => tr(cx, "仅多行时确认").to_owned(),
+                PasteConfirm::Never => tr(cx, "从不确认").to_owned(),
+            };
+            (SharedString::from(mode.value()), SharedString::from(text))
+        })
+        .collect();
+    let paste_current = SharedString::from(settings.paste_confirm.value());
+    let paste_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "粘贴确认"),
+            Some(
+                tr(
+                    cx,
+                    "多行文本里的每个换行都会立刻执行。确认框里可以把换行折成空格再粘。",
+                )
+                .into(),
+            ),
+            dropdown_select(
+                "duck-settings-term-paste-confirm",
+                paste_options,
+                paste_current,
+                move |value: SharedString, _, cx| {
+                    let Some(mode) = PasteConfirm::from_value(value.as_ref()) else {
+                        return;
+                    };
+                    let mut next = settings.clone();
+                    next.paste_confirm = mode;
+                    save(cx, KV_TERMINAL, &next);
+                },
+                cx,
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let input_reset = reset_row(
+        cx,
+        "duck-settings-term-reset-input",
+        "恢复本节的默认值",
+        |cx| {
+            let mut next = terminal_settings(cx);
+            next.paste_confirm = TerminalSettings::default().paste_confirm;
+            save(cx, KV_TERMINAL, &next);
+        },
+    );
+    let input_section = settings_section(Some(tr(cx, "输入").into()), [paste_row, input_reset], cx);
 
     v_flex()
         .w_full()
         .gap(tokens.spacing.lg)
         .child(display_section)
         .child(session_section)
+        .child(input_section)
 }
 
 // ── 数据库 ──────────────────────────────────────────────────────────────
@@ -574,7 +1071,7 @@ pub(super) fn database_body(cx: &mut App) -> Div {
             shown,
             "例如：30",
             "留空并确定即恢复「跟随引擎」。",
-            move |value, cx| {
+            move |value, _window, cx| {
                 let trimmed = value.trim();
                 let parsed = if trimmed.is_empty() {
                     None
@@ -956,6 +1453,18 @@ pub(crate) struct ProjectsSettings {
     pub reminders: bool,
     /// 「久未更新」的判定天数：高优先级任务超过这么多天没动过就提醒一次。
     pub stale_days: i64,
+    /// 每天最多单独提醒几条（**0 = 不限**）。简报不占这个额度。
+    ///
+    /// 默认 0：升级到这一版不改变原有行为 —— 上限是新增的手动闸门，不是新政策。
+    pub daily_limit: i64,
+    /// 每日简报（一场汇总，不是逐条提醒）。
+    pub daily_brief: bool,
+    /// 每日简报的时刻（`HH:MM`，本机时区）。
+    pub daily_at: String,
+    /// 每周简报。
+    pub weekly_brief: bool,
+    /// 每周简报的时刻（`HH:MM`）。周报固定**周一**发（见 `remind::brief_due`）。
+    pub weekly_at: String,
 }
 
 impl Default for ProjectsSettings {
@@ -964,6 +1473,13 @@ impl Default for ProjectsSettings {
             reminders: true,
             // 默认值只有一处真源：判定逻辑就在 `remind` 里，天数不该在这里再写一遍。
             stale_days: super::projects::remind::STALE_DAYS,
+            daily_limit: 0,
+            // 简报默认开：这是「提醒」这一族里唯一一条**每天只有一次**的消息，
+            // 而用户打开这一页正是想让它按时说一句。
+            daily_brief: true,
+            daily_at: "21:00".to_owned(),
+            weekly_brief: true,
+            weekly_at: "09:00".to_owned(),
         }
     }
 }
@@ -985,7 +1501,7 @@ pub(super) fn projects_body(cx: &mut App) -> Div {
             Some(
                 tr(
                     cx,
-                    "到期前一天、当天与逾期时各推一条应用内提示与系统通知；同一件事一天只说一次。",
+                    "到期前一天、当天与逾期时各推一条应用内提示与系统通知；填了截止时刻的任务改为到期前一小时提醒。同一件事一天只说一次。",
                 )
                 .into(),
             ),
@@ -1021,9 +1537,137 @@ pub(super) fn projects_body(cx: &mut App) -> Div {
         )
     };
 
-    let section = settings_section(Some(tr(cx, "提醒").into()), [remind_row, stale_row], cx);
+    let limit_row = {
+        let settings = settings.clone();
+        number_setting_row(
+            cx,
+            "duck-settings-projects-daily-limit",
+            "每天最多提醒几条",
+            Some("到量之后当天不再逐条提醒（下方的简报不受影响）；0 表示不限。"),
+            tr(cx, "条"),
+            settings.daily_limit,
+            0,
+            move |value, cx| {
+                let mut next = settings.clone();
+                next.daily_limit = value;
+                save(cx, KV_PROJECTS, &next);
+            },
+        )
+    };
 
-    v_flex().w_full().gap(tokens.spacing.lg).child(section)
+    let section = settings_section(
+        Some(tr(cx, "提醒").into()),
+        [remind_row, stale_row, limit_row],
+        cx,
+    );
+
+    // ── 简报（G-PRJ-13）──────────────────────────────────────────────
+    // 与上面三条的区别：上面那组是「有事就说」，这一组是「每天 / 每周到点说一句汇总」。
+    // 所以单独成组 —— 关掉逐条提醒不该连带关掉简报（它们是两个意图）。
+    let daily_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "每日简报"),
+            Some(
+                tr(
+                    cx,
+                    "每天到点推一条汇总：今天到期多少、逾期多少，再接前三条待办。",
+                )
+                .into(),
+            ),
+            switch_control(
+                "duck-settings-projects-daily-brief",
+                settings.daily_brief,
+                move |on: &bool, _, cx| {
+                    let mut next = settings.clone();
+                    next.daily_brief = *on;
+                    save(cx, KV_PROJECTS, &next);
+                },
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let daily_at_row = {
+        let settings = settings.clone();
+        text_setting_row(
+            cx,
+            "duck-settings-projects-daily-at",
+            "每日简报时刻",
+            Some("按本机时区。过了这个点才发；当时没开着应用，就在下次启动时补一条。"),
+            settings.daily_at.clone().into(),
+            "例如：21:00",
+            "填 24 小时制的 HH:MM；不合法的写法会保留原值。",
+            move |text, _, cx| {
+                let Some(at) = super::projects::remind::normalize_time(text) else {
+                    // 坏时刻不写盘：写进去等于让这一期永远不发，而界面上看不出来。
+                    return;
+                };
+                let mut next = settings.clone();
+                next.daily_at = at;
+                save(cx, KV_PROJECTS, &next);
+            },
+        )
+    };
+
+    let weekly_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "每周简报"),
+            Some(
+                tr(
+                    cx,
+                    "每周一推一条汇总：本周完成多少、逾期多少，仍在进行中多少。",
+                )
+                .into(),
+            ),
+            switch_control(
+                "duck-settings-projects-weekly-brief",
+                settings.weekly_brief,
+                move |on: &bool, _, cx| {
+                    let mut next = settings.clone();
+                    next.weekly_brief = *on;
+                    save(cx, KV_PROJECTS, &next);
+                },
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let weekly_at_row = {
+        let settings = settings.clone();
+        text_setting_row(
+            cx,
+            "duck-settings-projects-weekly-at",
+            "每周简报时刻",
+            Some("固定周一发；过了这个点才发，当天没开应用就在下次启动时补一条。"),
+            settings.weekly_at.clone().into(),
+            "例如：09:00",
+            "填 24 小时制的 HH:MM；不合法的写法会保留原值。",
+            move |text, _, cx| {
+                let Some(at) = super::projects::remind::normalize_time(text) else {
+                    return;
+                };
+                let mut next = settings.clone();
+                next.weekly_at = at;
+                save(cx, KV_PROJECTS, &next);
+            },
+        )
+    };
+
+    let brief_section = settings_section(
+        Some(tr(cx, "简报").into()),
+        [daily_row, daily_at_row, weekly_row, weekly_at_row],
+        cx,
+    );
+
+    v_flex()
+        .w_full()
+        .gap(tokens.spacing.lg)
+        .child(section)
+        .child(brief_section)
 }
 
 // ── 行构建helper ────────────────────────────────────────────────────────
@@ -1055,8 +1699,96 @@ fn value_row(
     .into_any_element()
 }
 
-/// 一行数字设置：展示当前值 + 「编辑」→ 数字输入弹窗。
+/// 一行**行内步进**的数值设置：`−  值  +`，点一次立刻落盘。
 ///
+/// 与 [`number_setting_row`] 的分工按「调的时候要不要看效果」划：
+/// - 需要精确输入、调完再看结果（重连上限、退避秒数）→ 弹窗；
+/// - 边调边看（行高、内边距）→ 这个。弹窗会把「调一点看看」打断成
+///   「开窗 → 输入 → 确定 → 关窗」四步，眼睛离开的正是要看的那块画布。
+///
+/// 到边界时按钮置灰而不是静默不动：点了没反应比点不动更让人怀疑程序坏了。
+#[allow(clippy::too_many_arguments)]
+fn stepper_row(
+    cx: &App,
+    id: &'static str,
+    title: &'static str,
+    description: Option<&'static str>,
+    shown: SharedString,
+    value: i64,
+    range: std::ops::RangeInclusive<i64>,
+    step: i64,
+    apply: impl Fn(i64, &mut App) + 'static,
+) -> AnyElement {
+    let tokens = active_theme(cx).tokens().clone();
+    let apply = Rc::new(apply);
+    let at_low = value <= *range.start();
+    let at_high = value >= *range.end();
+    let mut stepper = h_flex().items_center().gap(tokens.spacing.xs);
+
+    for (delta, disabled) in [(-step, at_low), (step, at_high)] {
+        let apply = Rc::clone(&apply);
+        let (icon, label) = if delta < 0 {
+            (DuckIcon::Minus, tr(cx, "减小"))
+        } else {
+            (DuckIcon::Plus, tr(cx, "增大"))
+        };
+        let next = (value + delta).clamp(*range.start(), *range.end());
+        stepper = stepper.child(
+            icon_button(
+                SharedString::from(format!("{id}-{}", if delta < 0 { "dec" } else { "inc" })),
+                label,
+                Icon::new(icon).size(tokens.typography.sm.size),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .disabled(disabled)
+            .on_click(move |_, _, cx| {
+                if !disabled {
+                    apply(next, cx);
+                }
+            }),
+        );
+    }
+
+    option_row(
+        tr(cx, title),
+        description.map(|text| SharedString::from(tr(cx, text))),
+        stepper.child(body_text(shown, cx)),
+        cx,
+    )
+    .into_any_element()
+}
+
+/// 一节的「恢复默认」行。
+///
+/// **只重置本节**：以当前设置为底，只把本节那几项换成 `Default`，别的节原样保留。
+/// 直接写 `TerminalSettings::default()` 会把别的节一起清掉 —— 用户只是想重置行高，
+/// 结果连回滚行数、重连策略都没了，那是撤不回来的意外。
+///
+/// 出场默认值一律取自 `Default::default()`（也就是 `load()` 的回落值），
+/// 这里不另写一份字面量：**默认值只有一处真源**，改默认就改 `Default`。
+fn reset_row(
+    cx: &App,
+    id: &'static str,
+    title: &'static str,
+    on_reset: impl Fn(&mut App) + 'static,
+) -> AnyElement {
+    let restore = button(id, tr(cx, "恢复默认"), ButtonVariant::Secondary, cx).on_click(
+        move |_, window, cx| {
+            on_reset(cx);
+            notify::info(tr(cx, "已恢复本节的默认值。"), window, cx);
+        },
+    );
+    option_row(
+        tr(cx, title),
+        Some(tr(cx, "把本节各项恢复为出厂默认，其它节不受影响。").into()),
+        restore,
+        cx,
+    )
+    .into_any_element()
+}
+
+/// 一行数字设置：展示当前值 + 「编辑」→ 数字输入弹窗。
 /// 参数刻意保持扁平：调用点要逐一给出 `id` / 标题 / 说明 / 单位 / 范围 / 落盘闭包，
 /// 收进结构体只是把同一份样板挪个地方，对照设置表反而更绕。
 #[allow(clippy::too_many_arguments)]
@@ -1095,12 +1827,74 @@ fn text_setting_row(
     shown: SharedString,
     placeholder: &'static str,
     hint: &'static str,
-    apply: impl Fn(&str, &mut App) + 'static,
+    apply: impl Fn(&str, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let apply = Rc::new(apply);
     value_row(cx, id, title, description, shown, move |window, cx| {
         let apply = Rc::clone(&apply);
-        let confirm: TextConfirm = Rc::new(move |text, _, cx| apply(text, cx));
+        let confirm: TextConfirm = Rc::new(move |text, window, cx| apply(text, window, cx));
         open_text_prompt(window, cx, title, title, placeholder, Some(hint), confirm);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_size_follows_the_theme_when_unset() {
+        // `None` = 跟随主题：这是「⌘0 复位」的落点，不能变成某个写死的数。
+        let settings = TerminalSettings::default();
+        assert_eq!(effective_font_size(&settings, 13., 1.), 13.);
+        assert_eq!(effective_font_size(&settings, 21.5, 1.), 21.5);
+        // 跟随主题时主题档**已经**含界面缩放（`scale_typography`），不能再乘一遍 ——
+        // 乘了就是平方，1.5 倍界面下终端字会大得离谱。
+        assert_eq!(effective_font_size(&settings, 19.5, 1.5), 19.5);
+    }
+
+    #[test]
+    fn font_size_is_clamped_into_the_single_range() {
+        // 存档里可能有手改过的越界值（或旧版本更宽的区间）：读出来必须夹回区间，
+        // 否则画布会按 99 磅排版，一屏只剩三个字。
+        let mut settings = TerminalSettings::default();
+        settings.font_size = Some(99);
+        assert_eq!(
+            effective_font_size(&settings, 13., 1.),
+            *TERMINAL_FONT_SIZE_RANGE.end() as f32
+        );
+        settings.font_size = Some(1);
+        assert_eq!(
+            effective_font_size(&settings, 13., 1.),
+            *TERMINAL_FONT_SIZE_RANGE.start() as f32
+        );
+    }
+
+    /// 回退链的解析：中英文逗号都收、空项丢掉、全空必须是 `None`
+    /// （`None` = 按系统级联；`Some(vec![])` 会让某些后端干脆不回退）。
+    #[test]
+    fn fallback_list_is_split_on_both_commas() {
+        let mut settings = TerminalSettings::default();
+        assert!(font_fallbacks(&settings).is_none(), "留空 = 交给系统级联");
+        settings.font_fallbacks = " Sarasa Mono SC ，PingFang SC ,, ".to_owned();
+        let list = font_fallbacks(&settings).expect("有回退链");
+        assert_eq!(list.fallback_list(), ["Sarasa Mono SC", "PingFang SC"]);
+    }
+
+    /// 显式字号要**跟着界面缩放走**：界面 150% 时别的字都大了，终端不放大就是全屏最小处。
+    /// 钳位发生在缩放**之前**（区间描述的是用户能选什么，不是屏幕上的磅值）。
+    #[test]
+    fn explicit_font_size_follows_the_ui_scale() {
+        let mut settings = TerminalSettings::default();
+        settings.font_size = Some(14);
+        assert_eq!(effective_font_size(&settings, 13., 1.), 14.);
+        assert_eq!(effective_font_size(&settings, 13., 1.5), 21.);
+        // 越界值先夹回 32，再乘缩放：32 × 1.5 = 48，而不是把 99 × 1.5 夹到 32。
+        settings.font_size = Some(99);
+        assert_eq!(
+            effective_font_size(&settings, 13., 1.5),
+            *TERMINAL_FONT_SIZE_RANGE.end() as f32 * 1.5
+        );
+        // 缩放的 0 值不能让字号归零（画布会算不出列宽）。
+        assert!(effective_font_size(&settings, 13., 0.) > 0.);
+    }
 }

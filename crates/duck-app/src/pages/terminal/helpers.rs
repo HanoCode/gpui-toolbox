@@ -2,18 +2,6 @@
 
 use super::*;
 
-/// 画布的**初始**字号：设置页「终端」里设了就按它，否则跟随主题的等宽字号。
-///
-/// 只在建页面时读一次。之后字号归工具条 / 快捷键管（用户当场调了就该立刻生效），
-/// 设置页那一项是「下次进来从哪儿起」的默认值，不是实时绑定。
-pub(super) fn initial_font_size(cx: &App) -> f32 {
-    let theme_size = active_theme(cx).tokens().typography.mono_md.size.to_f64() as f32;
-    super::super::module_settings::terminal_settings(cx)
-        .font_size
-        .map_or(theme_size, |size| size as f32)
-        .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end())
-}
-
 /// 弹窗口令按保存口径的「应存明文」。
 ///
 /// 只有「密码认证 + 勾记住 + 填了值」才算一条要保存的口令；其余情形都是

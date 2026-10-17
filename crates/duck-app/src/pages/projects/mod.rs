@@ -83,7 +83,13 @@ pub(crate) mod float;
 // **输入侧别名表**（含中文列名，因此豁免了 i18n 守卫 —— 理由写在它自己的模块头）。
 mod import;
 mod import_aliases;
+// `inbox` 对 `app` 可见：轮询挂在 `app::install` 上（与 `remind` 同口径 —— 收件箱的
+// 价值正是「没打开项目页时也在收活」）。
+pub(crate) mod inbox;
 mod prefs;
+// `quick_capture` 对 `app` 可见：唤起入口在 shell 层（`app::open_quick_capture`），
+// 与两个浮窗同一个待遇。
+pub(crate) mod quick_capture;
 mod quickparse;
 // `remind` 对 `app` 可见：周期扫描挂在 `app::install` 上（**不依赖项目页是否打开**，
 // 提醒的价值正在于此）。
@@ -98,9 +104,9 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    KeyBinding, ParentElement, Render, SharedString, Styled, Subscription, WeakEntity, Window,
-    actions, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _,
+    IntoElement, KeyBinding, ParentElement, Render, SharedString, Styled, Subscription, WeakEntity,
+    Window, actions, div, px,
 };
 use gpui_component::{
     Icon, WindowExt as _, h_flex,
@@ -121,7 +127,10 @@ use duck_theme::{active_theme, tr, trf, trn};
 
 use prefs::{CalendarMode, GroupMode, ReportRange, ViewMode};
 use report::ReportStatus;
-use state::{ArchiveRow, BoardScope, ImportOutcome, ProjectsState, SmartFilter, UndoAction};
+use state::{
+    ArchiveRow, BoardScope, ImportOutcome, ProjectsState, SmartFilter, UndoAction, hours_display,
+    plus_hours,
+};
 use widgets::status_label;
 
 use import::SourceFormat;
@@ -136,6 +145,14 @@ const CONFIRM_WIDTH: f32 = 440.;
 
 /// 底部提示条的阅读宽度上限（约 30 个中文字符 + 一个按钮，再加长就压到看板了）。
 const HINT_MAX_WIDTH: f32 = 480.;
+
+/// 右栏「工时」下的快速记时三档（分钟 + 按钮文案）。
+///
+/// 放装配层而不是 `widgets`：按钮（`task_detail_panel`）与页面的写入口
+/// （[`ProjectsPage::log_actual_hours`]）读同一份，将来加「+2h」只改这里一处。
+/// 档位是「记一次」的常见粒度（一刻钟 / 半小时 / 整点），更细或更粗都去「完整编辑」。
+pub(crate) const QUICK_LOG_MINUTES: [(u32, &str); 3] =
+    [(15, "+15 分钟"), (30, "+30 分钟"), (60, "+1 小时")];
 
 /// 普通回执的存活时长（照 `pages/db.rs` 的 toast：够看清一句话，连点也不堆叠）。
 const HINT_LIFETIME: Duration = Duration::from_millis(2400);
@@ -163,6 +180,14 @@ const KEY_CONTEXT: &str = "Projects";
 /// ⚠️ 与 [`KEY_CONTEXT`] **必须同改**：谓词靠名字匹配，改错不会编译报错，只会
 /// 让裸键在输入框里抢字。由 `bare_key_context_tracks_the_page_context` 钉住。
 const KEY_CONTEXT_BARE: &str = "Projects && !Input";
+
+/// 归档中心自成的键位上下文（只挂 `Esc`）。
+///
+/// 与 [`KEY_CONTEXT_BARE`] 的差别是**不带 `!Input`**：归档区里唯一值得打字的框就是
+/// 搜索框，而「先搜两下、发现找错了、想退出去」正是最容易卡住的那条路。页面级的
+/// `Esc` 在输入框里不匹配，于是用户在归档中心里按 `Esc` 毫无反应 —— 这个上下文
+/// 就是给那种时刻补的出口。它只在归档区那一层元素上挂，不影响别的输入框。
+const ARCHIVE_KEY_CONTEXT: &str = "ProjectsArchive";
 
 actions!(
     projects,
@@ -195,6 +220,10 @@ actions!(
         /// `⌘Z`：撤销上一步可撤销的变更；**连按就是一路往回退**（栈深与时限见
         /// `state::UNDO_DEPTH` / `UNDO_RETENTION`）。
         UndoLast,
+        /// `/`：把焦点送进左栏那个筛选框（要打字找东西时不该先摸鼠标）。
+        FocusSearch,
+        /// `F`：展开 / 收起工具条的「筛选」面板。
+        ToggleFilters,
         /// `1`：切到看板。
         ViewBoard,
         /// `2`：切到列表。
@@ -228,10 +257,18 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // `⌘C` / `Ctrl-C`（已逐条核对），所以这一条不会与别处抢。
         KeyBinding::new("backspace", DeleteSelected, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("escape", LeaveArchive, Some(KEY_CONTEXT_BARE)),
+        // 归档区自己的 `Esc`：不带 `!Input`，焦点在归档搜索框里也能出去（见
+        // [`ARCHIVE_KEY_CONTEXT`]）。两条并存，页面级那条负责别处的 `Esc`。
+        KeyBinding::new("escape", LeaveArchive, Some(ARCHIVE_KEY_CONTEXT)),
         // `Enter` / `E` 都是裸字母键（`!Input` 是必需的，理由见 [`KEY_CONTEXT_BARE`]）：
         // 输入框里回车是提交、按 E 就是打一个 e。
         KeyBinding::new("enter", OpenSelectedDetail, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("e", EditSelected, Some(KEY_CONTEXT_BARE)),
+        // `/` 与 `F` 是「找东西」这一组：`/` 去打字（跳过鼠标去点左栏那个框），
+        // `F` 摊开筛选面板。两个都是裸键，同样要 `!Input` —— 在输入框里 `/` 得能打出
+        // 斜杠（路径、分数），`f` 得能打出字母。
+        KeyBinding::new("/", FocusSearch, Some(KEY_CONTEXT_BARE)),
+        KeyBinding::new("f", ToggleFilters, Some(KEY_CONTEXT_BARE)),
         // `1`–`6` 切常规视图（原型状态栏那条提示的排法）。裸数字键同样要 `!Input`。
         KeyBinding::new("1", ViewBoard, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("2", ViewList, Some(KEY_CONTEXT_BARE)),
@@ -385,6 +422,19 @@ impl ProjectsPage {
                 cx.notify();
             },
         ));
+        // 「随手看」点了「主窗口」：它带的是**当前展开那条**的 id。收到就把右栏摆出来
+        // —— 否则用户在小窗看到一条、点进主窗却落在一屏全量看板上，还得重新找。
+        // 右栏是 shell 级区域，页面只能请求（返回 `false` = 这个窗口里开不了，
+        // 此时选中仍然生效，只是右栏不出现，与 `open_selected_detail` 同一条口径）。
+        subscriptions.push(cx.subscribe(
+            &bus,
+            |this: &mut Self, _bus, event: &bus::FocusTask, cx| {
+                this.state
+                    .update(cx, |state, _| state.select(Some(event.0)));
+                crate::app::set_right_sidebar_open(cx, true);
+                cx.notify();
+            },
+        ));
 
         Self {
             state,
@@ -504,6 +554,59 @@ impl ProjectsPage {
         cx.notify();
     }
 
+    /// 工具条「筛选」面板：勾一个标签（**追加**语义，与左栏的「替换」不同）。
+    pub(crate) fn toggle_filter_tag(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, _| state.toggle_filter_tag(id));
+        cx.notify();
+    }
+
+    /// 工具条「筛选」面板：勾一个四象限。
+    pub(crate) fn toggle_filter_quadrant(&mut self, quadrant: Quadrant, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, _| state.toggle_filter_quadrant(quadrant));
+        cx.notify();
+    }
+
+    /// 工具条「筛选」面板：勾一个优先级。
+    pub(crate) fn toggle_filter_priority(&mut self, priority: Priority, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, _| state.toggle_filter_priority(priority));
+        cx.notify();
+    }
+
+    /// 工具条「筛选」面板：清掉面板里那三档（范围 / 智能列表 / 搜索词不动）。
+    pub(crate) fn clear_filters(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.clear_filters());
+        cx.notify();
+    }
+
+    /// 展开 / 收起工具条的「筛选」面板。
+    pub(crate) fn toggle_filters(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.toggle_filters());
+        cx.notify();
+    }
+
+    /// 开合待办列底部那段「已搁置 N」。
+    pub(crate) fn toggle_deferred(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.toggle_deferred());
+        cx.notify();
+    }
+
+    /// `/`：把焦点送进左栏那个筛选框。
+    ///
+    /// 左栏收起时先摊开它 —— 焦点送进一个看不见的框，症状是「按了 `/` 什么都没发生，
+    /// 但接着打的字全进了搜索」。
+    pub(crate) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sidebar.read(cx).is_collapsed() {
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.set_collapsed(false, cx));
+        }
+        let handle = self.filter.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
     /// 工具条「显示已完成」开关。
     ///
     /// **不落盘**：与智能列表 / 搜索词 / 报表的状态与标签筛选同一类「一次性视角」，
@@ -546,6 +649,18 @@ impl ProjectsPage {
             .update(cx, |state, _| state.move_task(id, status, 0));
         // 这几条写动作**不弹回执**，所以拿不到 [`Self::show`] 里那次广播，得自己叫一声
         // （口径见模块头第 3 条）。
+        bus::notify(cx);
+        cx.notify();
+    }
+
+    /// 卡片落到**另一张卡片**上：插到它之前。
+    ///
+    /// 与 [`Self::move_task_to`]（落到列空白处 ⇒ 列首）是同一类动作的两个粒度：
+    /// 落列只谈「去哪一列」，落卡才谈「哪一个位置」。两者都不弹回执 —— 拖拽期间
+    /// 手指还在鼠标上，弹一条提示条只会挡住刚落下的那张卡。
+    pub(crate) fn drop_on_task(&mut self, drag_id: i64, target_id: i64, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, _| state.reorder_before(drag_id, target_id));
         bus::notify(cx);
         cx.notify();
     }
@@ -633,6 +748,36 @@ impl ProjectsPage {
         }
         let message = trf(cx, "进度已推进到 {}%。", &[&progress.to_string()]);
         self.patch_task(id, TaskPatch::new().progress(progress), message, cx);
+    }
+
+    /// 右栏「工时」下的快速记时：把一档增量并进 `actual_hours`。
+    ///
+    /// 一次点击就落库，不弹弹窗、不做二次确认 —— 记时是个高频小动作，多一道确认
+    /// 就等于逼人回去用编辑器。回执报**累计值**：只说「+15 分钟」用户还得回头看那
+    /// 一行才敢确认记上了。
+    ///
+    /// 不做撤销槽（与优先级 / 四象限 / 进度这些字段改同一个口径）：撤销栈里存的是
+    /// 任务级动作（改状态、归档、排序…），塞进「工时 +0.25」会把真正想撤的那一步挤掉。
+    /// 点错了的出口是头部那颗铅笔（「完整编辑」里能直接改数值）。
+    pub(crate) fn log_actual_hours(&mut self, id: i64, minutes: u32, cx: &mut Context<Self>) {
+        let current = self
+            .state
+            .read(cx)
+            .tasks()
+            .iter()
+            .find(|task| task.id == id)
+            .map(|task| task.actual_hours);
+        // 任务已经不在这份视图里（刚被筛掉 / 归档）：静默返回，别弹一条「修改失败」。
+        let Some(current) = current else {
+            return;
+        };
+        let total = plus_hours(current, minutes);
+        let message = trf(
+            cx,
+            "已记 {} 分钟，累计 {} h。",
+            &[&minutes.to_string(), &hours_display(total)],
+        );
+        self.patch_task(id, TaskPatch::new().actual_hours(Some(total)), message, cx);
     }
 
     /// 卡片菜单：置顶 / 取消置顶（星标）。
@@ -1317,7 +1462,7 @@ impl ProjectsPage {
     ///
     /// 设计文档的快捷键表里没有这一条，但 `⇧A` 是单向门 —— 没有它，键盘用户只能靠
     /// 鼠标点左栏才能回去。补一条「原路返回」，不改任何既有语义。
-    fn leave_archive(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn leave_archive(&mut self, cx: &mut Context<Self>) {
         if self.state.read(cx).view().is_archive() {
             self.set_view(ViewMode::Board, cx);
         }
@@ -1396,6 +1541,21 @@ impl ProjectsPage {
                     UndoAction::RemoveCreated(_) => {
                         SharedString::from(tr(cx, "已删掉刚复制出来的那条。"))
                     }
+                    UndoAction::BatchedStatus(entries) => SharedString::from(trf(
+                        cx,
+                        "已把 {} 条任务改回原状态。",
+                        &[&entries.len().to_string()],
+                    )),
+                    UndoAction::BatchedFields(entries) => SharedString::from(trf(
+                        cx,
+                        "已把 {} 条任务的字段改回去。",
+                        &[&entries.len().to_string()],
+                    )),
+                    UndoAction::Reorder(order) => SharedString::from(trf(
+                        cx,
+                        "已把 {} 条任务的顺序改回去。",
+                        &[&order.len().to_string()],
+                    )),
                 };
                 // 栈里还有就把「撤销」按钮**接着挂上**：连按比「再按一次 `⌘Z` 才发现
                 // 还能退」容易发现得多。剩下的步数一起报出来，免得退到一半不知道有没有底。
@@ -2186,6 +2346,29 @@ impl ProjectsPage {
         self.report(outcome, tr(cx, "已移出计划。").to_owned(), cx);
     }
 
+    /// 「带入上周未完成」：把上周许了愿但没收尾的任务并进这一周的计划。
+    ///
+    /// 只动计划成员、不动截止日（理由见 `ProjectsState::carry_over_last_week`）——
+    /// 所以这条动作的可逆性也简单：在右栏把那几行「移出计划」就退回去了。
+    pub(crate) fn carry_over_last_week(&mut self, cx: &mut Context<Self>) {
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.carry_over_last_week());
+        match outcome {
+            Ok(0) => self.report(Ok(()), tr(cx, "上周没有要带的任务。").to_owned(), cx),
+            Ok(count) => self.report(
+                Ok(()),
+                trf(
+                    cx,
+                    "已把 {} 条上周未完成的任务带进这一周。",
+                    &[&count.to_string()],
+                ),
+                cx,
+            ),
+            Err(err) => self.report(Err(err), String::new(), cx),
+        }
+    }
+
     /// 「改一个字段」类动作的公共收尾：成功给回执、失败报错，最后重绘。
     ///
     /// 与私有的 [`Self::patch_task`] 并存：那个只收一条 `TaskPatch`，这里用在**多步**
@@ -2390,6 +2573,12 @@ impl Render for ProjectsPage {
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(|this, _: &QuickCreate, window, cx| {
                 this.open_spotlight(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
+                this.focus_search(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFilters, _window, cx| {
+                this.toggle_filters(cx);
             }))
             .on_action(cx.listener(|this, _: &NewTask, window, cx| {
                 this.new_task_in_scope(window, cx);

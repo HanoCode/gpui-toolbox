@@ -1672,6 +1672,21 @@ impl DatabasePage {
                 ),
             ),
             (
+                StructureTab::Constraints,
+                tr(cx, "约束").into(),
+                Some(self.structure_constraint_count()),
+            ),
+            (
+                StructureTab::Partitions,
+                tr(cx, "分区").into(),
+                Some(usize::from(
+                    draft
+                        .ddl
+                        .as_deref()
+                        .is_some_and(|ddl| parse_partition_clause(ddl).is_some()),
+                )),
+            ),
+            (
                 StructureTab::Triggers,
                 tr(cx, "触发器").into(),
                 Some(draft.triggers.len()),
@@ -1990,6 +2005,9 @@ impl DatabasePage {
                 );
             }
             StructureTab::Triggers => {}
+            // 约束 / 分区是只读总览，工具区不放任何按钮 —— 要改约束去字段 / 索引 /
+            // 外键三页（那里才是生成 DDL 的地方）。
+            StructureTab::Constraints | StructureTab::Partitions => {}
         }
         tools.into_any_element()
     }
@@ -3209,6 +3227,209 @@ impl DatabasePage {
             .into_any_element()
     }
 
+    /// 约束页的角标数：主键算 1，每个唯一索引 / 检查约束 / 外键各算 1。
+    ///
+    /// 与 [`Self::render_structure_constraints`] 的取数完全同源（同一批过滤器），
+    /// 否则会出现「角标写 3、页里只有 2 行」这种对不上的账。
+    fn structure_constraint_count(&self) -> usize {
+        let Some(draft) = self.structure.as_ref() else {
+            return 0;
+        };
+        let pk = draft
+            .columns
+            .iter()
+            .any(|column| column.primary && !column.dropped);
+        let unique = draft
+            .indexes
+            .iter()
+            .filter(|index| index.unique && !index.system && !index.dropped)
+            .count();
+        let checks = draft
+            .ddl
+            .as_deref()
+            .map(|ddl| parse_check_constraints(ddl).len())
+            .unwrap_or(0);
+        let foreign_keys = draft
+            .foreign_keys
+            .iter()
+            .filter(|item| !item.dropped)
+            .count();
+        usize::from(pk) + unique + checks + foreign_keys
+    }
+
+    /// 约束标签：主键 / 唯一 / 检查 / 外键四类**只读**总览。
+    ///
+    /// 数据全部是**投影**，不新造内省：主键来自字段草稿的 `primary` 标记，唯一约束来自
+    /// 索引草稿里 `unique` 的那些，外键来自外键草稿，检查约束从建表 DDL 里解析
+    ///（`parse_check_constraints`）。四类各自的编辑入口在别的页 —— 这里每行右侧都写明
+    /// 来源，看完知道该去哪改。
+    fn render_structure_constraints(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(draft) = self.structure.as_ref() else {
+            return div().into_any_element();
+        };
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let pk: Vec<String> = draft
+            .columns
+            .iter()
+            .filter(|column| column.primary && !column.dropped)
+            .map(|column| column.name.read(cx).value().to_string())
+            .collect();
+        if !pk.is_empty() {
+            rows.push(self.constraint_row(
+                cx,
+                tr(cx, "主键"),
+                None,
+                pk.join(", "),
+                tr(cx, "字段页"),
+            ));
+        }
+        for index in draft
+            .indexes
+            .iter()
+            .filter(|index| index.unique && !index.system && !index.dropped)
+        {
+            let name = index.name.read(cx).value().to_string();
+            rows.push(self.constraint_row(
+                cx,
+                tr(cx, "唯一"),
+                Some(name),
+                index.columns.join(", "),
+                tr(cx, "索引页"),
+            ));
+        }
+        if let Some(ddl) = draft.ddl.as_deref() {
+            for (name, expression) in parse_check_constraints(ddl) {
+                rows.push(self.constraint_row(
+                    cx,
+                    tr(cx, "检查"),
+                    (!name.is_empty()).then_some(name),
+                    expression,
+                    tr(cx, "建表 DDL"),
+                ));
+            }
+        }
+        for foreign_key in draft.foreign_keys.iter().filter(|item| !item.dropped) {
+            let name = foreign_key.name.read(cx).value().to_string();
+            let detail = format!(
+                "({}) → {}({})",
+                foreign_key.columns.join(", "),
+                foreign_key.ref_table,
+                foreign_key.ref_columns.join(", ")
+            );
+            rows.push(self.constraint_row(
+                cx,
+                tr(cx, "外键"),
+                (!name.is_empty()).then_some(name),
+                detail,
+                tr(cx, "外键页"),
+            ));
+        }
+        self.render_structure_readonly_list(
+            SharedString::from(tr(cx, "这张表没有任何约束")),
+            rows,
+            cx,
+        )
+    }
+
+    /// 约束页的一行：`类型` 标签 + 约束名 + 明细 + 来源。
+    fn constraint_row(
+        &self,
+        cx: &App,
+        kind: &'static str,
+        name: Option<String>,
+        detail: String,
+        source: &'static str,
+    ) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        card(cx)
+            .w_full()
+            .flex_none()
+            .px(tokens.spacing.sm)
+            .py(tokens.spacing.xs)
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(tokens.spacing.sm)
+                    .child(neutral_tag(SharedString::from(kind), cx))
+                    .children(name.map(|name| {
+                        div()
+                            .max_w(px(200.))
+                            .min_w_0()
+                            .truncate()
+                            .text_size(tokens.typography.sm.size)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(tokens.colors.foreground)
+                            .child(selectable_text(SharedString::from(name)))
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(tokens.typography.mono_md.size)
+                            .text_color(tokens.colors.muted_foreground)
+                            .child(selectable_text(SharedString::from(detail))),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(tokens.typography.xs.size)
+                            .text_color(extended.colors.text_tertiary)
+                            .child(source),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// 分区标签：从建表 DDL 里认 `PARTITION BY …`，原样贴出来（可选中 / 可复制）。
+    ///
+    /// 不解析成结构化字段：分区的写法在各引擎之间差得太多（MySQL 的
+    /// `PARTITION p0 VALUES LESS THAN (…)` 列表、PG 的 `FOR VALUES FROM … TO …`、
+    /// 子分区模板），拆成统一结构只会把原句拆丢。这里给的是「引擎怎么说的」。
+    fn render_structure_partitions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        let Some(draft) = self.structure.as_ref() else {
+            return div().into_any_element();
+        };
+        let Some(clause) = draft.ddl.as_deref().and_then(parse_partition_clause) else {
+            return self.render_structure_readonly_list(
+                SharedString::from(tr(cx, "这张表没有分区（或该引擎的建表 DDL 不含分区信息）")),
+                Vec::new(),
+                cx,
+            );
+        };
+        v_flex()
+            .w_full()
+            .gap(tokens.spacing.xs)
+            .child(
+                div()
+                    .text_size(tokens.typography.xs.size)
+                    .text_color(extended.colors.text_tertiary)
+                    .child(tr(
+                        cx,
+                        "以下分区子句取自建表 DDL（只读；改分区请写 ALTER TABLE）",
+                    )),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p(tokens.spacing.sm)
+                    .rounded(tokens.radius.md)
+                    .border_1()
+                    .border_color(extended.colors.hairline)
+                    .bg(tokens.colors.background)
+                    .text_size(tokens.typography.mono_md.size)
+                    .text_color(tokens.colors.foreground)
+                    .child(selectable_text(SharedString::from(clause))),
+            )
+            .into_any_element()
+    }
+
     /// 触发器标签：已有触发器只读清单（名称 + 时机 + 事件），本轮新增的草稿
     /// 是可编辑卡片（名称 / 时机 / 事件 / 触发体）。
     fn render_structure_triggers(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3699,6 +3920,8 @@ impl DatabasePage {
                 StructureTab::Columns => self.render_structure_grid(cx),
                 StructureTab::Indexes => self.render_structure_indexes(cx),
                 StructureTab::ForeignKeys => self.render_structure_foreign_keys(cx),
+                StructureTab::Constraints => self.render_structure_constraints(cx),
+                StructureTab::Partitions => self.render_structure_partitions(cx),
                 StructureTab::Triggers => self.render_structure_triggers(cx),
             }
         };

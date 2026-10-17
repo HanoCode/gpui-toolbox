@@ -136,7 +136,9 @@ impl TerminalPage {
                         }
                     })),
             )
-            .child(queue)
+            // 队列为空就**整块不渲染**：它此前是一个常驻 24px + 一条标题行的空壳，
+            // 在「今天还没传过任何东西」这种最常见的情形下白吃一条分带。
+            .when(!self.transfers.is_empty(), |this| this.child(queue))
             .into_any_element()
     }
 
@@ -159,11 +161,37 @@ impl TerminalPage {
             .gap(tokens.spacing.xxs)
             .overflow_x_hidden();
         if skip > 0 {
-            trail = trail.child(meta_text(tr(cx, "…"), cx)).child(
-                Icon::new(DuckIcon::ChevronRight)
-                    .size(extended.icon.sm)
-                    .text_color(extended.colors.text_tertiary),
-            );
+            // 「…」**可点**：点开是全部被折叠的祖先目录。此前它只是一段文字，
+            // 深路径想回上一级两级只能一路点「上一级目录」。
+            let ancestors: Vec<(SharedString, SharedString)> = crumbs
+                .iter()
+                .take(skip)
+                .map(|(path, label)| {
+                    (
+                        SharedString::from(path.clone()),
+                        SharedString::from(label.clone()),
+                    )
+                })
+                .collect();
+            let view_more = view.clone();
+            trail = trail
+                .child(div().flex_none().child(dropdown_select(
+                    format!("duck-sftp-crumbs-more-{}", side.index()),
+                    ancestors,
+                    // `current` 不与任何候选项相等 ⇒ 控件上显示的就是这个省略号本身。
+                    SharedString::from("…"),
+                    move |path: SharedString, _, cx| {
+                        let path = path.to_string();
+                        let _ =
+                            view_more.update(cx, |this, cx| this.navigate(side, path.clone(), cx));
+                    },
+                    cx,
+                )))
+                .child(
+                    Icon::new(DuckIcon::ChevronRight)
+                        .size(extended.icon.sm)
+                        .text_color(extended.colors.text_tertiary),
+                );
         }
         for (index, (path, label)) in crumbs.iter().enumerate().skip(skip) {
             let current = index + 1 == crumbs.len();
@@ -211,6 +239,24 @@ impl TerminalPage {
             }
             trail = trail.child(crumb);
         }
+
+        // 路径栏可**内联编辑**（`⌘L`）：编辑态直接用输入框顶掉面包屑，位置不变 ——
+        // 用户的视线不用挪，也不需要先理解一个弹窗。
+        let trail: AnyElement = match &pane.path_edit {
+            Some((input, _)) => div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    Input::new(input)
+                        .appearance(false)
+                        .with_size(Size::Small)
+                        .text_size(tokens.typography.sm.size)
+                        .line_height(tokens.typography.sm.line_height)
+                        .w_full(),
+                )
+                .into_any_element(),
+            None => trail.into_any_element(),
+        };
 
         let path_bar = h_flex()
             .w_full()
@@ -377,24 +423,35 @@ impl TerminalPage {
             .px(tokens.spacing.sm)
             .border_b(extended.stroke.thin)
             .border_color(extended.colors.hairline)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(caption_heading(tr(cx, "名称"), cx)),
-            )
-            .child(
-                div()
-                    .w(px(SIZE_COLUMN_WIDTH))
-                    .flex_none()
-                    .child(caption_heading(tr(cx, "大小"), cx)),
-            )
-            .child(
-                div()
-                    .w(px(MODIFIED_COLUMN_WIDTH))
-                    .flex_none()
-                    .child(caption_heading(tr(cx, "修改时间"), cx)),
-            );
+            // 三列都可点：换列或翻转方向。此前列头只是三段死文字 ——
+            // 「按时间找最新的那个文件」只能靠自己一行行扫。
+            .child(sort_header(
+                side,
+                SortKey::Name,
+                tr(cx, "名称"),
+                pane.sort,
+                None,
+                &view,
+                cx,
+            ))
+            .child(sort_header(
+                side,
+                SortKey::Size,
+                tr(cx, "大小"),
+                pane.sort,
+                Some(px(SIZE_COLUMN_WIDTH)),
+                &view,
+                cx,
+            ))
+            .child(sort_header(
+                side,
+                SortKey::Modified,
+                tr(cx, "修改时间"),
+                pane.sort,
+                Some(px(MODIFIED_COLUMN_WIDTH)),
+                &view,
+                cx,
+            ));
 
         let rows = v_flex().w_full().children(pane.entries.iter().map(|entry| {
             let selected = pane.selected.as_deref() == Some(entry.name.as_str());
@@ -426,15 +483,20 @@ impl TerminalPage {
                 })
                 .on_click({
                     let view = view.clone();
+                    let focus = self.pane_focus[side.index()].clone();
                     // `entry.name` 还要给下面的右键菜单用：按值交给点击闭包之前先克隆一份。
                     let click_name = name.clone();
                     move |event: &ClickEvent, window, cx| {
+                        // 点哪一栏，键盘就归哪一栏（点完接着按 `↓` 是最自然的动作）。
+                        window.focus(&focus, cx);
                         // 双击进入目录：`down.click_count` 是平台给的连击计数（第二次按下为 2）。
                         let double =
                             matches!(event, ClickEvent::Mouse(mouse) if mouse.down.click_count > 1);
+                        // `⌘` 双击 = 在访达里显示（本地文件）；双击本身是「上传 / 下载」。
+                        let reveal = event.modifiers().platform;
                         let name = click_name.clone();
                         let _ = view.update(cx, |this, cx| {
-                            this.click_entry(side, name, double, window, cx);
+                            this.click_entry(side, name, double, reveal, window, cx);
                         });
                     }
                 })
@@ -463,7 +525,11 @@ impl TerminalPage {
                 .child(
                     div()
                         .w(px(SIZE_COLUMN_WIDTH))
-                        .flex_none()
+                        // 列宽是基准不是下限：面板被拖窄（或窗口变窄）时列随
+                        // flex-shrink 收缩、文字省略号收口 —— 行与列头同一套规则，
+                        // 对齐关系不失真。此前 `flex_none` 钉死，窄面板直接溢出裁切。
+                        .min_w_0()
+                        .truncate()
                         .font_features(tabular_numbers())
                         .text_size(tokens.typography.xs.size)
                         .line_height(tokens.typography.xs.line_height)
@@ -477,7 +543,8 @@ impl TerminalPage {
                 .child(
                     div()
                         .w(px(MODIFIED_COLUMN_WIDTH))
-                        .flex_none()
+                        .min_w_0()
+                        .truncate()
                         .font_features(tabular_numbers())
                         .text_size(tokens.typography.xs.size)
                         .line_height(tokens.typography.xs.line_height)
@@ -488,66 +555,145 @@ impl TerminalPage {
                         })
                         .child(entry.modified.clone()),
                 );
-            // 右键菜单只挂远端行：本地面板没有对应的远端动作（见路径栏那三档的注释）。
-            if side.is_local() {
-                row.into_any_element()
-            } else {
-                row.context_menu({
-                    let view = view.clone();
-                    let menu_name = name.clone();
-                    // 菜单闭包是 `Fn`（每次打开都重跑），每一项各自克隆。
-                    move |menu, _, cx| {
-                        let menu = menu
-                            .item(PopupMenuItem::new(tr(cx, "重命名")).on_click({
+            // 右键菜单：一侧只列**这一侧真能做的事**。
+            //
+            // - 远端 5 项：下载 / 重命名 / 复制路径 / 删除 / 新建文件夹；
+            // - 本地 3 项：上传 / 在访达中显示 / 复制路径。
+            //
+            // 本地面板是「上传的取材区」：改本机文件不是这个页面的职责（要动本机文件
+            // 用户有访达），所以重命名 / 删除在本侧缺席 —— 菜单里点得出来的每一件事
+            // 都必须真能做成，这条比「两侧菜单对称」重要。
+            row.context_menu({
+                let view = view.clone();
+                let menu_name = name.clone();
+                // 菜单闭包是 `Fn`（每次打开都重跑），每一项各自克隆。
+                move |menu, _, cx| {
+                    if side.is_local() {
+                        menu.item(PopupMenuItem::new(tr(cx, "上传到远端")).on_click({
+                            let name = menu_name.clone();
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.upload_named(name.clone(), window, cx);
+                                });
+                            }
+                        }))
+                        .item(PopupMenuItem::new(tr(cx, "在访达中显示")).on_click({
+                            let name = menu_name.clone();
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |this, _| {
+                                    this.reveal_local(name.clone());
+                                });
+                            }
+                        }))
+                        .item(
+                            PopupMenuItem::new(tr(cx, "复制路径")).on_click({
                                 let name = menu_name.clone();
                                 let view = view.clone();
                                 move |_, window, cx| {
                                     let _ = view.update(cx, |this, cx| {
-                                        this.rename_remote_entry(name.clone(), window, cx);
+                                        this.copy_entry_path(Side::Local, name.clone(), window, cx);
                                     });
                                 }
-                            }))
-                            .item(PopupMenuItem::new(tr(cx, "删除")).on_click({
-                                let name = menu_name.clone();
-                                let view = view.clone();
-                                move |_, window, cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.delete_remote_entry(name.clone(), window, cx);
-                                    });
-                                }
-                            }));
-                        menu.separator()
-                            .item(PopupMenuItem::new(tr(cx, "新建文件夹")).on_click({
+                            }),
+                        )
+                    } else {
+                        menu.item(PopupMenuItem::new(tr(cx, "下载到本地")).on_click({
+                            let name = menu_name.clone();
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.download_named(name.clone(), window, cx);
+                                });
+                            }
+                        }))
+                        .separator()
+                        .item(PopupMenuItem::new(tr(cx, "重命名")).on_click({
+                            let name = menu_name.clone();
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.rename_remote_entry(name.clone(), window, cx);
+                                });
+                            }
+                        }))
+                        .item(PopupMenuItem::new(tr(cx, "复制路径")).on_click({
+                            let name = menu_name.clone();
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.copy_entry_path(Side::Remote, name.clone(), window, cx);
+                                });
+                            }
+                        }))
+                        .item(PopupMenuItem::new(tr(cx, "删除")).on_click({
+                            let name = menu_name.clone();
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.delete_remote_entry(name.clone(), window, cx);
+                                });
+                            }
+                        }))
+                        .separator()
+                        .item(
+                            PopupMenuItem::new(tr(cx, "新建文件夹")).on_click({
                                 let view = view.clone();
                                 move |_, window, cx| {
                                     let _ = view.update(cx, |this, cx| {
                                         this.new_remote_directory(window, cx);
                                     });
                                 }
-                            }))
+                            }),
+                        )
                     }
-                })
-                .into_any_element()
-            }
+                }
+            })
+            .into_any_element()
         }));
 
         // 空目录 / 读失败 / 未连接：说明**就写在列表位置**，不留一片空白让人以为界面坏了。
         let list: AnyElement = if pane.entries.is_empty() {
+            // 失败与「空目录」必须给出**不同的下一步**：失败时要能重试，
+            // 空目录时无话可说。此前两者共用一段说明文字，用户唯一的出路是
+            // 切走再切回来（而 `loaded` 已经置真，切回来也不会重列）。
+            let retry = pane.failed.then(|| {
+                button(
+                    "duck-sftp-retry",
+                    tr(cx, "重试"),
+                    ButtonVariant::Secondary,
+                    cx,
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| this.refresh_remote_listing(cx));
+                    }
+                })
+            });
             v_flex()
                 .w_full()
                 .items_center()
                 .gap(tokens.spacing.xs)
                 .py(tokens.spacing.xl)
+                // 列举**进行中**时只说这一句：此刻列表被有意清空了（见 `navigate`），
+                // 用户需要一个「马上就好」的信号，而不是「这个目录里什么都没有」。
+                .when(side.is_remote() && self.remote_listing_inflight, |this| {
+                    this.child(meta_text(tr(cx, "正在列举…"), cx))
+                })
                 // 有说明就只说说明 ——「尚未连接」「没有权限读取」比「空目录」准确得多；
                 // 没有说明时，才是真的空目录。
-                .when(pane.notice.is_none(), |this| {
-                    this.child(meta_text(tr(cx, "这个目录里没有可显示的条目。"), cx))
-                })
+                .when(
+                    pane.notice.is_none() && !(side.is_remote() && self.remote_listing_inflight),
+                    |this| this.child(meta_text(tr(cx, "这个目录里没有可显示的条目。"), cx)),
+                )
                 .children(
                     pane.notice
                         .as_ref()
                         .map(|notice| meta_text(notice.render(cx), cx)),
                 )
+                .children(retry)
                 .into_any_element()
         } else {
             v_flex()
@@ -598,6 +744,13 @@ impl TerminalPage {
                     .min_h_0()
                     .overflow_y_scroll()
                     .py(tokens.spacing.xxs)
+                    // 键盘可达：点一下列表就拿到焦点，`↑` `↓` `⏎` `⌫` 才有作用对象。
+                    // `tab_stop` 让 Tab 键也能走到这里（纯键盘用户的入口）。
+                    .track_focus(&self.pane_focus[side.index()])
+                    .tab_stop(true)
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                        this.pane_key(side, event, window, cx);
+                    }))
                     .child(list),
             );
 
@@ -673,9 +826,9 @@ impl TerminalPage {
                     )
                     .child(
                         div()
-                            .w(px(TRANSFER_NAME_WIDTH))
-                            .flex_none()
                             .min_w_0()
+                            .max_w(px(TRANSFER_NAME_WIDTH))
+                            .flex_1()
                             .truncate()
                             .text_size(tokens.typography.sm.size)
                             .line_height(tokens.typography.sm.line_height)
@@ -779,5 +932,76 @@ impl TerminalPage {
             )
             .child(rows)
             .into_any_element()
+    }
+}
+
+/// 可点击的排序列头：标题 + 一个方向箭头。
+///
+/// 当前列给实心的 `arrow-up` / `arrow-down`（强调色），其余列给淡色的
+/// `arrow-up-down` —— 后者是「这里能排」的唯一提示，少了它就没人会去点。
+///
+/// `width` 为 `None` 的是名称列（吃满剩余宽度），其余两列用固定列宽，
+/// 与下方数据行严格对齐。
+///
+/// 只借 `&App`（不是 `&mut Context`）：渲染期调用方通常正握着一份从 `cx` 借出来的
+/// `theme`，再要一个可变借用就重叠了；而这里的点击回调自己接 `cx`，并不需要外层可变。
+fn sort_header(
+    side: Side,
+    key: SortKey,
+    label: &'static str,
+    sort: SortState,
+    width: Option<gpui::Pixels>,
+    view: &gpui::WeakEntity<TerminalPage>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let active = sort.key == key;
+    let (icon, tint) = if active {
+        (
+            if sort.ascending {
+                DuckIcon::ArrowUp
+            } else {
+                DuckIcon::ArrowDown
+            },
+            extended.colors.accent_text,
+        )
+    } else {
+        (DuckIcon::ArrowUpDown, tokens.colors.muted_foreground)
+    };
+    let label_cell = div().min_w_0().truncate().child(caption_heading(label, cx));
+    let icon_cell = div()
+        .flex_none()
+        .child(Icon::new(icon).size(extended.icon.sm).text_color(tint));
+    let cell = h_flex()
+        .id(SharedString::from(format!(
+            "duck-sftp-sort-{}-{}",
+            side.index(),
+            key.id()
+        )))
+        .items_center()
+        .gap(tokens.spacing.xxs)
+        .cursor_pointer()
+        .rounded(tokens.radius.sm)
+        .px(tokens.spacing.xxs)
+        // 自绘的可点区域必须自带角色与名字，否则对读屏等于不存在
+        //（名字说的是**点下去之后**的状态，不是现在）。
+        .role(Role::Button)
+        .aria_label(SharedString::from(tr(cx, sort.action_label(key))))
+        .hover(move |style| style.bg(extended.colors.hover_tint))
+        .on_click({
+            let view = view.clone();
+            move |_, _, cx| {
+                let _ = view.update(cx, |this, cx| this.set_sort(side, key, cx));
+            }
+        })
+        .child(label_cell)
+        .child(icon_cell);
+    // 固定列也不设 `flex_none`：与数据行同一套「w 为基准、可收缩」的规则，
+    // 窄面板下列头与数据列同步收缩，对齐关系不失真。
+    match width {
+        Some(width) => cell.w(width).min_w_0().into_any_element(),
+        None => cell.flex_1().min_w_0().into_any_element(),
     }
 }

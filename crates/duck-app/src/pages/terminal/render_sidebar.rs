@@ -223,6 +223,21 @@ impl TerminalPage {
                                     this.open_connection(&id, window, cx);
                                 });
                             }
+                        })
+                        // 右键 = 「只是选中它」：右栏据此显示这条档案的详情，不建立连接。
+                        // 用 `on_mouse_down` 而不是在右键菜单构造闭包里改状态 ——
+                        // 那个闭包在菜单构建期跑，从里面 `update` 页面是重入风险。
+                        .on_mouse_down(gpui::MouseButton::Right, {
+                            let id = id.clone();
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    if this.selected_profile.as_deref() != Some(id.as_str()) {
+                                        this.selected_profile = Some(id.clone());
+                                        cx.notify();
+                                    }
+                                });
+                            }
                         });
                         // 拖拽源：只有用户档案能拖（本地 shell 是内置入口，不属于任何
                         // 分组），搜索过滤视图里也不拖 —— 列表是筛出来的，落组语义混乱。

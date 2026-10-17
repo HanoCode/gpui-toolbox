@@ -10,7 +10,7 @@ use gpui_component::{Icon, h_flex, v_flex};
 use duck_components::content::{neutral_tag, tag};
 use duck_components::notify::Tone;
 use duck_components::{ButtonVariant, DuckIcon, icon_button};
-use duck_project::{BoardColumn, CalendarDate, Project, Task};
+use duck_project::{BoardColumn, CalendarDate, Project, Task, TaskStatus};
 use duck_theme::{active_theme, tr, trf};
 
 use super::super::ProjectsPage;
@@ -25,15 +25,106 @@ use super::task_card::task_card;
 /// 236 是左栏默认宽，列宽取 268 让「左栏 + 两列」在 1280 宽的窗口里正好排开，
 /// 再多一列就得横向滚动 —— 与参考项目的 `repeat(N, 1fr)` 不同，这里用定宽是为了
 /// 让每列宽度不随列数变化，拖动卡片时列不会跳宽。
-const COLUMN_WIDTH: f32 = 268.;
+///
+/// `pub(crate)`：拖拽幽灵卡（`task_card::TaskDragGhost`）要与真卡片同宽，
+/// 同一个数不该在两个文件里各写一份。
+pub(crate) const COLUMN_WIDTH: f32 = 268.;
 
-/// 一列。
-pub(crate) fn kanban_column(
-    column: &BoardColumn,
-    tasks: &[&Task],
+/// 待办列底部那段「已搁置 N」。
+///
+/// 为什么挂在待办列而不是另开第五列：搁置不是并列的第五种「正在发生的事」，
+/// 它是「这条我先不做」——语义上紧挨着待办。另开一列会让看板默认变成五列，
+/// 1280 宽的窗口放不下（见 [`COLUMN_WIDTH`] 的来由），而且用户没要过这一列。
+///
+/// 折叠时只留一行入口：**完全不给入口**等于这些任务在界面上不存在（它们不在
+/// `DEFAULT_BOARD` 的四列里），既选不中也拖不出来。
+#[allow(clippy::too_many_arguments)]
+fn deferred_section(
+    deferred: &[&Task],
+    open: bool,
     projects: &[Project],
     today: CalendarDate,
     selected: Option<i64>,
+    checked: &[i64],
+    view: &WeakEntity<ProjectsPage>,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let hover_tint = extended.colors.hover_tint;
+    let label = trf(cx, "已搁置 {}", &[&deferred.len().to_string()]);
+
+    let mut section = v_flex().w_full().flex_none().gap(tokens.spacing.xs).child(
+        h_flex()
+            .id("project-column-deferred-head")
+            .w_full()
+            .flex_none()
+            .h(theme.density().control)
+            .items_center()
+            .gap(tokens.spacing.xs)
+            .px(tokens.spacing.xs)
+            .rounded(theme.components().card_radius)
+            .cursor_pointer()
+            .text_size(tokens.typography.xs.size)
+            .line_height(tokens.typography.xs.line_height)
+            .text_color(extended.colors.text_tertiary)
+            .role(Role::Button)
+            .aria_label(SharedString::from(label.clone()))
+            .hover(move |style| style.bg(hover_tint))
+            .child(
+                Icon::new(if open {
+                    DuckIcon::ChevronDown
+                } else {
+                    DuckIcon::ChevronRight
+                })
+                .size(extended.icon.sm),
+            )
+            .child(div().truncate().child(SharedString::from(label)))
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    let _ = view.update(cx, |page, cx| page.toggle_deferred(cx));
+                }
+            }),
+    );
+
+    if open {
+        // 整段整体压暗一档：搁置卡与待办卡同形，只靠位置区分不够 —— 拖到别处之后
+        // 就再也看不出哪张是搁置过的。
+        section = section.child(
+            v_flex()
+                .w_full()
+                .gap(tokens.spacing.xs)
+                .opacity(extended.opacity.dim)
+                .children(deferred.iter().map(|task| {
+                    task_card(
+                        task,
+                        projects,
+                        today,
+                        selected == Some(task.id),
+                        checked.contains(&task.id),
+                        view,
+                        cx,
+                    )
+                })),
+        );
+    }
+
+    section.into_any_element()
+}
+
+/// 一列。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn kanban_column(
+    column: &BoardColumn,
+    tasks: &[&Task],
+    deferred: &[&Task],
+    deferred_open: bool,
+    projects: &[Project],
+    today: CalendarDate,
+    selected: Option<i64>,
+    checked: &[i64],
     view: &WeakEntity<ProjectsPage>,
     cx: &App,
 ) -> AnyElement {
@@ -70,7 +161,17 @@ pub(crate) fn kanban_column(
 
     let cards: Vec<AnyElement> = tasks
         .iter()
-        .map(|task| task_card(task, projects, today, selected == Some(task.id), view, cx))
+        .map(|task| {
+            task_card(
+                task,
+                projects,
+                today,
+                selected == Some(task.id),
+                checked.contains(&task.id),
+                view,
+                cx,
+            )
+        })
         .collect();
 
     // `drag_over` / `on_drop` / `hover` 的闭包必须是 `'static`，而 `extended` 借的是
@@ -84,7 +185,9 @@ pub(crate) fn kanban_column(
         .h_full()
         .min_h_0()
         .rounded(theme.components().card_radius)
-        .bg(extended.colors.chrome)
+        // 凹陷区底色（浅色下比 chrome 深一整档）：列要和画布分得开、白卡片要浮得起来，
+        // 见 `duck-theme::ExtendedColors::well`。
+        .bg(extended.colors.well)
         // 投放高亮：`drag_over` 只在**兼容载荷**悬停时才回调，天然就是判据，
         // 不需要自己在页面上记一个「现在悬在哪一列」。
         .drag_over::<TaskDrag>(move |style, _, _, _| style.bg(drop_target))
@@ -171,7 +274,19 @@ pub(crate) fn kanban_column(
                 .pb(tokens.spacing.xs)
                 .overflow_y_scroll()
                 .children(cards)
-                .when(tasks.is_empty(), |body| {
+                .when(status == TaskStatus::Todo && !deferred.is_empty(), |body| {
+                    body.child(deferred_section(
+                        deferred,
+                        deferred_open,
+                        projects,
+                        today,
+                        selected,
+                        checked,
+                        view,
+                        cx,
+                    ))
+                })
+                .when(tasks.is_empty() && deferred.is_empty(), |body| {
                     body.child(
                         div()
                             .w_full()

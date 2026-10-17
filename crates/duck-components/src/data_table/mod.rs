@@ -43,7 +43,7 @@ mod state;
 mod table;
 
 pub use events::{
-    CellDoubleClickHook, CellMenuHook, CellPos, DataTableEvent, DataTableHooks, DataTableLabels,
+    CellDoubleClickHook, CellMenuHook, CellPos, CellRange, DataTableEvent, DataTableHooks, DataTableLabels,
     HeaderMenuHook, RowDoubleClickHook,
 };
 pub use model::{

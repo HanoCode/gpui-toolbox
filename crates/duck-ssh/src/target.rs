@@ -269,6 +269,22 @@ impl Target {
         argv.push("ServerAliveInterval=30".to_owned());
         argv.push("-o".to_owned());
         argv.push("ServerAliveCountMax=3".to_owned());
+        // —— 超时 ——
+        //
+        // 没有 `ConnectTimeout` 时，一个「丢包但没 RST」的网络（公司网络、跨境线路、
+        // 断掉 Wi-Fi 后残留的路由）会让 `ssh` 卡在 TCP 握手上一分多钟，而我们这边
+        // 看到的就是「永远转圈」。10 秒是 OpenSSH 自己文档里的常用值：
+        // 正常握手（含一次 KEX）远在这之内，慢网络也够。
+        argv.push("-o".to_owned());
+        argv.push("ConnectTimeout=10".to_owned());
+        // —— locale 转发 ——
+        //
+        // 只在**客户端**声明要送还不够，还得 `~/.ssh/config` 里有 `SendEnv`。
+        // macOS 自带的那份有，很多 Linux 发行版的 `/etc/ssh/ssh_config` 里是注释掉的，
+        // 于是「同一个程序在两台机器上中文表现不同」。这里显式补上（`-o` 是累加的，
+        // 不会覆盖用户自己的 `SendEnv`）。
+        argv.push("-o".to_owned());
+        argv.push("SendEnv=LANG".to_owned());
         // —— 认证方法协商 ——
         //
         // 不写这一组时 ssh 会把**所有它能用的方法依次试一遍**：本机 ssh-agent 与
@@ -369,18 +385,23 @@ impl Target {
         argv
     }
 
-    /// 交互式终端会话的完整 argv（含 `-t` 与目标串）。
+    /// 交互式终端会话的完整 argv（含 `-t`、目标串与远端 locale 引导）。
     ///
     /// `-t` 是必须的：不强制分配 PTY，远端不会给 shell 提示符，
     /// 而且 `sudo`、`top` 这类程序会因为「不是终端」而拒绝运行。
     ///
     /// 端口转发**只在这里加**：`scp`（[`Self::scp_base_argv`]）不认识 `-L/-R/-D`。
+    ///
+    /// 目标串之后固定追加 [`locale_bootstrap`]（v4）：工具去适配服务器，而不是
+    /// 要求服务器改配置 —— 详见该函数的文档。它排在最后，因此调用点可以从
+    /// 「倒数第二个 argv」拿到目标串。
     #[must_use]
     pub fn terminal_argv(&self, socket_dir: Option<&Path>) -> Vec<String> {
         let mut argv = self.base_argv(socket_dir);
         argv.extend(self.forward_argv());
         argv.push("-t".to_owned());
         argv.push(self.destination());
+        argv.push(locale_bootstrap());
         argv
     }
 
@@ -403,7 +424,9 @@ impl Target {
     /// 口令走**环境变量**而不是 argv —— argv 在 `ps` 里对同机所有用户可见。
     #[must_use]
     pub fn env(&self, helper: Option<&Path>) -> Vec<(String, String)> {
-        let mut env = Vec::new();
+        // locale 先放：它**无条件**要给（见 [`locale_env`]），而后面的分支有好几处提前
+        // `return` —— 放进分支里就会「有口令才有 LANG」这种荒唐的耦合。
+        let mut env = locale_env();
         if self.auth == AuthMethod::Agent || self.agent_forwarding {
             env.extend(agent_env(Self::agent_socket()));
         }
@@ -448,6 +471,87 @@ impl Target {
             .filter(|socket| !socket.is_empty())
             .or_else(agent_socket_from_launchd)
     }
+}
+
+/// 让远端 shell 用**服务器自己的**登录 locale：只透传本进程真实的 `LANG`，
+/// 没有就不送（GUI 启动时就是这样）。
+///
+/// 为什么不再兜底 —— 两个版本先后被实测打脸，败因是同一条：**客户端猜不到
+/// 远端生成了哪些 locale**。
+///
+/// - v1 按 `AppleLocale` 猜 `zh_CN.UTF-8`：云服务器镜像通常没生成它，
+///   `setlocale` 失败打回 `C`，`ls` 把中文文件名转义成八进制；
+/// - v2 固定送 `C.UTF-8`：老 glibc（CentOS 7 一族）根本没有这个 locale，
+///   同样打回 `C` —— 用户实测依旧转义；
+/// - v3（本版）什么都不编造：远端登录 shell 用**自己的**默认 locale
+///   （`/etc/profile` → `/etc/default/locale` / `/etc/locale.conf`，发行版
+///   必然配好）。这正是 Tabby 等不送环境变量的终端在同一台服务器上显示
+///   正常的原因 —— 它只开 PTY + shell，一个 env 请求都不发。
+///
+/// - **v4（现行）**：v3 只覆盖「LANG 是好的」的服务器。用户的机器上
+///   `LANG=en_US.UTF-8` 却被 `LC_CTYPE=C` 单项压住（pam_env / `/etc/environment`
+///   / 老镜像的遗留配置都常见），远端 `ls` 照样把中文转义成八进制 ——
+///   客户端**改不了**远端的配置文件，但可以在登录时**引导**：见
+///   [`locale_bootstrap`]（只在交互式终端会话的 argv 末尾追加一次）。
+///   `locale_env` 本身维持 v3 语义：只透传真实值，绝不编造。
+///
+/// 从终端启动时进程里本来就带着用户自己的 `LANG`，照旧透传（`SendEnv=LANG`
+/// 在 [`Target::common_argv`] 里）；服务端 `AcceptEnv` 不收就自然回落服务器
+/// 默认 —— 两条路都通向「远端自己做主」。
+fn locale_env() -> Vec<(String, String)> {
+    locale_env_from(std::env::var("LANG").ok().as_deref())
+}
+
+/// [`locale_env`] 的纯函数核心（只为了可测：进程 env 取决于跑测试的机器）。
+fn locale_env_from(lang: Option<&str>) -> Vec<(String, String)> {
+    lang.filter(|value| !value.is_empty())
+        .map(|value| vec![("LANG".to_owned(), value.to_owned())])
+        .unwrap_or_default()
+}
+
+/// 远端 locale 引导命令（v4）：**工具适配服务器**，不要求服务器改配置。
+///
+/// 为什么客户端要做这件事：`locale` 是服务器侧状态，客户端送什么
+/// `AcceptEnv` 不收就作废，而服务器的 `LC_CTYPE=C`（pam_env、`/etc/environment`
+/// 或老镜像遗留）会把 `LANG=en_US.UTF-8` 单项压回 C —— GNU `ls` 在
+/// `LC_CTYPE=C` 下把一切非 ASCII 文件名判为「不可打印」，转义成八进制。
+/// 客户端改不了那些文件，但 `-t` 登录时可以带一条命令：先看远端
+/// **实际生效**的 charmap（`locale charmap` 已按 LC_ALL > LC_CTYPE 的优先级
+/// 算好），不是 UTF-8 就从 `locale -a` 里挑一个**服务器上真实存在**的
+/// UTF-8 locale 设给 `LC_CTYPE`，最后 exec 登录 shell。
+///
+/// 设计约束：
+///
+/// - **正常服务器一根手指都不碰**：charmap 已是 UTF-8 就直接 exec，服务器
+///   的语言偏好（`LC_MESSAGES` 等）原样保留；
+/// - **只在坏档覆盖**：`LC_ALL` 的优先级高于 `LC_CTYPE` —— 若服务器把它钉成
+///   非 UTF-8，只修 `LC_CTYPE` 会被无视（本地模拟实测），所以「探测到坏
+///   charmap 且找到可用 locale」的分支里两者一起设；此时用户整个字符集
+///   本来就是错的，覆盖是唯一出路；只探测到坏、没找到 locale 则不动
+///   （真 GBK 独占的服务器交还给 duck-term 的 GB18030 自动解码档）；
+/// - **候选 locale 必须查实存在**（`locale -a` + 全字匹配）才设 ——
+///   v2 的教训：编造 `C.UTF-8` 在老 glibc 上不存在，等于没设；
+/// - **整体包在 `sh -c` 里**：远端登录 shell 可能是 csh / fish，
+///   `$()`、`case` 这些 POSIX 语法不能直接喂给它；`SHELL` 由 sshd 设置成
+///   用户登录 shell，`exec "$SHELL" -l` 回到原样的登录环境（profile / rc
+///   照跑），体验与不带这条命令完全一致；
+/// - **命令串里不含单引号**：外层单引号引用靠这一点才闭合，钉在测试里；
+/// - **层层失败无害**：`locale`/`grep` 缺失或出错时 `l` 为空，不设变量
+///   直接 exec shell —— 最坏情况等于 v3。
+///
+/// 已知边界：如果用户自己的 `~/.bashrc` 在登录后又把 `LC_CTYPE` 设回 `C`，
+/// 那发生在本引导（exec 登录 shell）**之后**，客户端无能为力 —— 只能提示
+/// 用户删掉那行。
+fn locale_bootstrap() -> String {
+    concat!(
+        "exec sh -c 'c=$(locale charmap 2>/dev/null); ",
+        "case $c in *[Uu][Tt][Ff]*) ;; *) l=; for n in C.UTF-8 C.utf8 ",
+        "en_US.UTF-8 en_US.utf8 zh_CN.UTF-8 zh_CN.utf8; do ",
+        "if locale -a 2>/dev/null | grep -qix \"$n\"; then l=$n; break; fi; done; ",
+        "if [ -n \"$l\" ]; then LC_ALL=$l LC_CTYPE=$l; export LC_ALL LC_CTYPE; fi ;; esac; ",
+        "exec \"${SHELL:-/bin/sh}\" -l'"
+    )
+    .to_owned()
 }
 
 /// 问一次 launchd 要 agent socket（只有 macOS 有这一步，其余平台恒 `None`）。
@@ -513,7 +617,7 @@ impl Availability {
 
 /// 连接复用 socket 的路径。
 ///
-/// 用「`用户@主机:端口` 的哈希」做文件名，而不是把目标串直接当文件名：
+/// 用「[`connection_key`] 的哈希」做文件名，而不是把目标串直接当文件名：
 /// 主机名里可能有 `/`、`:` 等不能进文件名的字符，而且长度不可控
 ///（Unix domain socket 的路径上限是 104 字节，超了整个连接直接失败）。
 ///
@@ -522,10 +626,45 @@ impl Availability {
 #[must_use]
 pub fn control_path(socket_dir: &Path, target: &Target) -> PathBuf {
     let mut hasher = DefaultHasher::new();
-    target.destination().hash(&mut hasher);
-    target.port.hash(&mut hasher);
-    target.identity.hash(&mut hasher);
+    for part in connection_key(target) {
+        part.hash(&mut hasher);
+    }
     socket_dir.join(format!("{:016x}.sock", hasher.finish()))
+}
+
+/// 决定「能不能复用同一条 master」的全部字段。
+///
+/// ⚠️ 这份清单必须与 [`Target::common_argv`] 里**由档案决定**的选项一一对应。
+///
+/// 原因：`ControlMaster` 复用的是**第一个客户端**建立的那条连接，后加入的客户端
+/// 再传 `-o` / `-L` / `-R` 一律被忽略（`ssh` 只在建连时读它们）。所以两个
+/// 「目标相同、参数不同」的档案**绝不能**共用一个 socket —— 否则改完端口转发 /
+/// `ForwardAgent` 之后重连，连的还是旧那条，用户看到的就是「改了不生效」，
+/// 而且它会在 5 分钟后（`ControlPersist`）自己「好起来」，极难复现。
+///
+/// 只 hash 了「影响连接本身」的字段：`password` 不进（它是每次认证的凭据，
+/// 换了口令仍可复用同一条已建立的连接）；`options` 进（跳板机、ProxyCommand
+/// 这类一改就必须重建）。
+fn connection_key(target: &Target) -> Vec<String> {
+    let mut key = vec![
+        target.destination(),
+        format!("port={}", target.port),
+        format!(
+            "identity={}",
+            target
+                .identity
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ),
+        format!("auth={:?}", target.auth),
+        format!("agent={}", target.agent_forwarding),
+    ];
+    key.extend(target.options.iter().cloned());
+    for forward in &target.forwards {
+        key.push(format!("{} {}", forward.kind.value(), forward.spec()));
+    }
+    key
 }
 
 /// askpass 助手脚本的内容。
@@ -670,8 +809,9 @@ mod tests {
                 .any(|arg| arg.starts_with("LocalForward") || arg.starts_with("RemoteForward")),
             "不要用 -o LocalForward：那会走配置解析器的二次拆词"
         );
-        // 目标串仍排在最后，转发排在它前面。
-        assert_eq!(argv.last(), Some(&"root@10.0.1.11".to_owned()));
+        // 目标串仍在转发之后、locale 引导之前。
+        assert_eq!(argv.get(argv.len() - 2), Some(&"root@10.0.1.11".to_owned()));
+        assert_eq!(argv.last(), Some(&locale_bootstrap()));
     }
 
     #[test]
@@ -739,8 +879,32 @@ mod tests {
     fn terminal_argv_has_pty_and_destination() {
         let argv = target().terminal_argv(None);
         assert!(argv.contains(&"-t".to_owned()), "必须强制分配 PTY");
-        assert_eq!(argv.last(), Some(&"root@10.0.1.11".to_owned()));
+        // 目标串 + 引导命令收尾：目标在倒数第二，引导在最后。
+        assert_eq!(argv.get(argv.len() - 2), Some(&"root@10.0.1.11".to_owned()));
+        assert_eq!(argv.last(), Some(&locale_bootstrap()));
         assert!(argv.contains(&"22".to_owned()));
+    }
+
+    /// locale 引导命令（v4）的形态钉子：整体必须可被远端登录 shell 安全引用。
+    #[test]
+    fn locale_bootstrap_is_quoting_safe_and_self_contained() {
+        let bootstrap = locale_bootstrap();
+        // 命令 = `exec sh -c '<脚本体>'`：单引号只允许出现这一对，
+        // 脚本体里再有单引号就会截断外层引用。
+        let Some(body) = bootstrap
+            .strip_prefix("exec sh -c '")
+            .and_then(|rest| rest.strip_suffix('\''))
+        else {
+            panic!("引导命令必须是 `exec sh -c '...'` 形态：{bootstrap}");
+        };
+        assert!(!body.contains('\''), "脚本体里不允许单引号：{body}");
+        // 整条命令一个 argv，内部不得换行（argv 拼接会变成多条远端命令）。
+        assert!(!bootstrap.contains('\n'));
+        // 核心动作：探测 charmap、查实 locale 存在、只设 LC_CTYPE、exec 登录 shell。
+        assert!(body.contains("locale charmap"));
+        assert!(body.contains("locale -a"));
+        assert!(body.contains("LC_CTYPE=$l"));
+        assert!(body.ends_with("exec \"${SHELL:-/bin/sh}\" -l"));
     }
 
     #[test]
@@ -809,6 +973,18 @@ mod tests {
         assert!(debug.contains("***"));
     }
 
+    /// locale 只透传真实值：空串与缺失同权（GUI 启动 = 什么都不送，
+    /// 远端用自己的登录 locale —— 与 Tabby 同一条路）。
+    #[test]
+    fn locale_env_forwards_only_real_values() {
+        assert!(locale_env_from(None).is_empty());
+        assert!(locale_env_from(Some("")).is_empty());
+        assert_eq!(
+            locale_env_from(Some("zh_CN.UTF-8")),
+            vec![("LANG".to_owned(), "zh_CN.UTF-8".to_owned())]
+        );
+    }
+
     #[test]
     fn env_carries_password_through_helper_only() {
         let with_password = Target {
@@ -816,7 +992,9 @@ mod tests {
             ..target()
         };
         // 没有助手脚本路径时不设置任何 askpass 变量，避免连接卡在「等助手」上。
-        assert!(with_password.env(None).is_empty());
+        // （locale 只透传本进程真实的 LANG —— 有没有取决于跑测试的机器，
+        // 所以期望值现场算，见 `locale_env`。）
+        assert_eq!(with_password.env(None), locale_env());
 
         let env = with_password.env(Some(Path::new("/data/askpass.sh")));
         let pairs: Vec<(&str, &str)> = env
@@ -833,7 +1011,11 @@ mod tests {
         );
 
         // 没有口令时不设置：否则一个本来能走公钥的连接会卡在等助手上。
-        assert!(target().env(Some(Path::new("/data/askpass.sh"))).is_empty());
+        // locale 照常透传 —— 它与 askpass 无关。
+        assert_eq!(
+            target().env(Some(Path::new("/data/askpass.sh"))),
+            locale_env()
+        );
     }
 
     #[test]
@@ -978,13 +1160,14 @@ mod tests {
             ..target()
         };
         let env = agent.env(None);
+        // locale 透传（有没有取决于机器），socket 按解析结果注入。
+        let mut expected = locale_env();
         match Target::agent_socket() {
-            Some(socket) => assert_eq!(
-                env,
-                vec![("SSH_AUTH_SOCK".to_owned(), socket)],
-                "解析到 socket 就必须原样注入"
-            ),
-            None => assert!(env.is_empty(), "没解析到就别猜路径：{env:?}"),
+            Some(socket) => {
+                expected.push(("SSH_AUTH_SOCK".to_owned(), socket));
+                assert_eq!(env, expected, "解析到 socket 就必须原样注入");
+            }
+            None => assert_eq!(env, expected, "没解析到 socket 就别猜路径：{env:?}"),
         }
     }
 

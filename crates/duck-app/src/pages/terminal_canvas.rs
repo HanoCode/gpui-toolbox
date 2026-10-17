@@ -59,6 +59,7 @@
 //!    shell。这条规则落在内核（[`duck_term::encode`] 的第 0 步）而不是这里：可单测，
 //!    且新增调用点时漏填 `platform` 会编译报错。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,10 +67,10 @@ use duck_components::{
     ButtonVariant, DuckIcon, body_text, button, meta_text, notify, tabular_numbers, title_text,
 };
 use duck_term::{
-    CellSize, Color, Column, CursorShape, Dimensions, Encoded, Flags, KeyStroke, Line, MouseAction,
-    MouseModifiers, Palette, Point as TermPoint, SelectionKind, SelectionRange, Session,
-    SessionEvent, Side, SpawnOptions, TermLink, TermMouseButton, encode, encode_focus,
-    encode_mouse, prompt_bars, reports_motion,
+    CellSize, Color, Column, CursorShape, Dimensions, Encoded, Encoding, Flags, KeyStroke, Line,
+    MouseAction, MouseModifiers, Palette, Point as TermPoint, SelectionKind, SelectionRange,
+    Session, SessionEvent, Side, SpawnOptions, Suggestion, TermLink, TermMode, TermMouseButton,
+    encode, encode_focus, encode_mouse, prompt_bars, reports_motion, suggest as suggest_for,
 };
 use duck_theme::{ThemeMode, active_theme, tr, trf};
 use gpui::{
@@ -83,6 +84,11 @@ use gpui_component::{
     Icon,
     menu::{ContextMenuExt as _, PopupMenuItem},
     v_flex,
+};
+
+use super::terminal::suggest::{
+    SuggestState, history_host, last_word, load_history, path_candidates, remember_command,
+    save_history, suggest_popup,
 };
 
 use crate::pages::TerminalPage;
@@ -165,11 +171,40 @@ actions!(
         SelectAll,
         // 标签：主流终端的 `⌘T` / `⌘W`（此前只写在设置页的快捷键说明里，一条都没绑）。
         NewTab,
+        NewLocalTab,
+        // `⌘N`：统一选择器（搜连接 / 直接连 / 新建）。**不是**直接弹 14 字段表单 ——
+        // 临时连一台是高频动作，表单是它后面那一层。
+        QuickConnect,
         CloseTab,
+        ReopenClosedTab,
+        // 按方向切标签（`⌃Tab` / `⌃⇧Tab` / `⌘⇧[` / `⌘⇧]`）。
+        NextTab,
+        PreviousTab,
         // 缓冲区搜索（`⌘F`）。
         Find,
+        // SFTP / 文件面板（绑在页面级 `"TerminalPage"` 上下文，不是画布的 `"Terminal"`）：
+        // 焦点在画布里时这几条不生效，两边互不抢键。
+        EditPath,
+        RefreshPane,
+        NewFolderHere,
+        DeleteEntry,
+        CopyPath,
     ]
 );
+
+/// 切到第 N 张标签（`⌘1`..`⌘9`；越界是空操作）。
+///
+/// 用带字段的 action 而不是九条无参 action：键位表与处理器都只写一遍，
+/// 标签数量变化不用同步改九个地方（与数据库页的 `SwitchTabAt` 同一套做法）。
+///
+/// ⚠️ `⌘1`..`⌘8` 全局是**路由切换**：这里在更深的 `"TerminalPage"` 上下文里覆盖，
+/// 属于刻意的（主流终端里 `⌘1..9` 都是切标签）；离开终端页即恢复路由语义。
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = terminal, no_json)]
+pub struct SwitchTabAt {
+    /// 从 0 开始的标签下标。
+    pub index: usize,
+}
 
 /// 重连快照：把「这条会话当初是怎么起来的」冻下来，断开后可原样重放。
 ///
@@ -261,9 +296,21 @@ fn scrollback(cx: &App) -> usize {
     super::module_settings::terminal_settings(cx).scrollback as usize
 }
 
+/// 起会话时的编码：设置页「终端」的模块偏好，未知值回落 UTF-8。
+///
+/// 与 `scrollback` 同一条规矩：偏好只有一份（`kv: terminal.settings`），
+/// 会话不另存第二份 —— 之后的临时切换写在会话自己的 `EncodingHandle` 里。
+fn terminal_encoding(cx: &App) -> Encoding {
+    super::module_settings::terminal_settings(cx)
+        .encoding
+        .as_deref()
+        .and_then(Encoding::from_value)
+        .unwrap_or_default()
+}
+
 /// 终端使用的等宽字体族：设置页里填了就按它（去空白后为空 = 跟随主题），
 /// 否则用主题的等宽字体。
-fn mono_family(
+pub(crate) fn mono_family(
     prefs: &super::module_settings::TerminalSettings,
     fallback: SharedString,
 ) -> SharedString {
@@ -273,6 +320,28 @@ fn mono_family(
         .map(str::trim)
         .filter(|family| !family.is_empty())
         .map_or(fallback, |family| SharedString::from(family.to_owned()))
+}
+
+/// 画布用的等宽 `Font`（族名 + 回退链 + 等宽数字特性）。
+///
+/// **度量与绘制必须用同一个 `Font`**：`sync_cell_metrics` 量 `'m'` 的推进量决定格宽，
+/// `render_terminal_session` 按这个格宽排版。两处各拼一个 `Font` 时，只要有一处
+/// 忘了带回退链 / 特性，量出来的格子与实际字形就是两套度量 —— 整屏错位，
+/// 而且「只在用户改了字体设置之后」才出现。所以只留这一个构造出口。
+pub(crate) fn mono_font(
+    prefs: &super::module_settings::TerminalSettings,
+    fallback_family: SharedString,
+) -> Font {
+    Font {
+        family: mono_family(prefs, fallback_family),
+        // 等宽数字：终端里数字宽度不一致会让整列错位。
+        features: tabular_numbers(),
+        // 回退链：主字体里没有的字（CJK、Nerd 图标）由它接手。留空 = 交给系统级联
+        // （macOS 的 Menlo / SF Mono 本来就能级联到中日韩字体，所以缺省不改行为）。
+        fallbacks: super::module_settings::font_fallbacks(prefs),
+        weight: FontWeight::NORMAL,
+        style: FontStyle::Normal,
+    }
 }
 
 /// 一条会话的自动重连状态。
@@ -333,6 +402,29 @@ fn reconnect_after_disconnect(
     }
 }
 
+/// 「主题指纹」：决定要不要把配色 / 字号重新灌进内核。
+///
+/// 为什么要连**颜色**一起算进来：`Palette` 的十六进制 16 色来自主题配色的默认值，
+/// 而前景 / 背景 / 光标三项取自 `tokens.colors`。只看 `(深色?, 字号)` 的话，
+/// 「浅色主题 A → 浅色主题 B」这类切换指纹不变 ⇒ 画布底色、文字色、光标色**都不更新**，
+/// 只有退出重开标签才生效 —— 表现就是「换了主题，终端还是旧配色」。
+/// 这种 a→b 同深色档的切换恰好是用户最常做的（换一个更柔和的浅色主题）。
+type StyleKey = (bool, i32, [u8; 3], [u8; 3], [u8; 3]);
+
+/// 由「深色档 + 字号 + 实际要灌进去的调色板」算出指纹。
+///
+/// 取的是**调色板里的值**而不是主题 token 的原始值：写入内核的就是这几个字节，
+/// 比较它们才和「看起来变没变」严格对应。
+fn style_key_of(dark: bool, font_size: f32, palette: &Palette) -> StyleKey {
+    (
+        dark,
+        (font_size * 1000.) as i32,
+        palette.foreground,
+        palette.background,
+        palette.cursor,
+    )
+}
+
 /// 一个终端标签的运行时状态（本地 shell 与 SSH 会话共用）。
 pub(super) struct TerminalSession {
     /// 内核会话。`None` = 起 shell 失败（只试一次，不在每帧重试）。
@@ -350,8 +442,8 @@ pub(super) struct TerminalSession {
     title: Option<String>,
     /// 已灌进内核的配色。
     palette: Palette,
-    /// 主题指纹（深色?, 字号千分位），变了才重灌调色板。
-    style_key: (bool, i32),
+    /// 主题指纹（深色?, 字号千分位, 前景 / 背景 / 光标色），变了才重灌调色板。
+    style_key: StyleKey,
     /// 子进程**已退出**。
     ///
     /// 本地 shell 退出即「这个标签的使命结束了」，直接关标签；
@@ -411,6 +503,10 @@ pub(super) struct TerminalSession {
     plan: Option<RespawnPlan>,
     /// 自动重连状态（见 [`ReconnectState`]）。默认 `Idle`。
     reconnect: ReconnectState,
+    /// 智能提示弹层状态（候选 + 高亮位）。空 = 收起。
+    suggest: SuggestState,
+    /// shell 集成脚本是否已注入（每条会话至多一次；`spawn` 即发，字节在 PTY 里排队）。
+    shell_integration_sent: bool,
 }
 
 impl TerminalSession {
@@ -430,7 +526,8 @@ impl TerminalSession {
             title: None,
             palette,
             // 指纹先置一个不可能的值，逼第一帧就把主题色灌进去。
-            style_key: (true, i32::MIN),
+            // 一开始就与任何真实指纹都不相同：第一帧必定灌一次配色。
+            style_key: (true, i32::MIN, [0; 3], [0; 3], [0; 3]),
             exited: false,
             started: std::time::Instant::now(),
             origin: gpui::Point::default(),
@@ -443,6 +540,8 @@ impl TerminalSession {
             ime_cursor: std::cell::Cell::new((0, 0)),
             plan: None,
             reconnect: ReconnectState::Idle,
+            suggest: SuggestState::default(),
+            shell_integration_sent: false,
         }
     }
 
@@ -450,6 +549,7 @@ impl TerminalSession {
     fn spawn_local(cx: &mut Context<TerminalPage>) -> Self {
         let options = SpawnOptions {
             scrollback: scrollback(cx),
+            encoding: terminal_encoding(cx),
             ..SpawnOptions::default()
         };
         let cwd = options.cwd.clone();
@@ -475,7 +575,8 @@ impl TerminalSession {
             scroll_remainder: 0.,
             title: None,
             palette: Palette::default(),
-            style_key: (true, i32::MIN),
+            // 一开始就与任何真实指纹都不相同：第一帧必定灌一次配色。
+            style_key: (true, i32::MIN, [0; 3], [0; 3], [0; 3]),
             exited: true,
             started: std::time::Instant::now(),
             origin: gpui::Point::default(),
@@ -488,6 +589,8 @@ impl TerminalSession {
             ime_cursor: std::cell::Cell::new((0, 0)),
             plan: None,
             reconnect: ReconnectState::Idle,
+            suggest: SuggestState::default(),
+            shell_integration_sent: false,
         }
     }
 
@@ -505,7 +608,12 @@ impl TerminalSession {
         socket_dir: &std::path::Path,
         cx: &mut Context<TerminalPage>,
     ) -> Self {
-        let options = Self::ssh_options(target, socket_dir, None, None, scrollback(cx));
+        let options = {
+            let mut options = Self::ssh_options(target, socket_dir, None, None, scrollback(cx));
+            // 编码是显示层偏好（不进 argv），初值取当前设置；之后可热切。
+            options.encoding = terminal_encoding(cx);
+            options
+        };
         let mut live = Self::spawn(options, cx);
         live.plan = Some(RespawnPlan {
             target: Some(target.clone()),
@@ -517,8 +625,9 @@ impl TerminalSession {
 
     /// 构造 SSH 会话的 [`SpawnOptions`]（初起与重连共用同一份 argv 拼装）。
     ///
-    /// argv 来自 [`duck_ssh::Target::terminal_argv`]（`target.rs:290-296`：`-t` + 目标串，
-    /// 端口转发只在这一处加）—— 重连因此**重放的是同一条命令行**，而不是另写一套。
+    /// argv 来自 [`duck_ssh::Target::terminal_argv`]（`-t` + 目标串 + 远端 locale
+    /// 引导，端口转发只在这一处加）—— 重连因此**重放的是同一条命令行**，
+    /// 而不是另写一套。
     fn ssh_options(
         target: &duck_ssh::Target,
         socket_dir: &std::path::Path,
@@ -528,11 +637,17 @@ impl TerminalSession {
     ) -> SpawnOptions {
         // 口令走 askpass 助手（脚本落盘是幂等的，`duck_ssh` 自己也会落一次）。
         let helper = duck_ssh::askpass_script(socket_dir).ok();
-        // 终端里不该出现「上次登录时间」之外的宿主环境：清掉 `PWD` 之类的继承值，
-        // 让远端 shell 自己决定工作目录。
+        // 环境变量**必须从 `SpawnOptions::default()` 长出来**，不能整份替换：
+        // 那个默认值里带着 `TERM=xterm-256color` 与 `COLORTERM=truecolor`
+        //（`duck-term/src/session.rs:82`），是远端「能上 24 位色」的唯一来源。
+        // 此前这里写的是 `env: target.env(..)` —— 字段被整份覆盖，两条一起丢，
+        // 于是远端 `$TERM` 只剩 ssh 自己兜底的 `xterm`（16 色档），
+        // 而 `ls --color` / `git diff` 的加粗与真彩全部退化。
+        let mut env = SpawnOptions::default().env;
+        env.extend(target.env(helper.as_deref()));
         let mut options = SpawnOptions {
             shell: Some(("ssh".to_owned(), target.terminal_argv(Some(socket_dir)))),
-            env: target.env(helper.as_deref()),
+            env,
             scrollback,
             ..SpawnOptions::default()
         };
@@ -550,19 +665,28 @@ impl TerminalSession {
     ///
     /// 这是「重连」的全部：拿回当初的目标与尺寸，重放同一条 argv。会话键、标签、
     /// 分屏归属都不动 —— 调用方只把这个 `TerminalSession` 换回 `sessions` 表里的**原位**。
-    fn respawn(plan: &RespawnPlan, grid: (u16, u16), cx: &mut Context<TerminalPage>) -> Self {
+    ///
+    /// `encoding` 由调用方从**旧会话**读出来传进来：编码是用户对这条会话的临时选择
+    ///（可能是为了一个 GBK 日志），重连后不能悄悄回到设置页的默认值。
+    fn respawn(
+        plan: &RespawnPlan,
+        grid: (u16, u16),
+        encoding: Encoding,
+        cx: &mut Context<TerminalPage>,
+    ) -> Self {
         // 回滚行数取**当前**偏好，而不是会话当初那份：它是显示偏好（不进 argv），
         // 重连时用户多半正希望新起的这条跟上刚改过的设置。
         let scrollback = scrollback(cx);
         match &plan.target {
             Some(target) => {
-                let options = Self::ssh_options(
+                let mut options = Self::ssh_options(
                     target,
                     &plan.socket_dir,
                     plan.cwd.clone(),
                     Some(grid),
                     scrollback,
                 );
+                options.encoding = encoding;
                 let mut live = Self::spawn(options, cx);
                 live.plan = Some(RespawnPlan {
                     target: Some(target.clone()),
@@ -574,6 +698,7 @@ impl TerminalSession {
             None => {
                 let mut options = SpawnOptions {
                     scrollback,
+                    encoding,
                     ..SpawnOptions::default()
                 };
                 if let Some(cwd) = &plan.cwd {
@@ -612,6 +737,22 @@ impl TerminalSession {
     pub(super) fn write(&self, bytes: &[u8]) {
         if let Some(session) = self.session() {
             session.write(bytes);
+        }
+    }
+
+    /// 这条会话当前的编码（会话没起来时返回默认；仅用于「重连时沿用」与菜单标当前档）。
+    pub(super) fn encoding(&self) -> Encoding {
+        self.session()
+            .map_or_else(Encoding::default, |live| live.encoding())
+    }
+
+    /// 热切换编码：显示与输入立刻按新编码走，不重开会话。
+    ///
+    /// `pub(super)`：标签右键菜单与设置页都从这里进来，只此一条路 ——
+    /// 会话的编码状态只有内核那一份 `EncodingHandle`。
+    pub(super) fn set_encoding(&self, encoding: Encoding) {
+        if let Some(session) = self.session() {
+            session.set_encoding(encoding);
         }
     }
 
@@ -674,6 +815,11 @@ impl TerminalPage {
             if tab.kind == TabKind::Sftp {
                 continue;
             }
+            // 休眠标签（上次退出时恢复出来的）：不连，等用户点它。
+            // 分屏的右窗格跟着一起休眠 —— 一半连着一半灰着，比整条灰着更让人困惑。
+            if tab.dormant {
+                continue;
+            }
             if !self.sessions.contains_key(&tab.id) {
                 missing.push((tab.id.clone(), tab.kind, tab.id.clone()));
             }
@@ -720,7 +866,13 @@ impl TerminalPage {
             return;
         };
         let grid = live.grid;
-        let fresh = TerminalSession::respawn(plan, grid, cx);
+        let encoding = live.encoding();
+        let mut fresh = TerminalSession::respawn(plan, grid, encoding, cx);
+        // 手动重连把自动重连的计数**归零**（回到 `Idle`）：
+        // 留着 `Pending` 那个旧的 `due` 会在下一帧再触发一次 respawn，白起一条 ssh；
+        // 留着 `Armed` 的计数则会让用户手动救回来之后、下一次断线只剩几次机会。
+        // 「人已经出手了」的语义就是从头开始。
+        fresh.reconnect = ReconnectState::Idle;
         self.sessions.insert(key.to_owned(), fresh);
         // 新会话有新的焦点句柄：清掉「已经交过焦点」的标记，下一帧重新把键盘交给画布
         //（否则焦点停在一个已随旧会话 drop 掉的死句柄上，按键无处可去）。
@@ -755,6 +907,9 @@ impl TerminalPage {
 
     /// 取走所有会话的待处理事件；返回是否还有会话在跑。
     fn poll_sessions(&mut self, cx: &mut Context<TerminalPage>) -> bool {
+        // 标签集合变了就落盘（比指纹，幂等）。放在「会话为空就早退」之前 ——
+        // 空会话恰恰是最需要记下来的状态（用户刚关掉最后一个标签）。
+        self.persist_tabs(cx);
         if self.sessions.is_empty() {
             return false;
         }
@@ -784,6 +939,12 @@ impl TerminalPage {
         let mut host_key_failures: Vec<(String, HostKeySignals)> = Vec::new();
         // 标签的回写（标题 / 关闭）必须等会话表借完再动 —— 两者都在 `self` 上。
         let mut retitled: Vec<(String, Option<String>)> = Vec::new();
+        // 有输出的会话：输出意味着「网格可能变了」，建议候选要重算；顺带
+        // 摘一遍新完成的命令进历史（`D` 标记本身就会触发 Wakeup）。
+        let mut suggest_dirty: Vec<String> = Vec::new();
+        // 待注入 shell 集成脚本的会话（设置开关在循环外读一次）。
+        let mut inject_ids: Vec<String> = Vec::new();
+        let shell_integration_on = super::module_settings::terminal_shell_integration(cx);
         for (id, live) in &mut self.sessions {
             let Some(session) = live.session().map(Arc::clone) else {
                 continue;
@@ -872,17 +1033,34 @@ impl TerminalPage {
             }
             if repaint {
                 retitled.push((id.clone(), live.title.clone()));
+                suggest_dirty.push(id.clone());
                 dirty = true;
+            }
+            if shell_integration_on && !live.shell_integration_sent && !live.exited {
+                inject_ids.push(id.clone());
             }
         }
         for (id, title) in retitled {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                let next = title.unwrap_or_else(|| tab.title.clone());
-                if tab.title != next {
-                    tab.title = next;
+                // 标签名**恒等于档案名**，OSC 标题只进副标题：
+                // 远端跑一次 `vim` 再退出时，`title` 不该被改成 `/etc/nginx/nginx.conf`
+                //（那样用户就认不出这是哪台机器了）。OSC 22/23 复位时 `title` 是
+                // `None`，副标题跟着清空、标签回到只有档案名的样子。
+                if tab.subtitle != title {
+                    tab.subtitle = title;
                     dirty = true;
                 }
             }
+        }
+        // 有输出才动历史与建议：干转的轮询（空闲心跳）一无所获，直接跳过。
+        if !suggest_dirty.is_empty() {
+            self.ingest_commands(cx);
+            for id in &suggest_dirty {
+                self.refresh_suggestions(id, cx);
+            }
+        }
+        for id in inject_ids {
+            self.inject_shell_integration(&id, cx);
         }
         for id in exited {
             // 分屏的右窗格退出：**只收那一半**，标签留着 —— 另一半还好好的。
@@ -973,7 +1151,8 @@ impl TerminalPage {
                 continue;
             };
             let grid = live.grid;
-            let mut fresh = TerminalSession::respawn(plan, grid, cx);
+            let encoding = live.encoding();
+            let mut fresh = TerminalSession::respawn(plan, grid, encoding, cx);
             // 调控器随会话搬过去：Armed 表示「已发起过尝试，等结局」。
             fresh.reconnect = ReconnectState::Armed { driver };
             self.sessions.insert(key.clone(), fresh);
@@ -992,11 +1171,13 @@ impl TerminalPage {
         }
     }
 
-    /// 只保留 `keep` 里那些会话键的自动重连，其余全部撤销（切标签时调）。
+    /// 只保留 `keep` 里那些会话键的自动重连，其余全部撤销。
     ///
-    /// 依据团队约定：任何改变「当前正在看的会话」的动作都要撤销别处的计时器 ——
-    /// 否则用户已经切走，后台还在按退避起 `ssh`。`keep` 用切片而不是 `HashSet`：
-    /// 每次切换的集合都很小（标签 + 分屏两三个键），线性比较比建表划算。
+    /// **当前没有调用点**，保留它是因为「用户主动暂停后台重连」仍是一个合理动作
+    ///（例如笔记本切到电池模式时）。切标签**不是**这样的动作 —— 见
+    /// `terminal::tabs::TerminalPage::activate` 的说明：后台重连有次数上限，
+    /// 而它的全部价值就在于「用户没看的时候自己长回来」。
+    #[allow(dead_code)]
     pub(super) fn retain_reconnect_only(&mut self, keep: &[String]) {
         for (key, live) in &mut self.sessions {
             if reconnect_busy(live.reconnect) && !keep.iter().any(|k| k == key) {
@@ -1017,7 +1198,8 @@ impl TerminalPage {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let mono_token = tokens.typography.mono_md;
-        let font_size = px(self.terminal_font_size);
+        let font_size_value = self.font_size(cx);
+        let font_size = px(font_size_value);
         // 字体族 / 行高可被「设置 → 终端」覆盖（出厂默认 = 跟随主题）。
         // 这里每帧读一次模块偏好：它是个小对象的 `serde_json` 解析（亚微秒级），
         // 而字号/主题本来就要每帧现算（上面的理由），多这一份不改变量级。
@@ -1028,15 +1210,9 @@ impl TerminalPage {
             || mono_token.line_height.to_f64() / mono_token.size.to_f64(),
             |percent| f64::from(percent) / 100.,
         );
-        let line_height = px(self.terminal_font_size * ratio as f32);
+        let line_height = px(font_size_value * ratio as f32);
 
-        let font = Font {
-            family: mono_family(&prefs, tokens.typography.mono.clone()),
-            features: tabular_numbers(),
-            fallbacks: None,
-            weight: FontWeight::NORMAL,
-            style: FontStyle::Normal,
-        };
+        let font = mono_font(&prefs, tokens.typography.mono.clone());
         let text_system = window.text_system();
         let font_id = text_system.resolve_font(&font);
         // 等宽字体下所有字形的推进量相同，量一个 `'m'` 就够（`ch_advance` 在部分后端
@@ -1051,8 +1227,8 @@ impl TerminalPage {
         }
 
         let dark = theme.mode() == ThemeMode::Dark;
-        let style_key = (dark, (self.terminal_font_size * 1000.) as i32);
         let palette = palette_for(cx);
+        let style_key = style_key_of(dark, font_size_value, &palette);
         for live in self.sessions.values_mut() {
             live.cell = cell;
             if live.style_key == style_key {
@@ -1557,18 +1733,10 @@ impl TerminalPage {
         }
     }
 
-    /// 把系统剪贴板的内容写进 PTY（走内核的括号粘贴模式处理）。
-    fn paste_clipboard(&mut self, tab_id: &str, cx: &mut Context<TerminalPage>) {
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return;
-        };
-        let Some(session) = self.sessions.get(tab_id).and_then(TerminalSession::session) else {
-            return;
-        };
-        session.paste(&text);
-        session.scroll_to_bottom();
-        cx.notify();
-    }
+    // 粘贴不在这里：多行确认 / 折成一行 / 裁剪首尾那一整套在
+    // `terminal::paste`（`TerminalPage::paste_from_clipboard`）。早期的实现直接
+    // `session.paste(&text)` —— 多行文本里的每个换行都会立刻执行，等于把「复制一段
+    // 带注释的脚本」变成「照着跑一遍」。
 
     /// 全选（回滚区 + 当前屏幕）。
     fn select_all(&mut self, tab_id: &str, cx: &mut Context<TerminalPage>) {
@@ -1659,10 +1827,14 @@ impl TerminalPage {
         event: &KeyDownEvent,
         cx: &mut Context<TerminalPage>,
     ) {
+        // 建议弹层优先：它可见时 ↑/↓/→/Tab/Esc 是弹层的键，绝不透传进 PTY。
+        if self.suggest_handle_key(tab_id, event, cx) {
+            return;
+        }
         let Some(live) = self.sessions.get(tab_id) else {
             return;
         };
-        let Some(session) = live.session() else {
+        let Some(session) = live.session().map(Arc::clone) else {
             return;
         };
         let modifiers = event.keystroke.modifiers;
@@ -1717,6 +1889,222 @@ impl TerminalPage {
             },
             cx,
         );
+    }
+
+    // ── 智能提示（详见 docs/terminal-autocomplete-design.md）──────────────────
+
+    /// 建议弹层是否对这条会话可见。
+    fn suggest_visible(&self, tab_id: &str) -> bool {
+        self.sessions
+            .get(tab_id)
+            .is_some_and(|live| live.suggest.visible())
+    }
+
+    /// 弹层可见时拦截的按键。返回 `true` 表示事件已消费（调用点要
+    /// `stop_propagation`，不能再把字节写进 PTY）。
+    ///
+    /// 刻意**不拦**的键：`Enter`（关弹层照常提交）、普通字符（透传后等回显
+    /// 触发的 [`SessionEvent::Wakeup`] 重算候选）。
+    fn suggest_handle_key(
+        &mut self,
+        tab_id: &str,
+        event: &KeyDownEvent,
+        cx: &mut Context<TerminalPage>,
+    ) -> bool {
+        if !self.suggest_visible(tab_id) {
+            return false;
+        }
+        match event.keystroke.key.as_str() {
+            "up" => self.suggest_move(tab_id, -1, cx),
+            "down" => self.suggest_move(tab_id, 1, cx),
+            "tab" | "right" => self.suggest_accept(tab_id, cx),
+            "escape" => {
+                if let Some(live) = self.sessions.get_mut(tab_id) {
+                    live.suggest.clear();
+                }
+            }
+            // 回车 = 执行当前行，建议不参与。
+            "enter" => {
+                if let Some(live) = self.sessions.get_mut(tab_id) {
+                    live.suggest.clear();
+                }
+                return false;
+            }
+            _ => return false,
+        }
+        cx.stop_propagation();
+        cx.notify();
+        true
+    }
+
+    /// 移动弹层高亮（循环）。
+    fn suggest_move(&mut self, tab_id: &str, direction: i32, cx: &mut Context<TerminalPage>) {
+        let Some(live) = self.sessions.get_mut(tab_id) else {
+            return;
+        };
+        let count = live.suggest.items.len();
+        if count == 0 {
+            return;
+        }
+        let current = live.suggest.selected as i32;
+        live.suggest.selected = (current + direction).rem_euclid(count as i32) as usize;
+        cx.notify();
+    }
+
+    /// 接受当前高亮的建议：退格删掉已打的半个词（按**字符**数），再把差集
+    /// 写进 PTY —— 行编辑仍由 shell 完成，宿主只打字。
+    fn suggest_accept(&mut self, tab_id: &str, cx: &mut Context<TerminalPage>) {
+        let Some(live) = self.sessions.get(tab_id) else {
+            return;
+        };
+        let Some(session) = live.session().map(Arc::clone) else {
+            return;
+        };
+        let Some(item) = live
+            .suggest
+            .items
+            .get(live.suggest.selected % live.suggest.items.len().max(1))
+            .cloned()
+        else {
+            return;
+        };
+        // 光标此刻必须还停在输入末尾（弹层出现的前提），拿最新的输入行算差集。
+        let Some(input) = session.input_line() else {
+            return;
+        };
+        let backspaces = item.backspaces(&input.text);
+        let insert = item.insert_text(&input.text);
+        if backspaces > 0 {
+            session.write(&vec![0x7f; backspaces]);
+        }
+        if !insert.is_empty() {
+            session.write_str(&insert);
+        }
+        session.scroll_to_bottom();
+        // 接受不是终点：fish 式地接着给下一段建议（比如接受 `git status` 后
+        // 紧跟一个空格，下一轮给文件名候选）。
+        self.refresh_suggestions(tab_id, cx);
+        cx.notify();
+    }
+
+    /// 重新计算一条会话的建议候选。任何拿不到的前提（会话没了、设置关了、
+    /// 备用屏、不在提示符、输入为空）都收起弹层 —— 宁可漏弹。
+    fn refresh_suggestions(&mut self, tab_id: &str, cx: &App) {
+        // 历史装载要借 `self`，放在 `sessions` 可变借用**之前**。
+        self.ensure_history(cx);
+        let Some(live) = self.sessions.get_mut(tab_id) else {
+            return;
+        };
+        if !super::module_settings::terminal_suggest(cx) {
+            live.suggest.clear();
+            return;
+        }
+        let Some(session) = live.session() else {
+            live.suggest.clear();
+            return;
+        };
+        if session.term_mode().contains(TermMode::ALT_SCREEN) {
+            live.suggest.clear();
+            return;
+        }
+        let Some(input) = session.input_line() else {
+            live.suggest.clear();
+            return;
+        };
+        if input.text.trim_end().is_empty() {
+            live.suggest.clear();
+            return;
+        }
+        let Some(plan) = live.plan.as_ref() else {
+            live.suggest.clear();
+            return;
+        };
+        let host = history_host(plan.target.as_ref());
+        let history = self.term_history.get(&host).cloned().unwrap_or_default();
+        // 路径候选只给本地会话：远端列表要走 SFTP 通道（设计文档 M3），
+        // 现在挂进来只会让 SSH 会话的弹层响应变慢。
+        let paths = if plan.target.is_none() {
+            plan.cwd
+                .as_deref()
+                .map(|cwd| path_candidates(cwd, last_word(&input.text)))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        live.suggest.items = suggest_for(&input.text, &history, &paths, 8);
+        live.suggest.selected = 0;
+    }
+
+    /// 把各会话新完成的命令摘进历史（[`Session::drain_commands`] 的水位去重
+    /// 保证同一条命令只采一次），有新增才写 kv。
+    fn ingest_commands(&mut self, cx: &App) {
+        let mut fresh: Vec<(String, Vec<String>)> = Vec::new();
+        for (id, live) in &self.sessions {
+            let Some(session) = live.session() else {
+                continue;
+            };
+            let captured: Vec<String> = session
+                .drain_commands()
+                .into_iter()
+                .map(|record| record.command)
+                .collect();
+            if !captured.is_empty() {
+                fresh.push((id.clone(), captured));
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        self.ensure_history(cx);
+        for (id, commands) in fresh {
+            let Some(host) = self.session_host(&id) else {
+                continue;
+            };
+            for command in commands {
+                remember_command(&mut self.term_history, &host, &command);
+            }
+        }
+        save_history(cx, &self.term_history);
+    }
+
+    /// 会话的历史命名空间（SSH = 目标串，本地 = `localhost`）。
+    fn session_host(&self, tab_id: &str) -> Option<String> {
+        self.sessions.get(tab_id).and_then(|live| {
+            live.plan
+                .as_ref()
+                .map(|plan| history_host(plan.target.as_ref()))
+        })
+    }
+
+    /// 历史缓存惰性装载（kv 只读一次）。
+    fn ensure_history(&mut self, cx: &App) {
+        if !self.term_history_loaded {
+            self.term_history = load_history(cx);
+            self.term_history_loaded = true;
+        }
+    }
+
+    /// L2：把 shell 集成脚本发进会话（每条至多一次）。
+    ///
+    /// 字节在 PTY 里排队，shell 初始化完成读到即执行；远端 shell 不是
+    /// bash / zsh 时脚本自己退出去，一个多余的字节都不发。
+    fn inject_shell_integration(&mut self, tab_id: &str, cx: &App) {
+        let Some(live) = self.sessions.get_mut(tab_id) else {
+            return;
+        };
+        if live.shell_integration_sent || live.exited {
+            return;
+        }
+        if !super::module_settings::terminal_shell_integration(cx) {
+            return;
+        }
+        let Some(session) = live.session().map(Arc::clone) else {
+            return;
+        };
+        live.shell_integration_sent = true;
+        // 行首空格：bash 的 `HISTCONTROL=ignorespace` 与 zsh 的
+        // `HIST_IGNORE_SPACE` 都会把带空格开头的命令踢出历史 —— 尽力而为。
+        session.write_str(&format!(" {}\r", super::terminal::suggest::SHELL_INTEGRATION_SCRIPT));
     }
 
     /// 按行翻某个标签的视口（正数向上看历史，与 [`Session::scroll`] 同向）。
@@ -1842,18 +2230,11 @@ impl TerminalPage {
         //（度量与实际绘制用不同字体族会让整屏错位）。
         let prefs = super::module_settings::terminal_settings(cx);
         let mono: SharedString = mono_family(&prefs, tokens.typography.mono.clone());
-        let font_size = px(self.terminal_font_size);
+        let font_size = px(self.font_size(cx));
         let cell = live.cell;
         let line_height = px(cell.height);
 
-        let base_font = Font {
-            family: mono.clone(),
-            // 等宽数字：终端里数字宽度不一致会让整列错位。
-            features: tabular_numbers(),
-            fallbacks: None,
-            weight: FontWeight::NORMAL,
-            style: FontStyle::Normal,
-        };
+        let base_font = mono_font(&prefs, mono.clone());
 
         // 画布内边距：终端文字不贴边（与页面其余内容区同一对 token）。
         // 子元素的 `Bounds` 会自动扣掉它，`apply_canvas_size` 的列行换算因此天然正确。
@@ -1898,25 +2279,37 @@ impl TerminalPage {
                         .any(|(range_line, range)| *range_line == line && range.contains(&column))
                 });
                 if hovered_here {
-                    painted.underline = true;
+                    // 悬停的链接临时加一条下划线（内核没给下划线的那种链接也看得出来）。
+                    if painted.underline == UnderlineKind::None {
+                        painted.underline = UnderlineKind::Single;
+                    }
                 }
                 lines[row as usize].push(painted);
             }
 
             let mut rows: Vec<AnyElement> = Vec::with_capacity(screen_lines);
             for cells in &lines {
-                let (text, runs) = build_row(cells, &base_font);
-                rows.push(
-                    div()
-                        .h(line_height)
-                        .flex_none()
-                        // 行是**网格行**，不是流式文本：一行就是一行，绝不换行。
-                        // 换行的续行会溢出定高行盒、叠在下一行上 —— `ll` 这类长行
-                        // 一多就满屏鬼影。超宽的部分由画布 `overflow_hidden` 裁掉。
-                        .whitespace_nowrap()
-                        .child(gpui::StyledText::new(text).with_runs(runs))
-                        .into_any_element(),
-                );
+                // 一行 = 若干**按列定位**的段（见 [`build_segments`]）：段内可流式，
+                // 段与段之间按 `col × cell.width` 对齐，宽字符的宽度误差因此不跨段累积。
+                // 纯 ASCII 行仍然只有一段，元素数量与从前一样。
+                let mut row_div = div()
+                    .relative()
+                    .h(line_height)
+                    .flex_none()
+                    // 行是**网格行**，不是流式文本：一行就是一行，绝不换行。
+                    // 换行的续行会溢出定高行盒、叠在下一行上 —— `ll` 这类长行
+                    // 一多就满屏鬼影。超宽的部分由画布 `overflow_hidden` 裁掉。
+                    .whitespace_nowrap();
+                for segment in build_segments(cells, &base_font) {
+                    row_div = row_div.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left(px(segment.col as f32 * cell.width))
+                            .child(gpui::StyledText::new(segment.text).with_runs(segment.runs)),
+                    );
+                }
+                rows.push(row_div.into_any_element());
             }
 
             let cursor_row = content.cursor.point.line.0 + offset;
@@ -1987,6 +2380,23 @@ impl TerminalPage {
                     .child(gpui::StyledText::new(live.preedit.clone()).with_runs(vec![run]))
                     .into_any_element()
             });
+        // 建议弹层：锚在光标格上。候选是 `refresh_suggestions` 上一轮算的 ——
+        // 比本帧网格旧半帧是刻意的取舍（刷新跟随 Wakeup，不为它单独开锁）。
+        let suggest_overlay = (live.suggest.visible())
+            .then(|| {
+                let raw = cursor.as_ref()?;
+                suggest_popup(
+                    &live.suggest.items,
+                    live.suggest.selected,
+                    raw.row,
+                    raw.column,
+                    cell,
+                    line_height,
+                    live.grid.1 as usize,
+                    cx,
+                )
+            })
+            .flatten();
         // 光标由 `cursor_shape` 直接以「行 × 列」定位：它是 wrapper 的绝对定位子元素，
         // 而 wrapper 就是行的父容器 —— 两者**共享同一原点**，不做任何内边距补偿。
         // （曾在光标坐标里加 pad_x/pad_y 去凑外层容器的 padding box，实测真机上绝对
@@ -2068,12 +2478,38 @@ impl TerminalPage {
         let focus = live.focus.clone();
         // 断线重连入口：SSH 会话退出（多半是连接断了）后，画布底部给一条可操作的横幅。
         // 本地 shell 退出走的是「关标签」，不会走到这里 —— 它的 `plan.target` 是 `None`。
-        // 横幅第二行反映**自动重连状态**：排定中 / 已停止（次数用尽或错误不可重试）；
-        // 手动「重连」按钮始终在，即使自动重连已停止也留一条退路。
-        let reconnect_hint: Option<&'static str> = match live.reconnect {
-            ReconnectState::Pending { .. } => Some("自动重连中…"),
-            ReconnectState::Stopped => Some("已停止自动重连。"),
-            ReconnectState::Idle | ReconnectState::Armed { .. } => None,
+        //
+        // **这是全页唯一的一条断线横幅**：`terminal/render_terminal.rs` 里那条
+        // 「已断开 + 重新连接」的兄弟实现已经删掉（它俩同时出现在屏幕上，文案不同、
+        // 按钮语义也不同 —— 一个摘掉会话重来、一个走自动重连，用户只能猜）。
+        //
+        // 第二行反映**自动重连状态**：排定中给「第 n/N 次 · m 秒后重试」，
+        // 已停止说明理由；手动「重连」按钮始终在，即使自动重连已停也留一条退路。
+        let reconnect_hint: Option<String> = match live.reconnect {
+            ReconnectState::Pending { driver, due } => {
+                // 向上取整到秒：`as_secs()` 截断会让「0 秒后重试」闪一下。
+                let remaining = due.saturating_duration_since(std::time::Instant::now());
+                let secs = remaining.as_secs() + u64::from(remaining.subsec_millis() > 0);
+                Some(trf(
+                    cx,
+                    "自动重连 第 {}/{} 次 · {} 秒后重试",
+                    &[
+                        &driver.attempts.to_string(),
+                        &driver.max_attempts.to_string(),
+                        &secs.max(1).to_string(),
+                    ],
+                ))
+            }
+            ReconnectState::Armed { driver } => Some(trf(
+                cx,
+                "自动重连 第 {}/{} 次 · 正在连接…",
+                &[
+                    &driver.attempts.to_string(),
+                    &driver.max_attempts.to_string(),
+                ],
+            )),
+            ReconnectState::Stopped => Some(tr(cx, "已停止自动重连。").to_owned()),
+            ReconnectState::Idle => None,
         };
         let reconnect = (live.exited
             && live.plan.as_ref().is_some_and(|plan| plan.target.is_some()))
@@ -2091,9 +2527,7 @@ impl TerminalPage {
                 .border_t(theme.extended().stroke.thin)
                 .border_color(theme.extended().colors.hairline)
                 .child(body_text(tr(cx, "连接已断开。"), cx))
-                .when_some(reconnect_hint, |this, hint| {
-                    this.child(meta_text(tr(cx, hint), cx))
-                })
+                .when_some(reconnect_hint, |this, hint| this.child(meta_text(hint, cx)))
                 .child(
                     button(
                         SharedString::from(format!("terminal-reconnect-{tab_id}")),
@@ -2153,6 +2587,12 @@ impl TerminalPage {
             .on_action(cx.listener({
                 let tab_id = tab_id.to_owned();
                 move |this, _: &SendTab, _window, cx| {
+                    // 弹层可见时 Tab 是「接受建议」，不再是制表符。
+                    if this.suggest_visible(&tab_id) {
+                        this.suggest_accept(&tab_id, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
                     this.send_encoded(&tab_id, KeyStroke::key("tab"), cx);
                 }
             }))
@@ -2168,7 +2608,13 @@ impl TerminalPage {
             // 不在这里盖掉，Linux / Windows 用户的 SIGINT 就是死的。
             .on_action(cx.listener({
                 let tab_id = tab_id.to_owned();
-                move |this, _: &SendCtrlC, _window, cx| this.send_ctrl(&tab_id, "c", cx)
+                move |this, _: &SendCtrlC, _window, cx| {
+                    // Ctrl-C 会清掉整行输入：建议随之作废，先收弹层再发字节。
+                    if let Some(live) = this.sessions.get_mut(&tab_id) {
+                        live.suggest.clear();
+                    }
+                    this.send_ctrl(&tab_id, "c", cx)
+                }
             }))
             // 字号快捷键与工具条 ± 共用同一份状态（`terminal_font_size`），钳位也在同处。
             .on_action(cx.listener(|this, _: &ZoomIn, _window, cx| this.nudge_font_size(1., cx)))
@@ -2267,19 +2713,18 @@ impl TerminalPage {
             }))
             .on_action(cx.listener({
                 let tab_id = tab_id.to_owned();
-                move |this, _: &PasteFromClipboard, _window, cx| this.paste_clipboard(&tab_id, cx)
+                move |this, _: &PasteFromClipboard, window, cx| {
+                    this.paste_from_clipboard(&tab_id, window, cx);
+                }
             }))
             .on_action(cx.listener({
                 let tab_id = tab_id.to_owned();
                 move |this, _: &SelectAll, _window, cx| this.select_all(&tab_id, cx)
             }))
-            // —— 标签 ——
-            // 与工具条那条「新建 / 关闭」是同一份状态机（`terminal/tabs.rs`），
-            // 这里只是把 `⌘T` / `⌘W` 接到它上面。
-            .on_action(cx.listener(|this, _: &NewTab, _window, cx| this.new_local_tab(cx)))
-            .on_action(cx.listener(|this, _: &CloseTab, _window, cx| this.close_active_tab(cx)))
-            // 缓冲区搜索（⌘F）：动作从画布派发，所以搜的就是这一块画布的会话。
-            .on_action(cx.listener(|this, _: &Find, window, cx| this.open_find(window, cx)))
+            // —— 标签 / 查找 ——
+            // 这三个动作**不在这里处理**：它们的作用对象是「整页」（标签条、查找条），
+            // 键位也挂在页面级 `"TerminalPage"` 上下文、处理在页面根上。
+            // 在画布上也挂一份会让一次按键触发两次（画布 + 页面根都会收到）。
             // `track_focus` 只置 `focusable`、不置 `tab_stop`，不补这一行 Tab 键到不了这里。
             .tab_stop(true)
             .track_focus(&focus)
@@ -2427,41 +2872,116 @@ impl TerminalPage {
                     }
                 }),
             )
-            // 右键菜单：终端里最常用的三件事（复制 / 粘贴 / 全选）。
-            // 「复制」按**有没有选区**置灰 —— 菜单因此如实反映「现在能做什么」。
-            // 这个布尔在渲染期算：`selection_range` 走 `try_with_term`，拿不到锁当没有，
-            // 不会把 UI 线程按在 PTY 上。
+            // 右键菜单：终端里最常做的事都在这儿，不必先去找工具条上的按钮。
+            //
+            // 「复制」按**有没有选区**置灰，「复制连接信息」按**这个窗格有没有地址**
+            // 置灰 —— 菜单因此如实反映「现在能做什么」，而不是点下去才发现点了没用。
+            // 这两个布尔都在渲染期算：`selection_range` 走 `try_with_term`，拿不到锁
+            // 当没有，不会把 UI 线程按在 PTY 上。
             .context_menu({
                 let view = self.view.clone();
                 let menu_tab_id = tab_id.to_owned();
                 let has_selection = session.selection_range().is_some();
+                let address = self.address_for_session(tab_id);
+                let split_active = self.active_tab().is_some_and(|tab| tab.split.is_some());
                 move |menu, _, cx| {
-                    let menu = menu.item(
-                        PopupMenuItem::new(tr(cx, "复制"))
-                            .disabled(!has_selection)
-                            .on_click({
-                                let tab_id = menu_tab_id.clone();
-                                let view = view.clone();
-                                move |_, _, cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.copy_selection(&tab_id, cx);
-                                    });
-                                }
-                            }),
-                    );
-                    let menu = menu.item(PopupMenuItem::new(tr(cx, "粘贴")).on_click({
-                        let tab_id = menu_tab_id.clone();
-                        let view = view.clone();
-                        move |_, _, cx| {
-                            let _ = view.update(cx, |this, cx| this.paste_clipboard(&tab_id, cx));
-                        }
-                    }));
-                    menu.separator()
+                    let menu = menu
+                        .item(
+                            PopupMenuItem::new(tr(cx, "复制"))
+                                .disabled(!has_selection)
+                                .on_click({
+                                    let tab_id = menu_tab_id.clone();
+                                    let view = view.clone();
+                                    move |_, _, cx| {
+                                        let _ = view.update(cx, |this, cx| {
+                                            this.copy_selection(&tab_id, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .item(PopupMenuItem::new(tr(cx, "粘贴")).on_click({
+                            let tab_id = menu_tab_id.clone();
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.paste_from_clipboard(&tab_id, window, cx);
+                                });
+                            }
+                        }))
+                        // 「粘贴并执行」= 折成一行 + ⏎：粘一长串参数再敲回车的固定动作，
+                        // 折行是它有别于「粘贴」的全部意义（否则多行会逐行执行）。
+                        .item(PopupMenuItem::new(tr(cx, "粘贴并执行")).on_click({
+                            let tab_id = menu_tab_id.clone();
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.paste_and_run(&tab_id, window, cx);
+                                });
+                            }
+                        }))
                         .item(PopupMenuItem::new(tr(cx, "全选")).on_click({
                             let tab_id = menu_tab_id.clone();
                             let view = view.clone();
                             move |_, _, cx| {
                                 let _ = view.update(cx, |this, cx| this.select_all(&tab_id, cx));
+                            }
+                        }));
+                    menu.separator()
+                        .item(PopupMenuItem::new(tr(cx, "清屏")).on_click({
+                            let tab_id = menu_tab_id.clone();
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.clear_session(&tab_id, cx);
+                                });
+                            }
+                        }))
+                        .item(PopupMenuItem::new(tr(cx, "查找…")).on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| this.open_find(window, cx));
+                            }
+                        }))
+                        .item(
+                            PopupMenuItem::new(if split_active {
+                                tr(cx, "取消分屏")
+                            } else {
+                                tr(cx, "分屏")
+                            })
+                            .on_click({
+                                let view = view.clone();
+                                move |_, _, cx| {
+                                    let _ = view.update(cx, |this, cx| this.toggle_split(cx));
+                                }
+                            }),
+                        )
+                        .separator()
+                        .item(
+                            PopupMenuItem::new(tr(cx, "复制连接信息"))
+                                .disabled(address.is_none())
+                                .on_click({
+                                    let address = address.clone();
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        let Some(address) = address.clone() else {
+                                            return;
+                                        };
+                                        let _ = view.update(cx, |this, cx| {
+                                            this.copy_connection_text(address, window, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .item(PopupMenuItem::new(tr(cx, "增大字号")).on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| this.nudge_font_size(1., cx));
+                            }
+                        }))
+                        .item(PopupMenuItem::new(tr(cx, "减小字号")).on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| this.nudge_font_size(-1., cx));
                             }
                         }))
                 }
@@ -2485,6 +3005,9 @@ impl TerminalPage {
                     .when_some(cursor, |this, cursor| this.child(cursor))
                     // 预编辑覆盖层压在光标之上：组合中的那串字必须盖住光标格。
                     .when_some(preedit, |this, preedit| this.child(preedit))
+                    // 建议弹层压在预编辑之上：它只会在非组合期出现，两者不相逢，
+                    // 顺序只为可读性。
+                    .when_some(suggest_overlay, |this, popup| this.child(popup))
                     // 断线横幅压在最上层：它是唯一可点的操作，不能被子内容盖住。
                     .when_some(reconnect, |this, banner| this.child(banner))
                     // 挂 IME：一块空画布，paint 阶段把 `ElementInputHandler` 注册给本画布的
@@ -2669,15 +3192,109 @@ fn term_button(button: gpui::MouseButton) -> Option<TermMouseButton> {
 }
 
 /// 一个单元格画出来需要的最少信息。
+/// `SGR 2`（faint）把前景色压到多重的不透明度。
+///
+/// 0.6 是「看得出来更暗、但仍然读得清」的折中：再低（0.4）在深色主题上几乎消失，
+/// 再高（0.8）与正常文字几乎没差别。
+const DIM_FOREGROUND_ALPHA: f32 = 0.6;
+
+/// 下划线的画法（SGR `4:0..4:5`）。
+///
+/// 只有 `wavy` 一个开关是不够的：`git diff` 用双下划线标「新增」，拼写检查用波浪线
+/// 标「可疑」，两者在终端里必须一眼分得开。GPUI 的 `UnderlineStyle` 给了
+/// `thickness` 与 `wavy` 两个自由度，正好一一对上；点线 / 虚线没有对应形状，
+/// 退化成最细的直线（比「画成和单下划线一样粗」更接近原意）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UnderlineKind {
+    /// 无下划线。
+    None,
+    /// 单下划线（`SGR 4`）。
+    Single,
+    /// 双下划线（`SGR 4:2`）。
+    Double,
+    /// 波浪线（`SGR 4:3`，拼写检查）。
+    Curly,
+    /// 点线（`SGR 4:4`）。
+    Dotted,
+    /// 虚线（`SGR 4:5`）。
+    Dashed,
+}
+
+impl UnderlineKind {
+    /// 由内核 flags 判档。多位同时置起时按「越特殊越优先」取一个。
+    fn from_flags(flags: Flags) -> Self {
+        if flags.contains(Flags::UNDERCURL) {
+            Self::Curly
+        } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
+            Self::Double
+        } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+            Self::Dotted
+        } else if flags.contains(Flags::DASHED_UNDERLINE) {
+            Self::Dashed
+        } else if flags.contains(Flags::UNDERLINE) {
+            Self::Single
+        } else {
+            Self::None
+        }
+    }
+
+    /// 翻译成 GPUI 的画法（`None` = 不画）。
+    fn style(self, color: Option<Hsla>) -> Option<UnderlineStyle> {
+        let (thickness, wavy) = match self {
+            Self::None => return None,
+            Self::Single => (1., false),
+            Self::Double => (2., false),
+            Self::Curly => (1., true),
+            Self::Dotted | Self::Dashed => (0.5, false),
+        };
+        Some(UnderlineStyle {
+            color,
+            thickness: px(thickness),
+            wavy,
+        })
+    }
+}
+
+/// 两条下划线画法是否相同（run 合并用）。
+///
+/// 不直接比 `Option<UnderlineStyle>`：那要 `UnderlineStyle: PartialEq`（外部类型，
+/// 不保证有），逐字段比还顺带说明了「哪几项会影响合并」。
+fn same_underline(left: Option<UnderlineStyle>, right: Option<UnderlineStyle>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.color == right.color
+                && left.thickness == right.thickness
+                && left.wavy == right.wavy
+        }
+        _ => false,
+    }
+}
+
 struct CellPaint {
-    ch: char,
+    /// 这一格要画的字形（**字符串**，不是单个 `char`）。
+    ///
+    /// 带组合记号的字（`e` + U+0301 → `é`）在 alacritty 里是**同一个格**：
+    /// 基字符在 `cell.c`，组合记号在 `cell.zerowidth()`。只取 `cell.c` 会把它画成
+    /// 光秃秃的 `e` —— 文件名、`é` / `ü` 变音、部分 emoji 全都不对。
+    ch: String,
     fg: Hsla,
     /// 与终端底色不同才画（`None` = 用底色）。
     bg: Option<Hsla>,
     bold: bool,
     italic: bool,
-    underline: bool,
+    /// 下划线的画法（SGR `4:x`）。
+    underline: UnderlineKind,
+    /// 下划线自己的颜色（SGR `58`）；`None` = 跟文字同色。
+    underline_color: Option<Hsla>,
     strike: bool,
+    /// 宽字符**占位格**（`WIDE_CHAR_SPACER` / `LEADING_WIDE_CHAR_SPACER`）。
+    ///
+    /// 它自己没有字形（`ch` 只是个替身空格），但**仍占一列**：分段时要跳过它的字形
+    /// 累加列号，否则宽字符后面整行右移。
+    spacer: bool,
+    /// 宽字符本体（`WIDE_CHAR`）：占两列，字形由字体自己画宽。
+    wide: bool,
 }
 
 /// 光标要画在哪、画成什么样。
@@ -2695,13 +3312,16 @@ fn paint_cell(cell: &duck_term::Cell, colors: &duck_term::Colors, palette: &Pale
     // 宽字符占位格：它本身没有字形，前一个格子的字已经画了两列宽。
     if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
         return CellPaint {
-            ch: ' ',
+            ch: " ".to_owned(),
             fg: foreground(palette),
             bg: None,
             bold: false,
             italic: false,
-            underline: false,
+            underline: UnderlineKind::None,
+            underline_color: None,
             strike: false,
+            spacer: true,
+            wide: false,
         };
     }
 
@@ -2714,50 +3334,83 @@ fn paint_cell(cell: &duck_term::Cell, colors: &duck_term::Colors, palette: &Pale
     if flags.contains(Flags::HIDDEN) {
         fg = bg;
     }
+    // SGR 2（faint）：把前景色压暗。`DIM_BOLD` 也带 DIM 位，所以只看这一位。
+    // 用 alpha 而不是「把颜色变黑一点」：终端底色可能是任意色，往透明方向靠
+    // 与底色混出来的结果才是「暗」，直接算成黑在浅色主题上会变成一团污渍。
+    if flags.contains(Flags::DIM) {
+        fg = fg.opacity(DIM_FOREGROUND_ALPHA);
+    }
 
     // 底色与终端默认底色一致时不画 run 背景：让容器底色透出来，
     // 少一层绘制，也让「行尾之外」的空白与「行内空白」看起来是同一种底。
     let is_default_bg = bg == rgb_of(&palette.background);
+    // 基字符 + 组合记号：alacritty 把零宽字符挂在**同一个格**上，
+    // 这里拼回一个字符串，交给排版当一个簇处理。
+    let mut ch = String::with_capacity(4);
+    ch.push(cell.c);
+    if let Some(zerowidth) = cell.zerowidth() {
+        ch.extend(zerowidth);
+    }
     CellPaint {
-        ch: cell.c,
+        ch,
         fg,
         bg: (!is_default_bg).then_some(bg),
         bold: flags.contains(Flags::BOLD),
         italic: flags.contains(Flags::ITALIC),
-        underline: flags.intersects(Flags::UNDERLINE | Flags::DOUBLE_UNDERLINE | Flags::UNDERCURL),
+        underline: UnderlineKind::from_flags(flags),
+        // 下划线颜色是**独立**于前景色的（`SGR 58;…`）：`rli` / `git diff` 这类
+        // 工具用它把「行内哪一段被改了」标出来，跟着前景色走就丢了这层信息。
+        underline_color: cell
+            .underline_color()
+            .map(|color| resolve(color, colors, palette)),
         strike: flags.contains(Flags::STRIKEOUT),
+        spacer: false,
+        wide: flags.contains(Flags::WIDE_CHAR),
     }
 }
 
-/// 把一行单元格拼成文本与分色 run。
+/// 一行的文本累加器：一边写 `String` 一边记每个 run 的字节长。
 ///
 /// GPUI 的 `TextRun::len` 是**字节数**，且 `with_runs` 会在「run 长度之和 ≠ 文本长度」时
-/// 直接 panic（`elements/text.rs:526`）。所以这里一边写 `String` 一边记每个 run 的字节长，
-/// 逐格累加保证严丝合缝。相邻格子的样式完全相同就并进同一个 run —— 一整行白字只该产出一个
-/// run，否则一屏 200 列 × 50 行会变成一万个 run。
-fn build_row(cells: &[CellPaint], font: &Font) -> (String, Vec<TextRun>) {
-    let mut text = String::with_capacity(cells.len());
-    let mut runs: Vec<TextRun> = Vec::new();
-    // `(run, 已累计的字节长)`：`run.len` 要等这一格串结束才知道，先攒着。
-    let mut current: Option<(TextRun, usize)> = None;
+/// 直接 panic（`elements/text.rs:526`）。所以长度必须逐格累加，不能事后按字符数推。
+/// 相邻格子的样式完全相同就并进同一个 run —— 一整行白字只该产出一个 run，
+/// 否则一屏 200 列 × 50 行会变成一万个 run。
+struct RowText {
+    text: String,
+    runs: Vec<TextRun>,
+    /// `(run, 已累计的字节长)`：`run.len` 要等这一格串结束才知道，先攒着。
+    current: Option<(TextRun, usize)>,
+}
 
-    for cell in cells {
-        text.push(cell.ch);
-        let len = cell.ch.len_utf8();
-        let matches = current.as_ref().is_some_and(|(run, _)| {
+impl RowText {
+    fn with_capacity(cells: usize) -> Self {
+        Self {
+            text: String::with_capacity(cells),
+            runs: Vec::new(),
+            current: None,
+        }
+    }
+
+    fn push(&mut self, cell: &CellPaint, font: &Font) {
+        // 下划线的画法由「档位 + 颜色」两半决定，先算出来：合并判据与构造都用它，
+        // 两处各算一遍迟早不一致（一处算走「有 / 无」，另一处算成具体粗细）。
+        let underline = cell.underline.style(cell.underline_color);
+        self.text.push_str(&cell.ch);
+        let len = cell.ch.len();
+        let matches = self.current.as_ref().is_some_and(|(run, _)| {
             run.color == cell.fg
                 && run.background_color == cell.bg
                 && (run.font.weight == FontWeight::BOLD) == cell.bold
                 && (run.font.style == FontStyle::Italic) == cell.italic
-                && run.underline.is_some() == cell.underline
+                && same_underline(run.underline, underline)
                 && run.strikethrough.is_some() == cell.strike
         });
         if !matches {
-            if let Some((mut run, length)) = current.take() {
+            if let Some((mut run, length)) = self.current.take() {
                 run.len = length;
-                runs.push(run);
+                self.runs.push(run);
             }
-            current = Some((
+            self.current = Some((
                 TextRun {
                     len: 0,
                     font: Font {
@@ -2775,11 +3428,7 @@ fn build_row(cells: &[CellPaint], font: &Font) -> (String, Vec<TextRun>) {
                     },
                     color: cell.fg,
                     background_color: cell.bg,
-                    underline: cell.underline.then_some(UnderlineStyle {
-                        color: None,
-                        thickness: px(1.),
-                        wavy: false,
-                    }),
+                    underline,
                     strikethrough: cell.strike.then_some(gpui::StrikethroughStyle {
                         color: None,
                         thickness: px(1.),
@@ -2788,16 +3437,97 @@ fn build_row(cells: &[CellPaint], font: &Font) -> (String, Vec<TextRun>) {
                 0,
             ));
         }
-        if let Some((_, length)) = current.as_mut() {
+        if let Some((_, length)) = self.current.as_mut() {
             *length += len;
         }
     }
 
-    if let Some((mut run, length)) = current {
-        run.len = length;
-        runs.push(run);
+    fn finish(mut self) -> (String, Vec<TextRun>) {
+        if let Some((mut run, length)) = self.current.take() {
+            run.len = length;
+            self.runs.push(run);
+        }
+        (self.text, self.runs)
     }
-    (text, runs)
+}
+
+/// 一行里按列定位的一段文字。
+#[derive(Debug)]
+struct RowSegment {
+    /// 起始列（0 基）。
+    col: usize,
+    /// 这段的文本。
+    text: String,
+    /// 与 `text` 字节长严格对齐的 runs。
+    runs: Vec<TextRun>,
+}
+
+/// 把一行切成**按列绝对定位**的段。
+///
+/// 为什么不能整行当一段流式文本排：
+///
+/// 1. **宽字符**：一个 CJK 字占两列，它的占位格在 [`paint_cell`] 里是个空格。
+///    整行拼成 `"中 文 "` 交给排版时，字体画的 `中` 若比两格宽（或窄）一点点，
+///    后面**每个字**都会跟着偏 —— 40 个汉字就能偏出半屏。终端不能靠字体自觉。
+/// 2. **回退字体**：等宽字体常把 CJK 交给回退字体画，回退字体的推进量与主字体的
+///    格宽本来就没有契约。整行流式排布等于把两套度量混在一个坐标系里。
+///
+/// 所以每段自带一个**起点列**，渲染时按 `left = col × cell.width` 绝对定位：
+/// 段内错位不跨段累积，宽字符一律独占一段（错位只可能压在自己那两列里）。
+///
+/// 切段规则（顺序即优先级）：
+/// - 占位格**不产出字形**，但列号照样 +1（否则宽字符之后整行左移一格）；
+/// - 上一格是宽字符 → 断开（宽字符必须独占一段）；
+/// - 本格是宽字符 → 断开（它自己起一段）；
+/// - 样式变了 → 交给 [`RowText::push`] 自己断 run（同一段内可以多 run）。
+fn build_segments(cells: &[CellPaint], font: &Font) -> Vec<RowSegment> {
+    let mut segments: Vec<RowSegment> = Vec::new();
+    let mut row = RowText::with_capacity(cells.len());
+    let mut start = 0usize;
+    let mut col = 0usize;
+    let mut prev_wide = false;
+
+    for cell in cells {
+        if cell.spacer {
+            // 占位格：没有字形，只占列。
+            col += 1;
+            continue;
+        }
+        if prev_wide && !row.text.is_empty() {
+            let (text, runs) =
+                std::mem::replace(&mut row, RowText::with_capacity(cells.len())).finish();
+            segments.push(RowSegment {
+                col: start,
+                text,
+                runs,
+            });
+            start = col;
+        }
+        if cell.wide && !row.text.is_empty() {
+            let (text, runs) =
+                std::mem::replace(&mut row, RowText::with_capacity(cells.len())).finish();
+            segments.push(RowSegment {
+                col: start,
+                text,
+                runs,
+            });
+            start = col;
+        }
+        row.push(cell, font);
+        // 列号按**网格格**走：宽字符本体占一格、它的占位格占下一格，两格加起来才是
+        // 视觉上的两列宽。这里按格 +1、不在宽字符上 +2，否则占位格会把列号推过头。
+        col += 1;
+        prev_wide = cell.wide;
+    }
+    if !row.text.is_empty() {
+        let (text, runs) = row.finish();
+        segments.push(RowSegment {
+            col: start,
+            text,
+            runs,
+        });
+    }
+    segments
 }
 
 /// 光标块 / 竖线 / 下划线。坐标是**网格坐标**（行 × 列 × 单元格尺寸），
@@ -3113,14 +3843,40 @@ mod tests {
 
     fn plain(ch: char) -> CellPaint {
         CellPaint {
-            ch,
+            ch: ch.to_string(),
             fg: rgb_hsla(0xff, 0xff, 0xff),
             bg: None,
             bold: false,
             italic: false,
-            underline: false,
+            underline: UnderlineKind::None,
+            underline_color: None,
             strike: false,
+            spacer: false,
+            wide: false,
         }
+    }
+
+    /// 一个宽字符本体 + 它占位格的组合（内核就是这么发出来的）。
+    fn wide(ch: char) -> [CellPaint; 2] {
+        let mut body = plain(ch);
+        body.wide = true;
+        let mut spacer = plain(' ');
+        spacer.spacer = true;
+        [body, spacer]
+    }
+
+    /// 把一行切出的各段拼回「整行文本 + runs」。
+    ///
+    /// 画布早就改成逐段绝对定位了（[`build_segments`]）；这些断言按「整行」写更直观，
+    /// 拼回去再断言。拼法就是按段顺序连起来 —— 段是按列单调排列的。
+    fn row_text(cells: &[CellPaint], font: &Font) -> (String, Vec<TextRun>) {
+        let mut text = String::new();
+        let mut runs = Vec::new();
+        for segment in build_segments(cells, font) {
+            text.push_str(&segment.text);
+            runs.extend(segment.runs);
+        }
+        (text, runs)
     }
 
     /// run 的字节长之和**必须**等于文本字节长：`StyledText::with_runs` 在不等时
@@ -3137,7 +3893,7 @@ mod tests {
     fn row_runs_cover_the_text_exactly() {
         let font = mono_font();
         let cells: Vec<CellPaint> = "echo hi".chars().map(plain).collect();
-        let (text, runs) = build_row(&cells, &font);
+        let (text, runs) = row_text(&cells, &font);
         assert_eq!(text, "echo hi");
         assert_runs_cover(&text, &runs);
     }
@@ -3147,7 +3903,7 @@ mod tests {
     fn multibyte_cells_count_bytes_not_chars() {
         let font = mono_font();
         let cells: Vec<CellPaint> = "中文café".chars().map(plain).collect();
-        let (text, runs) = build_row(&cells, &font);
+        let (text, runs) = row_text(&cells, &font);
         assert_eq!(text.chars().count(), 6);
         assert!(text.len() > 6, "应当按字节计，实际 {} 字节", text.len());
         assert_runs_cover(&text, &runs);
@@ -3158,7 +3914,7 @@ mod tests {
     fn identical_styles_merge_into_one_run() {
         let font = mono_font();
         let cells: Vec<CellPaint> = "-".repeat(80).chars().map(plain).collect();
-        let (text, runs) = build_row(&cells, &font);
+        let (text, runs) = row_text(&cells, &font);
         assert_eq!(runs.len(), 1);
         assert_runs_cover(&text, &runs);
     }
@@ -3171,7 +3927,7 @@ mod tests {
         let mut bold = plain('C');
         bold.bold = true;
         cells.push(bold);
-        let (text, runs) = build_row(&cells, &font);
+        let (text, runs) = row_text(&cells, &font);
         assert_eq!(text, "abC");
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].len, 2);
@@ -3180,11 +3936,129 @@ mod tests {
         assert_runs_cover(&text, &runs);
     }
 
+    /// 纯 ASCII 的一行只切出一段，且起点是第 0 列 —— 元素数量与「整行一段」时代一致，
+    /// 绝对定位不该让普通行变慢。
+    #[test]
+    fn ascii_rows_stay_a_single_segment() {
+        let font = mono_font();
+        let cells: Vec<CellPaint> = "ls -la".chars().map(plain).collect();
+        let segments = build_segments(&cells, &font);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].col, 0);
+        assert_eq!(segments[0].text, "ls -la");
+        assert_runs_cover(&segments[0].text, &segments[0].runs);
+    }
+
+    /// 宽字符**独占一段**，且段起点落在那两列的第一列上。
+    ///
+    /// 这是「`print('中文'*40)` 末字与第 80 列格线对齐」那条验收的守卫：
+    /// 流式排布时占位格那个空格会再吃掉一格，几十个汉字就偏出半屏。
+    #[test]
+    fn wide_chars_get_their_own_column_anchored_segment() {
+        let font = mono_font();
+        let mut cells = Vec::new();
+        for ch in "中文".chars() {
+            cells.extend(wide(ch));
+        }
+        let segments = build_segments(&cells, &font);
+        assert_eq!(segments.len(), 2, "两个汉字 = 两段");
+        assert_eq!(segments[0].col, 0);
+        assert_eq!(segments[0].text, "中");
+        assert_eq!(segments[1].col, 2, "第二个汉字从第 2 列起（宽字符占两列）");
+        assert_eq!(segments[1].text, "文");
+        for segment in &segments {
+            assert_runs_cover(&segment.text, &segment.runs);
+            assert!(
+                !segment.text.contains(' '),
+                "占位格不该产出字形：{segment:?}"
+            );
+        }
+    }
+
+    /// 汉字夹在 ASCII 里：三段，起点分别是 0 / 1 / 3。
+    #[test]
+    fn mixed_rows_anchor_each_part_at_its_column() {
+        let font = mono_font();
+        let mut cells = vec![plain('a')];
+        cells.extend(wide('中'));
+        cells.push(plain('b'));
+        let segments = build_segments(&cells, &font);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|s| (s.col, s.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "a"), (1, "中"), (3, "b")]
+        );
+    }
+
+    /// 六档下划线各有各的画法：单线 1px、双线 2px、波浪线 wavy、点线/虚线退成细线。
+    /// 「都画成一条 1px 直线」等于把 `git diff` 的双下划线与拼写检查的波浪线
+    /// 压缩成同一个视觉信号 —— 那不如不画。
+    #[test]
+    fn underline_kinds_are_visually_distinct() {
+        let of = |kind: UnderlineKind| kind.style(None).map(|s| (f32::from(s.thickness), s.wavy));
+        assert_eq!(of(UnderlineKind::None), None);
+        assert_eq!(of(UnderlineKind::Single), Some((1.0, false)));
+        assert_eq!(of(UnderlineKind::Double), Some((2.0, false)));
+        assert_eq!(of(UnderlineKind::Curly), Some((1.0, true)));
+        // 点线 / 虚线没有对应形状：退成比单线更细的直线，至少与单线可区分。
+        assert_eq!(of(UnderlineKind::Dotted), Some((0.5, false)));
+        assert_eq!(of(UnderlineKind::Dashed), Some((0.5, false)));
+    }
+
+    /// `SGR 58` 给的下划线色要落到 `UnderlineStyle.color` 上，而不是被丢掉。
+    #[test]
+    fn underline_color_reaches_the_style() {
+        let red = rgb_hsla(0xff, 0x00, 0x00);
+        let style = UnderlineKind::Single.style(Some(red)).expect("有下划线");
+        assert_eq!(style.color, Some(red));
+    }
+
+    /// 单下划线与波浪线相邻时**不能合并**成一个 run：合并了就只能二选一，
+    /// 拼写检查的波浪线会被邻居的单线吞掉。
+    #[test]
+    fn different_underlines_do_not_merge() {
+        let font = mono_font();
+        let plain_cell = plain('a');
+        let mut curly = plain('b');
+        curly.underline = UnderlineKind::Curly;
+        let (_, runs) = row_text(&[plain_cell, curly], &font);
+        assert_eq!(runs.len(), 2, "画法不同就该是两个 run");
+        assert!(runs[1].underline.is_some_and(|style| style.wavy));
+    }
+
+    /// 组合记号留在**同一格**里：`e` + U+0301 是一个簇，不能拆成两段，
+    /// 也不能被当成「一格两列」——列号只按网格格走。
+    #[test]
+    fn combining_marks_stay_inside_their_cell() {
+        let font = mono_font();
+        let mut accented = plain('e');
+        accented.ch.push('\u{301}');
+        let cells = vec![accented, plain('x')];
+        let segments = build_segments(&cells, &font);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].col, 0);
+        assert_eq!(segments[0].text, "e\u{301}x");
+        assert_runs_cover(&segments[0].text, &segments[0].runs);
+    }
+
+    /// 全是占位格 / 全空的行走不出段：不能产出空 `StyledText`（`with_runs` 收空切片虽然合法，
+    /// 但空段定位在 0 列纯属浪费，行高由行容器自己撑着）。
+    #[test]
+    fn rows_without_glyphs_produce_no_segments() {
+        let font = mono_font();
+        assert!(build_segments(&[], &font).is_empty());
+        let mut spacer = plain(' ');
+        spacer.spacer = true;
+        assert!(build_segments(&[spacer], &font).is_empty());
+    }
+
     /// 空行（一帧都没拿到锁时的兜底行）：文本与 runs 都为空，`with_runs` 收空切片是合法的。
     #[test]
     fn empty_row_stays_empty() {
         let font = mono_font();
-        let (text, runs) = build_row(&[], &font);
+        let (text, runs) = row_text(&[], &font);
         assert!(text.is_empty());
         assert!(runs.is_empty());
         assert_runs_cover(&text, &runs);

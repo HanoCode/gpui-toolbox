@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 
 use super::*;
+// `Stateful` / `Div` 只在本文件的弹窗标题行用到：`super::*` 没转出这两个类型名。
+use gpui::{Div, Stateful};
 
 /// 这个引擎的「命名空间」是不是**就是库本身**？
 ///
@@ -359,27 +361,32 @@ pub(super) fn push_history(history: &mut Vec<String>, sql: &str, limit: usize) {
     history.truncate(limit.max(1));
 }
 
-/// 翻页用的 `ORDER BY` 档位：**用户排序列在前，主键随后兜底**。
+/// 翻页用的 `ORDER BY` 档位：**用户排序键按顺序在前，主键随后兜底**。
 ///
 /// 只按用户那一列排是不够的：同值行之间的先后在 SQL 里是**未定义**的，PG / MySQL
 /// 每页各排一次就可能给出不同顺序 → 翻页重复或漏行（`docs/database-design.md` §4.5）。
 /// 主键（唯一）随后补位，整条序才是全序。
 ///
-/// 用户排的列**本身就是主键的一部分**时不再重复挂一列（重复列不报错但没意义），
-/// 改用它指定的方向——否则「按主键降序」会被后面的升序主键抵消。
-pub(super) fn page_order(sort: Option<&SortSpec>, pk: &[String]) -> Vec<OrderBy> {
-    let mut order: Vec<OrderBy> = Vec::with_capacity(pk.len() + 1);
-    if let Some(spec) = sort
-        && !pk.contains(&spec.column)
-    {
-        order.push(if spec.descending {
-            OrderBy::desc(spec.column.clone())
+/// 去重口径：同一个列在追加键里出现两次时只认第一次（页面层点同一列会切方向
+/// 而不是新增一条，这里是防手滑的第二道闸）。主键列若已在用户键里，按其方向
+/// 排一次、不再重复追加 —— 否则「按主键降序」会被后面的升序主键抵消。
+pub(super) fn page_order_keys(keys: &[(String, bool)], pk: &[String]) -> Vec<OrderBy> {
+    let mut order: Vec<OrderBy> = Vec::with_capacity(keys.len() + pk.len());
+    for (column, descending) in keys {
+        if pk.contains(column) || order.iter().any(|item| item.column == *column) {
+            continue;
+        }
+        order.push(if *descending {
+            OrderBy::desc(column.clone())
         } else {
-            OrderBy::asc(spec.column.clone())
+            OrderBy::asc(column.clone())
         });
     }
     order.extend(pk.iter().map(|column| {
-        let descending = sort.is_some_and(|spec| spec.column == *column && spec.descending);
+        let descending = keys
+            .iter()
+            .find(|(name, _)| name == column)
+            .is_some_and(|(_, descending)| *descending);
         if descending {
             OrderBy::desc(column.clone())
         } else {
@@ -398,6 +405,127 @@ pub(super) fn row_as_tsv(row: &[duck_db::Value]) -> String {
         .map(|value| tsv_field(&value.render()))
         .collect::<Vec<_>>()
         .join("\t")
+}
+
+/// 这一格能不能进「合计 / 平均」：只有数据库侧的**数值族**算数。
+///
+/// 刻意**不**认 `Text` 里的数字字面量 —— 一列电话号码 / 邮编 / 订单号被当数值求和
+/// 只会得到一串离谱结果，「显示出来像数字」与「语义上是数值」不是一回事。
+///
+/// `Decimal` 走 `f64` 是有损的：合计只用来**读个量级**（精确值请看原格 / 复制走
+/// 精确文本），所以这里接受这点损失，而不是为它引一套定点数。
+pub(super) fn numeric_value(value: &duck_db::Value) -> Option<f64> {
+    use duck_db::Value;
+    match value {
+        Value::Int(number) => Some(*number as f64),
+        Value::UInt(number) => Some(*number as f64),
+        Value::Float(number) => Some(*number),
+        Value::Decimal(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// 选区的读数（底栏「N 格 · 合计 X · 平均 Y」）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct SelectionStats {
+    /// 选区里的格子数（含 NULL / 非数值格）。
+    pub cells: usize,
+    /// 真正参与合计的数值格数（NULL 与非数值格都不算）。
+    pub numeric: usize,
+    /// 数值格的合计。
+    pub sum: f64,
+    /// 数值格的平均（`numeric == 0` 时为 0，界面据此不显示平均）。
+    pub average: f64,
+}
+
+/// 统计一块矩形选区：`columns` 是**参与统计的列下标**（调用点传可见列）。
+///
+/// 传列下标而不是「列区间」：隐藏列不画也不该悄悄进合计 —— 用户看不见它，却让
+/// 计数从 6 变成 8 只会让人怀疑读数算错了。
+pub(super) fn selection_stats(
+    rows: &[Vec<duck_db::Value>],
+    range: super::CellRange,
+    columns: &[usize],
+) -> SelectionStats {
+    let (row_start, row_end, col_start, col_end) = range.bounds();
+    let mut stats = SelectionStats::default();
+    for row in rows
+        .get(row_start..=row_end.min(rows.len().saturating_sub(1)))
+        .unwrap_or(&[])
+    {
+        for col in columns
+            .iter()
+            .copied()
+            .filter(|col| (col_start..=col_end).contains(col))
+        {
+            stats.cells += 1;
+            if let Some(number) = row.get(col).and_then(numeric_value) {
+                stats.numeric += 1;
+                stats.sum += number;
+            }
+        }
+    }
+    if stats.numeric > 0 {
+        stats.average = stats.sum / stats.numeric as f64;
+    }
+    stats
+}
+
+/// 数字的展示文本：整数不带小数点，小数去掉尾随零（最多 6 位）。
+///
+/// 与 [`duck_db::Value::render`] 的分工：那个保精度（复制 / 导出走它），这个只服务
+/// 「合计 / 平均」这类**读数**——`0.1 + 0.2` 的浮点尾巴不该糊在底栏上。
+pub(super) fn format_number(value: f64) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    // 整数档：`1e15` 以内用 i64 打，超出就退回带指数的 `to_string`
+    //（否则 `as i64` 会静默饱和成一个完全不同的数）。
+    if value.fract() == 0. && value.abs() < 1e15 {
+        return format!("{}", value as i64);
+    }
+    let mut text = format!("{value:.6}");
+    while text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
+/// 选区复制成一块**矩阵 TSV**（只取 `columns` 里的列，按选区列序）。
+///
+/// 行内用 `\t`、行间用 `\n`：粘进 Excel / Sheets / Numbers 就是一块对齐的格子，
+/// 与「复制整行」同一个口径（[`row_as_tsv`] 同一份转义）。
+pub(super) fn selection_as_tsv(
+    rows: &[Vec<duck_db::Value>],
+    range: super::CellRange,
+    columns: &[usize],
+) -> String {
+    let (row_start, row_end, col_start, col_end) = range.bounds();
+    let picked: Vec<usize> = columns
+        .iter()
+        .copied()
+        .filter(|col| (col_start..=col_end).contains(col))
+        .collect();
+    let last = row_end.min(rows.len().saturating_sub(1));
+    rows.get(row_start..=last)
+        .unwrap_or(&[])
+        .iter()
+        .map(|row| {
+            picked
+                .iter()
+                .map(|col| {
+                    row.get(*col)
+                        .map(|value| tsv_field(&value.render()))
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 把结果集转成数据表组件的**中性模型**（见 `duck_components::data_table`）。
@@ -514,23 +642,6 @@ pub(super) fn thousands_separated(text: &str) -> String {
     }
 }
 
-/// 单元格的**粗分类**（与展示文本分开：NULL 压灰、将来数值右对齐 / JSON 单独阅览
-/// 都靠类型判，不靠「猜字符串像不像数字」）。
-///
-/// `Decimal` / `Date` / `Time` / `DateTime` 都归 `Text`：它们渲染出来就是文本
-/// （内核刻意不让数值经 `f64` 有损中转，保精度的字符串就是最终展示形态）。
-fn table_cell(value: &Value) -> CellValue {
-    let kind = match value {
-        Value::Null => CellKind::Null,
-        Value::Bool(_) => CellKind::Bool,
-        Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Decimal(_) => CellKind::Number,
-        Value::Json(_) => CellKind::Json,
-        Value::Bytes(_) => CellKind::Bytes,
-        Value::Text(_) | Value::Date(_) | Value::Time(_) | Value::DateTime(_) => CellKind::Text,
-    };
-    CellValue::new(kind, value.render())
-}
-
 /// 结果里**可见**的列：`(原始下标, 列)`，被「字段筛选」藏掉的按列名剔除。
 ///
 /// 保留下标是因为行数据（`Vec<Value>`）与列宽都按**完整**列序对齐 —— 渲染只是
@@ -545,6 +656,20 @@ pub(super) fn visible_columns(
         .enumerate()
         .filter(|(_, column)| !hidden.contains(&column.name))
         .map(|(index, column)| (index, column.clone()))
+        .collect()
+}
+
+/// 可见列的**下标**（不 clone 列本身）：选区统计 / 选区复制只关心「哪几列在画」。
+///
+/// 与 [`visible_columns`] 同一条判据（按列名判隐藏，见
+/// [`SessionView::hidden_columns`]），只是省掉了列的克隆 —— 底栏读数每帧都要一份，
+/// 没必要为它把整份列元信息复制一遍。
+pub(super) fn visible_column_indexes(columns: &[Column], hidden: &BTreeSet<String>) -> Vec<usize> {
+    columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| !hidden.contains(&column.name))
+        .map(|(index, _)| index)
         .collect()
 }
 
@@ -701,7 +826,45 @@ fn sort_key(value: Option<&Value>, floats: bool) -> SortKey {
     exact_parts(&text).map_or_else(|| SortKey::Text(text.to_lowercase()), SortKey::Exact)
 }
 
-/// 按某一列**重排行下标**（客户端排序，SQL 结果集的列头）。
+/// 排序键表的**三态轮转**（点列头 / `Shift+点击` 的共同实现）。
+///
+/// `additive = false`（普通点击）：只保留这一列 —— 同列走「升 → 降 → 取消」，
+/// 换列则从升序重来并**清掉**其余追加键（点另一列意味着「重新排」）。
+///
+/// `additive = true`（`Shift+点击`）：在这一列上「追加 → 切方向 → 移除」，
+/// 其余键原样保留（第 1 键仍是主排序）。
+pub(super) fn toggle_sort_keys_in(keys: &mut Vec<SortSpec>, column: &str, additive: bool) {
+    if !additive {
+        let same_first = keys.first().is_some_and(|spec| spec.column == column);
+        if same_first && !keys[0].descending {
+            keys.truncate(1);
+            keys[0].descending = true;
+        } else if same_first {
+            keys.clear();
+        } else {
+            keys.clear();
+            keys.push(SortSpec {
+                column: column.to_owned(),
+                descending: false,
+            });
+        }
+        return;
+    }
+    if let Some(position) = keys.iter().position(|spec| spec.column == column) {
+        if keys[position].descending {
+            keys.remove(position);
+        } else {
+            keys[position].descending = true;
+        }
+    } else {
+        keys.push(SortSpec {
+            column: column.to_owned(),
+            descending: false,
+        });
+    }
+}
+
+/// 按**排序键表**重排行下标（客户端排序，SQL 结果集的列头）。
 ///
 /// 只动下标、不动行数据：结果集仍是那**一份**（导出 / 编辑 / 多选都按原始行集走），
 /// 排序改变的是「网格按什么顺序看它」——与「结果内搜索」「客户端分页」同一层语义。
@@ -710,35 +873,48 @@ fn sort_key(value: Option<&Value>, floats: bool) -> SortKey {
 ///
 /// 1. `NULL` **恒在最后**（升序时）——`NULL` 不是「最小的值」，是「没有值」，
 ///    混在数字堆里会让人以为库里真有这个数；
-/// 2. 降序 = 升序结果**整体取反**：`NULL` 因此排到最前，与 PostgreSQL 的默认
+/// 2. 降序 = 该键的 `cmp` 取反：`NULL` 因此排到最前，与 PostgreSQL 的默认
 ///    `NULLS FIRST` 行为一致（同一个直觉，不是两套规则）；
-/// 3. 同键行按**原行号**定序（`then_with`）：全序、结果可复现 —— 只按键排的话
-///    同值行的先后由排序算法决定，翻页 / 重排时看着像在跳。
-pub(super) fn sort_row_indexes(
+/// 3. 全键相等时返回 `Equal`（`sort_by` 稳定）：同值行保持原来的先后，
+///    重排 / 翻页时看着不会「跳」。
+pub(super) fn sort_row_indexes_multi(
     rows: &[Vec<Value>],
     indexes: &mut [usize],
-    column: usize,
-    descending: bool,
+    keys: &[(usize, bool)],
 ) {
-    // 「本列有没有浮点」先扫一遍（O(行数)）：有就把**全部**数值抬到 `f64`，
-    // 免得在比较函数里反复解析一遍（那是 O(比较次数)，多得多）。
-    let floats = rows
+    if keys.is_empty() {
+        return;
+    }
+    // 每一列各自先扫一遍「有没有浮点」：有就把该列的数值全抬成 `f64`，把
+    // O(比较次数) 的解析压成 O(行数)。
+    let floats: Vec<bool> = keys
         .iter()
-        .any(|row| matches!(row.get(column), Some(Value::Float(_))));
-    let mut keyed: Vec<(SortKey, usize)> = indexes
-        .iter()
-        .map(|index| {
-            let key = sort_key(rows.get(*index).and_then(|row| row.get(column)), floats);
-            (key, *index)
+        .map(|(column, _)| {
+            rows.iter()
+                .any(|row| matches!(row.get(*column), Some(Value::Float(_))))
         })
         .collect();
-    keyed.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    for (slot, (_, index)) in indexes.iter_mut().zip(keyed) {
-        *slot = index;
-    }
-    if descending {
-        indexes.reverse();
-    }
+    indexes.sort_by(|left, right| {
+        for (position, (column, descending)) in keys.iter().enumerate() {
+            let left_key = sort_key(
+                rows.get(*left).and_then(|row| row.get(*column)),
+                floats[position],
+            );
+            let right_key = sort_key(
+                rows.get(*right).and_then(|row| row.get(*column)),
+                floats[position],
+            );
+            let ordering = if *descending {
+                right_key.cmp(&left_key)
+            } else {
+                left_key.cmp(&right_key)
+            };
+            if ordering != std::cmp::Ordering::Equal {
+                return ordering;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
 }
 
 /// 结果内搜索的命中行：升序的**原始行下标**（空词 / 纯空白 = 不过滤，全部命中）。
@@ -1095,6 +1271,58 @@ pub(super) fn open_confirm(
     });
 }
 
+/// 「未保存的更改」弹窗的标题行：琥珀警告三角 + 标题 + ✕。
+///
+/// 与 [`modal_title_row`] 同一座舱（拖拽区在 [`modal_drag_area`]，✕ 关弹窗），
+/// 只是标题前面多一枚警告图标 —— 「接下来这个选择丢的是东西」要先于正文被看见
+///（dbx 的 closeConfirm 同款）。
+pub(super) fn unsaved_title_row(title: impl Into<SharedString>, cx: &App) -> Stateful<Div> {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let icon_size = theme.extended().icon.md;
+    let close_label = tr(cx, "关闭");
+    h_flex()
+        .id("db-unsaved-title")
+        .w_full()
+        .flex_none()
+        .items_center()
+        .justify_between()
+        .gap(tokens.spacing.sm)
+        .child(
+            h_flex()
+                .min_w_0()
+                .items_center()
+                .gap(tokens.spacing.sm)
+                .child(
+                    Icon::new(DuckIcon::TriangleAlert)
+                        .size(icon_size)
+                        .text_color(theme.extended().colors.warning),
+                )
+                .child(div().min_w_0().truncate().child(title_text(title, cx))),
+        )
+        .child(
+            toolbar_action_button(
+                "db-unsaved-title-close",
+                close_label,
+                Icon::new(DuckIcon::X).size(icon_size),
+                false,
+                false,
+                cx,
+            )
+            .on_click(|_, window, cx| window.close_dialog(cx)),
+        )
+}
+
+/// 「有没有未保存的更改」的**纯判据**（dbx 的 `isTabDirty` 同口径）：
+/// 文本非空、且与基线不同。
+///
+/// 两条边界都是有意为之：**空文本不算脏**（刚从「＋」开出来的空标签关掉不该弹窗），
+/// **与基线逐字相同也不算脏**（载入 / 保存之后原样没动）。基线缺失按空串算 ——
+/// 那是「新标签」的语义。
+pub(super) fn sql_is_dirty(text: &str, original: Option<&str>) -> bool {
+    !text.trim().is_empty() && Some(text) != original
+}
+
 /// 编辑表单的**指纹**：列名 + 展示原值 + NULL 位。
 ///
 /// 回答的问题是「这份表单服务的那一行还是不是原来那一行」。结果重取 / 翻页 / 换表
@@ -1107,4 +1335,266 @@ pub(super) fn specs_stamp(specs: &[(String, String, bool)]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     specs.hash(&mut hasher);
     hasher.finish()
+}
+
+// ── 建表 DDL 的两处解析（结构编辑器的「约束」「分区」两页）───────────────────
+
+/// 从建表 DDL 里抠出 `CHECK (...)` 约束：`(约束名〔可能为空〕, 括号内表达式)`。
+///
+/// 为什么在界面层解析、不新增内核内省：`list_constraints` 要在七条驱动上各写一份
+///（`information_schema` / `pg_constraint` / `sqlite_master` / `sys.check_constraints`），
+/// 而建表 DDL 本来就在手边（DDL 页显示的就是同一份文本）。`CHECK` 的写法在
+/// SQLite / MySQL / PG 上语义一致，一段扫描三档通用。
+///
+/// 口径三条：
+///
+/// 1. 只认**词边界**上的 `CHECK`（不然 `CHECKSUM` 也会命中）；
+/// 2. 括号按**配对深度**取（`CHECK (a IN (1, 2))` 的内层括号不能提前收尾），
+///    并且跳过 `'…'` / `"…"` / `` `…` `` 里的内容与反斜杠转义；
+/// 3. 约束名只在**同一个逗号分隔项**里往前找 —— 跨过逗号就把上一列的 `CONSTRAINT`
+///    名字认成这一条的。
+#[must_use]
+pub(super) fn parse_check_constraints(ddl: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let upper = ddl.to_ascii_uppercase();
+    let bytes = ddl.as_bytes();
+    let mut cursor = 0usize;
+    while let Some(offset) = upper[cursor..].find("CHECK") {
+        let start = cursor + offset;
+        let after_keyword = start + "CHECK".len();
+        cursor = after_keyword;
+        if !is_word_at(bytes, start, after_keyword) {
+            continue;
+        }
+        // 字符串字面量里的 `CHECK`（`CHECK (note <> 'CHECK (x)')`）不是关键字：
+        // 只看前缀就能判断（DDL 是几 KB 的量级，这点重复扫描比维护一套状态机划算）。
+        if inside_string(bytes, start) {
+            continue;
+        }
+        let Some(open) = skip_spaces(bytes, after_keyword) else {
+            continue;
+        };
+        if bytes.get(open) != Some(&b'(') {
+            continue;
+        }
+        let Some(close) = matching_paren(bytes, open) else {
+            continue;
+        };
+        found.push((
+            constraint_name_before(&ddl[..start]),
+            ddl[open + 1..close].trim().to_owned(),
+        ));
+        cursor = close;
+    }
+    found
+}
+
+/// 从建表 DDL 里摘出分区子句（`PARTITION BY …` 起到语句结束）。
+///
+/// MySQL 的 `SHOW CREATE TABLE` 把分区放在表选项之后（`… ) ENGINE=InnoDB PARTITION BY …`），
+/// PG 的 `CREATE TABLE` 把它写在列清单之后（`… ) PARTITION BY RANGE (a);`）—— 两种都
+/// 只要「从 `PARTITION BY` 到结尾」这一段，所以不做结构化拆分：分区定义里的
+/// `VALUES LESS THAN (…)` / `FOR VALUES FROM … TO …` 列表照原样给人看，拆开只会拆丢。
+#[must_use]
+pub(super) fn parse_partition_clause(ddl: &str) -> Option<String> {
+    let upper = ddl.to_ascii_uppercase();
+    let start = upper.find("PARTITION BY")?;
+    let clause = ddl[start..].trim_end().trim_end_matches(';').trim_end();
+    (!clause.is_empty()).then(|| clause.to_owned())
+}
+
+/// `position` 这个下标是否落在某个字符串字面量里面（`'…'` / `"…"` / `` `…` ``）。
+fn inside_string(bytes: &[u8], position: usize) -> bool {
+    let mut quote: Option<u8> = None;
+    let mut index = 0usize;
+    while index < position {
+        let byte = bytes[index];
+        if let Some(active) = quote {
+            if byte == b'\\' {
+                index += 1;
+            } else if byte == active {
+                if bytes.get(index + 1) == Some(&active) {
+                    index += 1;
+                } else {
+                    quote = None;
+                }
+            }
+        } else if matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+        }
+        index += 1;
+    }
+    quote.is_some()
+}
+
+/// `start..end` 这个下标区间是不是一个完整的词（两侧都不是标识符字符）。
+fn is_word_at(bytes: &[u8], start: usize, end: usize) -> bool {
+    let is_word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let before = start == 0 || !is_word(bytes[start - 1]);
+    let after = end >= bytes.len() || !is_word(bytes[end]);
+    before && after
+}
+
+/// 从 `index` 起第一个非空白字符的下标。
+fn skip_spaces(bytes: &[u8], mut index: usize) -> Option<usize> {
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_whitespace() {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
+/// `open` 位置那个 `(` 的配对 `)` 下标。
+///
+/// 跳过三种情况：嵌套括号（按深度）、引号包裹的文本（`'…'` / `"…"` / `` `…` ``）、
+/// 双写的引号（SQL 的 `''` 转义）。
+fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut index = open;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active) = quote {
+            if byte == b'\\' {
+                // MySQL 风格的反斜杠转义：`\'` 不闭合字符串。
+                index += 1;
+            } else if byte == active {
+                if bytes.get(index + 1) == Some(&active) {
+                    // `''` 是转义，不闭合。
+                    index += 1;
+                } else {
+                    quote = None;
+                }
+            }
+        } else {
+            match byte {
+                b'\'' | b'"' | b'`' => quote = Some(byte),
+                b'(' => depth += 1,
+                b')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+/// `CHECK` 之前、同一个逗号分隔项里最近的那个 `CONSTRAINT <name>` 的名字。
+fn constraint_name_before(prefix: &str) -> String {
+    let tail_start = prefix.rfind(',').map_or(0, |index| index + 1);
+    let tail = &prefix[tail_start..];
+    let upper = tail.to_ascii_uppercase();
+    let Some(position) = upper.find("CONSTRAINT") else {
+        return String::new();
+    };
+    tail[position + "CONSTRAINT".len()..]
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '"' | '`' | '.'))
+        .collect::<String>()
+        .trim_matches(|ch| matches!(ch, '"' | '`'))
+        .to_owned()
+}
+
+// ── 光标下的标识符路径（表名跳转 / 悬停看表结构）─────────────────────────────
+
+/// 标识符里允许出现的字符（未加引号的那一档）。
+///
+/// `is_alphanumeric` 是 **Unicode** 判定，所以中文表名（`用户`）也成一个词 ——
+/// 这些引擎里它们本来就得加引号，但光标落上去时仍该认得出来。
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '_' | '$')
+}
+
+/// 光标（UTF-8 字节偏移）所在的那个**标识符路径**：`(字节范围, "schema.table")`。
+///
+/// 「路径」= 点号连起来的若干段（`public.users`、`u.id`），不是单词 —— 因为界面要
+/// 用整段去对目录里的限定名：只取末段的话，`public.users` 与 `other.users` 会指向
+/// 同一张表。
+///
+/// 口径三条：
+///
+/// 1. 左右各自按「标识符字符」扩，**不跨空白 / 括号 / 逗号**；
+/// 2. 点号只有在**两边都是标识符**时才吃进来（`users.` 停在 `users`，
+///    `1.5` 停在 `5` 而不是把数字拼成一段 —— 数字本身仍算标识符，见第 3 条）；
+/// 3. 光标落在词边界上（左边是空白）时取右边那一段；落在标点中间时返回 `None`
+///    —— 没有「词」可言，别硬猜一个出来。
+///
+/// 引号标识符按「去引号」处理：`"users"` 里光标落上去得到 `users`（引号不是标识符
+/// 字符），这正是查目录要的形状。
+#[must_use]
+pub(super) fn identifier_path_at(
+    text: &str,
+    offset: usize,
+) -> Option<(std::ops::Range<usize>, String)> {
+    if offset > text.len() || !text.is_char_boundary(offset) {
+        return None;
+    }
+
+    // ① 光标所在的那一段。
+    let mut start = offset;
+    for (index, ch) in text[..offset].char_indices().rev() {
+        if !is_identifier_char(ch) {
+            break;
+        }
+        start = index;
+    }
+    let mut end = offset;
+    for (index, ch) in text[offset..].char_indices() {
+        if !is_identifier_char(ch) {
+            break;
+        }
+        end = offset + index + ch.len_utf8();
+    }
+    if start == end {
+        return None;
+    }
+
+    // ② 向右吃掉 `.segment`（点号两边都得是标识符）。
+    loop {
+        let rest = &text[end..];
+        if !rest.starts_with('.') {
+            break;
+        }
+        let mut grown = 0usize;
+        for (index, ch) in rest[1..].char_indices() {
+            if !is_identifier_char(ch) {
+                break;
+            }
+            grown = 1 + index + ch.len_utf8();
+        }
+        if grown == 0 {
+            break;
+        }
+        end += grown;
+    }
+
+    // ③ 向左同理。
+    loop {
+        let head = &text[..start];
+        if !head.ends_with('.') {
+            break;
+        }
+        let head = &head[..head.len() - 1];
+        let mut shrunk = None;
+        for (index, ch) in head.char_indices().rev() {
+            if !is_identifier_char(ch) {
+                break;
+            }
+            shrunk = Some(index);
+        }
+        match shrunk {
+            Some(index) => start = index,
+            None => break,
+        }
+    }
+
+    Some((start..end, text[start..end].to_owned()))
 }

@@ -36,6 +36,11 @@ pub(crate) const LIST_LIMIT: usize = 400;
 /// 连接状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinkStatus {
+    /// 从未连接过（档案在，但这次运行还没开过标签）—— 灰点。
+    ///
+    /// 与 [`Self::Disconnected`] 分开：红点的意思是「连过、现在断了」，
+    /// 给一条从没打开过的档案发红点是**撒谎** —— 用户会以为自己刚掉线。
+    Idle,
     /// 已连接。
     Connected,
     /// 连接中。
@@ -48,6 +53,7 @@ impl LinkStatus {
     /// 状态文案（i18n 源串）。
     pub(crate) const fn label(self) -> &'static str {
         match self {
+            Self::Idle => "未连接",
             Self::Connected => "已连接",
             Self::Connecting => "连接中",
             Self::Disconnected => "已断开",
@@ -55,9 +61,14 @@ impl LinkStatus {
     }
 
     /// 状态点颜色，取任务状态 token（与工具箱状态栏同一套语义色）。
+    ///
+    /// `Idle` 用前景色的**弱化档**而不是某个状态色：它不是一种「状态」，
+    /// 只是「这里有个档案、还没连过」。
     pub(crate) fn color(self, cx: &App) -> Hsla {
-        let colors = active_theme(cx).extended().colors;
+        let theme = active_theme(cx);
+        let colors = theme.extended().colors;
         match self {
+            Self::Idle => theme.tokens().colors.muted_foreground,
             Self::Connected => colors.status_completed,
             Self::Connecting => colors.status_downloading,
             Self::Disconnected => colors.status_paused,
@@ -101,7 +112,16 @@ pub(crate) struct SessionTab {
     /// 稳定标识：本地终端用 `local-<序号>`，远程用连接 id，SFTP 用 `<连接 id>/sftp`。
     pub(crate) id: String,
     /// 标签名（i18n 源串或连接显示名）。
+    ///
+    /// **只由档案决定，不被程序改写**：远端 shell 发 OSC 0/2 时改的是
+    /// [`Self::subtitle`]。以前这里直接被 OSC 标题覆盖，于是在远端跑一次 `vim`
+    /// 再退出，标签就永远叫 `/etc/nginx/nginx.conf` 了 —— 用户认不出那是哪台机器。
     pub(crate) title: String,
+    /// 副标题：远端 shell 上报的 OSC 标题（`vim`、`ssh` 里的 `top` 等）或 `None`。
+    ///
+    /// 显示在标签名之后、弱化色。OSC 22/23（复位标题）落回 `None`，
+    /// 标签随即回到只有档案名的样子。
+    pub(crate) subtitle: Option<String>,
     /// 会话类型。
     pub(crate) kind: TabKind,
     /// 连接状态。
@@ -119,6 +139,16 @@ pub(crate) struct SessionTab {
     /// 或在连接右键菜单里选「在分屏中打开」。与 `split` **同生共死**，
     /// 两处只在 [`Self::set_split`] / 清分屏的地方一起改。
     pub(crate) split_owner: Option<String>,
+    /// **休眠**：标签是从上次退出时恢复出来的，但**还没**连过。
+    ///
+    /// 恢复会话与「自动连上去」是两件事：重启应用就去拨五台生产机，等于替用户
+    /// 做了一次他没做的动作（还可能撞上跳板机的二次认证 / 2FA 弹窗）。
+    /// 休眠标签在标签栏里是灰的，点一下（[`TerminalPage::activate`]）才醒，
+    /// 唤醒后 `ensure_sessions` 才给它起会话。
+    ///
+    /// 不参与持久化：它只描述「本次进程内还没连过」，存下来反而会在下次启动时
+    /// 把「已经连着的标签」也标成灰的。
+    pub(crate) dormant: bool,
 }
 
 impl SessionTab {
@@ -161,6 +191,35 @@ pub(crate) fn split_owner_for(kind: TabKind, tab_id: &str) -> String {
 /// 且 `#` 不在 `duck_platform::secret` 的键名白名单里，谁也不会误当档案 id 去查连接。
 pub(crate) fn split_session_key(tab_id: &str) -> String {
     format!("{tab_id}#2")
+}
+
+/// 同主机第二条会话的标签 id（`⌘T`）。
+///
+/// 用 `~2` 而不是 `#2`：`#2` 已经是**分屏右窗格**的会话键后缀
+///（[`split_session_key`]），两者都是 `sessions` 这张表的键 ——
+/// 撞在一起会出现「开第二条会话时，Prod 标签的右半窗格突然变成另一条会话」。
+///
+/// `n` 从 2 起（第一条就是档案 id 本身）。
+pub(crate) fn duplicate_tab_id(owner: &str, n: u32) -> String {
+    format!("{owner}~{n}")
+}
+
+/// 从标签 / 会话键里取出**档案 id**。
+///
+/// 标签 id 上挂着两种后缀：`/sftp`（SFTP 面板）与 `~n`（同主机第 n 条会话）。
+/// 凡是要回答「这条标签属于哪份档案」的地方都必须经过这里 ——
+/// 少剥一层就会拿着 `prod~2` 去档案表里查，查不到，于是连接详情空白、
+/// `ssh` 起不来，而编译期不会有任何提示。
+pub(crate) fn tab_owner(id: &str) -> &str {
+    let id = id.strip_suffix("/sftp").unwrap_or(id);
+    match id.rsplit_once('~') {
+        Some((base, tail))
+            if !base.is_empty() && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => id,
+    }
 }
 
 /// 认证方式：决定新建连接弹窗里展开哪一组字段。
@@ -289,6 +348,16 @@ pub(crate) struct StoredProfile {
     /// 所以它与认证方式正交，任何一种认证都能开。
     #[serde(default)]
     pub(crate) agent_forwarding: bool,
+    /// 跳板机（OpenSSH `ProxyJump`，`ssh -J` 的原文）。
+    ///
+    /// 两种写法都收：`user@bastion:2222`（单跳），或逗号分隔的多跳
+    /// `user@a,user@b:2200`（ssh 自己会按顺序串起来）。留空 = 直连。
+    ///
+    /// 存**原文**而不是解析成结构体：多跳、别名（`~/.ssh/config` 里的 `Host` 名）、
+    /// `none` 这类写法全是 ssh 自己的语法，拆开再拼一遍只会丢东西。
+    /// 合法性判据见 [`validate_proxy_jump`]，拼参数见 [`proxy_jump_option`]。
+    #[serde(default)]
+    pub(crate) proxy_jump: String,
 }
 
 /// 一条端口转发的**持久化形态**（随连接档案落 `kv: ssh_profiles`）。
@@ -332,6 +401,42 @@ pub(crate) fn forward_from_stored(stored: &StoredForward) -> Option<duck_ssh::Po
 /// 连接档案的存储键。
 pub(crate) const KEY_PROFILES: &str = "ssh_profiles";
 
+/// 跳板机原文是否可用（返回 **i18n 源串**；空串表示直连，合法）。
+///
+/// 只拦**必然连不上**的两类写法，不替用户做语法校验 —— 多跳、`Host` 别名、
+/// `none` 都是 ssh 自己的语法，这里认不全，硬拦会挡掉合法配置：
+///
+/// - **空白**：走 `-o ProxyJump=<值>` 时，`-o` 的值会被 ssh 的配置解析器
+///   **再拆一次词**（与 `ControlPath` 同一个坑）。带空格的写法到这里必然被拆坏，
+///   报的还是「keyword proxyjump extra arguments at end of line」这种读不懂的错。
+/// - **引号**：同上，引号会开启一个被引号包裹的 token，把后面的内容整段吞掉。
+///
+/// 「是不是真的能连上」交给 `ssh` 自己说 —— 「测试连接」按钮就是为这个存在的。
+#[must_use]
+pub(crate) fn validate_proxy_jump(raw: &str) -> Result<(), &'static str> {
+    let value = raw.trim();
+    if value.contains(|c: char| c.is_whitespace()) {
+        return Err("跳板机地址里不能有空格。");
+    }
+    if value.contains(['"', '\'']) {
+        return Err("跳板机地址里不能有引号。");
+    }
+    Ok(())
+}
+
+/// 由档案里的跳板机原文拼出给 `ssh` 的 `-o` 值（空串 → `None`，不是跳板连）。
+///
+/// 返回的是**整条 `-o` 值**（`ProxyJump=user@bastion`）而不是裸地址：调用方把它
+/// 原样推进 [`duck_ssh::Target::options`]，拼法（用哪个选项名）只在这一处出现。
+#[must_use]
+pub(crate) fn proxy_jump_option(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(format!("ProxyJump={value}"))
+}
+
 /// 内置本地 shell 的固定 id（不是用户档案）。
 pub(crate) const LOCAL_SHELL_ID: &str = "local-shell";
 
@@ -365,6 +470,117 @@ pub(crate) fn save_profiles(cx: &App, profiles: &[StoredProfile]) {
         Ok(json) => duck_store::kv_put(cx, KEY_PROFILES, json),
         // 序列化失败只可能是存储层坏了；不写半截 JSON 覆盖掉用户的档案。
         Err(error) => tracing::error!(%error, "ssh profiles serialization failed"),
+    }
+}
+
+// ── 快速连接：直接连一台 / 最近用过 ────────────────────────────────────────
+
+/// 「最近用过的连接」的存储键（档案 id 的 JSON 数组，最新的在前）。
+pub(crate) const KEY_RECENT: &str = "ssh_recent";
+
+/// 最近列表保留几条。
+///
+/// 选择器里只展示 3 条，多存几条是为了「第 3 条被删了」时还能从存储里补上一档；
+/// 再长就没意义了——没人从第 9 条里找机器。
+pub(crate) const RECENT_CAP: usize = 8;
+
+/// 选择器里展示几条「最近」。
+pub(crate) const RECENT_SHOWN: usize = 3;
+
+/// 临时连接的 id 前缀。
+///
+/// 与档案 id 隔开是必需的：档案 id 由 `unique_connection_id` 从标签名派生，
+/// 用户完全可以给一台机器起名 `direct-1` —— 同前缀就会撞上一条只活在内存里的
+/// 临时连接，表现是「点档案打开的是上一次临时连的那台」。
+/// `:` 不在 `unique_connection_id` 的清洗字符集里，撞不上。
+pub(crate) const AD_HOC_PREFIX: &str = "direct:";
+
+/// `user@host:port` 的解析结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectTarget {
+    pub(crate) user: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+}
+
+/// 把「直接连」那一行输入解析成目标。
+///
+/// 接受的写法：`host` / `host:port` / `user@host` / `user@host:port`，
+/// IPv6 走方括号（`[::1]:22`）。用户名缺省取本机登录名（与终端里 `ssh host`
+/// 的行为一致），端口缺省 22。
+///
+/// **解析失败必须返回 `None` 而不是猜**：这一行的结果会直接变成一条 `ssh` 进程，
+/// 猜错的代价是「弹了一个窗口，里面是 ssh 的报错」。拒绝的只有三类：
+/// 空白（会被 shell 拆成多个参数）、以 `-` 开头（会被 ssh 当成选项）、
+/// 端口不是 1..=65535 的数字。
+pub(crate) fn parse_direct_target(raw: &str) -> Option<DirectTarget> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.chars().any(char::is_whitespace) {
+        return None;
+    }
+    // 主机部分不许以 `-` 开头：`ssh -oProxyCommand=…` 这类写法一旦能进来，
+    // 「输入地址」这个框就变成了「执行任意 ssh 选项」。
+    if raw.starts_with('-') {
+        return None;
+    }
+    let (user, rest) = match raw.split_once('@') {
+        Some((user, rest)) => {
+            if user.is_empty() || user.starts_with('-') || rest.is_empty() {
+                return None;
+            }
+            (user.to_owned(), rest)
+        }
+        // 没写用户名：取本机登录名。取不到就留空，由 ssh 自己按默认走
+        //（`ssh host` 在没有 `-l` 时用的是本机用户名）。
+        None => (std::env::var("USER").unwrap_or_default(), raw),
+    };
+    // IPv6：[::1] / [::1]:22 —— 冒号在方括号内不拆端口。
+    let (host, port) = if let Some(rest) = rest.strip_prefix('[') {
+        let (host, tail) = rest.split_once(']')?;
+        let port = match tail.strip_prefix(':') {
+            Some(port) => parse_port(port)?,
+            None if tail.is_empty() => 22,
+            None => return None,
+        };
+        (host.to_owned(), port)
+    } else {
+        match rest.rsplit_once(':') {
+            Some((host, port)) => (host.to_owned(), parse_port(port)?),
+            None => (rest.to_owned(), 22),
+        }
+    };
+    if host.is_empty() || host.starts_with('-') {
+        return None;
+    }
+    Some(DirectTarget { user, host, port })
+}
+
+fn parse_port(raw: &str) -> Option<u16> {
+    raw.parse::<u16>().ok().filter(|port| *port > 0)
+}
+
+/// 最近用过的连接 id（最新的在前；认不出的垃圾项直接丢掉）。
+pub(crate) fn recent_ids(cx: &App) -> Vec<String> {
+    duck_store::kv_get(cx, KEY_RECENT)
+        .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+        .unwrap_or_default()
+}
+
+/// 记一次「用过」：提到最前、去重、截到 [`RECENT_CAP`]。
+///
+/// 临时连接（[`AD_HOC_PREFIX`]）**不记**：它没有档案，下次启动就不存在了，
+/// 记下来只会在「最近」里留一条点了没反应的死项。
+pub(crate) fn remember_recent(cx: &App, id: &str) {
+    if id.starts_with(AD_HOC_PREFIX) || id == LOCAL_SHELL_ID {
+        return;
+    }
+    let mut ids = recent_ids(cx);
+    ids.retain(|existing| existing != id);
+    ids.insert(0, id.to_owned());
+    ids.truncate(RECENT_CAP);
+    match serde_json::to_string(&ids) {
+        Ok(json) => duck_store::kv_put(cx, KEY_RECENT, json),
+        Err(error) => tracing::error!(%error, "ssh recent list serialization failed"),
     }
 }
 
@@ -542,6 +758,11 @@ impl Side {
         matches!(self, Self::Local)
     }
 
+    /// 是否为远端侧（决定「正在列举…」这类只在远端成立的状态）。
+    pub(crate) const fn is_remote(self) -> bool {
+        matches!(self, Self::Remote)
+    }
+
     /// 主目录。本地取 `$HOME`；远端**返回空串**。
     ///
     /// 远端家目录只有远端自己知道（`root` 与 `deploy` 不是同一个），我们不猜：
@@ -566,7 +787,8 @@ impl Side {
 
 /// 一次目录列举的结果。
 pub(crate) struct Listing {
-    /// 条目（目录在前、名称升序）。
+    /// 条目（**未排序**：由面板按自己的 `SortState` 排 —— 列举本身不知道
+    /// 用户点过哪个列头）。
     pub(crate) entries: Vec<DirEntry>,
     /// 需要告知用户的说明（读失败的原因 / 未连接 / 已截断）；正常时为 `None`。
     pub(crate) notice: Option<Notice>,
@@ -602,10 +824,96 @@ pub(crate) struct DirEntry {
     pub(crate) name: String,
     /// 大小（已格式化；目录为 `—`）。
     pub(crate) size: String,
+    /// 原始字节数（`size` 是给人看的，这个是给排序用的）。
+    ///
+    /// 只按 `size` 那个字符串排会得到 `1.2 MB < 9.8 KB` 这种**字典序**结果 ——
+    /// 数字排序必须拿回原始数值。目录 / 设备文件没有意义，给 `None`。
+    pub(crate) size_bytes: Option<u64>,
     /// 修改时间（`MM-DD HH:MM`）。
     pub(crate) modified: String,
     /// 是否目录（决定图标与双击行为）。
     pub(crate) dir: bool,
+}
+
+/// 目录列表的排序键。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SortKey {
+    /// 文件名称。
+    #[default]
+    Name,
+    /// 字节数。
+    Size,
+    /// 修改时间。
+    Modified,
+}
+
+impl SortKey {
+    /// 用作 ElementId 尾部的稳定短名（同窗多面板共用列头 id 会互撞）。
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Size => "size",
+            Self::Modified => "modified",
+        }
+    }
+}
+
+/// 排序状态：按哪一列、往哪个方向。
+///
+/// 两半分开存（而不是塞进一个带方向的枚举）是因为 `⌘J` 那类「方向翻转」的语义
+/// 只动方向、不动列 —— 一个 `SortState { key, ascending }` 让这件事就是一次取反。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SortState {
+    /// 当前的键。
+    pub(crate) key: SortKey,
+    /// `true` = 升序（A→Z、小→大、旧→新）。
+    pub(crate) ascending: bool,
+}
+
+impl Default for SortState {
+    /// 默认按名称升序 —— 与 `ls` / Finder 的初次观感一致。
+    fn default() -> Self {
+        Self {
+            key: SortKey::Name,
+            ascending: true,
+        }
+    }
+}
+
+impl SortState {
+    /// 点了某一列的列头之后的新状态。
+    ///
+    /// 换列 → 用该列的**自然方向**（名称 A→Z；大小与时间取「大/新在前」，
+    /// 因为这两列被点开时想看的一定是最大的那个 / 最近改的那个）；
+    /// 同列 → 只翻转方向。
+    pub(crate) fn toggled(self, key: SortKey) -> Self {
+        if self.key == key {
+            Self {
+                key,
+                ascending: !self.ascending,
+            }
+        } else {
+            Self {
+                key,
+                ascending: key == SortKey::Name,
+            }
+        }
+    }
+
+    /// 点这一列**会发生什么**（列头的 `aria_label`，i18n 源串）。
+    ///
+    /// 说的是「点下去之后的状态」，不是「现在的状态」：读屏用户需要知道这一下
+    /// 换来什么，而不是再自己推一遍。
+    pub(crate) fn action_label(self, key: SortKey) -> &'static str {
+        match (key, self.toggled(key).ascending) {
+            (SortKey::Name, true) => "按名称升序排列",
+            (SortKey::Name, false) => "按名称降序排列",
+            (SortKey::Size, true) => "按大小升序排列",
+            (SortKey::Size, false) => "按大小降序排列",
+            (SortKey::Modified, true) => "按修改时间升序排列",
+            (SortKey::Modified, false) => "按修改时间降序排列",
+        }
+    }
 }
 
 /// 远端面板未建立会话时的统一说明（i18n 源串）。
@@ -656,7 +964,7 @@ fn local_listing(path: &str) -> Listing {
         }
         entries.push(entry);
     }
-    sort_entries(&mut entries);
+    // 排序交给调用方（面板持有 `SortState`）：这里按默认序排一遍只会被覆盖掉。
     Listing {
         entries,
         notice: truncated.then_some(Notice::Key("仅显示前 400 项。")),
@@ -674,6 +982,7 @@ fn local_entry(item: &fs::DirEntry) -> Option<DirEntry> {
         } else {
             format_bytes(metadata.len())
         },
+        size_bytes: (!dir).then(|| metadata.len()),
         modified: metadata
             .modified()
             .ok()
@@ -691,13 +1000,41 @@ fn read_notice(error: &std::io::Error) -> &'static str {
     }
 }
 
-/// 排序：目录在前，同类按名称升序（大小写不敏感，与 Finder 一致）。
-pub(crate) fn sort_entries(entries: &mut [DirEntry]) {
+/// 排序：目录恒在前，同组内按 `sort` 指定的列与方向排。
+///
+/// 两条固定规则叠在上面：
+/// 1. **目录永远在前** —— 无论按大小还是时间排，把文件夹和文件混在一起都不是
+///    任何人想要的（这是 Finder / 资源管理器 / WinSCP 的共同约定）。
+/// 2. **同值时按名称升序兜底** —— 否则同尺寸或同一分钟的文件每次重排相对次序都在跳，
+///    看起来像列表在自己乱动。
+pub(crate) fn sort_entries(entries: &mut [DirEntry], sort: SortState) {
     entries.sort_by(|a, b| {
-        b.dir
-            .cmp(&a.dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b.dir.cmp(&a.dir).then_with(|| {
+            let order = match sort.key {
+                SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                // `None`（目录 / 设备）当 0：降序时沉到最后，正是想要的观感。
+                SortKey::Size => a.size_bytes.unwrap_or(0).cmp(&b.size_bytes.unwrap_or(0)),
+                // 时间列已是 `MM-DD HH:MM`，字典序即时间序（跨年那一处无从分辨，
+                // 因为列举本身就不带年份）。`—`（拿不到时间）压到最小，降序时沉底。
+                SortKey::Modified => modified_key(a).cmp(modified_key(b)),
+            };
+            let order = if sort.ascending {
+                order
+            } else {
+                order.reverse()
+            };
+            order.then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        })
     });
+}
+
+/// 时间列的排序键：把「拿不到时间」的 `—` 换成空串（比任何真实时间都小）。
+fn modified_key(entry: &DirEntry) -> &str {
+    if entry.modified == "—" {
+        ""
+    } else {
+        &entry.modified
+    }
 }
 
 /// 规范化路径：空白视作根、折叠重复分隔符、去掉末尾斜杠（根保留 `/`）。
@@ -891,6 +1228,48 @@ impl TransferState {
 
 #[cfg(test)]
 mod tests {
+    /// 「直接连」那一行：四种写法都要解析对，缺省端口 22、缺省用户名取本机。
+    #[test]
+    fn direct_target_accepts_the_four_shapes() {
+        let parse = |raw: &str| parse_direct_target(raw).expect(raw);
+        let target = parse("alice@web-01:2222");
+        assert_eq!(
+            (target.user.as_str(), target.host.as_str(), target.port),
+            ("alice", "web-01", 2222)
+        );
+        let target = parse("web-01.example.com");
+        assert_eq!(target.host, "web-01.example.com");
+        assert_eq!(target.port, 22, "没写端口就是 22");
+        let target = parse("web-01:2022");
+        assert_eq!(target.port, 2022);
+        // IPv6 走方括号：冒号在括号里不拆端口。
+        let target = parse("root@[::1]:2200");
+        assert_eq!((target.host.as_str(), target.port), ("::1", 2200));
+    }
+
+    /// 这几类必须拒绝：它们会让「地址输入框」变成「ssh 选项 / 多参数注入」的入口，
+    /// 或者把一个必然失败的目标塞给 ssh（用户只会看到一句看不懂的报错）。
+    #[test]
+    fn direct_target_rejects_option_injection() {
+        for raw in [
+            "",
+            "   ",
+            "-oProxyCommand=curl evil",
+            "alice@-oProxyCommand=x",
+            "alice@host name",
+            "alice@host:0",
+            "alice@host:70000",
+            "alice@host:ssh",
+            "@host",
+            "alice@",
+        ] {
+            assert!(
+                parse_direct_target(raw).is_none(),
+                "「{raw}」不该被当成合法目标"
+            );
+        }
+    }
+
     use super::*;
 
     /// 造一个最小标签（字段补齐就在这一处，测试只关心分屏三件套）。
@@ -898,10 +1277,12 @@ mod tests {
         SessionTab {
             id: id.to_owned(),
             title: id.to_owned(),
+            subtitle: None,
             kind,
             status: LinkStatus::Disconnected,
             split: None,
             split_owner: None,
+            dormant: false,
         }
     }
 
@@ -1029,6 +1410,7 @@ mod tests {
                 host_port: "80".to_owned(),
             }],
             agent_forwarding: true,
+            proxy_jump: "ops@bastion:2222".to_owned(),
         };
         let json = serde_json::to_string(&[profile]).expect("序列化");
         let back: Vec<StoredProfile> = serde_json::from_str(&json).expect("反序列化");
@@ -1039,6 +1421,10 @@ mod tests {
         assert_eq!(back[0].forwards.len(), 1);
         assert_eq!(back[0].forwards[0].bind_port, "8080");
         assert!(back[0].agent_forwarding, "开关要跟着档案往返");
+        assert_eq!(
+            back[0].proxy_jump, "ops@bastion:2222",
+            "跳板机要跟着档案往返"
+        );
 
         // 旧存档里根本没有这个键：必须读成 `false`（默认关），而不是整份档案读不出来
         // ——「升级一次丢光连接列表」是这类新增字段最容易出的事故。
@@ -1049,6 +1435,50 @@ mod tests {
         assert!(
             !restored[0].agent_forwarding,
             "缺键时必须默认关（转发是「把身份借出去」的能力，缺省绝不能是开）"
+        );
+        assert!(
+            restored[0].proxy_jump.is_empty(),
+            "缺键时必须读成直连（空串），不能编一个跳板机出来"
+        );
+    }
+
+    #[test]
+    fn proxy_jump_is_only_spelled_when_it_has_a_value() {
+        // 空 / 纯空白 = 直连：绝不能拼出一个 `ProxyJump=` 空值 ——
+        // ssh 会当成「跳板机地址为空」直接拒连。
+        assert_eq!(proxy_jump_option(""), None);
+        assert_eq!(proxy_jump_option("   "), None);
+        assert_eq!(
+            proxy_jump_option(" ops@bastion ").as_deref(),
+            Some("ProxyJump=ops@bastion"),
+            "两侧空白要削掉（手输时光标很容易多带一个空格）"
+        );
+        // 多跳与别名原样透传：那是 ssh 自己的语法，本仓不解析。
+        assert_eq!(
+            proxy_jump_option("ops@a,ops@b:2200").as_deref(),
+            Some("ProxyJump=ops@a,ops@b:2200")
+        );
+        assert_eq!(
+            proxy_jump_option("bastion").as_deref(),
+            Some("ProxyJump=bastion")
+        );
+    }
+
+    #[test]
+    fn proxy_jump_rejects_only_what_ssh_would_mangle() {
+        // 合法：空、单跳、多跳、别名。
+        for ok in ["", "ops@bastion", "ops@a,ops@b:2200", "bastion", "none"] {
+            assert!(validate_proxy_jump(ok).is_ok(), "应放行：{ok}");
+        }
+        // 空格：`-o` 的值会被 ssh 的配置解析器再拆一次词，带空格必然拆坏。
+        assert_eq!(
+            validate_proxy_jump("ops@bastion -p 22"),
+            Err("跳板机地址里不能有空格。")
+        );
+        // 引号：会开启一个被引号包裹的 token，把后面的内容整段吞掉。
+        assert_eq!(
+            validate_proxy_jump("ops@\"bastion\""),
+            Err("跳板机地址里不能有引号。")
         );
     }
 
@@ -1175,20 +1605,26 @@ mod tests {
     }
 
     #[test]
-    fn local_listing_sorts_dirs_first() {
-        // 临时目录里放一个文件 + 一个子目录，断言目录排在前面。
+    fn local_listing_is_raw_and_sort_puts_dirs_first() {
+        // 临时目录里放一个文件 + 一个子目录。
         let dir = std::env::temp_dir().join(format!("duck-listing-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("adir")).expect("建子目录");
         fs::write(dir.join("afile.txt"), b"x").expect("写文件");
 
-        let listing = local_listing(&dir.to_string_lossy());
+        let mut listing = local_listing(&dir.to_string_lossy());
         assert_eq!(listing.notice, None);
         assert_eq!(listing.entries.len(), 2);
+        // 列举**不排序**（排序按面板的 `SortState` 来，见 `sort_entries`）：
+        // 直接断言 readdir 的返回次序是碰运气 —— 这里先按默认序排一遍再断言。
+        sort_entries(&mut listing.entries, SortState::default());
         assert!(listing.entries[0].dir);
         assert_eq!(listing.entries[0].name, "adir");
         assert_eq!(listing.entries[1].name, "afile.txt");
         assert_eq!(listing.entries[1].size, "1 B");
+        // 原始字节数也要在（列头按大小排靠的就是它，`1 B` 那个字符串排不得）。
+        assert_eq!(listing.entries[1].size_bytes, Some(1));
+        assert_eq!(listing.entries[0].size_bytes, None);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1243,5 +1679,182 @@ mod tests {
         for state in [Queued, Active, Cancelling, Cancelled, Done, Failed] {
             assert!(!state.label().is_empty(), "{state:?} 缺文案");
         }
+    }
+
+    /// 造一条测试用条目（`size` 直接由字节数推，免得手写两处不一致）。
+    fn entry(name: &str, size: Option<u64>, modified: &str, dir: bool) -> DirEntry {
+        DirEntry {
+            name: name.to_owned(),
+            size: size.map_or_else(|| "—".to_owned(), format_bytes),
+            size_bytes: size,
+            modified: modified.to_owned(),
+            dir,
+        }
+    }
+
+    fn names(entries: &[DirEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn sort_keeps_directories_first_on_every_key() {
+        // 目录恒在前 —— 按大小/时间排也不能把文件夹和文件混在一起。
+        for key in [SortKey::Name, SortKey::Size, SortKey::Modified] {
+            let mut entries = vec![
+                entry("a.txt", Some(10), "01-01 00:00", false),
+                // 目录的 size 是 None、时间是 `—`：无论按哪列排都不该因此沉底。
+                entry("zzz", None, "—", true),
+                entry("b.txt", Some(999), "12-31 23:59", false),
+            ];
+            sort_entries(
+                &mut entries,
+                SortState {
+                    key,
+                    ascending: true,
+                },
+            );
+            assert!(entries[0].dir, "{key:?} 排列后目录应当仍在首位");
+            assert_eq!(names(&entries)[0], "zzz", "{key:?} 的唯一目录应排第一");
+        }
+    }
+
+    #[test]
+    fn size_sorts_numerically_not_lexicographically() {
+        // `1.2 MB` 与 `9.8 KB` 按字符串排会把小的排到后面 —— 必须按原始字节数。
+        let mut entries = vec![
+            entry("big", Some(1_200_000), "01-01 00:00", false),
+            entry("small", Some(9_800), "01-01 00:00", false),
+        ];
+        sort_entries(
+            &mut entries,
+            SortState {
+                key: SortKey::Size,
+                ascending: true,
+            },
+        );
+        assert_eq!(names(&entries), ["small", "big"]);
+
+        // 翻转方向只是倒过来，不改变数值语义。
+        sort_entries(
+            &mut entries,
+            SortState {
+                key: SortKey::Size,
+                ascending: false,
+            },
+        );
+        assert_eq!(names(&entries), ["big", "small"]);
+    }
+
+    #[test]
+    fn clicking_a_new_column_starts_in_its_natural_direction() {
+        let name = SortState::default();
+        assert_eq!(name.key, SortKey::Name);
+        assert!(name.ascending);
+
+        // 换到大小 / 时间：先给「大在前 / 新在前」—— 点这两列想看的都是那一头。
+        let size = name.toggled(SortKey::Size);
+        assert_eq!(size.key, SortKey::Size);
+        assert!(!size.ascending);
+        let modified = name.toggled(SortKey::Modified);
+        assert_eq!(modified.key, SortKey::Modified);
+        assert!(!modified.ascending);
+
+        // 同一列再点：只翻转方向。
+        assert!(size.toggled(SortKey::Size).ascending);
+        assert!(modified.toggled(SortKey::Modified).ascending);
+        // 名称列换回来：仍是 A→Z。
+        assert!(modified.toggled(SortKey::Name).ascending);
+    }
+
+    #[test]
+    fn unknown_time_sinks_to_the_bottom_when_newest_first() {
+        let mut entries = vec![
+            entry("a", Some(1), "—", false),
+            entry("b", Some(1), "03-05 10:00", false),
+            entry("c", Some(1), "07-01 08:30", false),
+        ];
+        sort_entries(
+            &mut entries,
+            SortState {
+                key: SortKey::Modified,
+                ascending: false,
+            },
+        );
+        // 最新的在前，拿不到时间的沉底（而不是因为 `—` 的码位大被排到最前）。
+        assert_eq!(names(&entries), ["c", "b", "a"]);
+    }
+
+    #[test]
+    fn equal_keys_fall_back_to_name_so_the_order_is_stable() {
+        // 同尺寸的三个文件：每次重排的相对次序都该一样，否则列表看起来在自己乱动。
+        let build = || {
+            vec![
+                entry("delta", Some(5), "01-01 00:00", false),
+                entry("alpha", Some(5), "01-01 00:00", false),
+                entry("charlie", Some(5), "01-01 00:00", false),
+            ]
+        };
+        let mut first = build();
+        sort_entries(
+            &mut first,
+            SortState {
+                key: SortKey::Size,
+                ascending: true,
+            },
+        );
+        let mut second = build();
+        sort_entries(
+            &mut second,
+            SortState {
+                key: SortKey::Size,
+                ascending: true,
+            },
+        );
+        assert_eq!(names(&first), ["alpha", "charlie", "delta"]);
+        assert_eq!(names(&first), names(&second));
+    }
+
+    #[test]
+    fn tab_owner_strips_every_suffix() {
+        // 标签 id 上会挂两种后缀，剥漏任何一种都会拿一个查不到的 id 去档案表里找。
+        assert_eq!(tab_owner("prod-01"), "prod-01");
+        assert_eq!(tab_owner("prod-01/sftp"), "prod-01");
+        assert_eq!(tab_owner("prod-01~2"), "prod-01");
+        // 两种后缀叠在一起（同主机第二条第 SFTP 面板）。
+        assert_eq!(tab_owner("prod-01~3/sftp"), "prod-01");
+        // 不该误剥：`~` 后面不是数字、或 `~` 在开头。
+        assert_eq!(tab_owner("prod~beta"), "prod~beta");
+        assert_eq!(tab_owner("~2"), "~2");
+        // 档案 id 里带 `#`（分屏键用的那个后缀）不归这里管。
+        assert_eq!(tab_owner("prod#2"), "prod#2");
+    }
+
+    #[test]
+    fn duplicate_tab_id_never_collides_with_split_keys() {
+        // 分屏右窗格的会话键是 `<tab>#2`；同主机第二条会话必须换个分隔符，
+        // 否则「开第二条会话」会把某个标签的右半窗格顶掉。
+        assert_ne!(duplicate_tab_id("prod", 2), split_session_key("prod"));
+        assert_eq!(duplicate_tab_id("prod", 2), "prod~2");
+        assert_eq!(tab_owner(&duplicate_tab_id("prod", 7)), "prod");
+    }
+
+    #[test]
+    fn every_sort_column_has_an_action_label() {
+        // 六个组合都要有非空文案（i18n 源串兜底；漏一个列头就没名字给读屏）。
+        let keys = [SortKey::Name, SortKey::Size, SortKey::Modified];
+        for ascending in [true, false] {
+            for key in keys {
+                let sort = SortState { key, ascending };
+                assert!(
+                    !sort.action_label(key).is_empty(),
+                    "{key:?}/{ascending} 缺 aria 文案"
+                );
+                // 点下去之后方向必须真的翻过去，文案才不是谎话。
+                assert_ne!(sort.toggled(key).ascending, ascending);
+            }
+        }
+        // ElementId 尾部三列互不相同（同窗多面板共用 id 会静默互相覆盖）。
+        let ids: Vec<&str> = keys.iter().map(|key| key.id()).collect();
+        assert_eq!(ids, ["name", "size", "modified"]);
     }
 }

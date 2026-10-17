@@ -14,5 +14,9 @@ vte = { workspace = true }
 # alacritty 的 `FairMutex`（re-export 自 parking_lot）已在依赖图内。
 parking_lot = "0.12"
 
+# GB18030 / GBK 解码（会话编码设置）。同一份依赖早已在 `duck-db` 的图里
+# （`tiberius → encoding_rs`），不引入新的第三方。
+encoding_rs.workspace = true
+
 [dev-dependencies]
 # （暂无）

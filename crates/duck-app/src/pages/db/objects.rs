@@ -98,17 +98,6 @@ pub(super) fn column_type_placeholders(
 /// 骨架只服务过那两个入口；类型占位表 [`column_type_placeholders`] 仍在
 /// `supports_ddl` 判据与单测里服役。
 ///
-/// 改表语句骨架：给一条能直接跑的 `ADD COLUMN` 起点。
-///
-/// 不生成「完整的」`ALTER TABLE`：改结构有类型 / 默认值 / 约束 / 重整表几十种分支，
-/// 界面猜一种而已。一条**语法正确**的骨架 + 编辑器，比一条猜错的完整语句好。
-pub(super) fn alter_table_template(engine: DatabaseKind, qualified: &str) -> Option<String> {
-    let (_, name_type) = column_type_placeholders(engine)?;
-    Some(format!(
-        "ALTER TABLE {qualified} ADD COLUMN new_column {name_type};"
-    ))
-}
-
 /// 删表语句骨架。**破坏性**：只生成语句，跑不跑由用户在编辑器里点「执行」决定。
 pub(super) fn drop_table_template(engine: DatabaseKind, qualified: &str) -> Option<String> {
     // 判据与建表同源（`column_type_placeholders`），两者一致由单测钉住 ——

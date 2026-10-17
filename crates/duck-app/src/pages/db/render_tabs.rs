@@ -7,6 +7,23 @@
 //!（与 `pages::terminal` 同一口径）；类型定义仍在 `mod.rs`。
 
 use super::*;
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
+
+/// 标签拖拽重排的载荷：只带标签 id（**不带下标**）。
+///
+/// 带下标会在拖动过程中失效（前面的标签被移走，下标就变了）；按 id 现查位置，
+/// 与结构编辑器行重排同一条口径（`StructureRowDrag`）。
+#[derive(Clone)]
+struct TabDrag {
+    id: String,
+}
+
+impl Render for TabDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // 跟手的是光标形状，不需要拖影（与列宽把手、结构行重排一致）。
+        gpui::Empty
+    }
+}
 
 impl DatabasePage {
     /// 主区顶部的连接标签条。
@@ -50,14 +67,16 @@ impl DatabasePage {
 
         // 标签多到放不下时**横向滚动**（`overflow_x_scroll` 前必须先 `.id(...)`，
         // 与结果区横向滚动 `db-result-columns-x` 同一先例）；`restrict_scroll_to_axis`
-        // 防止标签条把纵向滚轮也吞掉。
+        // 防止标签条把纵向滚轮也吞掉。滚动条本体由外层相对容器叠加（下方）——
+        // gpui 不画系统滚动条，不叠 `Scrollbar` 用户就没有可拖动的东西。
         let mut row = h_flex()
             .id("db-tab-strip")
             .flex_1()
             .min_w_0()
             .gap(tokens.spacing.xxs)
             .overflow_x_scroll()
-            .restrict_scroll_to_axis();
+            .restrict_scroll_to_axis()
+            .track_scroll(&self.tab_strip_x_scroll);
         for (index, tab_id) in self.tabs.iter().enumerate() {
             // 标签元素是**标签 id**，经 `tab_conn` 找到所属连接再取展示信息。
             let Some(conn_id) = self.tab_conn.get(tab_id) else {
@@ -123,6 +142,25 @@ impl DatabasePage {
                             let _ = view.update(cx, |this, cx| this.activate(&tab_id, window, cx));
                         }
                     })
+                    // 拖拽重排：拖到哪张标签上就插到它的位置。载荷只带 id ——
+                    // 拖动过程中下标会变，按 id 现查才稳。
+                    .on_drag(TabDrag { id: tab_id.clone() }, |drag, _, _, cx| {
+                        // 别让这次按下再冒泡成「激活标签」。
+                        cx.stop_propagation();
+                        cx.new(|_| drag.clone())
+                    })
+                    .on_drag_move::<TabDrag>({
+                        let view = view.clone();
+                        move |event, _, cx| {
+                            let dragged = event.drag(cx).id.clone();
+                            let Some(entity) = view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| {
+                                this.move_tab_to(&dragged, index, cx);
+                            });
+                        }
+                    })
                     // 中键关闭（浏览器 / 编辑器通用手势），语义与点 ✕ 一致。
                     .on_mouse_down(MouseButton::Middle, {
                         let view = view.clone();
@@ -147,15 +185,10 @@ impl DatabasePage {
                         Some(TabKind::Instance(tab)) => Icon::new(instance_tab_icon(*tab))
                             .size(extended.icon.sm)
                             .into_any_element(),
-                        // 三张工具页：ER 关系图取「网络」形，比较 / 传输取「双向箭头」。
+                        // 工具页：ER 关系图取「网络」形。
                         Some(TabKind::Er { .. }) => Icon::new(DuckIcon::Network)
                             .size(extended.icon.sm)
                             .into_any_element(),
-                        Some(TabKind::Compare(_)) | Some(TabKind::Transfer(_)) => {
-                            Icon::new(DuckIcon::ArrowRightLeft)
-                                .size(extended.icon.sm)
-                                .into_any_element()
-                        }
                         Some(TabKind::Dashboard(_)) => Icon::new(DuckIcon::Columns2)
                             .size(extended.icon.sm)
                             .into_any_element(),
@@ -251,7 +284,18 @@ impl DatabasePage {
             .bg(extended.colors.chrome)
             .border_b(extended.stroke.thin)
             .border_color(extended.colors.hairline)
-            .child(row)
+            // 标签条宿主：相对容器承托滚动条轨道（`grid.rs` 结果网格同款形态）。
+            // **悬停才现身**（用户实测反馈：常驻太吵）——拖到标签条上滚动条才出现。
+            .child(
+                h_flex().flex_1().min_w_0().relative().child(row).child(
+                    div().absolute().inset_0().child(
+                        Scrollbar::horizontal(&self.tab_strip_x_scroll)
+                            .id("db-tab-strip-x-scrollbar")
+                            .mode(ScrollbarMode::Hover)
+                            .viewport_from_layout(),
+                    ),
+                ),
+            )
             .child({
                 // 「+」：在当前连接上再开一个空白查询标签（dbx 同款）——同一连接
                 // 可以并排多个标签，各拿各的 SQL 与结果区。没有活跃会话时禁用。
@@ -502,8 +546,9 @@ impl DatabasePage {
                                 };
                                 let sql = click_sql.clone();
                                 let name = click_name.clone();
+                                let saved_id = card_id.clone();
                                 entity.update(cx, |this, cx| {
-                                    this.load_saved_query(sql, &name, window, cx);
+                                    this.load_saved_query(sql, &name, &saved_id, window, cx);
                                 });
                             })
                             // 右键只放「载入」与「删除」：重命名是低频维护动作，留在左栏
@@ -513,6 +558,7 @@ impl DatabasePage {
                                 let delete_view = menu_view.clone();
                                 let load_sql = menu_sql.clone();
                                 let load_name = menu_name.clone();
+                                let load_id = id.clone();
                                 let delete_id = id.clone();
                                 let delete_name = menu_name.clone();
                                 menu.item(PopupMenuItem::new(load_label).on_click(
@@ -524,6 +570,7 @@ impl DatabasePage {
                                             this.load_saved_query(
                                                 load_sql.clone(),
                                                 &load_name,
+                                                &load_id,
                                                 window,
                                                 cx,
                                             );

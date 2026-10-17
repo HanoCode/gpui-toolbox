@@ -17,11 +17,12 @@
 //! 改用 [`Notification::content`] 自绘「图标 + 文字」行，图标相对首行行盒垂直居中。
 
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::time::SystemTime;
 
 use gpui::{
-    App, ElementId, FontWeight, Global, Hsla, IntoElement as _, ParentElement as _, SharedString,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    App, Context, ElementId, FontWeight, Global, Hsla, IntoElement as _, ParentElement as _,
+    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     Icon, IconName, WindowExt as _, h_flex,
@@ -360,6 +361,89 @@ fn system_notification(title: SharedString, message: SharedString) -> Notificati
     Notification::info(message)
         .title(title)
         .delivery(NotificationDelivery::System)
+}
+
+/// 横幅上那个动作按钮：一个短标签 + 点下去要做的事。
+///
+/// 动作按钮点下去要跑的那段逻辑。
+///
+/// 单独起个名字是给 clippy 的 `type_complexity` 一个落点 —— `Rc<dyn Fn>` 这种
+/// 类型写在字段声明里读起来像一堵墙，而它在这份文件里只出现在一处。
+type BannerHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// 收成一个结构体而不是两个参数，是因为它要**穿过**上游 `Notification::action` 的
+/// 闭包 —— 那个闭包是 `Fn`（每次重排都会调用），所以 handler 必须能反复克隆。
+/// 里面装 `Rc<dyn Fn>`，克隆只加一次引用计数。
+#[derive(Clone)]
+pub struct BannerAction {
+    label: SharedString,
+    handler: BannerHandler,
+}
+
+impl BannerAction {
+    /// 造一个动作按钮。
+    pub fn new(
+        label: impl Into<SharedString>,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            handler: Rc::new(handler),
+        }
+    }
+}
+
+/// 同时投递，并给**应用内**横幅挂一个动作按钮。
+///
+/// 与 [`system_with_toast`] 的唯一差别是那句 `.action(...)`。两处语义要记住：
+///
+/// 1. 上游的 `action` 会**关掉 `autohide`** —— 有按钮的通知要等用户表态，不该在
+///    5 秒后自己消失（「还没看清就没了」正是提醒最坏的收场）；
+/// 2. 系统通知中心那条**不带**按钮：按钮属于应用内自绘的那份通知，系统通道只有
+///    文本（理由同 [`system_with_toast`] 的「拆成两条推」）。
+pub fn system_with_toast_action(
+    title: impl Into<SharedString>,
+    message: impl Into<SharedString>,
+    action: BannerAction,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title = title.into();
+    let message = message.into();
+    record(Tone::Info, Some(title.clone()), message.clone(), cx);
+    if channels(cx).system {
+        push(
+            system_notification(title.clone(), message.clone()),
+            window,
+            cx,
+        );
+    }
+    if banners_allow(Tone::Info, cx) {
+        let notification = in_app(Tone::Info, Some(title), message).action(
+            move |_this: &mut Notification,
+                  _window: &mut Window,
+                  cx: &mut Context<Notification>| {
+                let action = action.clone();
+                let entity = cx.entity().downgrade();
+                let label = action.label.clone();
+                let handler = action.handler.clone();
+                // 点完就收起这条横幅：它讲的那件事已经被处理了，留着只会占位。
+                // 顺序是「先做事、再收起」—— 反过来的话，做事失败时横幅已经没了。
+                // 按钮类型必须是 `gpui_component::button::Button` —— 上游
+                // `Notification::action` 收的就是它；本仓 `crate::button` 造的是
+                // `gpui_base::Button`（vendor 分叉），两者不能互换。
+                gpui_component::button::Button::new("notification-action")
+                    .label(label)
+                    .on_click(move |_, window, cx| {
+                        handler(window, cx);
+                        if let Some(entity) = entity.upgrade() {
+                            entity.update(cx, |this, cx| this.dismiss(window, cx));
+                        }
+                    })
+            },
+        );
+        push(notification, window, cx);
+    }
 }
 
 /// 通知历史上限：超过后丢最旧的（只增不改的环形截断）。

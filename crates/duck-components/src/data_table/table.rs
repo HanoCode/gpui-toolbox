@@ -32,7 +32,9 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::data_table::events::{CellPos, DataTableEvent, DataTableHooks, DataTableLabels};
+use crate::data_table::events::{
+    CellPos, CellRange, DataTableEvent, DataTableHooks, DataTableLabels,
+};
 use crate::data_table::model::{
     HEADER_HEIGHT, RESIZE_HANDLE_WIDTH, ROW_HEIGHT, ROWNUM_WIDTH, SELECT_COLUMN_WIDTH,
     fill_template,
@@ -55,6 +57,8 @@ pub struct DataTableView<'a> {
     pub sort_descending: bool,
     /// 就地编辑中的格子。
     pub editing: Option<CellPos>,
+    /// 矩形选区（锚点 → 焦点）；`None` = 没有选区。
+    pub selection: Option<CellRange>,
     /// 就地编辑中的输入框（`InputState` 必须由宿主在 `window` 上建）。
     pub editing_input: Option<Entity<InputState>>,
     /// 「一行没中」的原位提示（宿主按当前搜索词拼好；不搜就给 `None`）。
@@ -125,6 +129,22 @@ struct ColumnResizeDrag {
 impl Render for ColumnResizeDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         // 跟手的是光标形状（`CursorStyle::ResizeColumn`），不需要拖影。
+        gpui::Empty
+    }
+}
+
+/// 单元格拖选的载荷：只带起点那一格。
+///
+/// 终点由**指针进入的那一格**给出（该格的 `on_drag_move` 收到本载荷），
+/// 与列宽拖拽同一套模式：载荷负责「在拖谁」，落点由监听者自己报。
+#[derive(Clone)]
+struct CellDrag {
+    position: CellPos,
+}
+
+impl Render for CellDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // 选区扩展靠格子的高亮，不需要拖影。
         gpui::Empty
     }
 }
@@ -202,6 +222,7 @@ pub fn data_table(
 
     // 宿主真源在渲染期**拷成 `'static` 能带走的小值**（行 / 列下标与集合都小）。
     let selected_row = view.selected_row;
+    let selection = view.selection;
     let editing = view.editing;
     let editing_input = view.editing_input.clone();
     let sortable = view.sortable;
@@ -335,10 +356,13 @@ pub fn data_table(
         let sort_click: HeaderSortClick = {
             let state = state.clone();
             let column = name.clone();
-            std::rc::Rc::new(move |_, _, cx| {
+            std::rc::Rc::new(move |event, _, cx| {
+                // `Shift+点击` = 追加一级排序；不按修饰键 = 替换（三态轮转）。
+                let additive = event.modifiers().shift;
                 state.update(cx, |_, cx| {
                     cx.emit(DataTableEvent::SortRequested {
                         column: column.clone(),
+                        additive,
                     });
                 });
             })
@@ -701,6 +725,7 @@ pub fn data_table(
                         .unwrap_or_else(|| "NULL".into());
                     let null_cell = value.is_none_or(|cell| cell.is_null());
                     let editing_here = editing == Some(position);
+                    let selected_here = selection.is_some_and(|range| range.contains(position));
                     let mut element = div()
                         .id(ElementId::Integer(index_key(ID_CELL, index, col)))
                         .w(px(width))
@@ -714,6 +739,11 @@ pub fn data_table(
                         // 格框线（dbx 同款：列与列之间一条竖线）。
                         .border_r(thin)
                         .border_color(hairline);
+                    // 选区底色：编辑中的那一格由下面的编辑态视觉接管（否则
+                    // 两个底色叠在一起，光标位置反而看不清）。
+                    if selected_here && !editing_here {
+                        element = element.bg(selection_bg);
+                    }
                     match (editing_here, editing_input.as_ref()) {
                         (true, Some(input)) => {
                             // 就地编辑的**整格**视觉：2px 强调描边框住整格 + 提亮底色。
@@ -860,6 +890,31 @@ pub fn data_table(
                             });
                         }
                     });
+                    // 拖选：按下设锚点，拖到哪一格就把焦点挪到哪一格。点击不触发
+                    // 拖拽（gpui 要按住移动超过阈值），所以与上面的 on_click 不冲突。
+                    element = element
+                        .on_mouse_down(gpui::MouseButton::Left, {
+                            let state = list_state.clone();
+                            move |_, _, cx| {
+                                state.update(cx, |_, cx| {
+                                    cx.emit(DataTableEvent::SelectionStarted(position));
+                                });
+                            }
+                        })
+                        .on_drag(CellDrag { position }, |drag, _, _, cx| {
+                            // 别让这次按下再冒泡成「选中行」。
+                            cx.stop_propagation();
+                            cx.new(|_| drag.clone())
+                        })
+                        .on_drag_move::<CellDrag>({
+                            let state = list_state.clone();
+                            move |event, _, cx| {
+                                let position = event.drag(cx).position;
+                                state.update(cx, |_, cx| {
+                                    cx.emit(DataTableEvent::SelectionExtended(position));
+                                });
+                            }
+                        });
                     if let Some(menu) = cell_menu.as_ref() {
                         let hook = menu.clone();
                         line = line.child(

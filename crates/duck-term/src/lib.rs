@@ -31,13 +31,16 @@
 //! UI 侧**不该**在渲染里阻塞等锁：用 [`Session::try_with_term`] 拿不到就沿用上一帧，
 //! 下一帧的 `SessionEvent::Wakeup` 会再叫醒它。
 
+mod encoding;
 mod focus;
 mod keymap;
 mod links;
 mod mouse;
 mod palette;
 mod session;
+mod suggest;
 
+pub use encoding::{Encoding, EncodingHandle};
 pub use focus::{encode as encode_focus, reports_focus};
 pub use keymap::{Encoded, KeyStroke, encode};
 pub use links::{LinkSpan, LinkTarget};
@@ -47,8 +50,10 @@ pub use mouse::{
 };
 pub use palette::Palette;
 pub use session::{
-    CellSize, SelectionKind, Session, SessionEvent, ShellMark, SpawnOptions, TermLink, prompt_bars,
+    CapturedCommand, CellSize, InputLine, SelectionKind, Session, SessionEvent, ShellMark,
+    SpawnOptions, TermLink, prompt_bars,
 };
+pub use suggest::{BUILTIN_COMMANDS, SuggestSource, Suggestion, suggest};
 
 // ── 渲染层需要的 alacritty 类型（重导出，避免上层再依赖 vendored crate）──────────
 

@@ -525,6 +525,25 @@ impl ProjectStore {
         Ok(stats)
     }
 
+    /// 某一天（调用方给的本地日）完成的任务数。
+    ///
+    /// 只回一个数、不拉整行：它的用途是「今天做完 3 条了，该写日报了」那类轻提示，
+    /// 每写一次任务就会调一次，拉全表回来再 `filter` 是浪费。
+    ///
+    /// `completed_at` 是 epoch 秒（见 `db` 的表定义），所以边界用
+    /// [`CalendarDate::start_of_day_unix`] 取当日零点、次日零点。
+    pub fn completed_on(&self, day: CalendarDate) -> Result<u32> {
+        let from = day.start_of_day_unix();
+        let to = day.add_days(1).start_of_day_unix();
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE archived_at IS NULL AND status = 'done' \
+             AND completed_at IS NOT NULL AND completed_at >= ?1 AND completed_at < ?2",
+            rusqlite::params![from, to],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u32)
+    }
+
     /// 每个项目的任务计数（左栏徽标用）。**排除归档项**。
     pub fn project_task_counts(&self) -> Result<HashMap<i64, TaskCounts>> {
         let mut out: HashMap<i64, TaskCounts> = HashMap::new();
@@ -835,6 +854,35 @@ mod tests {
         assert_eq!(stats.archived_projects, 0);
         assert_eq!(stats.completion_percent(), 33);
         assert_eq!(stats.open(), 2);
+        Ok(())
+    }
+
+    /// `completed_on` 只看**当天**、只认 `done`、排除归档项。
+    ///
+    /// 断言用的「今天」必须和 `completed_at` 落库时用的是同一个本地日 ——
+    /// 测试里的 `today()` 是固定的 2026-10-14，而 `completed_at` 写的是 `now_seconds()`，
+    /// 所以这里换算成真实的本地今天，不能拿 `today()` 顶。
+    #[test]
+    fn completed_on_counts_only_that_local_day() -> Result<()> {
+        let store = ProjectStore::open_in_memory()?;
+        let now = crate::time::now_seconds();
+        let real_today = CalendarDate::from_local_unix_seconds(
+            now,
+            duck_platform::local_utc_offset_seconds(now),
+        );
+        let done = store.create_task(NewTask::new("done today"))?;
+        store.set_task_status(done, TaskStatus::Done)?;
+        store.create_task(NewTask::new("still open"))?;
+        let archived = store.create_task(NewTask::new("archived done"))?;
+        store.set_task_status(archived, TaskStatus::Done)?;
+        store.archive_task(archived)?;
+
+        assert_eq!(store.completed_on(real_today)?, 1, "未完成与归档的都不计");
+        assert_eq!(
+            store.completed_on(real_today.add_days(-1))?,
+            0,
+            "不是这一天"
+        );
         Ok(())
     }
 

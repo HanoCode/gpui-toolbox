@@ -47,6 +47,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -57,16 +58,16 @@ use duck_components::{
         accent_tag, description_list, description_row, empty_state, neutral_tag, progress_bar,
         status_cell,
     },
-    dialog_footer, dialog_top_offset, icon_button, icon_text_button, meta_text, modal_drag,
-    modal_drag_area, modal_offset, modal_title_row, notify, selectable_text,
+    dialog_footer, dialog_top_offset, dropdown_select, icon_button, icon_text_button, meta_text,
+    modal_drag, modal_drag_area, modal_offset, modal_title_row, notify, selectable_text,
     sidebar_navigation_button, tabular_numbers, toolbar_action_button,
 };
 use duck_theme::{Lang, active_theme, t, tf, tr, trf};
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, CursorStyle, DragMoveEvent, Entity,
-    ExternalPaths, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement, Render, Role, SharedString, StatefulInteractiveElement as _, Styled,
-    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
+    ExternalPaths, FocusHandle, Focusable as _, FontWeight, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement, Render, Role, SharedString, StatefulInteractiveElement as _,
+    Styled, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     Icon, Sizable as _, Size, WindowExt as _, h_flex,
@@ -78,24 +79,41 @@ use gpui_component::{
 use crate::pages::status_support::format_bytes;
 use crate::pages::terminal_canvas::{CLEAR_SCREEN, TerminalSession};
 use crate::pages::terminal_data::{
-    self as data, AuthKind, Connection, DirEntry, Group, LinkStatus, SessionTab, Side,
-    StoredProfile, TabKind, Transfer,
+    self as data, AuthKind, Connection, DirEntry, Group, LinkStatus, SessionTab, Side, SortKey,
+    SortState, StoredProfile, TabKind, Transfer,
 };
 use crate::pages::terminal_dialogs::{
     ForwardDraft, NameDialogKind, NewConnection, open_connection_dialog, open_directory_dialog,
     open_entry_name_dialog,
 };
+// 子模块靠 `use super::*` 取这一层：`module_settings` 这个**路径**（粘贴偏好）与
+// `PasteConfirm` 这个**类型**都必须在这儿，兄弟模块才写得出来。
+// 字号区间的唯一来源在设置层：画布的 ± 与设置页的下拉共用它，单位统一为「磅」。
+use crate::pages::module_settings::{
+    self, PasteConfirm, TERMINAL_FONT_SIZE_RANGE as FONT_SIZE_RANGE,
+};
+// 页面级键位（`"TerminalPage"` 上下文）的动作类型：定义在画布模块里（与画布那批
+// `"Terminal"` 动作同一份 `actions!` 清单），绑定在 `app::install`。
+use crate::pages::terminal_canvas::{
+    CloseTab, CopyPath, DeleteEntry, EditPath, Find, NewFolderHere, NewLocalTab, NewTab, NextTab,
+    PreviousTab, QuickConnect, RefreshPane, ReopenClosedTab, SwitchTabAt,
+};
 
 mod conn;
 mod find;
 mod helpers;
+pub(crate) mod keys;
+mod paste;
+mod quick_connect;
 mod render_sftp;
 mod render_sidebar;
 mod render_status;
 mod render_tabs;
 mod render_terminal;
+mod restore;
 mod sftp;
 mod split;
+pub(super) mod suggest;
 mod tabs;
 mod transfer;
 
@@ -129,8 +147,22 @@ const READOUT_WIDTH: f32 = 44.;
 /// 状态点不在图标阶梯（12/14/16）里——它是**色块**不是图标，比最小的图标还小一档，
 /// 才不至于把标签文字挤出去。颜色 + 位置共同表达状态（色盲用户靠位置与文字兜底）。
 const STATUS_DOT_SIZE: f32 = 6.;
+/// 标签页右侧「状态点 / 关闭按钮」共用槽位的宽度。
+///
+/// 两者同宽是刻意的：指针移上去时状态点换成 ✕，占位不变 ⇒ 整排标签不左右跳；
+/// 而 ✕ 只在悬停时才存在，所以不存在「误点一个看不见的按钮」。
+const TAB_CLOSE_SLOT: f32 = 22.;
+/// `⌘⇧Z` 的重开栈容量。
+///
+/// 10 是「手滑关掉几个都还能救回来」与「不无界占内存」的折中：一条记录只有
+/// 三个短字符串，栈本身也不落盘（重启后没有「刚才关掉的那个」可言）。
+const CLOSED_TAB_CAPACITY: usize = 10;
+/// 状态栏里那段路径的宽度上限。
+///
+/// 路径是**变长的、无上界的**（远端目录可能很深），不封顶它就会一路挤掉右段的
+/// 版本号。封顶 + 省略号收口，完整内容靠点击复制拿。
+const STATUS_PATH_MAX_WIDTH: f32 = 280.;
 /// 终端字号的允许区间（`⌘-` / `⌘+` 与工具条按钮都钳在这里）。
-const FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 10.0..=20.0;
 
 /// 确认弹窗宽度：只有一句标题 + 一句说明，够放下就行。
 const CONFIRM_DIALOG_W: f32 = 420.;
@@ -140,14 +172,30 @@ const CONFIRM_DIALOG_W: f32 = 420.;
 /// 每次量远端大小都起一个 `ssh`（哪怕有 `ControlMaster` 复用，也仍有往返开销），
 /// 更疏则进度条看起来像卡住了。传输本身完全不受影响 —— 量的是**另一个**进程。
 const PROGRESS_POLL: Duration = Duration::from_millis(300);
+/// 传输**成功 / 取消**后，那一行还在队列里留多久。
+///
+/// 3 秒：够看清「100%」「已取消」，又不至于让队列长期挂着已经没用的行。
+/// 失败没有时限 —— 见 [`TerminalPage::schedule_transfer_cleanup`]。
+const TRANSFER_LINGER: Duration = Duration::from_secs(3);
 /// 缓冲区搜索在两帧之间的最小重算间隔。
 ///
 /// 终端一直在输出，而**每次输出都会把已有的命中整体挪位**（回滚区行号是相对的），
 /// 不重算高亮就会「框住的不是那几个字」。但每帧都全网格重搜（10k 行回滚）太贵，
 /// 按这个间隔节流：4Hz 的重算对眼睛来说已经是连续的。
 const FIND_REFRESH_MIN: Duration = Duration::from_millis(250);
-/// 缓冲区搜索输入框宽度：够看清一段命令，又不至于把搜索条拉满整行。
-const FIND_INPUT_WIDTH: f32 = 260.;
+/// 缓冲区搜索输入框宽度：够看清一段命令，又不至于把浮出的搜索条拉满整行。
+///
+/// 176 是按「搜索条整体 420」倒推的：图标 16 + 计数约 60 + 两个跳转按钮 + 关闭按钮
+/// 各 28，加上间距正好落在 420 以内。输入框再宽就得把搜索条撑到 500+，
+/// 那在 13 寸屏的一半宽度里会压掉半屏终端。
+const FIND_INPUT_WIDTH: f32 = 176.;
+/// 浮出式查找条的整体宽度（输入框 + 计数 + 两个跳转按钮 + 关闭）。
+const FIND_BAR_WIDTH: f32 = 420.;
+/// 顶部唤出工具条的**热区厚度**（逻辑像素）。
+///
+/// 6px 是「不容易误触、又足够扫到」的折中：1px 得瞄，12px 会在选第一行文字时
+/// 频繁把工具条叫出来。热区只在指针进入时唤出，不改变画布尺寸。
+const TOOLBAR_HOTZONE: f32 = 6.;
 
 /// 一条远端会话的句柄：目标 + 复用 socket 目录。
 ///
@@ -291,6 +339,20 @@ impl Render for PaneDragGhost {
 /// 双栏两侧各自的最小宽度（px）：拖到这个宽度就停，谁也别把谁挤没。
 const MIN_PANE_WIDTH: f32 = 160.;
 
+/// 一条「刚被关掉的标签」——重开它需要的最小信息。
+///
+/// 不存会话：旧 PTY 与进程都已经随标签销毁了。重开是**重新连接**，
+/// 这与浏览器「重开刚关掉的标签」是同一个语义（页面也要重新加载）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ClosedTab {
+    /// 原标签 id（可能带 `/sftp` 或 `~n` 后缀）。
+    pub(super) id: String,
+    /// 原标签标题（重新连接期间先显示它，连上后由状态刷新接管）。
+    pub(super) title: String,
+    /// 原标签类型。
+    pub(super) kind: TabKind,
+}
+
 /// 单个文件面板的浏览状态。
 ///
 /// 条目**缓存**在这里而不是渲染时现算：本地面板要读磁盘、远端面板要起 `ssh`，
@@ -309,6 +371,22 @@ struct PaneState {
     /// 用来区分「还没加载」与「加载完确实是空目录」：前者要触发一次列举，
     /// 后者只该显示「这个目录里没有可显示的条目」。
     loaded: bool,
+    /// 上一次列举**失败了**（连接断了、目录进不去、超时）。
+    ///
+    /// 与 `notice` 分开存：`notice` 也装「已截断」这类**非失败**说明，而失败需要一个
+    /// 可操作的出口（「重试」按钮）。两者混用一个字段时，界面只能要么给所有说明
+    /// 都挂一个重试按钮（对截断提示很怪），要么一个都不给（失败了没出路）。
+    failed: bool,
+    /// 路径栏的**内联编辑**（`⌘L`，访达 / 浏览器的同键）。`None` = 显示面包屑。
+    ///
+    /// 存 `(输入框, 订阅)`：订阅必须持有，丢了就不再收到 `PressEnter`
+    ///（与弹窗表单那条纪律同一个坑）。
+    path_edit: Option<(Entity<InputState>, Vec<Subscription>)>,
+    /// 该侧的排序状态（列头点击 / `⌘J` 翻转都落在这里）。
+    ///
+    /// 两侧各存一份：用户按时间排远端、按名称排本地是很正常的事，共用一个状态
+    /// 会让每点一次列头都把另一侧也搅乱。
+    sort: SortState,
 }
 
 impl PaneState {
@@ -320,6 +398,9 @@ impl PaneState {
             entries: Vec::new(),
             notice: None,
             loaded: false,
+            failed: false,
+            path_edit: None,
+            sort: SortState::default(),
         };
         if side.is_local() {
             pane.reload(side);
@@ -338,9 +419,13 @@ impl PaneState {
     fn reload(&mut self, side: Side) {
         let listing = data::listing(side, &self.path);
         self.entries = listing.entries;
+        // 排序按面板自己的 `SortState`：重列举 / 进目录都不该把用户选的列头重置掉。
+        data::sort_entries(&mut self.entries, self.sort);
         self.notice = listing.notice;
         self.selected = None;
         self.loaded = true;
+        // 本地面板读磁盘是同步的：这一次的结果就是最终结果，没有「等着重试」的状态。
+        self.failed = false;
     }
 
     /// 跳到指定目录。
@@ -355,10 +440,21 @@ impl PaneState {
             String::new()
         };
         self.selected = None;
+        // 跳转即退出编辑态：路径栏已经换了一处，还留着旧输入框只会让人接着按 ⏎
+        // 又跳回去。
+        self.path_edit = None;
         if side.is_local() {
             self.reload(side);
         } else {
-            // 远端：把 `loaded` 打回 false，让渲染前的 `ensure_remote_listing` 重新列举。
+            // 远端：**立刻清掉上一目录的条目**，再让渲染前的 `ensure_remote_listing` 重列。
+            //
+            // 不清的后果很具体：列举是一次 `ssh` 往返（几百毫秒到几秒），这期间列表
+            // 还停在上一个目录的内容上 —— 用户点进 `nginx/` 却看见 `site-available`
+            // 里的文件名，双击其中一个就会对一个**不在当前目录里**的路径发起操作。
+            // 这比空白更糟：空白说的是「还没好」，旧数据说的是「这是新目录」。
+            self.entries.clear();
+            self.notice = None;
+            self.failed = false;
             self.loaded = false;
         }
     }
@@ -403,6 +499,14 @@ pub struct TerminalPage {
     /// 两份表意味着「改了这份忘了那份」，而连接档案是用户的长期资产。
     /// 内置的本地 shell 不在表里（见 [`data::LOCAL_SHELL_ID`]），它是入口不是档案。
     profiles: Vec<StoredProfile>,
+    /// **临时连接**（`user@host:port` 直接连出来的那条）。
+    ///
+    /// 只活在内存里：不进 `profiles`（也就不落盘、不出现在左栏），关掉标签即释放。
+    /// 「临时连一台」要么是一次性的排障，要么是先试再存 —— 无论哪种，替用户
+    /// 在左栏留一条「web-01、web-01-2、web-01-3」都只是垃圾。
+    /// 键是 [`data::AD_HOC_PREFIX`] 开头的合成 id，[`Self::profile`] 会回落到这里，
+    /// 所以连接、重连、右栏详情、SFTP 全都不必知道「临时」这回事。
+    ad_hoc: HashMap<String, StoredProfile>,
     /// 打开的标签页（顺序即展示顺序）。
     pub(super) tabs: Vec<SessionTab>,
     /// 激活标签下标。
@@ -415,8 +519,8 @@ pub struct TerminalPage {
     panes: [PaneState; 2],
     /// 传输队列。
     transfers: Vec<Transfer>,
-    /// 终端画布字号（真实生效，「字号 -/+」与快捷键都改它）。
-    pub(super) terminal_font_size: f32,
+    /// 终端画布字号**不在这里存**：真源是设置里的 `terminal.settings`，
+    /// 见 [`Self::font_size`]。存一份本地副本就会出现「设置里改了、画布里没变」。
     /// 本地终端标签的运行时状态（键 = 标签 id）。SSH / SFTP 标签不进这张表。
     pub(super) sessions: HashMap<String, TerminalSession>,
     /// 事件轮询任务。持有句柄只是为了延长它的生命周期 —— 任务靠视图的**弱引用**自判退出，
@@ -427,6 +531,8 @@ pub struct TerminalPage {
     /// 单独立一个任务而不是搭在 `poll_task` 上：那个是 16ms 一帧，
     /// 拿它当滚动时钟会让视口一帧滚好几行，用户停不到想选的那一行。
     pub(super) autoscroll_task: Option<Task<()>>,
+    /// 上次落盘的标签集合指纹（见 `restore::persist_tabs`）：只在变了的时候写 kv。
+    pub(super) tabs_fingerprint: Option<String>,
     /// 最近一次把键盘交给画布的本地标签。
     ///
     /// 焦点只在**切换**到本地标签时接管一次；用户主动点去别处（搜索框、侧栏）后
@@ -502,8 +608,51 @@ pub struct TerminalPage {
     transfer_requests: HashMap<u64, (TransferRequest, RemoteHandle)>,
     /// 缓冲区搜索条。`None` = 没打开（`⌘F` 打开，`Esc` / 关闭按钮收起）。
     find: Option<FindState>,
+    /// 终端工具条是否被指针唤出（hover 浮出）。
+    ///
+    /// 工具条**不占布局**（绝对定位浮层），所以它出现在画布上方时会盖住第一行文字 ——
+    /// 这是刻意的取舍：占布局的工具条在那 24px 上永久吃掉 1.4 行 `tail -f`，
+    /// 而「悬停时盖住一行」只发生在用户主动去点按钮的那几秒。
+    pub(super) toolbar_hovered: bool,
+    /// 工具条是否被钉住（一直显示）。钉住后不再需要悬停，适合「我就爱用按钮」的人。
+    pub(super) toolbar_pinned: bool,
+    /// 指针正悬停在哪个标签上（决定那一个标签露出 ✕ 关闭按钮）。
+    ///
+    /// 存 id 而不是下标：标签随时会因关闭而移位，下标会在那一帧指错人。
+    pub(super) hovered_tab: Option<String>,
+    /// 指针正悬停在分屏右窗格的名牌上（决定它露出 ✕ 还是状态点）。
+    ///
+    /// 与 [`Self::hovered_tab`] 同一套槽位语言；布尔就够 —— 名牌只有一条。
+    pane_header_hovered: bool,
+    /// 左栏最后碰过的那条连接（点击打开 / 右键菜单）。
+    ///
+    /// 专供右栏：选中一条**还没连上**的档案时，右栏该显示这条档案的详情
+    ///（地址、端口、认证、备注），而不是「打开一个会话后这里显示…」这句废话。
+    pub(super) selected_profile: Option<String>,
+    /// 最近关掉的标签（`⌘⇧Z` 重开；容量 [`CLOSED_TAB_CAPACITY`]，先进后出）。
+    ///
+    /// 只记「重开需要的最小信息」：重开的是**一条新会话**，不是复活旧进程
+    ///（旧 PTY 已经随标签一起销毁，进程也收到了 `SIGHUP`）。
+    pub(super) closed_tabs: Vec<ClosedTab>,
+    /// 两侧文件列表的键盘焦点（下标同 [`Side::index`]）。
+    pub(super) pane_focus: [FocusHandle; 2],
+    /// 用户最后点过的那一侧面板。
+    ///
+    /// SFTP 的两栏没有「焦点」这个概念（都能点，都不吃键盘），但 `⌘L` / `⌘⇧N` /
+    /// `⌘⌫` / `⌘⌥C` 这些键必须落在**某一侧**。取「最后点过的那一侧」比任何
+    /// 推断都准；一次都没点过时给远端 —— 本地面板一进页面就有内容，远端那栏
+    /// 才是需要用户去动的地方。
+    pub(super) focused_side: Side,
     /// 自引用：右栏等只有 `&App` 的地方要靠它把点击送回来。
     pub(super) view: WeakEntity<Self>,
+    /// 终端命令历史（按 host 隔离，新命令在尾部）。智能提示的数据源。
+    ///
+    /// 真源在 kv（`terminal.history`，见 `terminal/suggest.rs`），这里是一份
+    /// **写穿缓存**：惰性加载一次，之后追加即写回。kv 读是同步的但也不便宜，
+    /// 轮询循环里每次采集都读一遍不值得。
+    pub(super) term_history: HashMap<String, Vec<String>>,
+    /// [`Self::term_history`] 是否已从 kv 装载过。
+    pub(super) term_history_loaded: bool,
     /// 搜索词变更订阅；持有句柄仅为延长生命周期。
     _subscriptions: Vec<Subscription>,
 }
@@ -545,6 +694,89 @@ impl Render for TerminalPage {
             .size_full()
             .min_w_0()
             .min_h_0()
+            // 页面级键位上下文（动作见 `app::install` 的第二组 `bind_keys`）：
+            // 与画布的 `"Terminal"` 分开 —— 画布的键是「发给 PTY 的字节」，
+            // 这里的是「操作界面」，混在一起迟早会互相抢键。
+            //
+            // 动作在页面根上收：SFTP 面板不在画布里，没有别的地方能接到它们；
+            // 而 gpui 的派发是**从焦点节点向上冒泡**，根节点必然收得到，且画布
+            // 更深处的同键绑定（如 `⌘⌫`）会先命中 —— 互不干扰。
+            .key_context("TerminalPage")
+            // —— 标签 / 查找（页面级）——
+            // 只在这一层处理：画布上曾经也挂过一份，一次按键会触发两次
+            // （画布与页面根都在焦点路径上）。
+            .on_action(cx.listener(|this, _: &NewTab, window, cx| {
+                this.new_tab_for_active(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewLocalTab, _window, cx| {
+                this.new_local_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &QuickConnect, window, cx| {
+                this.open_quick_connect(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseTab, _window, cx| {
+                this.close_active_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ReopenClosedTab, window, cx| {
+                this.reopen_last_closed(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextTab, _window, cx| this.step_tab(1, cx)))
+            .on_action(cx.listener(|this, _: &PreviousTab, _window, cx| this.step_tab(-1, cx)))
+            .on_action(cx.listener(|this, event: &SwitchTabAt, _window, cx| {
+                let index = event.index;
+                this.activate(index, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Find, window, cx| this.open_find(window, cx)))
+            .on_action(cx.listener(|this, _: &EditPath, window, cx| {
+                let side = this.focused_side;
+                this.start_path_edit(side, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RefreshPane, _window, cx| {
+                // `⌘R` = **刷新当前视图**，不是「刷新左栏之外的另一件事」：
+                // SFTP 标签重列目录，终端标签重连那一条会话。
+                // 以前它只落到 SFTP 两栏上，终端里按 `⌘R` 会去刷工具箱页 —— 与眼前
+                // 这块界面毫无关系。
+                match this.active_tab().map(|tab| tab.kind) {
+                    Some(TabKind::Sftp) => {
+                        let side = this.focused_side;
+                        this.reload_pane(side, cx);
+                    }
+                    Some(_) => {
+                        // 分屏时重连**用户正在打字的那一半**。
+                        if let Some(key) = this.focused_session_key() {
+                            this.reconnect_session(&key, cx);
+                        }
+                    }
+                    None => {}
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NewFolderHere, window, cx| {
+                if this.focused_side.is_local() {
+                    // 本地面板是「上传的取材区」，不在远端新建目录的语义里。
+                    notify::warning(tr(cx, "新建目录只作用于远端面板。"), window, cx);
+                    return;
+                }
+                this.new_remote_directory(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &DeleteEntry, window, cx| {
+                if this.focused_side.is_local() {
+                    notify::warning(tr(cx, "删除只作用于远端面板。"), window, cx);
+                    return;
+                }
+                if let Some(name) = this.pane(Side::Remote).selected.clone() {
+                    this.delete_remote_entry(name, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CopyPath, window, cx| {
+                let side = this.focused_side;
+                let path = this.pane(side).path.clone();
+                if path.trim().is_empty() {
+                    notify::warning(tr(cx, "远端目录尚未确定，请先浏览一次远端。"), window, cx);
+                    return;
+                }
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.clone()));
+                notify::success(trf(cx, "已复制路径：{}", &[&path]), window, cx);
+            }))
             .child(div().flex_1().min_h_0().min_w_0().child(panel))
             .child(self.render_status_bar(cx))
     }
@@ -579,15 +811,20 @@ impl TerminalPage {
             sidebar,
             search,
             profiles: data::load_profiles(cx),
+            ad_hoc: HashMap::new(),
             // 初始**没有**标签页：一进页面就是空态，由用户从左侧选连接或新建。
             // 预置演示标签会让人以为「已经连上了」，而它连的是不存在的主机。
+            // 上次退出时开着的标签在 `restore_tabs` 里摆回来（休眠态，点才连）。
             tabs: Vec::new(),
             active: 0,
             expanded: HashSet::new(),
             panes: [PaneState::new(Side::Local), PaneState::new(Side::Remote)],
+            // 两侧文件列表各一把键盘焦点（`↑` `↓` `⏎` `⌫` 靠它）。
+            // 放在页面而不是 `PaneState` 里：`PaneState` 是纯数据，测试要能不起
+            // `Context` 就构造它。
+            pane_focus: [cx.focus_handle(), cx.focus_handle()],
             // 传输队列从空开始：队列里的每一条都该对应一次真实传输。
             transfers: Vec::new(),
-            terminal_font_size: initial_font_size(cx),
             sessions: HashMap::new(),
             poll_task: None,
             autoscroll_task: None,
@@ -605,9 +842,22 @@ impl TerminalPage {
             transfer_handles: HashMap::new(),
             transfer_requests: HashMap::new(),
             find: None,
+            toolbar_hovered: false,
+            toolbar_pinned: false,
+            hovered_tab: None,
+            tabs_fingerprint: None,
+            pane_header_hovered: false,
+            selected_profile: None,
+            closed_tabs: Vec::new(),
+            focused_side: Side::Remote,
             view: cx.entity().downgrade(),
+            term_history: HashMap::new(),
+            term_history_loaded: false,
             _subscriptions: subscriptions,
         };
+        // 上次退出时开着的标签摆回来（休眠态：名字 / 顺序 / 分屏都在，但不连）。
+        // 放在起轮询之前：轮询一开就会调 `persist_tabs`，晚一步会先用空表覆盖存档。
+        this.restore_tabs(cx);
         // 轮询任务只能在渲染之外起：渲染期间 `App` 已经被借出，再 `spawn` 就是重入。
         // 这里起一次就够了 —— 任务自己按「有没有会话」快慢变速，不随标签增删重启。
         this.start_terminal_poller(cx);
@@ -621,30 +871,56 @@ impl TerminalPage {
         self.sidebar.clone()
     }
 
-    /// 调整终端画布字号（钳在 [`FONT_SIZE_RANGE`] 内）。
+    /// 当前画布字号。
     ///
-    /// `pub(crate)`：画布层（`terminal_canvas`）的 `ZoomIn` / `ZoomOut` 动作与命令面板都走这里，
-    /// 与工具条 ± 按钮共用同一份状态与钳位。
-    pub(crate) fn nudge_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
-        let next = (self.terminal_font_size + delta)
-            .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
-        if (next - self.terminal_font_size).abs() > f32::EPSILON {
-            self.terminal_font_size = next;
-            cx.notify();
-        }
+    /// **没有本地副本**：真源是 `kv: terminal.settings`（`font_size` 为 `None` 时
+    /// 跟随主题的等宽正文档）。每帧读一次是刻意的 —— 它让「设置里改字号」与
+    /// 「画布上按 `⌘+`」自动一致，省掉一整套「谁通知谁」的广播。
+    pub(super) fn font_size(&self, cx: &App) -> f32 {
+        let theme = active_theme(cx);
+        // 主题档已经含界面缩放（`scale_typography` 乘过），而设置里的显式字号还要
+        // 自己乘一次 —— 两件事在 `effective_font_size` 里分开处理。
+        let theme_size = theme.tokens().typography.mono_md.size.to_f64() as f32;
+        module_settings::effective_font_size(
+            &module_settings::terminal_settings(cx),
+            theme_size,
+            theme.appearance().ui_scale,
+        )
     }
 
-    /// 字号复位到主题的等宽正文档（`⌘0`）。
+    /// 调整终端画布字号（钳在 [`FONT_SIZE_RANGE`] 内），并**立刻落盘**。
     ///
-    /// 复位基准就是 `new()` 的初值（`typography.mono_md`），不另设常量 ——
-    /// 主题换档时「复位」跟着走，不会把用户丢回一个写死的旧字号。
-    pub(crate) fn reset_font_size(&mut self, cx: &mut Context<Self>) {
-        let next = active_theme(cx).tokens().typography.mono_md.size.to_f64() as f32;
-        if (next - self.terminal_font_size).abs() > f32::EPSILON {
-            self.terminal_font_size = next;
-            cx.notify();
+    /// `pub(crate)`：画布层（`terminal_canvas`）的 `ZoomIn` / `ZoomOut` 动作与命令面板都走这里，
+    /// 与工具条 ± 按钮共用同一条写入口（`set_terminal_font_size`）。
+    pub(crate) fn nudge_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
+        // 在**设置空间**里加减，不在显示空间里：`font_size(cx)` 是乘过界面缩放的
+        // 显示值，拿它 +1 会把缩放烘进设置 —— 之后再按一次就放大两遍（1.5 倍界面下
+        // 每按一次 `⌘+` 跳 1.5 档）。
+        let scale = ui_scale(cx);
+        let current = self.font_size(cx) / scale;
+        let next = (current + delta).round();
+        let low = *FONT_SIZE_RANGE.start() as f32;
+        let high = *FONT_SIZE_RANGE.end() as f32;
+        if (next.clamp(low, high) - current).abs() < f32::EPSILON {
+            return;
         }
+        module_settings::set_terminal_font_size(cx, Some(next.clamp(low, high) as u32));
     }
+
+    /// 字号复位到主题的等宽正文档（`⌘0`）：把设置清成「跟随主题」。
+    ///
+    /// 复位基准不写死常量 —— 主题换档时「复位」跟着走，不会把用户丢回旧字号。
+    pub(crate) fn reset_font_size(&mut self, cx: &mut Context<Self>) {
+        module_settings::set_terminal_font_size(cx, None);
+    }
+}
+
+/// 界面缩放系数，下限 0.1（防 0 除）。
+///
+/// 单独一个函数是因为它有两个用途：乘字号、以及把「显示字号」换回「设置字号」
+/// （`nudge_font_size`）。两处若各自 `.max(0.1)`，迟早有一处漏写。
+fn ui_scale(cx: &App) -> f32 {
+    active_theme(cx).appearance().ui_scale.max(0.1)
 }
 
 #[cfg(test)]

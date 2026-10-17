@@ -44,8 +44,9 @@ mod target;
 
 pub use known_hosts::{HostKeyStatus, known_hosts_path, status as host_key_status};
 pub use remote::{
-    Output, RemoteEntry, RemoteListing, TransferHandle, download, download_spawn, exec, list_dir,
-    local_size, mkdir, path_size, remove, rename, test_connection, upload, upload_spawn,
+    Output, RemoteEntry, RemoteListing, TransferHandle, close_master, download, download_spawn,
+    exec, list_dir, local_size, mkdir, path_size, remove, rename, test_connection, upload,
+    upload_spawn,
 };
 pub use target::{
     AuthMethod, Availability, ForwardKind, PortForward, Target, askpass_script, control_path,
@@ -74,6 +75,12 @@ pub enum SshError {
     NoSuchDir { path: String },
     /// 传输失败（`scp` 非零退出）。`message` 是 `scp` 的原文。
     Transfer { message: String },
+    /// 操作超过时限还没结果（进程已被杀掉）。
+    ///
+    /// 单独立一个变体而不是混进 [`Self::Failed`]：卡死的下一步是「重试 / 检查网络」，
+    /// 而 `Failed` 的下一步是「看远端到底报了什么」—— 混在一起用户只能看到
+    /// 「没有输出」，那是上一版最让人无措的一类提示。
+    TimedOut { secs: u64 },
     /// 本地源路径不存在（**上传前**的检查，见 [`upload`]）。
     LocalMissing { path: String },
 }
@@ -113,6 +120,10 @@ impl SshError {
                 }
             }
             Self::Transfer { message } => ("传输失败：{}", vec![message.clone()]),
+            Self::TimedOut { secs } => (
+                "远端操作超时（{} 秒无结果），请检查网络后重试。",
+                vec![secs.to_string()],
+            ),
             Self::NoSuchDir { path } => ("远端目录不存在或无法进入：{}", vec![path.clone()]),
             Self::LocalMissing { path } => ("本地路径不存在：{}", vec![path.clone()]),
         }

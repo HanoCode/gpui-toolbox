@@ -157,12 +157,11 @@ impl TerminalPage {
         let tab = &mut self.tabs[t_index];
         tab.split = Some(split.clone());
         tab.split_owner = Some(owner);
-        // 两处都算「会话归属变更」：被拖会话换到了分屏键、活动标签也变了。
-        // 按护栏撤销它们各自的自动重连计时，后台不再替用户起 `ssh`。
+        // 会话归属变了（从独立标签搬进右窗格），它自己的重连计时按「归属变更」撤销；
+        // **别的标签一概不动** —— 与 `activate` 同一条口径：后台标签的重连是
+        // 有界退避，不该因为用户拖了个窗格就全被清掉。
         self.cancel_reconnect(&split);
         self.active = t_index;
-        let keep: Vec<String> = vec![self.tabs[t_index].id.clone(), split.clone()];
-        self.retain_reconnect_only(&keep);
         // 焦点交给新窗格：用户刚把它拖进来，接下来打字多半就是打给它。
         self.focus_pane = Some(split);
         self.focused_tab = None;
@@ -358,32 +357,158 @@ impl TerminalPage {
         )
     }
 
-    /// 一个终端窗格：会话画布（必要时带「已断开」提示条）。
+    /// 关闭分屏右窗格（右窗格名牌上的 ✕）。
+    ///
+    /// 右窗格只有这一条会话：关掉它分屏就不复存在 —— 收尾与工具条「取消分屏」
+    /// 完全同一套（清标签数据 + 收会话 + 还焦点），只是入口不同。
+    pub(super) fn close_split_pane(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(split) = tab.split.take() else {
+            return;
+        };
+        tab.split_owner = None;
+        // 名牌随分屏一起消失，不会有离开事件：悬停标记就地清掉，
+        // 否则下次分屏时 ✕ 会替掉状态点，直到指针再进出一次。
+        self.pane_header_hovered = false;
+        // `tab` 的借用到此为止：收会话要走整个 `self`。
+        self.close_split_session(&split, cx);
+    }
+
+    /// 分屏右窗格在标签栏里的「窗格标签」：图标 + 名称 + 状态点，悬停出关闭。
+    ///
+    /// 左半窗格的名字牌就是标签栏里的活动标签；右窗格是**另一条会话**，旧实现里
+    /// 只有一条画布内的小名牌 —— 与顶部标签栏不在一行。现在分屏时标签栏本身按
+    /// 窗格分区（见 `render_tabs` 的分屏分支），右窗格的名牌以一枚与会话标签同
+    /// 节奏的芯片住进同一行：同高、同圆角、同状态点/✕ 槽位。✕ 关掉的就是这条
+    /// 分屏会话（[`Self::close_split_pane`]）—— 右窗格只有一条会话，关掉即取消
+    /// 分屏；点芯片本体把键盘焦点交给右窗格（与拖拽并入同一条口径）。
+    pub(super) fn render_pane_tab(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tab = self.active_tab()?;
+        let split = tab.split.clone()?;
+        let kind = tab.split_kind().unwrap_or(tab.kind);
+        // 名牌数据：连接归属决定显示名（本地 shell / 档案显示名），状态点跟会话表
+        // 走。档案刚被删时如实写「终端会话」。
+        let owner = tab
+            .split_owner
+            .clone()
+            .unwrap_or_else(|| data::split_owner_for(tab.kind, &tab.id));
+        let title = self
+            .connection_entry(&owner)
+            .map(|entry| entry.label)
+            .unwrap_or_else(|| tr(cx, "终端会话").to_owned());
+        let status = self.link_status(&split);
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        let view_click = self.view.clone();
+        let view_hover = self.view.clone();
+        let view_close = self.view.clone();
+        let hovered = self.pane_header_hovered;
+        let close = toolbar_action_button(
+            "terminal-pane-close",
+            tr(cx, "关闭分屏"),
+            Icon::new(DuckIcon::X).size(extended.icon.sm),
+            false,
+            false,
+            cx,
+        )
+        .w(px(TAB_CLOSE_SLOT))
+        .on_click(move |_, _, cx| {
+            // 关闭按钮在名牌内部：不掐断冒泡会顺带触发名牌上的别的手势。
+            cx.stop_propagation();
+            let _ = view_close.update(cx, |this, cx| this.close_split_pane(cx));
+        });
+
+        Some(
+            h_flex()
+                .id("terminal-pane-tab")
+                .relative()
+                .h(theme.density().control)
+                .min_w_0()
+                .max_w(px(TAB_MAX_WIDTH))
+                .items_center()
+                .gap(tokens.spacing.xs)
+                .pl(tokens.spacing.sm)
+                .pr(tokens.spacing.xs)
+                .rounded(tokens.radius.md)
+                .cursor_pointer()
+                .text_color(tokens.colors.foreground)
+                .text_size(tokens.typography.sm.size)
+                .role(Role::Button)
+                .aria_label(title.clone())
+                .hover(|style| style.bg(extended.colors.hover_tint))
+                .on_click({
+                    let split = split.clone();
+                    move |_, _, cx| {
+                        let _ = view_click.update(cx, |this, cx| {
+                            this.focus_pane = Some(split.clone());
+                            this.focused_tab = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_hover(move |hovered: &bool, _, cx| {
+                    let hovered = *hovered;
+                    let _ = view_hover.update(cx, |this, cx| {
+                        if this.pane_header_hovered != hovered {
+                            this.pane_header_hovered = hovered;
+                            cx.notify();
+                        }
+                    });
+                })
+                .child(
+                    Icon::new(kind.icon())
+                        .size(extended.icon.md)
+                        .text_color(extended.colors.accent_text),
+                )
+                .child(div().min_w_0().truncate().child(title))
+                .child(if hovered {
+                    // 与标签页同一套槽位语言：悬停换成 ✕，不悬停仍是状态点。
+                    div()
+                        .w(px(TAB_CLOSE_SLOT))
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .child(close)
+                } else {
+                    div()
+                        .w(px(TAB_CLOSE_SLOT))
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .size(px(STATUS_DOT_SIZE))
+                                .rounded_full()
+                                .bg(status.color(cx)),
+                        )
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// 一个终端窗格：会话画布（断线提示由画布自己画，见 `render_terminal_session`）。
     ///
     /// `split` 只影响无障碍名字 —— 两个同名「终端」的输入区对读屏是一团迷雾。
+    /// `_kind` 保留在签名里是为了让调用点读起来仍然「按标签类型渲染」：决定
+    /// 「断了要不要提示」的是会话自己的状态，不是标签类型（SFTP 标签也可能有会话）。
     pub(super) fn render_terminal_pane(
         &self,
         key: &str,
-        kind: TabKind,
+        _kind: TabKind,
         split: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match self.sessions.get(key) {
             Some(live) => {
-                let canvas = self.render_terminal_session(key, live, split, cx);
-                // SSH 会话退出（多半是连接失败）时，画布上留着 ssh 打印的原文，
-                // 上面再压一条「已断开 + 重新连接」的提示条 ——
-                // 用户不必去翻滚动历史确认到底怎么了。
-                if live.is_exited() && kind == TabKind::Ssh {
-                    v_flex()
-                        .size_full()
-                        .min_h_0()
-                        .child(canvas)
-                        .child(self.render_reconnect_bar(key, cx))
-                        .into_any_element()
-                } else {
-                    canvas
-                }
+                // 断线提示**不在这一层**：它是画布内部的一条绝对定位浮层
+                //（`pages::terminal_canvas` 的 `reconnect` 那段），与画布共享同一个
+                // 原点、不参与布局。此前这里还挂了一条「已断开 + 重新连接」的兄弟条，
+                // 结果是同一件事在屏幕上说了两遍、文案与按钮语义还不一样。
+                let _ = live;
+                self.render_terminal_session(key, live, split, cx)
             }
             // 会话没起来（PTY 创建失败、档案已删）：如实说明，不留一块空白底。
             None => self.render_terminal_failure(cx),

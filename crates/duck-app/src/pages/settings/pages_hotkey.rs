@@ -1,13 +1,14 @@
 //! 设置页「热键」：录入器与按键处理。
 //!
-//! 两段，结构相同（开关 + 键位），只是命令面板那段多一行「唤起时打开主窗口」：
+//! 每段结构相同（开关 + 键位），只有命令面板那段多一行「唤起时打开主窗口」：
 //!
 //! - **唤起命令面板**（`⌥Space`）—— 现行的全局唤起键。
 //! - **随手看悬浮窗**（`⌥⌘T`）—— 项目管理页的「随手看」入口（`docs/projects-design.md` §4.3 ⑤）。
+//! - **快速捕获窗**（`⌥⌘N`）—— 一句话记一条任务（G-PRJ-12）。
 //!
-//! 两段各有自己的开关：全局热键会**占掉**一个组合，默认给两个键就得给用户两个关掉它的
-//! 出口（「不打扰」原则）。两个槽位的界面状态按 [`HotkeySlot::index`] 存在
-//! `SettingsWindowView::hotkeys` 里，行与录入器都由槽位参数化 —— 加第三个键时这里
+//! 每段各有自己的开关：全局热键会**占掉**一个组合，默认给出几个键就得给用户几个关掉
+//! 它的出口（「不打扰」原则）。各槽位的界面状态按 [`HotkeySlot::index`] 存在
+//! `SettingsWindowView::hotkeys` 里，行与录入器都由槽位参数化 —— 加新键时这里
 //! 不用再抄一遍。
 
 use super::*;
@@ -34,6 +35,14 @@ impl SettingsWindowView {
             ],
             cx,
         );
+        let capture = settings_section(
+            Some(tr(cx, "快速捕获窗").into()),
+            [
+                self.hotkey_enabled_row(HotkeySlot::QuickCapture, cx),
+                self.hotkey_binding_row(HotkeySlot::QuickCapture, cx),
+            ],
+            cx,
+        );
         let tokens = active_theme(cx).tokens();
         div()
             .flex()
@@ -42,6 +51,7 @@ impl SettingsWindowView {
             .gap(tokens.spacing.xl)
             .child(launcher)
             .child(float)
+            .child(capture)
     }
 
     /// 「启用…快捷键」那一行。
@@ -69,6 +79,13 @@ impl SettingsWindowView {
                 tr(
                     cx,
                     "在任何程序里按一下都能把日历浮窗叫出来，再按一次收起来。它不抢焦点，适合瞄一眼哪天有什么。",
+                ),
+            ),
+            HotkeySlot::QuickCapture => (
+                tr(cx, "启用快速捕获快捷键"),
+                tr(
+                    cx,
+                    "在任何程序里按一下就能记一条任务：回车保存并关窗，Esc 放弃。它抢焦点，因为下一件事就是打字。",
                 ),
             ),
         };
@@ -310,6 +327,7 @@ fn hotkey_status(
             ),
             HotkeySlot::TaskFloat => tr(cx, "在别的程序里也能用；再按一次会把它收起来。"),
             HotkeySlot::CalendarFloat => tr(cx, "在别的程序里也能用；再按一次会把它收起来。"),
+            HotkeySlot::QuickCapture => tr(cx, "在别的程序里也能用；回车保存后自动关窗。"),
         }
         .into()
     }

@@ -153,6 +153,16 @@ impl ShellRoute {
         self
     }
 
+    /// 这条路由承载的页面视图。
+    ///
+    /// 给「从别处触发页面上的动作」用：命令面板的「新建任务」要落到 `ProjectsPage`
+    /// 上开 Spotlight，而面板本身只拿得到 shell。返回的是克隆 —— 调用方通常要
+    /// `downcast` 之后 `update`，借不住 `self`。
+    #[must_use]
+    pub fn view(&self) -> AnyView {
+        self.view.clone()
+    }
+
     /// 为该路由挂载顶栏插槽：路由活跃时 shell 在标题栏右侧渲染它。
     pub fn with_title_bar(mut self, view: impl Into<AnyView>) -> Self {
         self.title_bar = Some(view.into());
@@ -518,6 +528,20 @@ impl ShellView {
     #[must_use]
     pub fn active_route_id(&self) -> Option<&'static str> {
         self.active_route.map(RouteId::as_str)
+    }
+
+    /// 按稳定 id 取某条路由的页面视图。
+    ///
+    /// 与 [`Self::navigate_by_id`] 配对：先切过去、再拿它的页面做一件事（例如
+    /// 命令面板的「新建任务」——切页之后要调 `ProjectsPage::open_spotlight`）。
+    /// 页面是 `AnyView`，调用方自行 `downcast`；类型不对就什么都不做，比 panic 合适。
+    #[must_use]
+    pub fn route_view(&self, id: &'static str) -> Option<AnyView> {
+        let route = RouteId::new(id);
+        self.routes
+            .iter()
+            .find(|entry| entry.id == route)
+            .map(ShellRoute::view)
     }
 
     /// 设置活跃路由右栏的折叠态（会话恢复用）；没有活跃路由时什么都不做。

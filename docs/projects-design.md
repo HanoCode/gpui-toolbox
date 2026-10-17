@@ -1401,12 +1401,66 @@ S3 的**第三批**，也是唯一一批**不改功能范围、只改呈现与�
 | 单测 | `ai_assist` **10** · `schedule` **6** · `view::hours_text_keeps_at_most_one_decimal` **1**；`pages/projects` 179 → **198** |
 
 
+### 到期时刻与文件收件箱（S7-a，2026-10-17 落地）
+
+参考 `temp/TO-DO-Panel` 的待办实现后，只取两条（其余四条**刻意不抄**：默认截止
+23:30 会把「没有承诺日」写成「今天到期」、污染逾期与报表口径；本机 HTTP
+`/notify` 端口＝攻击面，agent 集成走 `duck-plugin` 更合规；贴顶刘海面板本仓已有
+「随手看」+ 日历浮窗两形态；四个可改名工作流本仓已有 `board_columns`，且比它多
+WIP 上限与排序）。
+
+| 能力 | 证据 |
+| --- | --- |
+| **到期时刻进入扫描**：新增 `DueSoon` 档，带 `due_time` 的任务在到期前 60 分钟内说一次（`DUE_SOON_LEAD_SECS`，与 `temp/TO-DO-Panel` 的 `TODO_REMINDER_LEAD_MS` 同口径） | `remind::ReminderKind::DueSoon`、`reminder_for` |
+| 带时刻的任务**不再**在早上先报一次「今天到期」（否则同一件事一天响两遍）：窗口外不说话，过了点才退回天级档 | `reminder_for` 的 `diff == 0` 分支；单测 `a_timed_task_is_not_reported_as_due_today_in_the_morning` |
+| 去重键带时刻：同一天把 17:00 改成 18:00 是另一件事，该重新提醒 | `Reminder::dedupe_key`（`{id}:{kind}:{日}:{HH:MM}`）；单测 `a_changed_due_time_is_a_new_thing_to_say` |
+| 时区仍由上层注入（内核不读时区）：`(日期, HH:MM) → Unix 秒` 走 `start_of_day_unix − offset` | `remind::{scan, reminder_for}` 收 `offset_seconds`；`run_once` 每轮现取（跨夏令时不缓存） |
+| 时刻的合法形状复用记号解析（两位小时 / `23:59` 上限），不抄第二份 | `remind::minute_of_day` → `quickparse::parse_time` |
+| 设置页文案补齐「填了截止时刻的任务改为到期前一小时提醒」 | `module_settings::projects_body` |
+| **文件收件箱**：`<应用数据目录>/project-inbox/*.json`，2 秒轮询；静置 1 秒才读（避开写到一半）；>1 MiB 不读直接拒绝；只追加、不改不删 | `pages/projects/inbox.rs`（`POLL_INTERVAL` / `SETTLE` / `MAX_BYTES`） |
+| 处理完移进 `processed/<时间戳>-<原名>.json` 并写同名 `.report.json`（`imported` / `partial` / `rejected` / `empty`）。**失败也留痕**：留在原地只会每 2 秒重试一次、把日志刷满 | `inbox::{archive, Outcome::status}` |
+| **不按标题去重**（与手动导入刻意不同）：手动导入是人工选择、防手抖；外部写入是「这条活确实又发生了一次」。收件箱靠「文件被移走」防重复，同一文件名可反复丢 | `inbox::poll_once`；单测 `the_same_file_name_can_be_dropped_twice` |
+| 字段映射只有一份：`import::new_task` 由对话框导入与收件箱共用（新增字段只改一处） | `import::new_task`；`state::import_rows` 改调它 |
+| 崩溃窗口取「先落库、后移走」：重复任务可见可删，好过静默丢任务 | `inbox.rs` 模块头 |
+| 单测 | `remind` 11 → **15** · `inbox` **10**（候选人 / 静置 / 各状态 / 项目关联 / 超大 / 重复文件名 / 坏 JSON / 空文件 / 目录不存在） |
+
+
+### 快速捕获窗与简报（S7-b，2026-10-17 落地）
+
+收口 `docs/projects-vs-devassistant-gap.md` 的 G-PRJ-12 / G-PRJ-13。两项都是**新增能力**
+（不是补界面入口），所以先立四条判据再写代码：① 捕获窗必须从**任意前台程序**唤起
+（否则不如页内弹窗）；② 记完即走（回车保存后关窗）；③ 简报是「一天/一周一次的汇总」，
+与逐条提醒**两套去重册**；④ 简报口径只走内核统计，界面不自己数。
+
+| 能力 | 证据 |
+| --- | --- |
+| **独立快速捕获窗**：`WindowKind::QuickCapture` + `HotkeySlot::QuickCapture`（`⌥⌘N` / Win `Ctrl+Alt+N`） | `app::{toggle,open,close}_quick_capture`；`duck_platform::QUICK_CAPTURE_SPEC` |
+| 与两个浮窗**语义不同**：`focus: true`（要打字）、`app_owns_titlebar_drag: true`（整窗可点）、居中、不可缩放；记账「记完即走」 | `quick_capture::quick_capture_window_options` |
+| 一行输入 + **实时解析预览**（`@项目` / `!P1` / 日期 / `HH:MM` / `#标签`），预览里**不重复标题**（标题就在输入框里） | `QuickCaptureWindow::preview_text`；单测 `the_preview_lists_only_the_markers` |
+| 回车保存后**关窗**并广播 `bus`；Esc 收起（输入框对 escape 最终 `cx.propagate()`，根元素接得住） | `submit` / `render` 的 `on_key_down` |
+| 只有记号没有标题时不落库、**不静默**（关窗会让人以为记上了） | `submit` 的 `title.is_empty()` 分支；单测 `a_marker_only_line_has_no_title` |
+| 项目按名字匹配、匹配不上进收集箱（与「随手看」同口径）；标签 `ensure_tag` 第一次就能用 | `quick_capture::create` |
+| **日报 / 周报**：默认 21:00 / 周一 09:00，内容＝数字汇总 + 前三条待办（周报为「本周完成 / 逾期 / 进行中」） | `remind::{brief_body, deliver_briefs}`；`module_settings::ProjectsSettings::{daily_brief,daily_at,weekly_brief,weekly_at}` |
+| 判定是「**已过点且今天没发过**」而不是「正好等于」：5 分钟一跳、应用还可能睡着，要求精确相等等于让 21:00 关着应用的人永远收不到 | `remind::brief_due`；单测 `a_brief_fires_after_its_time_only_once_a_day` |
+| 周报钉在**周一**（`weekday().index_from_monday() == 0`）：周二读上周的账没有行动价值 | `brief_due`；单测 `the_weekly_brief_only_fires_on_monday` |
+| 时区仍由上层注入；测试用「UTC 13:00 + 8h ＝ 本地 21:00」钉住比较方向 | `brief_due` 收 `offset_seconds: i32`；单测 `the_brief_time_is_compared_in_local_time` |
+| 简报去重册**独立**于逐条提醒（`projects_brief`）：逐条那册按天整批作废，混用会让周一那条每次重启都重发 | `KEY_BRIEF` / `BriefLog` |
+| **每天最多 N 条**只约束逐条提醒，简报不占额度；到量后这一批照样记账（否则下一轮又当新的、在同一个墙上来回撞） | `run_once` 的 `fresh.truncate(room)`；`daily_limit`（0 = 不限，升级不改原有行为） |
+| 设置页存的时刻有唯一规范形：`normalize_time` 比记号解析宽一档（人手打的 `9:05` 也收），**输出**仍是两位 `HH:MM` | `remind::normalize_time`；单测 `normalize_time_round_trips_through_the_parser` |
+| 简报同样「没窗口可投就不记账」，与逐条提醒同一条纪律 | `deliver_briefs` 的 `delivered` 判据 |
+| 单测 | `remind` 15 → **19** · `quick_capture` **2** · `HotkeySlot` 槽位表 1（`ALL.len() == 4` + 三条不撞） |
+
+> 刻意没做：捕获窗的**历史记录**（「记过什么」是清单的活，主窗有）；简报的**自定义周期**
+> （只有日报 / 周报两档 —— 任意 cron 的配置成本远高于它带来的价值）；`daily_limit` 的
+> 按档位分别限额（一档够用，多档只会让设置页长一倍）。
+
+
 **单测规模（当前磁盘）**
 
 | 侧 | 条数 | 分布 |
 | --- | --- | --- |
 | `crates/duck-project` | **129** | tasks 21 · query 14 · archive 11 · time 11 · store 10 · plans 8 · projects 8 · milestones 7 · columns 7 · models 8 · tags 6 · db 8 · groups 5 · logs 4 |
-| `pages/projects` | **198** | state 63 · import 29 · report 19 · prefs 15 · remind 11 · **ai_assist 10** · import_aliases 8 · quickparse 8 · export 7 · **schedule 6** · float 6 · mod 4 · dialogs 3 · view 3 · bus 2（`widgets/**` 0） |
+| `pages/projects` | **227** | state 63 · import 29 · report 19 · **remind 19** · prefs 15 · inbox 10 · ai_assist 10 · import_aliases 8 · quickparse 8 · export 7 · schedule 6 · float 6 · mod 4 · dialogs 3 · view 3 · bus 2 · **quick_capture 2**（`widgets/**` 0） |
 
 > `duck-app` bin 全量：S5-f 收尾时为 **464 passed / 1 failed** —— 唯一红的是 `pages::redis::tests::tree_rows_carry_tag_favorite_and_note`，属**其它并发会话**正在改的 Redis 树，与本模块无关（本批改动全在 `pages/projects/**` 与 i18n 表内）。
 > i18n 守卫同一时刻被并发会话的 `pages/db/browse.rs`（3 条新中文未登记，mtime 晚于本批）判红，**不是本批** —— 本批新增的 3 条文案已全部进 `locales/en.toml`（当前 **3503** 条）。

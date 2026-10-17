@@ -38,10 +38,56 @@ impl TerminalPage {
         Some((profile.host.clone(), port))
     }
 
+    /// 会话键 → **这一格**背后的档案（本地 shell / 分屏两侧 / 同主机第二条都算）。
+    ///
+    /// 与 [`Self::ssh_endpoint`] 同一套归属口径，差别只在这里要整个档案
+    ///（用户名、端口原文）而不是 `(主机, 端口)`。
+    fn profile_of_session(&self, session_key: &str) -> Option<&StoredProfile> {
+        if let Some(tab) = self.tabs.iter().find(|tab| tab.id == session_key) {
+            return self.profile(&tab.id);
+        }
+        let tab = self
+            .tabs
+            .iter()
+            .find(|tab| tab.split.as_deref() == Some(session_key))?;
+        let owner = tab.split_owner.clone().unwrap_or_else(|| tab.id.clone());
+        self.profile(data::tab_owner(&owner))
+    }
+
+    /// 右键菜单「复制连接信息」用的 `user@host[:port]`。
+    ///
+    /// 端口 22 不写出来：`ssh host` 与 `ssh host:22` 对用户是两件事，前者更短，
+    /// 也正好是他要粘进另一个终端的那一种写法。本地 shell 没有地址（`None` ⇒ 菜单项置灰）。
+    pub(crate) fn address_for_session(&self, session_key: &str) -> Option<String> {
+        let profile = self.profile_of_session(session_key)?;
+        if profile.host.trim().is_empty() {
+            return None;
+        }
+        let port = profile.port.trim();
+        Some(if port.is_empty() || port == "22" {
+            format!("{}@{}", profile.user, profile.host)
+        } else {
+            format!("{}@{}:{}", profile.user, profile.host, port)
+        })
+    }
+
+    /// 把一段连接文本写进剪贴板并回执。
+    pub(crate) fn copy_connection_text(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        notify::success(trf(cx, "已复制连接地址：{}", &[&text]), window, cx);
+    }
+
     /// 一个连接的展示条目（**含内置的本地 shell**）。
     ///
     /// 工具条与右栏都要它；统一在这里兜底，免得每个调用点各写一遍 `map_or`。
     pub(super) fn connection_entry(&self, id: &str) -> Option<Connection> {
+        // 先剥后缀（`/sftp`、`~n`）：传进来的多是标签 id，不是档案 id。
+        let id = data::tab_owner(id);
         if id == data::LOCAL_SHELL_ID {
             return Some(data::local_shell_view());
         }
@@ -90,6 +136,14 @@ impl TerminalPage {
             .iter()
             .filter_map(data::forward_from_stored)
             .collect();
+        // 跳板机走 `-o ProxyJump=…`（`Target::options` 是给 ssh 透传 `-o` 的口子）。
+        //
+        // 放在 `options` 而不是给 `Target` 加一个专用字段：`options` 已经被
+        // `connection_key` 逐条哈希进 `ControlPath`，改跳板机**自动**换新 socket ——
+        // 加字段就得记着同步哈希，漏一次的表现是「改了跳板机，5 分钟后才生效」。
+        let options: Vec<String> = data::proxy_jump_option(&profile.proxy_jump)
+            .into_iter()
+            .collect();
         Some((
             duck_ssh::Target {
                 host: profile.host.clone(),
@@ -107,7 +161,7 @@ impl TerminalPage {
                     AuthKind::Agent => duck_ssh::AuthMethod::Agent,
                     AuthKind::Password => duck_ssh::AuthMethod::Password,
                 },
-                options: Vec::new(),
+                options,
                 forwards,
                 // agent 转发随档案走：它管的是「远端能不能用本机 agent」，
                 // 与上面那个认证收窄**正交**，所以不走 `auth` 分支推导。
@@ -131,6 +185,11 @@ impl TerminalPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 右栏跟着「最后碰过的连接」走：点开一条就在右栏看它的详情。
+        if self.selected_profile.as_deref() != Some(id) {
+            self.selected_profile = Some(id.to_owned());
+            cx.notify();
+        }
         if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
             self.active = index;
             cx.notify();
@@ -159,17 +218,99 @@ impl TerminalPage {
         // 复用 socket 的目录要先建出来：`ControlPath` 指向不存在的目录时，
         // ssh 不会自己创建，直接报错退出。
         let _ = duck_platform::ensure_dir(&self.ssh_socket_dir());
+        // 「最近用过」在**打开时**就记，不等连上：连不上的机器恰恰是最想再试一次的。
+        data::remember_recent(cx, id);
         self.tabs.push(SessionTab {
             id: id.to_owned(),
             title: entry.label,
+            // 副标题留空：等远端 shell 发 OSC 标题再填。
+            subtitle: None,
             kind: TabKind::Ssh,
             // 标签先以「连接中」出现，真实状态由本帧起的会话在下一轮轮询里改写。
             status: LinkStatus::Connecting,
             split: None,
             split_owner: None,
+            dormant: false,
         });
         self.active = self.tabs.len() - 1;
         cx.notify();
+    }
+
+    /// 「直接连」：把一行 `user@host:port` 变成一条**临时**连接并打开。
+    ///
+    /// 这是「临时连一台」的成本下限 —— 不用先起名、选分组、挑认证方式。
+    /// 认证一律走 `SSH Agent`（服务器上的 `authorized_keys` + 本机 agent 是绝大多数
+    /// 人的实际形态），口令认证与私钥仍然要进完整表单填，弹窗底部那一行就是入口。
+    pub(super) fn open_direct(&mut self, raw: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = data::parse_direct_target(raw) else {
+            notify::warning(
+                trf(
+                    cx,
+                    "「{}」不是有效地址，写成 user@host:port。",
+                    &[raw.trim()],
+                ),
+                window,
+                cx,
+            );
+            return;
+        };
+        // 端口是 22 时不写出来：`alice@web-01:22` 只是噪音。
+        let label = if target.port == 22 {
+            format!("{}@{}", target.user, target.host)
+        } else {
+            format!("{}@{}:{}", target.user, target.host, target.port)
+        };
+        // 同一台机器连第二次要**复用那一条**（与档案连接一致）：两条临时连接指向
+        // 同一台机器时，用户没法从标签上分辨，只会以为多开了一个。
+        let existing = self
+            .ad_hoc
+            .iter()
+            .find(|(_, profile)| {
+                profile.host == target.host
+                    && profile.user == target.user
+                    && profile.port.trim().parse::<u16>().ok() == Some(target.port)
+            })
+            .map(|(id, _)| id.clone());
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                let id = self.next_ad_hoc_id();
+                self.ad_hoc.insert(
+                    id.clone(),
+                    StoredProfile {
+                        id: id.clone(),
+                        label,
+                        host: target.host,
+                        port: target.port.to_string(),
+                        user: target.user,
+                        auth: AuthKind::Agent.value().to_owned(),
+                        key_file: String::new(),
+                        // 空分组：临时连接不进左栏的任何分组（它压根不在 `profiles` 里），
+                        // 但右栏详情与编辑弹窗会读它，留空比编一个「临时」分组干净。
+                        group: String::new(),
+                        remember: false,
+                        password: None,
+                        forwards: Vec::new(),
+                        agent_forwarding: false,
+                        proxy_jump: String::new(),
+                    },
+                );
+                id
+            }
+        };
+        self.open_connection(&id, window, cx);
+    }
+
+    /// 下一个可用的临时连接 id（`direct:1`、`direct:2`…）。
+    fn next_ad_hoc_id(&self) -> String {
+        let mut n = 1_u32;
+        loop {
+            let id = format!("{}{n}", data::AD_HOC_PREFIX);
+            if self.profile(&id).is_none() {
+                return id;
+            }
+            n += 1;
+        }
     }
 
     /// 分组下拉的选项：`(分组 id, 分组显示名)`。
@@ -249,6 +390,7 @@ impl TerminalPage {
                 .filter_map(ForwardDraft::from_stored)
                 .collect(),
             agent_forwarding: profile.agent_forwarding,
+            proxy_jump: profile.proxy_jump.clone(),
         };
         let id = id.to_owned();
         let view = self.view.clone();
@@ -277,6 +419,12 @@ impl TerminalPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 旧目标要在**档案被改写之前**取，而且要在下面的 `iter_mut` 之前 ——
+        // `ssh_target` 借的是整张档案表（只读），与 `iter_mut` 的可变借用不共存。
+        // `ControlPath` 按连接参数哈希（`duck_ssh::control_path`）：改完再算就落到
+        // 新 socket 上，旧 master 谁也找不到，只能等 `ControlPersist` 的 5 分钟自己过期。
+        let old_target = self.ssh_target(id).map(|(target, _)| target);
+        let socket_dir = self.ssh_socket_dir();
         let Some(profile) = self.profiles.iter_mut().find(|profile| profile.id == id) else {
             return;
         };
@@ -294,6 +442,10 @@ impl TerminalPage {
         // agent 转发同样是**起进程时**加的参数：翻了不重连，远端那条链路不会变
         //（旧会话仍是 `ForwardAgent` 默认关）—— 与 `forwards_changed` 同一个道理。
         let agent_forwarding_changed = profile.agent_forwarding != draft.agent_forwarding;
+        // 跳板机同理：它是**起进程时**的路由参数，改了不重连，旧会话还径直连着
+        //（而且旧 master 认的还是旧路由）。`ControlPath` 按 `options` 哈希，
+        // 断掉旧 master 后新 socket 自然落到新路径上，不需要手工清缓存。
+        let proxy_jump_changed = profile.proxy_jump.trim() != draft.proxy_jump.trim();
         // 私钥先按认证方式规整（非公钥 → 空串），比较与落库都用这一份。
         let key_file = stored_key_file(draft.auth, draft.key_file.clone());
         let reconnect_needed = profile.host != draft.host
@@ -303,7 +455,8 @@ impl TerminalPage {
             || profile.auth != draft.auth.value()
             || password_changed
             || forwards_changed
-            || agent_forwarding_changed;
+            || agent_forwarding_changed
+            || proxy_jump_changed;
 
         // 口令先落档案（密文；它只读 `draft`，下面的档案字段会被 move 走）。
         apply_password(profile, &draft);
@@ -317,6 +470,8 @@ impl TerminalPage {
         profile.remember = draft.remember;
         profile.forwards = forwards;
         profile.agent_forwarding = draft.agent_forwarding;
+        // 存原文（只削两侧空白）：ssh 语法原样保存，不解析、不重排。
+        profile.proxy_jump = draft.proxy_jump.trim().to_owned();
         self.persist_profiles(cx);
 
         if reconnect_needed {
@@ -330,6 +485,12 @@ impl TerminalPage {
                 .collect();
             for tab_id in affected {
                 self.sessions.remove(&tab_id);
+            }
+            // 旧 master 必须显式关：它按旧的连接参数建起来（可能带着旧转发、旧的
+            // `ForwardAgent`），会一直占着本地端口直到 `ControlPersist` 到期。
+            // 不关它的表现是「改了转发，5 分钟后才生效」——最难查的一类。
+            if let Some(old) = old_target {
+                duck_ssh::close_master(&old, &socket_dir);
             }
         }
         notify::success(tr(cx, "连接已更新。"), window, cx);
@@ -407,6 +568,7 @@ impl TerminalPage {
             password,
             forwards: draft.forwards.iter().map(ForwardDraft::to_stored).collect(),
             agent_forwarding: draft.agent_forwarding,
+            proxy_jump: draft.proxy_jump.trim().to_owned(),
         });
         self.persist_profiles(cx);
         // 分组缺省折叠：新建的连接落进去却看不见，等于「点了没反应」——
@@ -530,6 +692,11 @@ impl TerminalPage {
         if self.profile(id).is_none() {
             return;
         }
+        // 档案删掉之后再也算不出它的 `ControlPath`（哈希的输入是档案字段），
+        // 所以目标必须在删除前取好 —— 否则这条 master 会留到 `ControlPersist` 过期，
+        // 期间 `ps` 里一直挂着一条指向已删主机的 `ssh -M`。
+        let target = self.ssh_target(id).map(|(target, _)| target);
+        let socket_dir = self.ssh_socket_dir();
         // 标签：连接本身 + 它的 SFTP 面板。倒序删，正序会因下标位移漏掉后面的。
         let doomed: Vec<usize> = self
             .tabs
@@ -542,6 +709,9 @@ impl TerminalPage {
             self.close_tab_at(index, cx);
         }
         self.profiles.retain(|profile| profile.id != id);
+        if let Some(target) = target {
+            duck_ssh::close_master(&target, &socket_dir);
+        }
         // 口令密文随档案行一起消失，没有第二份副本要收。
         self.persist_profiles(cx);
         cx.notify();

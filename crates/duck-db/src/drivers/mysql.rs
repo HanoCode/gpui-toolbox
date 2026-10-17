@@ -1110,6 +1110,42 @@ impl MysqlConnection {
         Err(DbError::Query(format!("table not found: {table}")))
     }
 
+    /// 存储过程 / 函数的定义原文（`SHOW CREATE PROCEDURE|FUNCTION`）。
+    ///
+    /// MySQL 的 `SHOW CREATE` 三列：名字、`sql_mode`、定义原文（第 3 列）。
+    /// 拿不到（权限不足 / 不存在）返回 `Ok(None)`，让调用方退化成只比存在性。
+    pub fn routine_definition(
+        &mut self,
+        kind: TableKind,
+        namespace: Option<&str>,
+        name: &str,
+    ) -> Result<Option<String>, DbError> {
+        let keyword = match kind {
+            TableKind::Procedure => "PROCEDURE",
+            TableKind::Function => "FUNCTION",
+            _ => return Ok(None),
+        };
+        let quoted = match namespace.filter(|schema| !schema.is_empty()) {
+            Some(schema) => format!(
+                "{}.{}",
+                quote_identifier(schema, '`')?,
+                quote_identifier(name, '`')?
+            ),
+            None => quote_identifier(name, '`')?,
+        };
+        let result = self
+            .conn
+            .query_iter(format!("SHOW CREATE {keyword} {quoted}"))
+            .map_err(DbError::from)?;
+        for row in result {
+            let row = row.map_err(DbError::from)?;
+            if let Some(mysql::Value::Bytes(bytes)) = row.as_ref(2) {
+                return Ok(Some(String::from_utf8_lossy(bytes).into_owned()));
+            }
+        }
+        Ok(None)
+    }
+
     /// 批量参数化插入：每行一条 INSERT，**单事务**提交；`None` 写 `NULL`。
     pub fn insert_rows(
         &mut self,

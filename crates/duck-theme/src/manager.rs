@@ -387,6 +387,15 @@ fn install(appearance: Appearance, _window: Option<&mut Window>, cx: &mut App) {
         base_theme.resizable.handle = Some(theme.extended.colors.hairline);
     }
 
+    // `gpui-component` 自带的那几十条文案（编辑器查找替换条上的「替换 / 全部替换」等）
+    // 走它自己的 `rust_i18n` 实例，本仓的英译表碰不到；它公开了 `set_locale`，所以在
+    // 这里跟本仓语言一起切。**只切这两种**：它的 `ui.yml` 也只有 en / zh-* 有全文，
+    // 别的 tag 会把英文界面切成半截中文。
+    gpui_component::set_locale(match appearance.language.resolve() {
+        Lang::Zh => "zh-CN",
+        Lang::En => "en",
+    });
+
     cx.set_global(DuckThemeState {
         resolved: theme,
         mode,

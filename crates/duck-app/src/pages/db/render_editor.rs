@@ -7,6 +7,7 @@
 //!（与 `pages::terminal` 同一口径）；类型定义仍在 `mod.rs`。
 
 use super::*;
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 
 impl DatabasePage {
     /// 编辑器工具条：执行按钮 + 状态 + 模式标签。
@@ -178,10 +179,20 @@ impl DatabasePage {
         };
         // 跑着就把「运行」换成「停止」：主按钮永远只有一个动作，
         // 用户不会去点一个点了没用的按钮。
+        //
+        // 动作组**可横向滚动**（`overflow_x_scroll` 前先 `.id(...)`，滚动条由下方
+        // 宿主叠加 —— gpui 不画系统滚动条）：窄窗口放不下时横向滚，右组的 Tx 徽标 /
+        // 连接 / 库下拉始终留在屏内。
         let actions = h_flex()
-            .flex_none()
+            .id("db-editor-toolbar")
+            .flex_1()
+            .min_w_0()
             .items_center()
             .gap(tokens.spacing.xxs)
+            .overflow_x_scroll()
+            .restrict_scroll_to_axis()
+            .track_scroll(&self.editor_toolbar_x_scroll);
+        let actions = actions
             // 跑着就把「执行」换成「停止」：主按钮永远只有一个动作，
             // 用户不会去点一个点了没用的按钮。
             .child(if self.running.is_some() {
@@ -656,7 +667,19 @@ impl DatabasePage {
             // 否则长 SQL 滚起来时按钮与首行文字糊在一起。
             .border_b(extended.stroke.thin)
             .border_color(extended.colors.hairline)
-            .child(actions)
+            // 动作组宿主：相对容器承托横向滚动条轨道（全局操作条 / 标签条同款形态；
+            // 无溢出时 Scrollbar 自己隐藏）。
+            .child(
+                h_flex().flex_1().min_w_0().relative().child(actions).child(
+                    div().absolute().inset_0().child(
+                        Scrollbar::horizontal(&self.editor_toolbar_x_scroll)
+                            .id("db-editor-toolbar-x-scrollbar")
+                            // **悬停才现身**（与全局操作条同口径：常驻太吵）。
+                            .mode(ScrollbarMode::Hover)
+                            .viewport_from_layout(),
+                    ),
+                ),
+            )
             // 中间只留弹性带：结果读数（N 行 · N 条语句 · 耗时）不再上顶部 ——
             // 摘要的「执行过程」与底部状态栏都在说这件事，三处重复（用户实测反馈）。
             // `status` 的操作反馈仍在底部状态栏与右上角通知，不丢。
@@ -664,7 +687,10 @@ impl DatabasePage {
             // 唯一的例外是**执行 SQL 文件**的进度：那是分钟级的活，读数只在状态栏出现
             // 就太远；它在这条带上占据中段，跑完即消失（只在 `sql_file` 有值时渲染）。
             .child({
-                let mut band = div().flex_1().min_w_0();
+                // ⚠️ 这条带**只在跑 SQL 文件时**才是 `flex_1`：动作组宿主已经占了
+                // `flex_1`（可滚动的前提是 basis 0），空带再拿一个 `flex_1` 会跟它
+                // 对半分宽 —— 平时把动作组压掉一半。空带 = 零宽占位。
+                let mut band = div().min_w_0();
                 if let Some(job) = self.sql_file.as_ref() {
                     // 总大小量不到（非普通文件）时只报条数，不编一个百分比出来。
                     let readout = if job.now.total_bytes == 0 {
@@ -677,7 +703,7 @@ impl DatabasePage {
                             &[&job.now.statements.to_string(), &percent],
                         )
                     };
-                    band = band.child(
+                    band = band.flex_1().child(
                         h_flex()
                             .id("db-sql-file-progress")
                             .w_full()

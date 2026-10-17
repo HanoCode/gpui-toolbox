@@ -56,7 +56,17 @@ pub enum Event {
     /// `anchor` is the mark's position in the scroll-invariant coordinate space produced by
     /// [`Grid::anchor`](crate::grid::Grid::anchor) — plain grid lines are *relative* and shift
     /// with every scroll, so a mark stored as a line number would drift onto other output.
-    ShellMark { anchor: i64, mark: ShellMark },
+    ///
+    /// `column` is the cursor column at emission time. Columns are scroll-invariant by nature
+    /// (they never shift), so this is exact without any anchor bookkeeping. It marks where the
+    /// shell was standing when the mark fired: `B` gives the first input column, `C` the column
+    /// just past the submitted command — hosts reconstruct the input line from these without
+    /// having to guess at prompt widths.
+    ShellMark {
+        anchor: i64,
+        column: u16,
+        mark: ShellMark,
+    },
 
     /// Terminal bell ring.
     Bell,
@@ -99,7 +109,9 @@ impl Debug for Event {
             Event::MouseCursorDirty => write!(f, "MouseCursorDirty"),
             Event::ResetTitle => write!(f, "ResetTitle"),
             Event::Wakeup => write!(f, "Wakeup"),
-            Event::ShellMark { anchor, mark } => write!(f, "ShellMark({anchor}, {mark:?})"),
+            Event::ShellMark { anchor, column, mark } => {
+                write!(f, "ShellMark({anchor}, {column}, {mark:?})")
+            }
             Event::Bell => write!(f, "Bell"),
             Event::Exit => write!(f, "Exit"),
             Event::ChildExit(status) => write!(f, "ChildExit({status:?})"),

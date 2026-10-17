@@ -114,6 +114,11 @@ pub(crate) struct NewConnection {
     pub(crate) forwards: Vec<ForwardDraft>,
     /// 是否把本机 ssh-agent 转发给远端（`ForwardAgent yes`）。
     pub(crate) agent_forwarding: bool,
+    /// 跳板机（`ProxyJump` 原文：`user@bastion:2222`，多跳用逗号分隔；空 = 直连）。
+    ///
+    /// 存**原文**而不是拆成 `(用户, 主机, 端口)` 三联：多跳、`~/.ssh/config` 里的
+    /// `Host` 别名、`none` 都是 ssh 自己的语法，拆开再拼只会丢东西。
+    pub(crate) proxy_jump: String,
 }
 
 /// 弹窗里的一行端口转发（表单草稿）。
@@ -303,6 +308,8 @@ struct ConnectionForm {
     remember: bool,
     /// 是否把本机 ssh-agent 转发给远端。
     agent_forwarding: bool,
+    /// 跳板机（`ProxyJump` 原文；空 = 直连）。
+    proxy_jump: Entity<InputState>,
     /// 保存后是否立即打开。
     open_now: bool,
     /// 端口转发行（可增删）。
@@ -379,6 +386,7 @@ pub(crate) fn open_connection_dialog<F>(
         let user = text(|seed| &seed.user);
         let key_file = text(|seed| &seed.key_file);
         let password = text(|seed| &seed.password);
+        let proxy_jump = text(|seed| &seed.proxy_jump);
         let group = seeded.as_ref().map_or(0, |seed| {
             groups
                 .iter()
@@ -440,6 +448,17 @@ pub(crate) fn open_connection_dialog<F>(
             }
         });
 
+        // 跳板机：一行原文输入。留空 = 直连，所以**不给默认值**（空串即直连）。
+        let proxy_jump_input = cx.new(|cx| {
+            let state =
+                InputState::new(window, cx).placeholder(tr(cx, "user@bastion:2222（留空则直连）"));
+            if proxy_jump.is_empty() {
+                state
+            } else {
+                state.default_value(proxy_jump)
+            }
+        });
+
         // 自定义分组名：选「自定义分组…」时才显示。新建时留空，编辑已存的自定义
         // 分组连接时把名字回填进去（下拉里没有它才回填，避免与已有项重复输入）。
         let group_custom_value = seeded
@@ -482,6 +501,7 @@ pub(crate) fn open_connection_dialog<F>(
             &user_input,
             &key_input,
             &password_input,
+            &proxy_jump_input,
         ]
         .into_iter()
         .map(|input| {
@@ -518,6 +538,7 @@ pub(crate) fn open_connection_dialog<F>(
             // 缺省**不转发**：转发等于把「以你的身份认证其他机器」的能力借给远端，
             // 新建连接时不该替用户预勾。
             agent_forwarding: seeded.as_ref().is_some_and(|seed| seed.agent_forwarding),
+            proxy_jump: proxy_jump_input,
             open_now: seeded.as_ref().is_none_or(|seed| seed.open_now),
             submitted: false,
             test: TestState::Idle,
@@ -548,6 +569,7 @@ pub(crate) fn open_connection_dialog<F>(
                 auth,
                 remember,
                 agent_forwarding,
+                proxy_jump,
                 open_now,
             ) = {
                 let state = form.read(cx);
@@ -561,6 +583,7 @@ pub(crate) fn open_connection_dialog<F>(
                     state.auth,
                     state.remember,
                     state.agent_forwarding,
+                    state.proxy_jump.read(cx).value().trim().to_owned(),
                     state.open_now,
                 )
             };
@@ -596,12 +619,16 @@ pub(crate) fn open_connection_dialog<F>(
             // 公钥认证必须给路径：空路径会让 ssh 退回去试默认密钥，
             // 而用户在界面上明明选的是「公钥」——那是「设置没生效」，不是「连不上」。
             let key_missing = auth == AuthKind::Key && key_file.is_empty();
+            // 跳板机在本地就能判掉必然连不上的写法（空格 / 引号会被 ssh 的
+            // `-o` 解析器拆坏）。其余语法（多跳、别名）交给 ssh，不在这儿硬拦。
+            let proxy_jump_invalid = terminal_data::validate_proxy_jump(&proxy_jump).is_err();
             if label.is_empty()
                 || host.is_empty()
                 || port.is_empty()
                 || key_missing
                 || group_missing
                 || forwards_invalid
+                || proxy_jump_invalid
             {
                 // 校验不通过：标记「已提交」让缺的字段亮红，弹窗保持打开。
                 form.update(cx, |state, cx| {
@@ -624,6 +651,7 @@ pub(crate) fn open_connection_dialog<F>(
                     open_now,
                     forwards: drafts,
                     agent_forwarding,
+                    proxy_jump,
                 },
                 window,
                 cx,
@@ -788,6 +816,23 @@ impl Render for ConnectionForm {
             Input::new(&self.user).control(cx).w_full(),
             None,
             None,
+            cx,
+        );
+        // 跳板机：错误文案取自同一处判据（`validate_proxy_jump`）——
+        // 界面上红的那一句与提交时拦的必须是同一条，否则会出现
+        // 「标红了却存得进去」「存不进去却不标红」。
+        let proxy_jump_error =
+            terminal_data::validate_proxy_jump(self.proxy_jump.read(cx).value().as_ref())
+                .err()
+                .filter(|_| submitted);
+        let proxy_jump_field = form_field(
+            tr(cx, "跳板机"),
+            Input::new(&self.proxy_jump).control(cx).w_full(),
+            proxy_jump_error.map(|reason| SharedString::from(tr(cx, reason))),
+            Some(SharedString::from(tr(
+                cx,
+                "经哪台机器中转（ProxyJump）。写成 user@bastion:2222，多级用逗号分隔；留空则直连。",
+            ))),
             cx,
         );
 
@@ -966,6 +1011,9 @@ impl Render for ConnectionForm {
                     vec![host_field.into_any_element(), port_field.into_any_element()],
                     cx,
                 ))
+                // 跳板机紧跟「主机 + 端口」：三者一起回答「怎么走到这台机器」，
+                // 而用户名 / 分组 / 认证回答的是「到了之后怎么证明我是我」。
+                .child(proxy_jump_field)
                 .child(form_row(
                     vec![
                         user_field.into_any_element(),
@@ -1047,7 +1095,7 @@ fn test_action(form: Entity<ConnectionForm>, socket_dir: PathBuf, cx: &App) -> F
 /// 测的就是**真正连接时会走的那条路**：同一份 `duck-ssh` 参数骨架、同一个
 /// socket 目录（连接复用命中同一条物理连接）、同一套 askpass 口令注入。
 fn run_test(form: &Entity<ConnectionForm>, socket_dir: &Path, cx: &mut App) {
-    let (host, port, user, auth, key_file, password, forwards, agent_forwarding) = {
+    let (host, port, user, auth, key_file, password, forwards, agent_forwarding, proxy_jump) = {
         let state = form.read(cx);
         (
             state.host.read(cx).value().trim().to_owned(),
@@ -1068,6 +1116,10 @@ fn run_test(form: &Entity<ConnectionForm>, socket_dir: &Path, cx: &mut App) {
             // 转发开关也一并带上：真正连接时会注入 `ForwardAgent=yes` 与 agent
             // socket 环境变量，实测路径必须一致，否则「测试通过、真连失败」。
             state.agent_forwarding,
+            // 跳板机更是「路怎么走」的一部分：不带它测，测的是「本机能不能直连
+            // 这台主机」——而用户真正会走的是那条经跳板机的路。这正是
+            // 「测试通过、真连失败」最典型的来源。
+            state.proxy_jump.read(cx).value().trim().to_owned(),
         )
     };
     let target = duck_ssh::Target {
@@ -1084,7 +1136,9 @@ fn run_test(form: &Entity<ConnectionForm>, socket_dir: &Path, cx: &mut App) {
             AuthKind::Agent => duck_ssh::AuthMethod::Agent,
             AuthKind::Password => duck_ssh::AuthMethod::Password,
         },
-        options: Vec::new(),
+        options: terminal_data::proxy_jump_option(&proxy_jump)
+            .into_iter()
+            .collect(),
         forwards,
         agent_forwarding,
     };

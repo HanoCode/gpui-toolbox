@@ -969,6 +969,12 @@ pub fn extended_tokens(base: &SemanticThemeTokens, mode: ThemeMode) -> ExtendedT
         ThemeMode::Dark => mix(c.background, c.surface, 0.35),
         ThemeMode::Light => mix(c.background, c.muted, 0.35),
     };
+    // 凹陷容器（看板列）：浅色下 chrome 与底色几乎同灰，列从画布里「看不出来」，
+    // 直接取 muted（深一整档，白卡片浮得起来）；深色下 chrome 够分层，沿用。
+    let well = match mode {
+        ThemeMode::Dark => chrome,
+        ThemeMode::Light => c.muted,
+    };
     let text_tertiary = mix(c.muted_foreground, c.surface, 0.38);
     let hairline = match mode {
         ThemeMode::Dark => mix(c.border, c.surface, 0.35),
@@ -1012,6 +1018,7 @@ pub fn extended_tokens(base: &SemanticThemeTokens, mode: ThemeMode) -> ExtendedT
             hairline,
             row_hover,
             chrome,
+            well,
             nav_hover: mix(chrome, nav_selected, 0.55),
             hover_tint,
             hover_tint_press,

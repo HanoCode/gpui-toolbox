@@ -1323,9 +1323,28 @@ impl Connection {
         }
     }
 
-    /// 一张表上的索引（右栏「索引」卡）。
-    pub fn table_indexes(&mut self, table: &TableRef) -> Result<Vec<TableIndex>, DbError> {
+    /// 一个存储过程 / 函数的**定义原文**（能取到的引擎给 DDL 或 body）。
+    ///
+    /// 取不到 / 引擎没有例程概念时返回 `Ok(None)`，**不是错误**：例程对比在那种情况下
+    /// 退化成「只比存在性」，由调用方在界面上如实说明。目前实现了 MySQL
+    /// （`SHOW CREATE …`）、PostgreSQL（`pg_get_functiondef`）、SQL Server
+    /// （`OBJECT_DEFINITION`）三条；其余引擎恒 `None`。
+    pub fn routine_definition(
+        &mut self,
+        kind: TableKind,
+        namespace: Option<&str>,
+        name: &str,
+    ) -> Result<Option<String>, DbError> {
         match self {
+            Self::Mysql(conn) => conn.routine_definition(kind, namespace, name),
+            Self::Postgres(conn) => conn.routine_definition(kind, namespace, name),
+            Self::SqlServer(conn) => conn.routine_definition(kind, namespace, name),
+            _ => Ok(None),
+        }
+    }
+
+    /// 一张表上的索引（右栏「索引」卡）。
+    pub fn table_indexes(&mut self, table: &TableRef) -> Result<Vec<TableIndex>, DbError> {        match self {
             Self::Sqlite(conn) => conn.table_indexes(table),
             Self::Postgres(conn) => conn.table_indexes(table),
             Self::Mysql(conn) => conn.table_indexes(table),

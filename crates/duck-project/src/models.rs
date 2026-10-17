@@ -1242,6 +1242,17 @@ impl TaskPatch {
         self
     }
 
+    /// 只改实际工时（`None` = 清空）。
+    ///
+    /// 与 [`hours`](Self::hours) 分开：快速记时（「+15 分钟」这类）只该动实际值，
+    /// 走 `hours` 就得把界面上读到的**旧**预估一并写回去 —— 那会把用户刚在编辑器里
+    /// 改过、这一帧还没重读的预估悄悄覆盖掉。
+    #[must_use]
+    pub const fn actual_hours(mut self, actual: Option<f64>) -> Self {
+        self.actual_hours = Some(actual);
+        self
+    }
+
     /// 改置顶。
     #[must_use]
     pub const fn starred(mut self, starred: bool) -> Self {

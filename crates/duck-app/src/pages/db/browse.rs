@@ -90,6 +90,10 @@ impl DatabasePage {
         self.selected_table = Some(table);
         self.table_page = 0;
         self.table_sort = None;
+        self.table_sort_extra.clear();
+        // 上/一/张表的隐藏列不能带到新表：同名列会被误藏（布局稍后由
+        // `apply_grid_layout` 按新表的存档恢复）。
+        self.hidden_columns.clear();
         self.mode = Mode::Table;
         self.selected_row = None;
         self.row_editor = None;
@@ -122,7 +126,9 @@ impl DatabasePage {
             return;
         };
         let page = self.table_page;
-        let sort = self.table_sort.clone();
+        // 多级排序：主键 + 追加键（`Shift+点列头` 加的）原样带走，
+        // 由 `page_order_keys` 拼成一条 `ORDER BY`。
+        let sort_keys = self.active_sort_keys();
         // 过滤条件随任务带走：它是**服务器侧** WHERE，与排序同样按当前页重新发起。
         let filters = self.table_filters.clone();
         let filtered = !filters.is_empty();
@@ -151,7 +157,7 @@ impl DatabasePage {
                 let table = table_for_work;
                 let mut guard = conn.lock().expect("连接锁不应中毒");
                 let pk = guard.table_primary_key(&table).unwrap_or_default();
-                let order = page_order(sort.as_ref(), &pk);
+                let order = page_order_keys(&sort_keys, &pk);
                 let ddl = guard.table_ddl(&table).ok();
                 let meta = wants_meta.then(|| {
                     // 元信息失败不该拖垮表页：各槽位独立兜底（索引 / 列 / 外键 /
@@ -292,40 +298,6 @@ impl DatabasePage {
         );
     }
 
-    /// 点列头：升序 → 降序 → 取消，然后重新取这一页。
-    pub(super) fn toggle_table_sort(&mut self, column: &str, cx: &mut Context<Self>) {
-        if self.mode != Mode::Table {
-            return;
-        }
-        self.table_sort = SortSpec::next(self.table_sort.as_ref(), column);
-        // 排序换了，行号的含义也换了：勾选与选中行都作废。
-        self.checked_rows.clear();
-        self.selected_row = None;
-        self.row_editor = None;
-        // 回第一页：排序变了还停在第 5 页没有意义。
-        self.table_page = 0;
-        self.load_table_page(cx);
-    }
-
-    /// 右键列头直接定序（升 / 降各一项），与点列头的三态循环并存。
-    ///
-    /// 作废集合与翻页口径与 [`Self::toggle_table_sort`] 完全一致——两个入口，
-    /// 一份真相。
-    pub(super) fn sort_table_by(&mut self, column: &str, descending: bool, cx: &mut Context<Self>) {
-        if self.mode != Mode::Table {
-            return;
-        }
-        self.table_sort = Some(SortSpec {
-            column: column.to_owned(),
-            descending,
-        });
-        self.checked_rows.clear();
-        self.selected_row = None;
-        self.row_editor = None;
-        self.table_page = 0;
-        self.load_table_page(cx);
-    }
-
     /// 右键列头把过滤条的「列」预选成这一列（**草稿态**：仍要点「添加」才生效）。
     pub(super) fn draft_filter_column(&mut self, column: &str, cx: &mut Context<Self>) {
         if self.mode != Mode::Table {
@@ -377,12 +349,7 @@ impl DatabasePage {
                 }
                 // 实例页 / 仪表板没有「页」的概念，跳页输入框在这两处也不出现。
                 // 结构标签同理（它没有结果集）。
-                Mode::Instance(_)
-                | Mode::Dashboard(_)
-                | Mode::Structure(_)
-                | Mode::Er { .. }
-                | Mode::Compare(_)
-                | Mode::Transfer(_) => {}
+                Mode::Instance(_) | Mode::Dashboard(_) | Mode::Structure(_) | Mode::Er { .. } => {}
             }
         }
         // 页码框是**受控显示**（页码是状态、框只是它的显示）：输入被采纳也好、
@@ -390,6 +357,57 @@ impl DatabasePage {
         // 与脚注读数一致）。这里不能走 `sync_page_jump` 的「聚焦则不动」——
         // 按下回车时输入框必然还聚焦着，正是要覆盖它的那一刻。
         self.write_page_jump(window, cx);
+    }
+
+    /// 表浏览的自动刷新档位（秒）。与 DBX 同档：5 / 10 / 30 / 60 / 300。
+    ///
+    /// 放 `browse.rs` 而不是 `mod.rs` 的常量区：它只服务表浏览，
+    /// 查询结果没有「重新取一页」这回事（重跑语句是另一条路径，不该被定时器代按）。
+    pub(super) const AUTO_REFRESH_CHOICES: [u64; 5] = [5, 10, 30, 60, 300];
+
+    /// 设置 / 关闭表浏览自动刷新。
+    ///
+    /// 定时器靠**比对当前档位**退出：切档或关闭时 `auto_refresh_secs` 变了，
+    /// 旧任务下一轮醒来就自行结束 —— 不必额外持有 `Task` 句柄，也就不会出现
+    /// 「关了又开、两个定时器同时在刷」的经典问题。
+    ///
+    /// 跳过规则：`busy`（有数据库操作在跑）或 `pending_total() > 0`（有暂存改动）
+    /// 时**只跳过这一轮**。自动刷新把用户正在改的那一行刷掉，比「不刷新」更糟。
+    pub(super) fn set_auto_refresh(&mut self, secs: Option<u64>, cx: &mut Context<Self>) {
+        self.auto_refresh_secs = secs;
+        cx.notify();
+        let Some(secs) = secs.filter(|secs| *secs > 0) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(secs))
+                    .await;
+                let keep = this
+                    .update(cx, |this, cx| {
+                        // 档位变了 / 被关掉：这个任务退休。
+                        if this.auto_refresh_secs != Some(secs) {
+                            return false;
+                        }
+                        // 切到别的标签或别的 mode：定时器留着（切回表就该继续），
+                        // 但本轮什么都不做。
+                        if !matches!(this.mode, Mode::Table) {
+                            return true;
+                        }
+                        if this.busy || this.pending_total() > 0 {
+                            return true;
+                        }
+                        this.refresh_table_page(cx);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     pub(super) fn refresh_table_page(&mut self, cx: &mut Context<Self>) {
@@ -547,7 +565,7 @@ impl DatabasePage {
 
     /// 过滤条件一变就重新取页。
     ///
-    /// 与 [`Self::toggle_table_sort`] 同一套善后：条件换了 → 行号的含义也换了
+    /// 与 [`Self::set_sort_keys`] 同一套善后：条件换了 → 行号的含义也换了
     /// （勾选 / 选中行 / 行编辑器全部作废）、页码回第一页。
     /// ⚠️ **不清暂存改动**：改格是按主键定位的，与「这一页显示哪些行」无关
     /// （与排序同口径）。
@@ -555,6 +573,7 @@ impl DatabasePage {
         self.checked_rows.clear();
         self.selected_row = None;
         self.row_editor = None;
+        self.cells_selection = None;
         self.table_page = 0;
         self.load_table_page(cx);
         cx.notify();
@@ -1986,8 +2005,9 @@ impl DatabasePage {
             };
             let sql = click_sql.clone();
             let name = click_name.clone();
+            let saved_id = id.clone();
             entity.update(cx, |this, cx| {
-                this.load_saved_query(sql, &name, window, cx);
+                this.load_saved_query(sql, &name, &saved_id, window, cx);
             });
         })
         // 右键三件事与「点一下」不重复：点 = 载入（最常用），
@@ -1998,6 +2018,7 @@ impl DatabasePage {
             let load_view = menu_view.clone();
             let load_sql = menu_sql.clone();
             let load_name = menu_name.clone();
+            let load_id = menu_id.clone();
             let rename_view = menu_view.clone();
             let rename_id = menu_id.clone();
             let rename_name = menu_name.clone();
@@ -2010,7 +2031,7 @@ impl DatabasePage {
                         return;
                     };
                     entity.update(cx, |this, cx| {
-                        this.load_saved_query(load_sql.clone(), &load_name, window, cx);
+                        this.load_saved_query(load_sql.clone(), &load_name, &load_id, window, cx);
                     });
                 }),
             )
@@ -2719,7 +2740,8 @@ impl DatabasePage {
                                             return;
                                         };
                                         entity.update(cx, |this, cx| {
-                                            this.open_compare_tab(
+                                            this.open_compare_dialog(
+                                                CompareScope::Data,
                                                 &compare_conn,
                                                 &compare_target,
                                                 Vec::new(),
@@ -2731,7 +2753,7 @@ impl DatabasePage {
                                 ));
                             }
                             {
-                                // 数据传输：源 = 当前连接 + 这个库的全部表；目标在页面上选。
+                                // 数据传输：源 = 当前连接 + 这个库；对象在弹窗里选。
                                 let transfer_view = view.clone();
                                 let transfer_conn = menu_conn.clone();
                                 let transfer_target = menu_target.clone();
@@ -2741,29 +2763,10 @@ impl DatabasePage {
                                             return;
                                         };
                                         entity.update(cx, |this, cx| {
-                                            // 表清单当场从源目录拍下来（只搬基础表）。
-                                            let tables: Vec<TableRef> = this
-                                                .sessions
-                                                .get(&transfer_conn)
-                                                .map(|session| {
-                                                    session
-                                                        .catalog
-                                                        .iter()
-                                                        .filter(|entry| {
-                                                            entry.kind == TableKind::Table
-                                                        })
-                                                        .filter(|entry| {
-                                                            entry.schema.as_deref()
-                                                                == Some(transfer_target.as_str())
-                                                        })
-                                                        .map(|entry| entry.table_ref())
-                                                        .collect()
-                                                })
-                                                .unwrap_or_default();
-                                            this.open_transfer_tab(
+                                            this.open_transfer_dialog(
                                                 &transfer_conn,
                                                 &transfer_target,
-                                                tables,
+                                                Vec::new(),
                                                 window,
                                                 cx,
                                             );
@@ -3538,7 +3541,7 @@ impl DatabasePage {
     ///
     /// 同一条连接且是 SQL 引擎 → 弹窗取名后生成 `CREATE TABLE … AS SELECT * FROM …`
     /// （SQL Server 没有 CTAS，用 `SELECT * INTO`）进编辑器过一次人眼；跨连接（或
-    /// 目标不是 SQL 引擎）→ 开数据传输标签，真正把数据搬过去（目标连接在页面上可改）。
+    /// 目标不是 SQL 引擎）→ 开数据传输弹窗，真正把数据搬过去（目标连接在页面上可改）。
     pub(super) fn paste_table(
         &mut self,
         target_conn: &str,
@@ -3558,7 +3561,8 @@ impl DatabasePage {
                 .is_some();
         if !same_sql {
             let source_ns = source_table.schema.clone().unwrap_or_default();
-            self.open_transfer_tab(&source_conn, &source_ns, vec![source_table], window, cx);
+            let source_name = source_table.name.clone();
+            self.open_transfer_dialog(&source_conn, &source_ns, vec![source_name], window, cx);
             return;
         }
         let Some(session) = self.sessions.get(target_conn) else {
@@ -4020,7 +4024,6 @@ impl DatabasePage {
         let definition_label = tr(cx, "查看定义");
         let exec_label = tr(cx, "生成执行语句");
         let setval_label = tr(cx, "设置当前值…");
-        let gen_sql_label = tr(cx, "生成 SQL");
         let insert_label = tr(cx, "生成 INSERT 语句");
         let update_label = tr(cx, "生成 UPDATE 语句");
         let delete_label = tr(cx, "生成 DELETE 语句");
@@ -4031,7 +4034,6 @@ impl DatabasePage {
         let rename_label = tr(cx, "重命名");
         let clone_label = tr(cx, "克隆为新表");
         let autoinc_label = tr(cx, "设置自增起始值");
-        let export_data_label = tr(cx, "导出数据");
         let export_ddl_label = tr(cx, "导出表结构");
         let dict_label = tr(cx, "导出数据字典");
         // 表剪贴板（dbx 对位）：「复制表」存进页内剪贴板，目标库 / 表分类「粘贴表」落地。
@@ -4040,16 +4042,26 @@ impl DatabasePage {
         // 「补齐 dbx 对位」的新增项文案。
         let ai_label = tr(cx, "加入 AI");
         let dependency_label = tr(cx, "查看依赖");
-        let dependency_note = tr(cx, "已生成引用查询：执行后列出引用此表的表与列。");
+        let dependency_note = tr(cx, "正在查询引用此表的表与列…");
         let compare_label = tr(cx, "比较数据…");
         let import_into_label = tr(cx, "导入数据…");
-        let copy_structure_label = tr(cx, "复制表结构为");
         let truncate_label = tr(cx, "截断表");
         let truncate_note = tr(cx, "已生成 TRUNCATE 语句；不可回滚，确认无误后再执行。");
         let clear_label = tr(cx, "清空数据");
         let clear_note = tr(cx, "已生成清空语句；建议放进事务里执行。");
         let vacuum_label = tr(cx, "整理空间（VACUUM）");
         let vacuum_note = tr(cx, "已生成 VACUUM 语句；确认无误后再执行。");
+        // 菜单分组（二级菜单的标题）与新增项：顶层只留高频动作，其余按
+        // 「生成 / 结构 / 复制 / 数据 / 危险操作」归组 —— 菜单太长时每一项
+        // 都在看，等于没有重点。
+        let structure_tab_label = tr(cx, "查看表结构");
+        let generate_group_label = tr(cx, "生成");
+        let structure_group_label = tr(cx, "结构与修改");
+        let copy_group_label = tr(cx, "复制");
+        let data_group_label = tr(cx, "数据");
+        let danger_group_label = tr(cx, "危险操作");
+        let copy_structure_tsv_label = tr(cx, "复制结构为 TSV");
+        let copy_structure_md_label = tr(cx, "复制结构为 Markdown");
 
         // 表行**可展开**（DBX 同款：列 / 索引 / 外键 / 触发器四个子分组）；视图 /
         // 过程 / 函数 / 序列仍是叶子 —— 它们没有「表结构」可铺。展开状态挂在
@@ -4293,51 +4305,23 @@ impl DatabasePage {
                             }),
                     );
                 }
+                // 「查看表结构」：开（或复用）这张表的**结构**标签 —— 列 / 索引 /
+                // 外键 / DDL 一页看完（与编辑器里 ⌘+点击表名同一条路）。
+                // 「查看 DDL」只给 DDL 原文，收进「结构与修改」组。
                 if kind == TableKind::Table {
-                    let ddl_view = view.clone();
-                    let ddl_ref = browse_ref.clone();
-                    let ddl_conn = conn_owned.clone();
-                    menu = menu.item(PopupMenuItem::new(view_ddl_label).on_click(
+                    let struct_view = view.clone();
+                    let struct_conn = conn_owned.clone();
+                    let struct_ref = browse_ref.clone();
+                    menu = menu.item(PopupMenuItem::new(structure_tab_label).on_click(
                         move |_, window, cx| {
-                            let Some(entity) = ddl_view.upgrade() else {
+                            let Some(entity) = struct_view.upgrade() else {
                                 return;
                             };
                             entity.update(cx, |this, cx| {
-                                this.view_table_ddl(&ddl_conn, ddl_ref.clone(), window, cx);
-                            });
-                        },
-                    ));
-                }
-                // 「查看依赖」：生成「谁引用我」的元数据查询进编辑器（MySQL / PG /
-                // SQL Server；SQLite 要遍历整库 pragma，不给这项）。只读查询，
-                // 用户自己执行 —— 与「查看定义」同一条节奏。
-                if let Some(query) = dependency_sql.clone() {
-                    let dep_view = view.clone();
-                    menu = menu.item(PopupMenuItem::new(dependency_label).on_click(
-                        move |_, window, cx| {
-                            let Some(entity) = dep_view.upgrade() else {
-                                return;
-                            };
-                            entity.update(cx, |this, cx| {
-                                this.stage_sql(query.clone(), dependency_note.into(), window, cx);
-                            });
-                        },
-                    ));
-                }
-                // 查看定义（视图 / 过程 / 函数）：按引擎跑定义原文查询，取回的
-                // CREATE 语句直接放进编辑器 —— 改完就能执行，即「编辑视图定义」。
-                if let Some(query) = definition_sql.clone() {
-                    let def_view = view.clone();
-                    let def_conn = conn_owned.clone();
-                    menu = menu.item(PopupMenuItem::new(definition_label).on_click(
-                        move |_, window, cx| {
-                            let Some(entity) = def_view.upgrade() else {
-                                return;
-                            };
-                            entity.update(cx, |this, cx| {
-                                this.stage_object_definition(
-                                    &def_conn,
-                                    query.clone(),
+                                this.open_structure_tab(
+                                    &struct_conn,
+                                    struct_ref.clone(),
+                                    false,
                                     window,
                                     cx,
                                 );
@@ -4352,6 +4336,9 @@ impl DatabasePage {
                     let gen_note = skeleton_note;
                     let select_sql = snippet.clone();
                     let skeletons = sql_skeletons.clone();
+                    // 「生成模型」要拿到连接与对象（builder 是 `move`，外面先克隆好）。
+                    let model_ref = browse_ref.clone();
+                    let model_conn = conn_owned.clone();
                     let sql_menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
                         menu = menu.item(PopupMenuItem::new(select_label).on_click({
                             let gen_view = gen_view.clone();
@@ -4418,9 +4405,26 @@ impl DatabasePage {
                                     }
                                 }));
                         }
+                        // 「生成模型」并进这一组：对象 → 模型定义，同为「从对象拿东西」，
+                        // 没必要在顶层单独占一行。
+                        if kind == TableKind::Table {
+                            let model_view = gen_view.clone();
+                            let model_ref = model_ref.clone();
+                            let model_conn = model_conn.clone();
+                            menu = menu.separator().item(
+                                PopupMenuItem::new(model_label).on_click(move |_, _, cx| {
+                                    let Some(entity) = model_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.generate_model(&model_conn, model_ref.clone(), cx);
+                                    });
+                                }),
+                            );
+                        }
                         menu
                     });
-                    menu = menu.item(PopupMenuItem::submenu(gen_sql_label, sql_menu));
+                    menu = menu.item(PopupMenuItem::submenu(generate_group_label, sql_menu));
                 }
                 // 执行骨架（过程 / 函数 / 序列）：CALL / 表函数 / nextval —— 与左键
                 // 点行放进编辑器的是同一段（`object_snippet`），补一个菜单入口。
@@ -4439,21 +4443,6 @@ impl DatabasePage {
                         },
                     ));
                 }
-                if kind == TableKind::Table {
-                    let model_view = view.clone();
-                    let model_ref = browse_ref.clone();
-                    let model_conn = conn_owned.clone();
-                    menu = menu.item(PopupMenuItem::new(model_label).on_click(
-                        move |_, _, cx| {
-                            let Some(entity) = model_view.upgrade() else {
-                                return;
-                            };
-                            entity.update(cx, |this, cx| {
-                                this.generate_model(&model_conn, model_ref.clone(), cx);
-                            });
-                        },
-                    ));
-                }
                 {
                     let history_view = view.clone();
                     menu = menu.item(PopupMenuItem::new(history_label).on_click(
@@ -4468,36 +4457,74 @@ impl DatabasePage {
                     ));
                 }
                 menu = menu.separator();
-                // ── 复制 / 置顶 ──
+                // ── 复制 ▸ ──（对象名 / 表剪贴板 / 结构为 TSV·Markdown：全是
+                // 「复制走」的变体，收进一组；置顶与 AI 是独立动作，留顶层。）
                 {
-                    let copy_view = view.clone();
-                    let name = object_name.clone();
-                    menu = menu.item(PopupMenuItem::new(copy_label).on_click(move |_, _, cx| {
-                        let Some(entity) = copy_view.upgrade() else {
-                            return;
-                        };
-                        entity.update(cx, |this, cx| {
-                            this.put_on_clipboard(name.clone(), copied_note, cx);
-                        });
-                    }));
-                }
-                if kind == TableKind::Table {
-                    // 「复制表」：存进**页内表剪贴板**（系统剪贴板放的是对象名，两者
-                    // 不抢）；目标库 / 表分类上「粘贴表」把它落地。
-                    let copy_view = view.clone();
-                    let copy_conn = conn_owned.clone();
-                    let copy_ref = browse_ref.clone();
-                    menu = menu.item(PopupMenuItem::new(copy_table_label).on_click(
-                        move |_, _, cx| {
-                            let Some(entity) = copy_view.upgrade() else {
-                                return;
-                            };
-                            entity.update(cx, |this, cx| {
-                                this.table_clipboard = Some((copy_conn.clone(), copy_ref.clone()));
-                                this.toast(notify::Tone::Success, copy_table_note, cx);
-                            });
-                        },
-                    ));
+                    let copy_menu = PopupMenu::build(window, cx, {
+                        let view = view.clone();
+                        let object_name = object_name.clone();
+                        let conn_owned = conn_owned.clone();
+                        let browse_ref = browse_ref.clone();
+                        move |mut menu, _, _| {
+                            menu = menu.item(PopupMenuItem::new(copy_label).on_click({
+                                let view = view.clone();
+                                let name = object_name.clone();
+                                move |_, _, cx| {
+                                    let Some(entity) = view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.put_on_clipboard(name.clone(), copied_note, cx);
+                                    });
+                                }
+                            }));
+                            if kind == TableKind::Table {
+                                // 「复制表」：存进**页内表剪贴板**（系统剪贴板放的是对象名，
+                                // 两者不抢）；目标库 / 表分类上「粘贴表」把它落地。
+                                menu = menu.item(PopupMenuItem::new(copy_table_label).on_click({
+                                    let view = view.clone();
+                                    let conn = conn_owned.clone();
+                                    let table = browse_ref.clone();
+                                    move |_, _, cx| {
+                                        let Some(entity) = view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.table_clipboard =
+                                                Some((conn.clone(), table.clone()));
+                                            this.toast(notify::Tone::Success, copy_table_note, cx);
+                                        });
+                                    }
+                                }));
+                                // 复制结构为 TSV / Markdown：数据字典的剪贴板版，
+                                // 粘进文档 / IM 里讨论用（dbx 的 copy structure as 对位）。
+                                for (markdown, label) in
+                                    [(false, copy_structure_tsv_label), (true, copy_structure_md_label)]
+                                {
+                                    menu = menu.item(PopupMenuItem::new(label).on_click({
+                                        let view = view.clone();
+                                        let conn = conn_owned.clone();
+                                        let table = browse_ref.clone();
+                                        move |_, _, cx| {
+                                            let Some(entity) = view.upgrade() else {
+                                                return;
+                                            };
+                                            entity.update(cx, |this, cx| {
+                                                this.copy_table_structure(
+                                                    &conn,
+                                                    table.clone(),
+                                                    markdown,
+                                                    cx,
+                                                );
+                                            });
+                                        }
+                                    }));
+                                }
+                            }
+                            menu
+                        }
+                    });
+                    menu = menu.item(PopupMenuItem::submenu(copy_group_label, copy_menu));
                 }
                 {
                     let pin_view = view.clone();
@@ -4546,8 +4573,68 @@ impl DatabasePage {
                     ));
                 }
                 menu = menu.separator();
-                // ── 结构 ──
-                if kind == TableKind::Table {
+                // ── 结构与修改 ▸ ──（看 / 改结构的所有入口收进一组；顶层只留
+                // 「查看表结构」这个最高频的）
+                {
+                    let structure_menu = PopupMenu::build(window, cx, {
+                        let view = view.clone();
+                        let conn_owned = conn_owned.clone();
+                        let browse_ref = browse_ref.clone();
+                        let menu_namespace = menu_namespace.clone();
+                        let entry_name = entry.name.clone();
+                        // 同上：这两个 `Option<String>` 先克隆成本地副本，
+                        // 内层 `move` 闭包吃副本，不动外层 `Fn` 闭包的捕获。
+                        let dependency_sql = dependency_sql.clone();
+                        let definition_sql = definition_sql.clone();
+                        move |mut menu, _, _| {
+                    if kind == TableKind::Table {
+                        // 查看 DDL：引擎原文的 CREATE 语句进编辑器（只读参考）。
+                        {
+                            let ddl_view = view.clone();
+                            let ddl_ref = browse_ref.clone();
+                            let ddl_conn = conn_owned.clone();
+                            menu = menu.item(PopupMenuItem::new(view_ddl_label).on_click(
+                                move |_, window, cx| {
+                                    let Some(entity) = ddl_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.view_table_ddl(
+                                            &ddl_conn,
+                                            ddl_ref.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            ));
+                        }
+                        // 查看依赖：**真的去查** —— 开一张新的查询标签，把「谁引用我」
+                        // 的元数据查询放进去并立刻执行，结果落在那张标签的结果区里
+                        //（原先只把 SQL 塞进当前编辑器，看起来就像「点了没反应」）。
+                        // 只读查询；SQLite 要遍历整库 pragma，不给这项。
+                        if let Some(query) = dependency_sql.clone() {
+                            let dep_view = view.clone();
+                            let dep_conn = conn_owned.clone();
+                            menu = menu.item(PopupMenuItem::new(dependency_label).on_click(
+                                move |_, window, cx| {
+                                    let Some(entity) = dep_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.open_tab(&dep_conn, window, cx);
+                                        this.stage_sql(
+                                            query.clone(),
+                                            dependency_note.into(),
+                                            window,
+                                            cx,
+                                        );
+                                        this.run_query(window, cx);
+                                    });
+                                },
+                            ));
+                        }
+                    }
                     // 「修改结构」直接打开（或复用）这张表的结构编辑器标签 ——
                     // 不再生成 `ALTER` 骨架：可视化编辑器覆盖的口径更全，生成的
                     // 语句也逐条可核（同右栏 DDL 卡的「修改表结构」一条路径）。
@@ -4756,353 +4843,372 @@ impl DatabasePage {
                             },
                         ));
                     }
-                    // 「生成删除语句」仍要方言模板（引号 / 引擎子句），给不出不给项。
-                    if let Some(drop) = drop_sql.as_ref() {
-                        let drop = drop.clone();
-                        let drop_view = view.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(drop_label).on_click(move |_, window, cx| {
-                                let Some(entity) = drop_view.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    this.stage_sql(drop.clone(), drop_note.into(), window, cx);
-                                });
-                            }),
-                        );
-                    }
-                    // ── 危险操作（生成语句版：一律进编辑器过一次人眼，不直接执行
-                    // —— 与重命名 / 克隆同一条仓库纪律；dbx 的 Truncate / Empty /
-                    // Vacuum 对位）。截断只有吃 `TRUNCATE` 的四家给（SQLite 没有，
-                    // 「清空数据」覆盖该场景）；VACUUM 只有 PG / SQLite 有这个概念
-                    // （MySQL 的 OPTIMIZE TABLE 会锁表，不冒充）。
-                    if let Some(quote) = menu_quote
-                        && let Ok(qualified) = quote_qualified(&browse_ref, quote)
-                    {
-                        if matches!(
-                            engine,
-                            DatabaseKind::Mysql
-                                | DatabaseKind::Postgres
-                                | DatabaseKind::SqlServer
-                                | DatabaseKind::ClickHouse
-                        ) {
-                            let sql = format!("TRUNCATE TABLE {qualified};");
-                            let truncate_view = view.clone();
-                            menu = menu.item(PopupMenuItem::new(truncate_label).on_click(
-                                move |_, window, cx| {
-                                    let Some(entity) = truncate_view.upgrade() else {
-                                        return;
-                                    };
-                                    entity.update(cx, |this, cx| {
-                                        this.stage_sql(
-                                            sql.clone(),
-                                            truncate_note.into(),
-                                            window,
-                                            cx,
-                                        );
-                                    });
-                                },
-                            ));
-                        }
-                        {
-                            let sql = format!("DELETE FROM {qualified};");
-                            let clear_view = view.clone();
-                            menu = menu.item(PopupMenuItem::new(clear_label).on_click(
-                                move |_, window, cx| {
-                                    let Some(entity) = clear_view.upgrade() else {
-                                        return;
-                                    };
-                                    entity.update(cx, |this, cx| {
-                                        this.stage_sql(
-                                            sql.clone(),
-                                            clear_note.into(),
-                                            window,
-                                            cx,
-                                        );
-                                    });
-                                },
-                            ));
-                        }
-                        match engine {
-                            DatabaseKind::Postgres => {
-                                let sql = format!("VACUUM (ANALYZE) {qualified};");
-                                let vacuum_view = view.clone();
-                                menu = menu.item(PopupMenuItem::new(vacuum_label).on_click(
-                                    move |_, window, cx| {
-                                        let Some(entity) = vacuum_view.upgrade() else {
-                                            return;
-                                        };
-                                        entity.update(cx, |this, cx| {
-                                            this.stage_sql(
-                                                sql.clone(),
-                                                vacuum_note.into(),
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    },
-                                ));
-                            }
-                            DatabaseKind::Sqlite => {
-                                let sql = "VACUUM;".to_owned();
-                                let vacuum_view = view.clone();
-                                menu = menu.item(PopupMenuItem::new(vacuum_label).on_click(
-                                    move |_, window, cx| {
-                                        let Some(entity) = vacuum_view.upgrade() else {
-                                            return;
-                                        };
-                                        entity.update(cx, |this, cx| {
-                                            this.stage_sql(
-                                                sql.clone(),
-                                                vacuum_note.into(),
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    },
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                // 非表对象的结构段：序列给「设置当前值」，其余给「生成删除语句」
-                // （视图 / 过程 / 函数 / 序列各有各的 DROP，引擎给不出的不给项）。
-                if kind != TableKind::Table {
-                    if kind == TableKind::Sequence && engine == DatabaseKind::Postgres {
-                        let setval_view = view.clone();
-                        let setval_schema = menu_namespace.clone();
-                        let setval_name = entry.name.clone();
-                        menu = menu.item(PopupMenuItem::new(setval_label).on_click(
-                            move |_, window, cx| {
-                                let Some(entity) = setval_view.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    let schema = setval_schema.clone();
-                                    let name = setval_name.clone();
-                                    this.open_text_prompt_dialog(
-                                        tr(cx, "设置当前值…"),
-                                        tr(cx, "当前值"),
-                                        tr(cx, "生成语句"),
-                                        Rc::new(
-                                            move |value: &str,
-                                                  this: &mut DatabasePage,
-                                                  window: &mut Window,
-                                                  cx: &mut Context<DatabasePage>| {
-                                                let Ok(next) = value.parse::<u64>() else {
-                                                    notify::warning(
-                                                        tr(cx, "请输入一个非负整数。"),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                    return false;
-                                                };
-                                                let sql = sequence_setval_sql(
-                                                    &schema,
-                                                    &name,
-                                                    next,
-                                                );
-                                                this.stage_sql(
-                                                    sql,
-                                                    tr(cx, "已生成 setval 语句；确认无误后再执行。")
-                                                        .into(),
-                                                    window,
-                                                    cx,
-                                                );
-                                                true
-                                            },
-                                        ),
-                                        window,
-                                        cx,
-                                    );
-                                });
-                            },
-                        ));
-                    }
-                    if let Some(sql) = drop_object_sql.clone() {
-                        let drop_object_view = view.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(drop_label).on_click(move |_, window, cx| {
-                                let Some(entity) = drop_object_view.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    this.stage_sql(
-                                        sql.clone(),
-                                        drop_object_note.into(),
-                                        window,
-                                        cx,
-                                    );
-                                });
-                            }),
-                        );
-                    }
-                }
-                // ── 导出 ──（表 / 视图都能导数据 —— `SELECT *` 对两者都合法；
-                // 表结构 / 数据字典只有表有，视图没有列元数据口径之外的列说明。）
-                // 表级「比较数据」：比较页的规格直接带上这一张（CompareSpec::tables）。
-                if kind == TableKind::Table {
-                    let compare_view = view.clone();
-                    let compare_ref = browse_ref.clone();
-                    let compare_conn = conn_owned.clone();
-                    let compare_ns = menu_namespace.clone();
-                    menu = menu.item(PopupMenuItem::new(compare_label).on_click(
+                    // 查看定义（视图 / 过程 / 函数）：按引擎跑定义原文查询，取回的
+                // CREATE 语句直接放进编辑器 —— 改完就能执行，即「编辑视图定义」。
+                if let Some(query) = definition_sql.clone() {
+                    let def_view = view.clone();
+                    let def_conn = conn_owned.clone();
+                    menu = menu.item(PopupMenuItem::new(definition_label).on_click(
                         move |_, window, cx| {
-                            let Some(entity) = compare_view.upgrade() else {
+                            let Some(entity) = def_view.upgrade() else {
                                 return;
                             };
                             entity.update(cx, |this, cx| {
-                                this.open_compare_tab(
-                                    &compare_conn,
-                                    &compare_ns,
-                                    vec![compare_ref.clone()],
+                                this.stage_object_definition(
+                                    &def_conn,
+                                    query.clone(),
                                     window,
                                     cx,
                                 );
                             });
                         },
                     ));
-                    // 表级「导入数据」：CSV 按列名对齐追加进这张表（分组级那项
-                    // 是「导入成新表」，两条路不重合）。
-                    let import_view = view.clone();
-                    let import_ref = browse_ref.clone();
-                    let import_conn = conn_owned.clone();
-                    menu = menu.item(PopupMenuItem::new(import_into_label).on_click(
-                        move |_, _, cx| {
-                            let Some(entity) = import_view.upgrade() else {
-                                return;
-                            };
-                            entity.update(cx, |_this, cx| {
-                                let import_conn = import_conn.clone();
-                                let import_ref = import_ref.clone();
-                                crate::file_dialogs::open_file(
-                                    cx,
-                                    tr(cx, "选择要导入的 CSV 文件"),
-                                    move |path, this, cx| {
-                                        this.import_csv_append(
-                                            &import_conn,
-                                            import_ref.clone(),
-                                            path,
-                                            cx,
-                                        );
-                                    },
-                                );
-                            });
-                        },
-                    ));
                 }
-                if kind.is_relation() && menu_quote.is_some() {
-                    // 导出数据 ▸：CSV / JSON / INSERT SQL 三档（同一份整表读取，
-                    // 渲染走 ResultFormat——dbx 的导出子菜单对位）。INSERT INTO 对
-                    // 视图通常无效，这一档只给表；标签在 build 前算好（builder 是
-                    // `Fn`，不能在里面动 `cx`）。
-                    let data_formats: Vec<(ResultFormat, &'static str)> =
-                        [(ResultFormat::Csv, tr(cx, "导出 CSV")),
-                         (ResultFormat::Json, tr(cx, "导出 JSON")),
-                         (ResultFormat::InsertSql, tr(cx, "导出 INSERT 语句"))]
-                            .into_iter()
-                            .filter(|(format, _)| {
-                                *format != ResultFormat::InsertSql
-                                    || kind == TableKind::Table
-                            })
-                            .collect();
-                    let data_menu = PopupMenu::build(window, cx, |sub, _, _| {
-                        data_formats.iter().fold(sub, |sub, (format, label)| {
-                            let item_view = view.clone();
-                            let item_ref = browse_ref.clone();
-                            let item_conn = conn_owned.clone();
-                            let format = *format;
-                            sub.item(
-                                PopupMenuItem::new(*label).on_click(move |_, _, cx| {
-                                    let Some(entity) = item_view.upgrade() else {
-                                        return;
-                                    };
-                                    entity.update(cx, |this, cx| {
-                                        this.export_table_data_as(
-                                            &item_conn,
-                                            item_ref.clone(),
-                                            format,
+                // 设置当前值（序列，PG）：nextval 的反向操作，同属「结构」。
+                if kind == TableKind::Sequence && engine == DatabaseKind::Postgres {
+                    let setval_view = view.clone();
+                    let setval_schema = menu_namespace.clone();
+                    let setval_name = entry_name.clone();
+                    menu = menu.item(PopupMenuItem::new(setval_label).on_click(move |_, window, cx| {
+                        let Some(entity) = setval_view.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| {
+                            let schema = setval_schema.clone();
+                            let name = setval_name.clone();
+                            this.open_text_prompt_dialog(
+                                tr(cx, "设置当前值…"),
+                                tr(cx, "当前值"),
+                                tr(cx, "生成语句"),
+                                Rc::new(
+                                    move |value: &str,
+                                          this: &mut DatabasePage,
+                                          window: &mut Window,
+                                          cx: &mut Context<DatabasePage>| {
+                                        let Ok(next) = value.parse::<u64>() else {
+                                            notify::warning(
+                                                tr(cx, "请输入一个非负整数。"),
+                                                window,
+                                                cx,
+                                            );
+                                            return false;
+                                        };
+                                        let sql = sequence_setval_sql(&schema, &name, next);
+                                        this.stage_sql(
+                                            sql,
+                                            tr(cx, "已生成 setval 语句；确认无误后再执行。").into(),
+                                            window,
                                             cx,
                                         );
-                                    });
-                                }),
-                            )
-                        })
+                                        true
+                                    },
+                                ),
+                                window,
+                                cx,
+                            );
+                        });
+                    }));
+                }
+                            menu
+                        }
                     });
-                    menu = menu.item(PopupMenuItem::submenu(export_data_label, data_menu));
-                    if kind == TableKind::Table {
-                        let ddl_export_view = view.clone();
-                        let ddl_export_ref = browse_ref.clone();
-                        let ddl_export_conn = conn_owned.clone();
-                        menu = menu.item(PopupMenuItem::new(export_ddl_label).on_click(
-                            move |_, _, cx| {
-                                let Some(entity) = ddl_export_view.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    this.export_table_ddl(
-                                        &ddl_export_conn,
-                                        ddl_export_ref.clone(),
-                                        cx,
-                                    );
-                                });
-                            },
-                        ));
-                        let dict_view = view.clone();
-                        let dict_ref = browse_ref.clone();
-                        let dict_conn = conn_owned.clone();
-                        menu = menu.item(PopupMenuItem::new(dict_label).on_click(
-                            move |_, _, cx| {
-                                let Some(entity) = dict_view.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    this.export_data_dictionary(
-                                        &dict_conn,
-                                        dict_ref.clone(),
-                                        cx,
-                                    );
-                                });
-                            },
-                        ));
-                        // 复制表结构为 ▸（TSV / Markdown）：数据字典的剪贴板版，
-                        // 粘进文档 / IM 里讨论用（dbx 的 copy structure as 对位）。
-                        let structure_formats = [
-                            (false, tr(cx, "TSV")),
-                            (true, tr(cx, "Markdown")),
-                        ];
-                        let structure_menu = PopupMenu::build(window, cx, |sub, _, _| {
-                            structure_formats.iter().fold(sub, |sub, (markdown, label)| {
+                    menu = menu.item(PopupMenuItem::submenu(structure_group_label, structure_menu));
+                }
+                // ── 数据 ▸ ──（导出 / 导入 / 比较：全是「数据搬来搬去」的子项，
+                // 顶层不再各占一行。导出要方言引号才能拼整表读取 —— 给不出引号
+                // 就只留导入 / 比较；表结构 / 数据字典只有表有。）
+                {
+                    // 标签与外层的可行性判断都在 build 前算好（builder 是 `Fn`，
+                    // 里面不许动 `cx`）。
+                    let data_formats: Vec<(ResultFormat, &'static str)> =
+                        if kind.is_relation() && menu_quote.is_some() {
+                            [
+                                (ResultFormat::Csv, tr(cx, "导出 CSV")),
+                                (ResultFormat::Json, tr(cx, "导出 JSON")),
+                                (ResultFormat::InsertSql, tr(cx, "导出 INSERT 语句")),
+                            ]
+                            .into_iter()
+                            // INSERT INTO 对视图通常无效，这一档只给表。
+                            .filter(|(format, _)| {
+                                *format != ResultFormat::InsertSql || kind == TableKind::Table
+                            })
+                            .collect()
+                        } else {
+                            Vec::new()
+                        };
+                    let is_table = kind == TableKind::Table;
+                    // 组里一项都凑不齐（非关系对象、或引擎给不出引号且不是表）
+                    // 就连「数据 ▸」这一层都不挂。
+                    let data_empty = data_formats.is_empty() && !is_table;
+                    let data_menu = PopupMenu::build(window, cx, {
+                        let view = view.clone();
+                        let browse_ref = browse_ref.clone();
+                        let conn_owned = conn_owned.clone();
+                        let menu_namespace = menu_namespace.clone();
+                        move |mut menu, _, _| {
+                            for (format, label) in data_formats.iter().copied() {
                                 let item_view = view.clone();
                                 let item_ref = browse_ref.clone();
                                 let item_conn = conn_owned.clone();
-                                let markdown = *markdown;
-                                sub.item(PopupMenuItem::new(*label).on_click(
+                                menu = menu.item(PopupMenuItem::new(label).on_click(
                                     move |_, _, cx| {
                                         let Some(entity) = item_view.upgrade() else {
                                             return;
                                         };
                                         entity.update(cx, |this, cx| {
-                                            this.copy_table_structure(
+                                            this.export_table_data_as(
                                                 &item_conn,
                                                 item_ref.clone(),
-                                                markdown,
+                                                format,
                                                 cx,
                                             );
                                         });
                                     },
-                                ))
-                            })
-                        });
-                        menu = menu.item(PopupMenuItem::submenu(
-                            copy_structure_label,
-                            structure_menu,
-                        ));
+                                ));
+                            }
+                            if is_table {
+                                if !data_formats.is_empty() {
+                                    menu = menu.separator();
+                                }
+                                let ddl_export_view = view.clone();
+                                let ddl_export_ref = browse_ref.clone();
+                                let ddl_export_conn = conn_owned.clone();
+                                menu = menu.item(PopupMenuItem::new(export_ddl_label).on_click(
+                                    move |_, _, cx| {
+                                        let Some(entity) = ddl_export_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.export_table_ddl(
+                                                &ddl_export_conn,
+                                                ddl_export_ref.clone(),
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                ));
+                                let dict_view = view.clone();
+                                let dict_ref = browse_ref.clone();
+                                let dict_conn = conn_owned.clone();
+                                menu = menu.item(PopupMenuItem::new(dict_label).on_click(
+                                    move |_, _, cx| {
+                                        let Some(entity) = dict_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.export_data_dictionary(
+                                                &dict_conn,
+                                                dict_ref.clone(),
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                ));
+                                menu = menu.separator();
+                                // 表级「导入数据」：CSV 按列名对齐追加进这张表
+                                //（分组级那项是「导入成新表」，两条路不重合）。
+                                let import_view = view.clone();
+                                let import_ref = browse_ref.clone();
+                                let import_conn = conn_owned.clone();
+                                menu = menu.item(PopupMenuItem::new(import_into_label).on_click(
+                                    move |_, _, cx| {
+                                        let Some(entity) = import_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |_this, cx| {
+                                            let import_conn = import_conn.clone();
+                                            let import_ref = import_ref.clone();
+                                            crate::file_dialogs::open_file(
+                                                cx,
+                                                tr(cx, "选择要导入的 CSV 文件"),
+                                                move |path, this, cx| {
+                                                    this.import_csv_append(
+                                                        &import_conn,
+                                                        import_ref.clone(),
+                                                        path,
+                                                        cx,
+                                                    );
+                                                },
+                                            );
+                                        });
+                                    },
+                                ));
+                                // 表级「比较数据」：比较页的规格直接带上这一张。
+                                let compare_view = view.clone();
+                                let compare_ref = browse_ref.clone();
+                                let compare_conn = conn_owned.clone();
+                                let compare_ns = menu_namespace.clone();
+                                menu = menu.item(PopupMenuItem::new(compare_label).on_click(
+                                    move |_, window, cx| {
+                                        let Some(entity) = compare_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.open_compare_dialog(
+                                                CompareScope::Data,
+                                                &compare_conn,
+                                                &compare_ns,
+                                                vec![compare_ref.clone()],
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                ));
+                            }
+                            menu
+                        }
+                    });
+                    if !data_empty {
+                        menu = menu.item(PopupMenuItem::submenu(data_group_label, data_menu));
                     }
-                    menu = menu.separator();
+                }
+
+                // ── 危险操作 ▸ ──（生成语句版：一律进编辑器过一次人眼，不直接执行
+                // —— 与重命名 / 克隆同一条仓库纪律；dbx 的 Drop / Truncate / Empty /
+                // Vacuum 对位。截断只有吃 `TRUNCATE` 的四家给（SQLite 没有，
+                // 「清空数据」覆盖该场景）；VACUUM 只有 PG / SQLite 有这个概念
+                // （MySQL 的 OPTIMIZE TABLE 会锁表，不冒充）。）
+                {
+                    let danger_menu = PopupMenu::build(window, cx, {
+                        let view = view.clone();
+                        let browse_ref = browse_ref.clone();
+                        // 这两个 `Option<String>` 由外层 `Fn` 闭包捕获，builder 是
+                        // `Fn` ⇒ 里面再被 `move` 闭包吃走就会 E0507；先在块首克隆
+                        // 成本地副本，内层 `move` 拿的是副本。
+                        let drop_sql = drop_sql.clone();
+                        let drop_object_sql = drop_object_sql.clone();
+                        move |mut menu, _, _| {
+                            // 「生成删除语句」仍要方言模板（引号 / 引擎子句），给不出不给项。
+                            if let Some(drop) = drop_sql.clone() {
+                                let drop_view = view.clone();
+                                menu = menu.item(PopupMenuItem::new(drop_label).on_click(
+                                    move |_, window, cx| {
+                                        let Some(entity) = drop_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.stage_sql(drop.clone(), drop_note.into(), window, cx);
+                                        });
+                                    },
+                                ));
+                            }
+                            if let Some(quote) = menu_quote
+                                && let Ok(qualified) = quote_qualified(&browse_ref, quote)
+                            {
+                                if matches!(
+                                    engine,
+                                    DatabaseKind::Mysql
+                                        | DatabaseKind::Postgres
+                                        | DatabaseKind::SqlServer
+                                        | DatabaseKind::ClickHouse
+                                ) {
+                                    let sql = format!("TRUNCATE TABLE {qualified};");
+                                    let trunc_view = view.clone();
+                                    menu = menu.item(PopupMenuItem::new(truncate_label).on_click(
+                                        move |_, window, cx| {
+                                            let Some(entity) = trunc_view.upgrade() else {
+                                                return;
+                                            };
+                                            entity.update(cx, |this, cx| {
+                                                this.stage_sql(
+                                                    sql.clone(),
+                                                    truncate_note.into(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        },
+                                    ));
+                                }
+                                {
+                                    let sql = format!("DELETE FROM {qualified};");
+                                    let clear_view = view.clone();
+                                    menu = menu.item(PopupMenuItem::new(clear_label).on_click(
+                                        move |_, window, cx| {
+                                            let Some(entity) = clear_view.upgrade() else {
+                                                return;
+                                            };
+                                            entity.update(cx, |this, cx| {
+                                                this.stage_sql(
+                                                    sql.clone(),
+                                                    clear_note.into(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        },
+                                    ));
+                                }
+                                match engine {
+                                    DatabaseKind::Postgres => {
+                                        let sql = format!("VACUUM (ANALYZE) {qualified};");
+                                        let vacuum_view = view.clone();
+                                        menu = menu.item(PopupMenuItem::new(vacuum_label).on_click(
+                                            move |_, window, cx| {
+                                                let Some(entity) = vacuum_view.upgrade() else {
+                                                    return;
+                                                };
+                                                entity.update(cx, |this, cx| {
+                                                    this.stage_sql(
+                                                        sql.clone(),
+                                                        vacuum_note.into(),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            },
+                                        ));
+                                    }
+                                    DatabaseKind::Sqlite => {
+                                        let sql = "VACUUM;".to_owned();
+                                        let vacuum_view = view.clone();
+                                        menu = menu.item(PopupMenuItem::new(vacuum_label).on_click(
+                                            move |_, window, cx| {
+                                                let Some(entity) = vacuum_view.upgrade() else {
+                                                    return;
+                                                };
+                                                entity.update(cx, |this, cx| {
+                                                    this.stage_sql(
+                                                        sql.clone(),
+                                                        vacuum_note.into(),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            },
+                                        ));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // 非表对象（视图 / 过程 / 函数 / 序列）的删除语句：
+                            // 各有各的 DROP，引擎给不出的不给项。
+                            if let Some(sql) = drop_object_sql.clone() {
+                                let drop_obj_view = view.clone();
+                                menu = menu.item(PopupMenuItem::new(drop_label).on_click(
+                                    move |_, window, cx| {
+                                        let Some(entity) = drop_obj_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.stage_sql(
+                                                sql.clone(),
+                                                drop_object_note.into(),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                ));
+                            }
+                            menu
+                        }
+                    });
+                    menu = menu.item(PopupMenuItem::submenu(danger_group_label, danger_menu));
                 }
                 // ── 刷新 / 删除 ──
+                menu = menu.separator();
                 {
                     let refresh_view = view.clone();
                     let refresh_id = conn_owned.clone();

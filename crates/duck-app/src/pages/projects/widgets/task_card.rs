@@ -3,7 +3,7 @@
 //! 结构逐段对齐原型 `cardHTML`（`docs/projects-mock.html:1170-1192`）：
 //!
 //! ```text
-//! ┃ ← 状态竖条（.card::before，仅进行中 / 阻塞）
+//! ┃ ← 状态竖条（.card::before，四态四色，占用中的两态用实色）
 //! ┃  .ctop   项目色点 · 首个标签 · 象限徽标 · 置顶星 ······ ⋯
 //! ┃  .ctitle 标题（已完成：删除线 + 降为三级字色）
 //! ┃  .pbar   进度条（仅未完成；填色按 80 / 40 / 0 三档换色）
@@ -28,7 +28,7 @@
 
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClickEvent, Context, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement, Render, Role, SharedString,
+    IntoElement, MouseButton, ParentElement, Pixels, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled, WeakEntity, Window, div, prelude::FluentBuilder as _,
     px,
 };
@@ -43,11 +43,13 @@ use duck_components::DuckIcon;
 use duck_components::content::tag;
 use duck_components::notify::Tone;
 use duck_components::selectable_text;
-use duck_project::{CalendarDate, Project, Task, TaskStatus};
+use duck_components::{ButtonVariant, icon_button};
+use duck_project::{CalendarDate, Priority, Project, Quadrant, Tag, Task, TaskStatus};
 use duck_theme::{active_theme, color_from_hex, tr};
 
 use super::super::ProjectsPage;
 use super::TaskDrag;
+use super::kanban_column::COLUMN_WIDTH;
 use super::priority_dot::{priority_color, priority_dot};
 use super::progress_bar::task_progress_bar;
 use super::quadrant_badge::quadrant_badge;
@@ -66,6 +68,7 @@ pub(crate) fn task_card(
     projects: &[Project],
     today: CalendarDate,
     selected: bool,
+    checked: bool,
     view: &WeakEntity<ProjectsPage>,
     cx: &App,
 ) -> AnyElement {
@@ -73,6 +76,9 @@ pub(crate) fn task_card(
     let tokens = theme.tokens();
     let extended = theme.extended();
     let done = task.status == TaskStatus::Done;
+    // `drag_over` 的闭包要 `'static`，而 `tokens` 借的是 `cx` —— 颜色是 `Copy` 的，
+    // 先取成值再 move 进去。
+    let drop_line = tokens.colors.primary;
     let project = task
         .project_id
         .and_then(|id| projects.iter().find(|project| project.id == id));
@@ -131,14 +137,25 @@ pub(crate) fn task_card(
         })
         // 拖拽：整张卡片是可拖源，载荷只带 id（见 `TaskDrag`）。必须挂在
         // `context_menu` **之前** —— 后者返回 `ContextMenu` 包装，不再是可拖元素。
+        // 幽灵卡在**拖起那一刻**拍快照（`project` 上面已经查好，直接传入）。
         .on_drag(TaskDrag { task_id: task.id }, {
-            let title = SharedString::from(task.title.clone());
-            move |_drag, _, _, cx| {
-                cx.new(|_| TaskDragGhost {
-                    title: title.clone(),
-                })
+            let ghost = TaskDragGhost::snapshot(task, project, today, cx);
+            move |_drag, _, _, cx| cx.new(|_| ghost.clone())
+        })
+        // 落到**这张卡上** = 插到它之前（落列空白处是「列首」，见 `kanban_column`）。
+        //
+        // 这里不用给载荷加「落点前是哪一条」：gpui 的 drop 走 mouse-up 的冒泡阶段，
+        // 监听器按绘制顺序逆序调用（`window.rs` 的 `mouse_listeners.iter_mut().rev()`），
+        // 卡片比列更深、先执行并 `stop_propagation()`，所以列级那条不会再重复搬一次。
+        .on_drop::<TaskDrag>({
+            let view = view.clone();
+            let target = task.id;
+            move |drag: &TaskDrag, _window, cx| {
+                let _ = view.update(cx, |page, cx| page.drop_on_task(drag.task_id, target, cx));
             }
         })
+        // 落点指示：目标卡顶部一道 2px 强调线（只抖上边，卡片不会挪位）。
+        .drag_over::<TaskDrag>(move |style, _, _, _| style.border_t(px(2.)).border_color(drop_line))
         .context_menu({
             let view = view.clone();
             let id = task.id;
@@ -157,9 +174,7 @@ pub(crate) fn task_card(
             }
         });
 
-    if let Some(stripe) = status_stripe(task.status, cx) {
-        card = card.child(stripe);
-    }
+    card = card.child(status_stripe(task.status, cx));
 
     // ── `.ctop` ─────────────────────────────────────────────────────────
     card = card.child(
@@ -167,6 +182,23 @@ pub(crate) fn task_card(
             .w_full()
             .items_center()
             .gap(tokens.spacing.xs)
+            // 多选勾：看板与列表共用同一个手势（`view::check_box`）。
+            //
+            // 之前批量只能在列表视图做：在板上看到 5 条该归到一个项目，要按 `2` 切列表、
+            // 逐条勾、批量改、再按 `1` 回来 —— 三步上下文切换只为了点五下。
+            // 勾选框放最左，与列表行的位置一致，用户不必记「这屏的勾在哪」。
+            .child(super::super::view::check_box(
+                SharedString::from(format!("project-task-check-{}", task.id)),
+                checked,
+                {
+                    let view = view.clone();
+                    let id = task.id;
+                    move |_, _, cx| {
+                        let _ = view.update(cx, |page, cx| page.toggle_checked(id, cx));
+                    }
+                },
+                cx,
+            ))
             .child(
                 // 项目色点（原型 `.pdot` 带 `title`）：色点本身读屏拿不到信息，
                 // 名字挂在卡片的 aria_label 上（项目名在详情里看）。
@@ -187,6 +219,46 @@ pub(crate) fn task_card(
                         .size(extended.icon.sm)
                         .flex_none()
                         .text_color(extended.colors.warning),
+                )
+            })
+            // 主行动（原型没有，是本仓补的）：待办 →「开始」，进行中 / 阻塞 →「完成」。
+            //
+            // 为什么只放一个：268 宽的卡片，多一个按钮就挤标题；而「这条现在该干
+            // 什么」本来就只有一个答案。完整的一组动作仍在 `⋯` 与右键菜单里。
+            //
+            // 为什么常显而不做「悬停才现形」：GPUI 里 `opacity: 0` 的元素照样能点，
+            // 读屏也感知不到一个看不见的按钮 —— 可发现性换来的那点干净不值。
+            //
+            // 为什么放在 `.ctop` 而不是底部读数行：`icon_button` 是控件高度，塞进
+            // `.pmeta` 会把每张卡撑高十来个像素，一屏几十张卡就是一片空白。
+            .when_some(primary_action(task.status, cx), |row, action| {
+                let target = action.target;
+                row.child(
+                    div()
+                        .flex_none()
+                        // 卡片整张可点（选中任务），按钮在它内部 ⇒ 必须在这一层拦住
+                        // 按下事件，否则点「完成」会先把卡片选中、再执行状态切换。
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            icon_button(
+                                SharedString::from(format!("project-task-act-{}", task.id)),
+                                action.label,
+                                Icon::new(action.icon)
+                                    .size(extended.icon.sm)
+                                    .text_color(tokens.colors.muted_foreground),
+                                ButtonVariant::Ghost,
+                                cx,
+                            )
+                            .on_click({
+                                let view = view.clone();
+                                let id = task.id;
+                                move |_, _window, cx| {
+                                    let _ = view.update(cx, |page, cx| {
+                                        page.set_task_status(id, target, cx)
+                                    });
+                                }
+                            }),
+                        ),
                 )
             })
             .child(div().flex_1())
@@ -319,31 +391,74 @@ pub(crate) fn task_card(
     card.into_any_element()
 }
 
+/// 卡片上的那一个主行动。
+///
+/// 取值只有两条，且都是**单向推进**（不会出现「撤销」语义的按钮 —— 退路是 `⌘Z`
+/// 与 `⋯` 菜单，不是卡片上再放一个反悔键）：
+///
+/// - `Todo` → 「开始」（转 `Doing`）；
+/// - `Doing` / `Blocked` → 「完成」（转 `Done`）—— 阻塞解除后的下一步通常就是继续做，
+///   所以它也直接给「完成」而不是「恢复进行」。
+///
+/// `Done` / `Deferred` / `Cancelled` 不给：这三种状态没有「下一步该干的那件事」，
+/// 硬塞一个按钮只会让人误点。
+fn primary_action(status: TaskStatus, cx: &App) -> Option<PrimaryAction> {
+    match status {
+        TaskStatus::Todo => Some(PrimaryAction {
+            label: tr(cx, "开始"),
+            icon: DuckIcon::Play,
+            target: TaskStatus::Doing,
+        }),
+        TaskStatus::Doing | TaskStatus::Blocked => Some(PrimaryAction {
+            label: tr(cx, "完成"),
+            icon: DuckIcon::Check,
+            target: TaskStatus::Done,
+        }),
+        TaskStatus::Done | TaskStatus::Deferred | TaskStatus::Cancelled => None,
+    }
+}
+
+/// [`primary_action`] 的取值：按钮文案、图标、点完落到哪个状态。
+struct PrimaryAction {
+    label: &'static str,
+    icon: DuckIcon,
+    target: TaskStatus,
+}
+
 /// 卡片左侧的状态竖条（原型 `.card::before`，`docs/projects-mock.html:236-238`）。
 ///
-/// 只在「进行中 / 阻塞」两态上出现：这两态是**正在占用人**的，被埋在一列卡片里也该
-/// 一眼看得见。待办与已完成不画 —— 一屏几十张卡都挂一条彩条，等于一条都没挂。
-fn status_stripe(status: TaskStatus, cx: &App) -> Option<AnyElement> {
+/// **四态四色**（待办灰 / 进行中强调色 / 阻塞橙 / 完成绿），与列头色点、卡片上的
+/// 状态点同一份口径（[`super::super::view::status_color`]），所以同一张卡在列头、
+/// 卡片、列表里看到的是同一个颜色。
+///
+/// 强度分两档：进行中与阻塞是**正在占用人**的两态，用实色；待办与已完成用弱化一档
+/// （0.35）—— 一屏几十张卡都挂同样醒目的彩条，等于一条都没挂。
+fn status_stripe(status: TaskStatus, cx: &App) -> AnyElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
-    let color = match status {
-        TaskStatus::Doing => tokens.colors.primary,
-        TaskStatus::Blocked => theme.extended().colors.warning,
-        _ => return None,
+    let extended = theme.extended();
+    let (color, strong) = match status {
+        TaskStatus::Doing => (tokens.colors.primary, true),
+        TaskStatus::Blocked => (extended.colors.warning, true),
+        TaskStatus::Todo => (tokens.colors.muted_foreground, false),
+        TaskStatus::Done => (extended.colors.success, false),
+        TaskStatus::Deferred | TaskStatus::Cancelled => (extended.colors.text_tertiary, false),
     };
-    Some(
-        div()
-            .absolute()
-            .left(px(0.))
-            // 上下各留出卡片内边距那一段（原型 `top/bottom:8px`）：顶到圆角上会跟
-            // 圆角打架，看起来像描边画歪了。
-            .top(tokens.spacing.xs)
-            .bottom(tokens.spacing.xs)
-            .w(px(STRIPE_WIDTH))
-            .rounded(px(2.))
-            .bg(color)
-            .into_any_element(),
-    )
+    div()
+        .absolute()
+        .left(px(0.))
+        // 上下各留出卡片内边距那一段（原型 `top/bottom:8px`）：顶到圆角上会跟
+        // 圆角打架，看起来像描边画歪了。
+        .top(tokens.spacing.xs)
+        .bottom(tokens.spacing.xs)
+        .w(px(STRIPE_WIDTH))
+        .rounded(px(2.))
+        .bg(if strong {
+            color
+        } else {
+            color.opacity(extended.opacity.muted)
+        })
+        .into_any_element()
 }
 
 /// `.pmeta` 里「小图标 + 文字」那一格（原型 `.pmeta .m`）。
@@ -368,28 +483,139 @@ fn meta_icon_text(icon: DuckIcon, text: SharedString, color: Hsla, cx: &App) -> 
         .into_any_element()
 }
 
-/// 跟着指针的幽灵卡：只显示标题。
+/// 跟着指针的幽灵卡。
 ///
-/// `on_drag` 要求当场给一个可渲染视图；画整张卡片会带来「幽灵比原卡片复杂」的
-/// 无谓开销，标题足够指明在拖什么。
+/// 与真卡片**同构**：状态竖条 + 顶行（项目色点 / 标签 / 象限）+ 标题 + 元信息行。
+/// 拖动时用户要在落点旁认出「我拿着的是哪张」—— 只给一行标题的话，同一屏里
+/// 「测试任务」可能有两三条，认不出来；而且卡片形的幽灵落下去之前就能对上
+/// 位置与大小，松手那一下不跳。
+///
+/// 不带勾选框 / 主行动 / 进度条 / `⋯`：那些是「停在板上」才有的交互件，幽灵
+/// 收不到鼠标事件；少画它们也让幽灵比原卡轻。数据在**拖拽开始那一刻**拍快照
+/// （[`Self::snapshot`]）：拖动期间任务不会变，而幽灵每帧都渲染，快照比让幽灵
+/// 回头查页面状态便宜得多。
+#[derive(Clone)]
 struct TaskDragGhost {
     title: SharedString,
+    status: TaskStatus,
+    priority: Priority,
+    done: bool,
+    project_color: Hsla,
+    tag: Option<Tag>,
+    quadrant: Quadrant,
+    due_text: SharedString,
+    due_color: Hsla,
+    /// 与真卡片同宽：列宽 − 列体内边距（`spacing.xs` ×2，随缩放档走）。
+    /// 宽度在拍快照那一刻算 —— 幽灵每帧渲染，不该再回去查主题。
+    ghost_width: Pixels,
+}
+
+impl TaskDragGhost {
+    /// 拖拽开始那一刻的卡片快照。
+    ///
+    /// `project` 由卡片渲染时查好传入（拖起时任务在屏上，这张表刚读过）。
+    fn snapshot(task: &Task, project: Option<&Project>, today: CalendarDate, cx: &App) -> Self {
+        let (due_text, due_color) = super::due_label(task, today, cx);
+        let tokens = active_theme(cx).tokens();
+        Self {
+            title: SharedString::from(task.title.clone()),
+            status: task.status,
+            priority: task.priority,
+            done: task.status == TaskStatus::Done,
+            project_color: project.map_or(tokens_fallback(cx), |project| {
+                color_from_hex(&project.color).unwrap_or_else(|| tokens_fallback(cx))
+            }),
+            tag: task.tags.first().cloned(),
+            quadrant: task.quadrant,
+            due_text,
+            due_color,
+            ghost_width: px(COLUMN_WIDTH) - tokens.spacing.xs * 2.,
+        }
+    }
+}
+
+/// 项目色点的兜底色（无项目 / 色值解析失败）：与卡片顶行的取值同一份口径。
+fn tokens_fallback(cx: &App) -> Hsla {
+    active_theme(cx).tokens().colors.muted_foreground
 }
 
 impl Render for TaskDragGhost {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
+        let extended = theme.extended();
         div()
-            .px(tokens.spacing.sm)
-            .py(tokens.spacing.xs)
+            // 与真卡片同宽（见 `ghost_width` 的来由）：幽灵的宽度就是落点的宽度，
+            // 松手前就能对上。
+            .w(self.ghost_width)
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(tokens.spacing.xs)
+            .p(tokens.spacing.sm)
             .rounded(theme.components().card_radius)
-            .border(theme.extended().stroke.thin)
-            .border_color(theme.extended().colors.hairline)
+            .border(extended.stroke.thin)
+            .border_color(extended.colors.hairline)
             .bg(tokens.colors.surface)
-            .text_size(tokens.typography.sm.size)
-            .line_height(tokens.typography.sm.line_height)
-            .text_color(tokens.colors.foreground)
-            .child(self.title.clone())
+            .child(status_stripe(self.status, cx))
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(tokens.spacing.xs)
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(extended.icon.sm / 2.)
+                            .rounded_full()
+                            .bg(self.project_color),
+                    )
+                    .children(self.tag.as_ref().map(|tag| tag_chip(tag, cx)))
+                    .child(quadrant_badge(self.quadrant, cx)),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .text_size(tokens.typography.sm.size)
+                    .line_height(tokens.typography.sm.line_height)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(if self.done {
+                        extended.colors.text_tertiary
+                    } else {
+                        tokens.colors.foreground
+                    })
+                    .when(self.done, |title| title.line_through())
+                    .child(self.title.clone()),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(tokens.spacing.sm)
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap(tokens.spacing.xxs)
+                            .child(priority_dot(self.priority, cx))
+                            .child(
+                                div()
+                                    .text_size(tokens.typography.xs.size)
+                                    .line_height(tokens.typography.xs.line_height)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(priority_color(self.priority, cx))
+                                    .child(SharedString::from(format!(
+                                        "P{}",
+                                        self.priority.as_i64()
+                                    ))),
+                            ),
+                    )
+                    .child(meta_icon_text(
+                        DuckIcon::Calendar,
+                        self.due_text.clone(),
+                        self.due_color,
+                        cx,
+                    )),
+            )
     }
 }

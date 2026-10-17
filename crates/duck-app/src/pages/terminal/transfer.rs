@@ -256,15 +256,17 @@ impl TerminalPage {
                     .find(|row| row.id == request.id)
                     .is_some_and(|row| row.state == data::TransferState::Cancelling);
                 page.transfer_handles.remove(&request.id);
-                match result {
+                let settled = match result {
                     _ if cancelled => {
                         // 取消不是失败：清掉输入快照（不再提供「重试」），标成已取消。
                         page.transfer_requests.remove(&request.id);
                         page.mark_transfer(request.id, data::TransferState::Cancelled, None, cx);
+                        data::TransferState::Cancelled
                     }
                     Ok(()) => {
                         page.transfer_requests.remove(&request.id);
                         page.mark_transfer(request.id, data::TransferState::Done, None, cx);
+                        data::TransferState::Done
                     }
                     Err(error) => {
                         // 失败：**保留**输入快照，行上给「重试」。
@@ -276,12 +278,55 @@ impl TerminalPage {
                             Some(ssh_error_text(cx, &error)),
                             cx,
                         );
+                        data::TransferState::Failed
                     }
-                }
+                };
+                // 成功 / 取消的行留 3 秒给用户确认结果，然后自己消失；
+                // 失败的**常驻**（错误信息 + 重试按钮是它存在的理由）。
+                page.schedule_transfer_cleanup(request.id, settled, cx);
                 if request.upload {
                     page.reload_pane(Side::Remote, cx);
                 } else {
                     page.reload_pane(Side::Local, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 让一条**已落定**的传输行在 [`TRANSFER_LINGER`] 后自动消失。
+    ///
+    /// 只处理成功与取消：`100%` 与「已取消」是**结论**，看一眼就够；
+    /// 而失败要常驻 —— 它带着 stderr 原文和「重试」按钮，消失就等于把线索抹掉。
+    ///
+    /// 定时器里要**复核状态**再删：重试复用同一个行 id（`retry_transfer`），
+    /// 用户在 3 秒内点了重试的话，这一行已经重新开始跑，此时删掉它等于把一条
+    /// 正在进行的传输从界面上抹掉（进程还在，但用户再也取消不了）。
+    pub(super) fn schedule_transfer_cleanup(
+        &mut self,
+        id: u64,
+        state: data::TransferState,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(
+            state,
+            data::TransferState::Done | data::TransferState::Cancelled
+        ) {
+            return;
+        }
+        cx.spawn(async move |page, cx| {
+            cx.background_executor().timer(TRANSFER_LINGER).await;
+            let _ = page.update(cx, |page, cx| {
+                let settled = page.transfers.iter().any(|row| {
+                    row.id == id
+                        && matches!(
+                            row.state,
+                            data::TransferState::Done | data::TransferState::Cancelled
+                        )
+                });
+                if settled {
+                    page.transfers.retain(|row| row.id != id);
+                    cx.notify();
                 }
             });
         })

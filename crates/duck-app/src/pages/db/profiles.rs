@@ -397,9 +397,12 @@ impl DatabasePage {
             tr(cx, "删除"),
             Rc::new(move |window, cx| {
                 let _ = view.update(cx, |this, cx| {
-                    // 顺序要紧：`close_tab` 要从档案里取这条连接的**断开钩子**，档案必须先还在
+                    // 顺序要紧：`force_close_tab` 要从档案里取这条连接的**断开钩子**，档案必须先还在
                     // （删档之后再拆会话，钩子就查不到了，等于静默跳过用户配好的收尾动作）。
-                    this.close_tab(&id, window, cx);
+                    // 走**硬关**而不走 `close_tab`：删档案的确认框里已经答过一次
+                    // 「删除」，再弹一道「未保存的更改」会问不住 —— 万一用户点了
+                    // 「取消」，档案删了一半就悬在半空。
+                    this.force_close_tab(&id, window, cx);
                     this.connections.retain(|cfg| cfg.id != id);
                     this.persist_connections(cx);
                     let _ = delete_password(&id);

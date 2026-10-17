@@ -35,11 +35,21 @@ pub enum HotkeySlot {
     TaskFloat,
     /// 唤起日历浮窗（`⌥⌘C`）。
     CalendarFloat,
+    /// 唤起快速捕获窗（`⌥⌘N`）。
+    ///
+    /// 与两个浮窗分开成槽：它**抢焦点**（要打字），语义是「记一条就走」，
+    /// 而不是「瞄一眼」。
+    QuickCapture,
 }
 
 impl HotkeySlot {
     /// 全部槽位（装配时逐个登记，`dispatch` 与提示也按它遍历）。
-    pub const ALL: [Self; 3] = [Self::Launcher, Self::TaskFloat, Self::CalendarFloat];
+    pub const ALL: [Self; 4] = [
+        Self::Launcher,
+        Self::TaskFloat,
+        Self::CalendarFloat,
+        Self::QuickCapture,
+    ];
 
     /// 平台层的槽名。
     ///
@@ -49,6 +59,7 @@ impl HotkeySlot {
             Self::Launcher => "launcher",
             Self::TaskFloat => "task_float",
             Self::CalendarFloat => "calendar_float",
+            Self::QuickCapture => "quick_capture",
         }
     }
 
@@ -69,6 +80,11 @@ impl HotkeySlot {
                 "calendar_hotkey",
                 "calendar_hotkey_failure_announced",
             ),
+            Self::QuickCapture => (
+                "capture_hotkey_enabled",
+                "capture_hotkey",
+                "capture_hotkey_failure_announced",
+            ),
         }
     }
 
@@ -78,6 +94,7 @@ impl HotkeySlot {
             Self::Launcher => duck_platform::LAUNCHER_HOTKEY_SPEC,
             Self::TaskFloat => duck_platform::FLOAT_HOTKEY_SPEC,
             Self::CalendarFloat => duck_platform::CALENDAR_HOTKEY_SPEC,
+            Self::QuickCapture => duck_platform::QUICK_CAPTURE_HOTKEY_SPEC,
         }
     }
 
@@ -90,6 +107,7 @@ impl HotkeySlot {
             Self::Launcher => 0,
             Self::TaskFloat => 1,
             Self::CalendarFloat => 2,
+            Self::QuickCapture => 3,
         }
     }
 
@@ -99,6 +117,7 @@ impl HotkeySlot {
             Self::Launcher => tr(cx, "唤起命令面板").into(),
             Self::TaskFloat => tr(cx, "打开「随手看」").into(),
             Self::CalendarFloat => tr(cx, "打开日历浮窗").into(),
+            Self::QuickCapture => tr(cx, "打开快速捕获窗").into(),
         }
     }
 
@@ -170,6 +189,7 @@ fn dispatch(slot: HotkeySlot, cx: &mut App) {
         HotkeySlot::Launcher => crate::app::toggle_launcher(cx),
         HotkeySlot::TaskFloat => crate::app::toggle_task_float(cx),
         HotkeySlot::CalendarFloat => crate::app::toggle_calendar_float(cx),
+        HotkeySlot::QuickCapture => crate::app::toggle_quick_capture(cx),
     }
 }
 
@@ -349,7 +369,7 @@ mod tests {
     fn the_slot_table_is_consistent() {
         assert_eq!(
             HotkeySlot::ALL.len(),
-            3,
+            4,
             "槽位数变了：请连带核对设置页的数组与 `index()`"
         );
         let mut names = HashSet::new();

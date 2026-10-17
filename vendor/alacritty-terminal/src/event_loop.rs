@@ -39,6 +39,14 @@ pub enum Msg {
     Resize(WindowSize),
 }
 
+/// PTY 原始字节的预处理器：`(输入块, 输出缓冲)`。
+///
+/// 解析器只认 UTF-8；需要别的字符集（GBK / GB18030）时，在字节进解析器**之前**
+/// 换掉是最小侵入点。回调是 `FnMut`：多字节字符可能被 `read` 切断，跨块的残留
+/// 状态要留在闭包里。`out` 是事件循环复用的临时缓冲，回调往里写「解析器该看到
+/// 的字节」即可（不需要追加原文）。
+pub type Preprocessor = Box<dyn FnMut(&[u8], &mut Vec<u8>) + Send>;
+
 /// The main event loop.
 ///
 /// Handles all the PTY I/O and runs the PTY parser which updates terminal
@@ -52,6 +60,7 @@ pub struct EventLoop<T: tty::EventedPty, U: EventListener> {
     event_proxy: U,
     drain_on_exit: bool,
     ref_test: bool,
+    preprocessor: Option<Preprocessor>,
 }
 
 impl<T, U> EventLoop<T, U>
@@ -78,11 +87,25 @@ where
             event_proxy,
             drain_on_exit,
             ref_test,
+            preprocessor: None,
         })
     }
 
+    /// 装一个 PTY 字节预处理器（见 [`Preprocessor`]）。
+    ///
+    /// 只在「解析器之前」动手：读到的原始字节先交给它，它写出的字节再进 `vte`。
+    /// 未装时不产生任何额外拷贝，热路径与上游完全一致。
+    #[must_use]
+    pub fn with_preprocessor(mut self, preprocessor: Preprocessor) -> Self {
+        self.preprocessor = Some(preprocessor);
+        self
+    }
+
     pub fn channel(&self) -> EventLoopSender {
-        EventLoopSender { sender: self.tx.clone(), poller: self.poll.clone() }
+        EventLoopSender {
+            sender: self.tx.clone(),
+            poller: self.poll.clone(),
+        }
     }
 
     /// Drain the channel.
@@ -129,7 +152,7 @@ where
                         if unprocessed == 0 {
                             break;
                         }
-                    },
+                    }
                     _ => return Err(err),
                 },
             }
@@ -151,7 +174,18 @@ where
             }
 
             // Parse the incoming bytes.
-            state.parser.advance(&mut **terminal, &buf[..unprocessed]);
+            //
+            // 装了预处理器（字符集转换）时先换字节再进解析器：`scratch` 与
+            // `preprocessor` / `parser` 是三个互不重叠的字段，借用互不冲突。
+            if state.preprocessor.is_some() {
+                state.scratch.clear();
+                if let Some(preprocessor) = state.preprocessor.as_mut() {
+                    preprocessor(&buf[..unprocessed], &mut state.scratch);
+                }
+                state.parser.advance(&mut **terminal, &state.scratch);
+            } else {
+                state.parser.advance(&mut **terminal, &buf[..unprocessed]);
+            }
 
             processed += unprocessed;
             unprocessed = 0;
@@ -180,21 +214,21 @@ where
                     Ok(0) => {
                         state.set_current(Some(current));
                         break 'write_many;
-                    },
+                    }
                     Ok(n) => {
                         current.advance(n);
                         if current.finished() {
                             state.goto_next();
                             break 'write_one;
                         }
-                    },
+                    }
                     Err(err) => {
                         state.set_current(Some(current));
                         match err.kind() {
                             ErrorKind::Interrupted | ErrorKind::WouldBlock => break 'write_many,
                             _ => return Err(err),
                         }
-                    },
+                    }
                 }
             }
         }
@@ -204,7 +238,10 @@ where
 
     pub fn spawn(mut self) -> JoinHandle<(Self, State)> {
         thread::spawn_named("PTY reader", move || {
-            let mut state = State::default();
+            let mut state = State {
+                preprocessor: self.preprocessor.take(),
+                ..State::default()
+            };
             let mut buf = [0u8; READ_BUFFER_SIZE];
 
             let poll_opts = PollMode::Level;
@@ -227,8 +264,9 @@ where
             'event_loop: loop {
                 // Wakeup the event loop when a synchronized update timeout was reached.
                 let handler = state.parser.sync_timeout();
-                let timeout =
-                    handler.sync_timeout().map(|st| st.saturating_duration_since(Instant::now()));
+                let timeout = handler
+                    .sync_timeout()
+                    .map(|st| st.saturating_duration_since(Instant::now()));
 
                 events.clear();
                 if let Err(err) = self.poll.wait(&mut events, timeout) {
@@ -237,7 +275,7 @@ where
                         _ => {
                             error!("Event loop polling error: {err}");
                             break 'event_loop;
-                        },
+                        }
                     }
                 }
 
@@ -269,7 +307,7 @@ where
                                 self.event_proxy.send_event(Event::Wakeup);
                                 break 'event_loop;
                             }
-                        },
+                        }
 
                         tty::PTY_READ_WRITE_TOKEN => {
                             if event.is_interrupt() {
@@ -301,7 +339,7 @@ where
                                     break 'event_loop;
                                 }
                             }
-                        },
+                        }
                         _ => (),
                     }
                 }
@@ -312,7 +350,9 @@ where
                     interest.writable = needs_write;
 
                     // Re-register with new interest.
-                    self.pty.reregister(&self.poll, interest, poll_opts).unwrap();
+                    self.pty
+                        .reregister(&self.poll, interest, poll_opts)
+                        .unwrap();
                 }
             }
 
@@ -402,6 +442,10 @@ pub struct State {
     write_list: VecDeque<Cow<'static, [u8]>>,
     writing: Option<Writing>,
     parser: ansi::Processor,
+    /// 解析前的字节预处理器（字符集转换）；`None` = 直通，零额外拷贝。
+    preprocessor: Option<Preprocessor>,
+    /// 预处理器复用的输出缓冲：每块只 `clear`，不重新分配。
+    scratch: Vec<u8>,
 }
 
 impl State {
@@ -436,7 +480,10 @@ impl State {
 impl Writing {
     #[inline]
     fn new(c: Cow<'static, [u8]>) -> Writing {
-        Writing { source: c, written: 0 }
+        Writing {
+            source: c,
+            written: 0,
+        }
     }
 
     #[inline]

@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use duck_command::{ActionSlot, primary_modifier};
+use duck_command::ActionSlot;
 use duck_components::DuckIcon;
 use duck_shell::{
     PaletteWindow, RouteId, ShellAction, ShellRoute, ShellView, main_window_options,
@@ -10,7 +10,7 @@ use duck_shell::{
 };
 use duck_theme::{DuckThemeState, active_theme, tr, trf};
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, IntoElement as _, KeyBinding,
+    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, IntoElement as _,
     ParentElement as _, SharedString, Styled as _, WeakEntity, Window, WindowBounds, WindowHandle,
     WindowId, point, px, size,
 };
@@ -18,13 +18,10 @@ use gpui_component::{Icon, Root};
 
 use crate::pages::projects::float::{FloatWindow, float_window_options};
 use crate::pages::{
-    ASSISTANT_ROUTE, AssistantPage, Clear, CloseTab, CopySelection, DATABASE_ROUTE, DatabasePage,
-    DeleteToLineEnd, DeleteToLineStart, DeleteWordForward, EMAIL_ROUTE, Find, MailPage,
-    MoveToLineEnd, MoveToLineStart, NewTab, OVERVIEW_ROUTE, OverviewPage, PROJECTS_ROUTE,
-    PasteFromClipboard, ProjectsPage, REDIS_ROUTE, RedisPage, SSH_ROUTE, ScrollLineDown,
-    ScrollLineUp, ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, SelectAll, SendCtrlC,
-    SendTab, SendTabPrev, SplitPane, TOOLBOX_ROUTE, TerminalPage, ToolboxPage, ZoomIn, ZoomOut,
-    ZoomReset, open_licenses, open_logs, open_plugin_center, open_settings,
+    ASSISTANT_ROUTE, AssistantPage, DATABASE_ROUTE, DatabasePage, EMAIL_ROUTE, MailPage,
+    OVERVIEW_ROUTE, OverviewPage, PROJECTS_ROUTE, ProjectsPage, REDIS_ROUTE, RedisPage, SSH_ROUTE,
+    TOOLBOX_ROUTE, TerminalPage, ToolboxPage, open_licenses, open_logs, open_plugin_center,
+    open_settings,
 };
 use crate::settings::AuxWindow;
 use crate::top_bar::TopBarSearch;
@@ -83,6 +80,8 @@ pub enum WindowKind {
     ///
     /// 与 [`Self::Float`] 分开是同一个理由：两块浮窗可以同时摆在桌面上。
     CalendarFloat,
+    /// 快速捕获窗（`⌥⌘N`）。与两个浮窗分开成槽：它**抢焦点**，且「记完即关」。
+    QuickCapture,
 }
 
 /// 跨窗口跳转目标。
@@ -224,6 +223,12 @@ impl Desktop {
     #[must_use]
     pub(crate) fn calendar_float_window(cx: &App) -> Option<WindowHandle<Root>> {
         Self::window_handle(cx, WindowKind::CalendarFloat)
+    }
+
+    /// 快速捕获窗的句柄快照（与 [`Self::float_window`] 同形，句柄可能陈旧）。
+    #[must_use]
+    pub(crate) fn quick_capture_window(cx: &App) -> Option<WindowHandle<Root>> {
+        Self::window_handle(cx, WindowKind::QuickCapture)
     }
 
     // ── 跨窗口跳转队列（§6.1 pending_jumps 队列） ──────────────────────────
@@ -414,86 +419,15 @@ pub fn install(cx: &mut App) {
     duck_command::install(cx);
     actions::declare_all(cx);
     duck_command::bind_all(cx);
-    // 终端画布的键位必须绑在更深的 `"Terminal"` 上下文里：gpui 的按键派发**先查
-    // action 绑定**，全部未命中才轮到 `on_key_down`；而 `gpui_base::Root` 在 `"Root"`
-    // 上下文占着 `"tab"` / `"shift-tab"` / `"cmd-c"`（macOS）/ `"ctrl-c"`（非 macOS）
-    // （`root.rs:15`）。不在这里用同键动作盖掉，终端就收不到这些键。
-    // 动作定义与处理见 `pages::terminal_canvas`；这套清单对齐
-    // `temp/zed/assets/keymaps/default-macos.json` 的 `"Terminal"` 上下文。
-    let modifier = primary_modifier();
-    cx.bind_keys([
-        // —— 全局冲突键 ——
-        KeyBinding::new("tab", SendTab, Some("Terminal")),
-        KeyBinding::new("shift-tab", SendTabPrev, Some("Terminal")),
-        // `Ctrl-C`（SIGINT）：非 macOS 上 Root 把它绑给了 `Copy`，不盖掉就是死的。
-        // macOS 上显式绑也无害 —— 发出去的正是终端本来就该收到的 `0x03`。
-        KeyBinding::new("ctrl-c", SendCtrlC, Some("Terminal")),
-        // —— 字号 / 清屏 ——
-        // `=` / `+` 都绑（美式布局 `+` 在 `=` 上，事件里两种键名都会出现）。
-        KeyBinding::new(&format!("{modifier}-="), ZoomIn, Some("Terminal")),
-        KeyBinding::new(&format!("{modifier}-+"), ZoomIn, Some("Terminal")),
-        KeyBinding::new(&format!("{modifier}--"), ZoomOut, Some("Terminal")),
-        KeyBinding::new(&format!("{modifier}-0"), ZoomReset, Some("Terminal")),
-        KeyBinding::new(&format!("{modifier}-k"), Clear, Some("Terminal")),
-        // 分屏 / 取消分屏（与工具条那个图标同一条路径）。
-        KeyBinding::new(&format!("{modifier}-d"), SplitPane, Some("Terminal")),
-        // —— 视口滚动：只挪视口，不向 PTY 写字节 ——
-        KeyBinding::new("shift-up", ScrollLineUp, Some("Terminal")),
-        KeyBinding::new("shift-down", ScrollLineDown, Some("Terminal")),
-        KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
-        KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
-        KeyBinding::new(&format!("{modifier}-up"), ScrollPageUp, Some("Terminal")),
-        KeyBinding::new(
-            &format!("{modifier}-down"),
-            ScrollPageDown,
-            Some("Terminal"),
-        ),
-        KeyBinding::new("shift-home", ScrollToTop, Some("Terminal")),
-        KeyBinding::new("shift-end", ScrollToBottom, Some("Terminal")),
-        KeyBinding::new(&format!("{modifier}-home"), ScrollToTop, Some("Terminal")),
-        KeyBinding::new(&format!("{modifier}-end"), ScrollToBottom, Some("Terminal")),
-        // —— 行编辑（发控制字节，靠 shell 的行编辑生效；对齐 zed 的 SendKeystroke）——
-        KeyBinding::new(
-            &format!("{modifier}-left"),
-            MoveToLineStart,
-            Some("Terminal"),
-        ),
-        KeyBinding::new(
-            &format!("{modifier}-right"),
-            MoveToLineEnd,
-            Some("Terminal"),
-        ),
-        KeyBinding::new(
-            &format!("{modifier}-backspace"),
-            DeleteToLineStart,
-            Some("Terminal"),
-        ),
-        KeyBinding::new(
-            &format!("{modifier}-delete"),
-            DeleteToLineEnd,
-            Some("Terminal"),
-        ),
-        KeyBinding::new("alt-delete", DeleteWordForward, Some("Terminal")),
-        // —— 剪贴板 / 选区 ——
-        // `⌘C` 在 `"Root"` 上下文被绑给了 `Copy`、`⌘A` 被绑给了 `SelectAll`
-        //（`gpui-base/src/root.rs`）：不在更深的 `"Terminal"` 上下文用同键动作盖掉，
-        // 终端里按 ⌘C 永远不会是「复制选中的文本」。
-        KeyBinding::new(&format!("{modifier}-c"), CopySelection, Some("Terminal")),
-        KeyBinding::new(
-            &format!("{modifier}-v"),
-            PasteFromClipboard,
-            Some("Terminal"),
-        ),
-        KeyBinding::new(&format!("{modifier}-a"), SelectAll, Some("Terminal")),
-        // —— 标签 ——
-        // 主流终端的一致键位；此前只写在设置页的快捷键说明里，一条都没绑。
-        KeyBinding::new(&format!("{modifier}-t"), NewTab, Some("Terminal")),
-        KeyBinding::new(&format!("{modifier}-w"), CloseTab, Some("Terminal")),
-        // —— 缓冲区搜索 ——
-        // `⌘F` 在 `gpui_base::Root` 里没有绑定（核对过 root.rs 的默认表），
-        // 绑在 `"Terminal"` 只是为了让焦点在终端画布上时命中。
-        KeyBinding::new(&format!("{modifier}-f"), Find, Some("Terminal")),
-    ]);
+    // —— 终端页的键位 ——
+    // 全部来自 `pages::terminal::keys` 的**一张表**：右栏的「快捷键」说明读的也是它，
+    // 所以「说明里写着的键按下去没反应」这类错从结构上不会再出现。
+    //
+    // 表里分两层上下文（`KeyScope`）：画布的 `"Terminal"`（键最终变成发给 PTY 的
+    // 字节）与整页的 `"TerminalPage"`（标签 / 查找 / 文件面板）。`tab` / `shift-tab` /
+    // `cmd-c`（macOS）/ `ctrl-c`（非 macOS）必须绑在更深的 `"Terminal"` 上下文里，
+    // 才能盖掉 `gpui_base::Root` 在 `"Root"` 占着的同名键（`root.rs:15`）。
+    cx.bind_keys(crate::pages::shortcut_bindings());
     // —— 数据库页 ——
     // 绑在页面自己的 `"Database"` 上下文（`pages::db::bind_keys`）：焦点在 SQL 编辑器里时
     // 上下文栈更深的是 `Editor`，它占着 `⌘Z`（撤销）与 `⌘.`，所以只挑它没占的
@@ -537,6 +471,10 @@ pub fn install(cx: &mut App) {
     // 任务的到期 / 逾期 / 久未更新提醒：进程级周期扫描（自带一个 `duck-project` 连接），
     // 走通知双通道。挂在 app 上而不是项目页里，是为了**没打开项目页时也能提醒**。
     crate::pages::projects::remind::install(cx);
+
+    // 文件收件箱：外部脚本 / AI 助手往 `<应用数据目录>/project-inbox/` 放 JSON，
+    // 运行期轮询追加成任务（口径见模块头：只追加、失败也留痕）。
+    crate::pages::projects::inbox::install(cx);
 
     // 更新器状态：更新源与阶段。后台顺带清扫上一次安装留下的旧 bundle。
     crate::update::init(cx);
@@ -600,8 +538,9 @@ fn on_window_closed(cx: &mut App, id: WindowId) {
         WindowKind::Onboarding
         | WindowKind::Palette
         | WindowKind::Float
-        | WindowKind::CalendarFloat => {
-            // 引导窗 / 调色盘 / 悬浮窗各自有「自关」语义，无须额外收尾。
+        | WindowKind::CalendarFloat
+        | WindowKind::QuickCapture => {
+            // 引导窗 / 调色盘 / 悬浮窗 / 捕获窗各自有「自关」语义，无须额外收尾。
         }
     }
 }
@@ -930,6 +869,57 @@ pub fn open_calendar_float(cx: &mut App) {
 /// 收起日历浮窗。
 pub fn close_calendar_float(cx: &mut App) {
     if let Some(handle) = Desktop::calendar_float_window(cx) {
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+    }
+}
+
+/// 快速捕获窗的开 / 收（`⌥⌘N`）。
+///
+/// 与前两个浮窗同一套直觉（同一个键按第二遍收起来），但窗口本身**抢焦点**：
+/// 这一窗的全部意义就是接着打字。
+pub fn toggle_quick_capture(cx: &mut App) {
+    if quick_capture_is_open(cx) {
+        close_quick_capture(cx);
+        return;
+    }
+    open_quick_capture(cx);
+}
+
+/// 捕获窗是否开着；句柄陈旧时返回 `false`（与 [`float_window_is_open`] 同形）。
+fn quick_capture_is_open(cx: &mut App) -> bool {
+    Desktop::quick_capture_window(cx).is_some_and(|handle| handle.update(cx, |_, _, _| {}).is_ok())
+}
+
+/// 开捕获窗；已经开着则只把它抬到前面。
+///
+/// 与两个浮窗的差别：这里**不**广播 `bus` —— 捕获窗不读库（它只写），开窗时没有
+/// 需要重读的东西。
+pub fn open_quick_capture(cx: &mut App) {
+    if let Some(handle) = Desktop::quick_capture_window(cx)
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        return;
+    }
+    match cx.open_window(
+        crate::pages::projects::quick_capture::quick_capture_window_options(cx),
+        |window, cx| {
+            let capture = cx.new(|cx| {
+                crate::pages::projects::quick_capture::QuickCaptureWindow::new(window, cx)
+            });
+            observe_system_appearance(window);
+            cx.new(|cx| Root::new(capture, window, cx))
+        },
+    ) {
+        Ok(handle) => Desktop::set_window(cx, WindowKind::QuickCapture, handle),
+        Err(error) => report_window_failure("快速捕获", &error, cx),
+    }
+}
+
+/// 收起快速捕获窗（回车保存成功 / Esc / 再按一次全局键）。
+pub fn close_quick_capture(cx: &mut App) {
+    if let Some(handle) = Desktop::quick_capture_window(cx) {
         let _ = handle.update(cx, |_, window, _| window.remove_window());
     }
 }

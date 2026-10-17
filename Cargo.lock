@@ -2042,6 +2042,7 @@ name = "duck-term"
 version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
+ "encoding_rs",
  "parking_lot",
  "vte",
 ]

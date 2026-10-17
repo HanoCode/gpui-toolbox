@@ -1924,6 +1924,9 @@ fn quadrant_grid(form: &Entity<TaskEditorForm>, current: Quadrant, cx: &App) -> 
     let option = |quadrant: Quadrant, cx: &App| {
         let picked = quadrant == current;
         let color = super::widgets::quadrant_badge::quadrant_color(quadrant, cx);
+        // 透明度档位先取成值：`hover` 的闭包是 `'static`，借不了 `extended`。
+        let tint = extended.opacity.tint;
+        let subtle = extended.opacity.subtle;
         let form_for_quadrant = form.clone();
         h_flex()
             .id(SharedString::from(format!(
@@ -1936,18 +1939,22 @@ fn quadrant_grid(form: &Entity<TaskEditorForm>, current: Quadrant, cx: &App) -> 
             .py(tokens.spacing.xs)
             .rounded(theme.components().input_radius)
             .border(extended.stroke.thin)
+            // 四格各带**自己那一档的薄底**：原型是四个一样的白格 + 一个小色点，
+            // 扫一眼只看见「四个选项」，看不出「哪个是紧急的」。底色跟着象限色走
+            // 之后，四格在同一屏里就是四种颜色，选中态只是同一色相再浓一档 +
+            // 描边转实色 —— 层级仍是一档，不会跟「已选中」抢。
             .border_color(if picked {
-                tokens.colors.primary
+                color
             } else {
                 extended.colors.hairline
             })
             .bg(if picked {
-                extended.colors.hover_tint
+                color.opacity(tint)
             } else {
-                tokens.colors.background
+                color.opacity(subtle)
             })
             .cursor_pointer()
-            .hover(move |style| style.bg(extended.colors.hover_tint))
+            .hover(move |style| style.bg(color.opacity(tint)))
             .gap(tokens.spacing.xs)
             .items_start()
             .child(

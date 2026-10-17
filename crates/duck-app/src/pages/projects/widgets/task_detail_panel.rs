@@ -36,7 +36,7 @@ use duck_components::{
 use duck_project::{CalendarDate, Milestone, Priority, Project, Quadrant, Task, TaskStatus};
 use duck_theme::{active_theme, color_from_hex, tr, trf};
 
-use super::super::ProjectsPage;
+use super::super::{ProjectsPage, QUICK_LOG_MINUTES, hours_display};
 use super::priority_dot::priority_label;
 use super::progress_bar::task_progress;
 use super::quadrant_badge::quadrant_badge;
@@ -103,7 +103,11 @@ pub(crate) fn task_detail_panel(
         DuckIcon::SlidersHorizontal,
         tr(cx, "属性"),
         None,
-        vec![description_list(meta).into_any_element()],
+        vec![
+            description_list(meta).into_any_element(),
+            // 快速记时紧贴「工时」下方 —— 它改的就是上面那一行的读数，所以不另开分区。
+            hours_quick_log(task, view, cx),
+        ],
         cx,
     ));
 
@@ -384,6 +388,41 @@ pub(crate) fn task_detail_panel(
     );
 
     panel.into_any_element()
+}
+
+/// 「工时」下面的快速记时：点一下把 15 / 30 / 60 分钟并进实际工时。
+///
+/// **不塞进「工时」那一行的值里**：属性列表的标签列固定 120px
+/// （`content::description_list` 的 `label_width`），而右栏最小 260px
+/// （`duck-shell` 的 `DEFAULT_RIGHT_SIDEBAR_RANGE`）—— 值区只剩约 120px，三个按钮
+/// 挤进去必然折行，还会把「实际 / 预估」那个读数顶出可视区。所以单独占一行：
+/// 左对齐、整体可换行（`flex_wrap`），窄窗下退化成两行也不挤。
+///
+/// 档位与文案来自 [`QUICK_LOG_MINUTES`]（装配层那份），这里只负责画。
+fn hours_quick_log(task: &Task, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElement {
+    let tokens = active_theme(cx).tokens();
+    h_flex()
+        .w_full()
+        .flex_wrap()
+        .items_center()
+        .gap(tokens.spacing.xxs)
+        .child(meta_text(tr(cx, "记时"), cx))
+        .children(QUICK_LOG_MINUTES.iter().map(|(minutes, label)| {
+            let view = view.clone();
+            let id = task.id;
+            let minutes = *minutes;
+            button(
+                SharedString::from(format!("project-hours-log-{minutes}-{id}")),
+                tr(cx, label),
+                ButtonVariant::Ghost,
+                cx,
+            )
+            .on_click(move |_, _, cx| {
+                let _ = view.update(cx, |page, cx| page.log_actual_hours(id, minutes, cx));
+            })
+            .into_any_element()
+        }))
+        .into_any_element()
 }
 
 /// 头部：标题 + 置顶 + 完整编辑。
@@ -890,11 +929,14 @@ fn date_text(date: Option<CalendarDate>, cx: &App) -> SharedString {
 }
 
 /// 工时文案：原型是 `实际 / 预估 h`。
+///
+/// 两个数都过 [`hours_display`]：库里可能躺着导入带进来的 `1.3500000000000001`，
+/// 直接 `{}` 出来会把这一行撑长、还会让人以为工时算错了。
 fn hours_text(task: &Task) -> SharedString {
     SharedString::from(format!(
         "{} / {} h",
-        task.actual_hours.unwrap_or(0.),
-        task.estimate_hours.unwrap_or(0.)
+        hours_display(task.actual_hours.unwrap_or(0.)),
+        hours_display(task.estimate_hours.unwrap_or(0.))
     ))
 }
 

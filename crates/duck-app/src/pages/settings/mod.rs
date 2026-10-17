@@ -89,10 +89,12 @@ mod pages_logs;
 mod pages_notify;
 mod pages_plugins;
 mod pages_tools;
+mod search;
 mod shell;
 mod state;
 mod widgets;
 
+use self::search::*;
 use self::shell::*;
 use self::state::*;
 use self::widgets::*;
@@ -636,7 +638,8 @@ impl Render for SettingsWindowView {
             .or_else(|| visible.first().copied());
 
         // 收起态不构造侧栏（搜索框与导航一起消失），内容区自然占满整宽。
-        let sidebar = (!self.sidebar_collapsed).then(|| self.render_sidebar(&visible, cx));
+        let hits = hits(&self.query(cx), active_theme(cx).lang());
+        let sidebar = (!self.sidebar_collapsed).then(|| self.render_sidebar(&visible, &hits, cx));
 
         v_flex()
             .size_full()
@@ -825,21 +828,28 @@ impl SettingsWindowView {
         }
     }
 
+    /// 当前搜索词（已 trim）。侧栏「项级结果」与分类过滤共用同一份。
+    pub(super) fn query(&self, cx: &Context<Self>) -> String {
+        self.search.read(cx).value().trim().to_owned()
+    }
+
     /// 搜索过滤后的可见分类；选中项被过滤掉时回落到第一个可见分类。
     ///
-    /// 搜索按**当前语言**的标题与描述匹配（切到英文后可用 `theme` 搜到外观页）。
+    /// 两条匹配面并行：
+    /// 1. **页级**——按当前语言的标题与描述（切到英文后可用 `theme` 搜到外观页）；
+    /// 2. **项级**——[`ITEMS`] 里任一设置项命中，它所在的分类也算命中。
+    ///
+    /// 只有页级那一条时，「行高」「回滚」「编码」这类正文里的词全搜不到——
+    /// 用户得先猜「这条设置归哪一页」才搜得动。
     pub(super) fn visible_pages(&self, cx: &Context<Self>) -> Vec<&'static SettingsPageSpec> {
-        let query = self.search.read(cx).value().trim().to_lowercase();
+        let query = self.query(cx);
         let lang = active_theme(cx).lang();
-        let visible: Vec<&'static SettingsPageSpec> = PAGES
+        let hit_pages: Vec<&'static str> =
+            hits(&query, lang).iter().map(|item| item.page).collect();
+        PAGES
             .iter()
-            .filter(|page| {
-                query.is_empty()
-                    || t(lang, page.title).to_lowercase().contains(&query)
-                    || t(lang, page.description).to_lowercase().contains(&query)
-            })
-            .collect();
-        visible
+            .filter(|page| page_matches(page, &query, lang) || hit_pages.contains(&page.key))
+            .collect()
     }
 
     /// 左侧分类导航：搜索框 + **按分组**的导航列表（chrome 底 + hairline 右缘）。
@@ -852,6 +862,7 @@ impl SettingsWindowView {
     pub(super) fn render_sidebar(
         &self,
         pages: &[&'static SettingsPageSpec],
+        hits: &[&'static SettingItem],
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = active_theme(cx);
@@ -915,6 +926,77 @@ impl SettingsWindowView {
             );
         }
 
+        // 「一条都没命中」：两条匹配面都空的时候才这么说（有命中项就一定有分类可见）。
+        let no_match = groups.is_empty();
+
+        // 项级结果：页级导航只回答「去哪一页」，这里直接点名「哪一行」。
+        // 只在搜索时出现（没有搜索词就没有「命中」可言），排在导航之上——
+        // 输入到一半时，用户要的是「有没有这一项」，而不是分类列表。
+        let hit_section: Option<AnyElement> = (!hits.is_empty()).then(|| {
+            let rows: Vec<AnyElement> = hits
+                .iter()
+                .map(|item| {
+                    let page_title = PAGES
+                        .iter()
+                        .find(|page| page.key == item.page)
+                        .map_or("", |page| page.title);
+                    let this = cx.entity().downgrade();
+                    let key: &'static str = item.page;
+                    div()
+                        .id(SharedString::from(format!("settings-hit-{}", item.label)))
+                        .flex()
+                        .items_center()
+                        .gap(tokens.spacing.sm)
+                        .w_full()
+                        .px(tokens.spacing.xs)
+                        .py(tokens.spacing.xxs)
+                        .rounded(tokens.radius.sm)
+                        .cursor_pointer()
+                        .role(Role::Button)
+                        .aria_label(SharedString::from(format!(
+                            "{} · {}",
+                            tr(cx, item.label),
+                            tr(cx, page_title)
+                        )))
+                        .hover(move |style| style.bg(extended.colors.hover_tint))
+                        .active(move |style| style.bg(extended.colors.hover_tint_press))
+                        .on_click(move |_, _, cx| {
+                            let key = SharedString::from(key);
+                            let _ = this.update(cx, |this, cx| {
+                                this.select_page(key, cx);
+                                cx.notify();
+                            });
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(tokens.typography.sm.size)
+                                .line_height(tokens.typography.sm.line_height)
+                                .text_color(tokens.colors.foreground)
+                                .child(tr(cx, item.label)),
+                        )
+                        // 尾注是分类名：同一行名在几页里都有时（「字体」），
+                        // 只有它能告诉用户点下去会去哪。
+                        .child(meta_text(tr(cx, page_title), cx))
+                        .into_any_element()
+                })
+                .collect();
+            v_flex()
+                .w_full()
+                .flex_none()
+                .gap(tokens.spacing.xxs)
+                .child(
+                    div()
+                        .px(tokens.spacing.sm)
+                        .pb(tokens.spacing.xxs)
+                        .child(meta_text(tr(cx, "设置项"), cx)),
+                )
+                .children(rows)
+                .into_any_element()
+        });
+
         v_flex()
             .flex_none()
             .w(px(SIDEBAR_WIDTH))
@@ -935,13 +1017,24 @@ impl SettingsWindowView {
                         .text_color(extended.colors.text_tertiary),
                 ),
             )
+            .when_some(hit_section, |this, section| this.child(section))
             .child(
                 v_flex()
                     .flex_1()
                     .min_h_0()
                     .gap(tokens.spacing.sm)
                     .overflow_y_scrollbar()
-                    .children(groups),
+                    .children(groups)
+                    // 搜了个不存在的词：留一句「没有」比一片空白好——
+                    // 空白看起来像界面坏了，而这里只是没命中。
+                    .when(no_match, |this| {
+                        this.child(
+                            div()
+                                .px(tokens.spacing.sm)
+                                .py(tokens.spacing.xs)
+                                .child(meta_text(tr(cx, "没有匹配的设置项"), cx)),
+                        )
+                    }),
             )
     }
 
@@ -1046,7 +1139,7 @@ impl SettingsWindowView {
             DATA_PAGE => super::data::body(cx),
             // 模块页同理（`pages::module_settings`）：它们只读写 kv，不需要视图状态，
             // 拼成 `Div` 交给本页渲染即可。
-            TERMINAL_PAGE => super::module_settings::terminal_body(cx),
+            TERMINAL_PAGE => super::module_settings::terminal_body(window, cx),
             DATABASE_PAGE => super::module_settings::database_body(cx),
             MAIL_PAGE => super::module_settings::mail_body(cx),
             REDIS_PAGE => super::module_settings::redis_body(cx),
