@@ -21,17 +21,21 @@ use std::rc::Rc;
 
 use duck_theme::active_theme;
 use gpui::{
-    Anchor, AnyElement, App, Bounds, BoxShadow, Context, Div, ElementId, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement, Pixels, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, Styled, Toggled, Window, div, point,
-    prelude::FluentBuilder as _, px, size,
+    Anchor, AnyElement, App, AppContext as _, Bounds, BoxShadow, Context, Div, ElementId, Entity,
+    Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement, Pixels,
+    Render, RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
+    Toggled, Window, div, point, prelude::FluentBuilder as _, px, size,
 };
+use gpui_base::SelectableText;
 use gpui_component::{
     Icon, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
-    input::Input,
+    h_flex,
+    input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+    popover::Popover,
     switch::Switch,
+    v_flex,
 };
 
 use crate::{
@@ -621,6 +625,9 @@ pub fn field_label(text: impl Into<SharedString>, cx: &App) -> Div {
 }
 
 /// 字段说明：12px 三级文字色。
+/// 字段说明 / 提示。文字**可拖选复制**（邮件详情的「收件人 / 抄送 / 大小」这类
+/// 值就走它渲染，那些值必须能选）。
+#[track_caller]
 pub fn field_hint(text: impl Into<SharedString>, cx: &App) -> Div {
     let theme = active_theme(cx);
     let xs = theme.tokens().typography.xs;
@@ -628,10 +635,11 @@ pub fn field_hint(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_size(xs.size)
         .line_height(xs.line_height)
         .text_color(theme.extended().colors.text_tertiary)
-        .child(text.into())
+        .child(selectable_text_at(std::panic::Location::caller(), text))
 }
 
-/// 字段错误：12px 危险色。
+/// 字段错误：12px 危险色。文字**可拖选复制**（错误详情要能整段拷给别人）。
+#[track_caller]
 pub fn field_error(text: impl Into<SharedString>, cx: &App) -> Div {
     let theme = active_theme(cx);
     let xs = theme.tokens().typography.xs;
@@ -639,12 +647,13 @@ pub fn field_error(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_size(xs.size)
         .line_height(xs.line_height)
         .text_color(theme.tokens().colors.destructive)
-        .child(text.into())
+        .child(selectable_text_at(std::panic::Location::caller(), text))
 }
 
 /// 字段成功提示：12px 成功绿。与 [`field_error`] 对称——测试通过、校验通过这类
 /// 「值得停下看一眼」的正向结论要有色彩语义，落回中性说明色就和旁边的字段说明
 /// 没有区别了。绿与「已连接 / 已完成」状态点同源（`extended().success`）。
+#[track_caller]
 pub fn field_success(text: impl Into<SharedString>, cx: &App) -> Div {
     let theme = active_theme(cx);
     let xs = theme.tokens().typography.xs;
@@ -652,7 +661,7 @@ pub fn field_success(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_size(xs.size)
         .line_height(xs.line_height)
         .text_color(theme.extended().colors.success)
-        .child(text.into())
+        .child(selectable_text_at(std::panic::Location::caller(), text))
 }
 
 /// 标准字段：标签 → 控件 → 可选错误 / 说明。标签与控件、控件与说明间距 6px
@@ -702,24 +711,85 @@ pub fn input_with_action(input: impl IntoElement, action: impl IntoElement, cx: 
         .child(div().flex_none().child(action))
 }
 
-/// 正文文字（`typography.sm`，正文色）。
+/// 可拖选、可 ⌘C 复制的纯文本 —— **内容区文字**一律走这里。
+///
+/// 为什么需要它：引擎（`gpui_base`）的文本选中是**元素主动报名**的 —— 只有把文本交给
+/// [`gpui_base::SelectableText`]，它才会把自己的命中区与文本 run 注册进窗口级的
+/// `TextSelection`；`gpui_base::Root` 里的 `TextSelectionLayer` 负责画选区、`⌘C` 负责
+/// 取文字。gpui 的普通文本子元素（`div().child("文字")`）**不参与报名**，因此天然
+/// 不可选中 —— 这是框架行为，不是遗漏。`TextView` 也能选中，但它自带 Markdown 解析与
+/// 虚拟化，给一行状态文字用是杀鸡用牛刀，所以内容区统一走本函数。
+///
+/// 样式无需额外传：`SelectableText` 内部的 `StyledText` 继承父元素的 text style，
+/// 外层照旧写 `div().text_size(..).text_color(..).child(selectable_text(t))`。
+///
+/// # id 是「调用点 + 文本内容」
+///
+/// 引擎把参与者按 `TextSelectionHandle` 的**实体**归档（`participants: HashMap<EntityId, _>`），
+/// 而 handle 是按**元素 id** 保留的 ⇒ 两个元素拿到同一个 id，就会共用同一个 handle，
+/// **后注册的覆盖先注册的**，先那个静默失去可选中（不 panic、不报错）。
+/// 所以本函数的 id 取 `NamedChild(CodeLocation(调用点), 文本内容)`：
+/// 调用点保证「不同代码位置」不撞，文本内容保证「同一处渲染多份」（循环 / 列表）
+/// 不撞 —— 于是循环里**不必**手工造号。
+///
+/// 代价：完全相同的两段文字若由同一行代码渲染，会共用 handle（互相同步选区）。
+/// 这种位置请改用 [`selectable_text_with_id`] 显式给号。
+#[track_caller]
+pub fn selectable_text(text: impl Into<SharedString>) -> SelectableText {
+    selectable_text_at(std::panic::Location::caller(), text)
+}
+
+/// [`selectable_text`] 的「调用点由调用方传入」版本。
+///
+/// 只给**样式 helper**（`body_text` / `meta_text`）用：它们自己被千余处调用，
+/// 若在 helper 体内调 [`selectable_text`]，id 的「调用点」会全部落在 helper 内部
+/// 那一行 ⇒ 所有调用点挤在同一个 id 上（只剩文本内容能区分，重复文字就会撞）。
+/// 所以 helper 一律自己 `#[track_caller]` 取 caller，再透传给本函数。
+#[track_caller]
+pub fn selectable_text_at(
+    caller: &'static std::panic::Location<'static>,
+    text: impl Into<SharedString>,
+) -> SelectableText {
+    let text = text.into();
+    let id = ElementId::from((ElementId::CodeLocation(*caller), text.clone()));
+    SelectableText::new(id, text)
+}
+
+/// 同 [`selectable_text`]，但 id 由调用方给 —— 循环 / 列表 / 表格单元格走这条。
+///
+/// `id` 必须同时满足两点：**同一帧内唯一**（否则选区串行）且**跨帧稳定**
+/// （否则选区挂在旧文本上）。所以用「内容键」而不是「本帧序号」。
+///
+/// 另外：**跨多段拖选**的复制顺序只由 `SelectableText::document_order` 决定
+/// （引擎按它排序、`\n` 拼接；都为 0 时顺序不定）。相邻的多段文字若希望复制顺序
+/// 稳定，用本函数配 `.document_order(n)` 显式编号。
+pub fn selectable_text_with_id(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+) -> SelectableText {
+    SelectableText::new(id, text)
+}
+
+/// 正文文字（`typography.sm`，正文色）。文字**可拖选复制**。
+#[track_caller]
 pub fn body_text(text: impl Into<SharedString>, cx: &App) -> Div {
     let tokens = active_theme(cx).tokens();
     div()
         .text_size(tokens.typography.sm.size)
         .line_height(tokens.typography.sm.line_height)
         .text_color(tokens.colors.foreground)
-        .child(text.into())
+        .child(selectable_text_at(std::panic::Location::caller(), text))
 }
 
-/// 辅助说明 / 元信息文字（`typography.xs`，二级文字色）。
+/// 辅助说明 / 元信息文字（`typography.xs`，二级文字色）。文字**可拖选复制**。
+#[track_caller]
 pub fn meta_text(text: impl Into<SharedString>, cx: &App) -> Div {
     let tokens = active_theme(cx).tokens();
     div()
         .text_size(tokens.typography.xs.size)
         .line_height(tokens.typography.xs.line_height)
         .text_color(tokens.colors.muted_foreground)
-        .child(text.into())
+        .child(selectable_text_at(std::panic::Location::caller(), text))
 }
 
 /// 分区 / 组标题文字（`xs` MEDIUM，三级文字色）。
@@ -887,15 +957,14 @@ pub fn option_group(rows: impl IntoIterator<Item = AnyElement>, cx: &App) -> Div
 /// 图标 + 短标记会被裁掉）；水平内边距取 `(高度 - 图标) / 2`，图标落点与
 /// 方形图标按钮完全重合，内容加宽时向右伸展。
 ///
-/// `anchor` 决定菜单相对触发器的弹出方向（顶栏控件用 `Anchor::BottomRight`，避免向上出界）。
-pub fn toolbar_dropdown_button(
+/// 工具条纯图标下拉的**触发按钮**（不带菜单主体）：[`toolbar_dropdown_button`] 与
+/// [`toolbar_searchable_dropdown`] 共用的外壳。
+fn toolbar_dropdown_trigger(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     icon: impl IntoElement,
-    anchor: Anchor,
-    build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
     cx: &App,
-) -> AnyElement {
+) -> Button {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let tooltip_label = label.into();
@@ -912,21 +981,15 @@ pub fn toolbar_dropdown_button(
         .accessibility_label(tooltip_label.clone())
         // 纯图标必须有悬停提示（与无障碍名同一份文案）。gpui-component 的 Button
         // 自带 tooltip 字段（内部渲染，不走 gpui 的 div 挂载，无「二次挂载」panic
-        // 之说）；必须在 `dropdown_menu_with_anchor` 之前给 —— 之后返回的是
-        // `DropdownMenuPopover` 包装层，已经没有按钮的 builder 了。
-        .tooltip(tooltip_label.clone())
+        // 之说）。
+        .tooltip(tooltip_label)
         .child(icon)
-        .dropdown_menu_with_anchor(anchor, build)
-        .into_any_element()
 }
 
-/// 文字版下拉触发按钮：图标 + **文字** + caret，外观与 [`toolbar_dropdown_button`]
-/// 同一档（幽灵底 + `density.toolbar_button` 高度）。
+/// 工具条纯图标下拉：点按弹出 [`PopupMenu`]。
 ///
-/// 为什么不直接给 [`toolbar_dropdown_button`] 渲染 label：它的既有调用点（语言切换、
-/// 邮件工具条等）全部按「纯图标」排版，补文字会同时改一排不相干的界面。设计稿里
-/// globalbar 的「更多」与结果脚注的「导出 ∨」都是文字按钮，用这个。
-pub fn toolbar_text_dropdown_button(
+/// `anchor` 决定菜单相对触发器的弹出方向（顶栏控件用 `Anchor::BottomRight`，避免向上出界）。
+pub fn toolbar_dropdown_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     icon: impl IntoElement,
@@ -934,6 +997,19 @@ pub fn toolbar_text_dropdown_button(
     build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
     cx: &App,
 ) -> AnyElement {
+    toolbar_dropdown_trigger(id, label, icon, cx)
+        .dropdown_menu_with_anchor(anchor, build)
+        .into_any_element()
+}
+
+/// 文字版下拉的**触发按钮**（图标 + 文字，不带菜单主体）：[`toolbar_text_dropdown_button`]
+/// 与 [`toolbar_text_searchable_dropdown`] 共用的外壳。
+fn toolbar_text_dropdown_trigger(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    cx: &App,
+) -> Button {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let label = label.into();
@@ -950,10 +1026,444 @@ pub fn toolbar_text_dropdown_button(
         .text_color(tokens.colors.muted_foreground)
         .text_size(tokens.typography.sm.size)
         .accessibility_label(label.clone())
+        // 提示与无障碍名共用同一份文案（纯图标按钮同款纪律）：触发器上那点文字
+        // 常常只是「当前值」，看不出点开能改什么 —— 调用方给的 `label` 才是说明。
+        .tooltip(label.clone())
         .child(icon)
         .child(label)
+}
+
+/// 文字版下拉触发按钮：图标 + **文字** + caret，外观与 [`toolbar_dropdown_button`]
+/// 同一档（幽灵底 + `density.toolbar_button` 高度）。
+///
+/// 为什么不直接给 [`toolbar_dropdown_button`] 渲染 label：它的既有调用点（语言切换、
+/// 邮件工具条等）全部按「纯图标」排版，补文字会同时改一排不相干的界面。设计稿里
+/// globalbar 的「更多」与结果脚注的「导出 ∨」都是文字按钮，用这个。
+pub fn toolbar_text_dropdown_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    anchor: Anchor,
+    build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    cx: &App,
+) -> AnyElement {
+    toolbar_text_dropdown_trigger(id, label, icon, cx)
         .dropdown_menu_with_anchor(anchor, build)
         .into_any_element()
+}
+
+/// 工具条纯图标可搜索下拉：搜索框**钉在弹层顶部**（[`SearchableDropdown`]）。
+///
+/// 与 [`toolbar_dropdown_button`] + PopupMenu 的差别只在弹层结构 ——
+/// 候选多到要滚动时，PopupMenu 版的搜索框会被一起卷走（structure 编辑器的
+/// 类型下拉实况），这一档不会。
+#[allow(clippy::too_many_arguments)]
+pub fn toolbar_searchable_dropdown(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    anchor: Anchor,
+    options: Vec<MenuItemSpec>,
+    search_placeholder: Option<SharedString>,
+    on_pick: ValuePick,
+    cx: &App,
+) -> AnyElement {
+    let id = id.into();
+    let trigger = toolbar_dropdown_trigger(id.clone(), label, icon, cx);
+    SearchableDropdown::new(
+        searchable_popover_id(&id),
+        anchor,
+        trigger,
+        options,
+        search_placeholder,
+        on_pick,
+    )
+    .into_any_element()
+}
+
+/// 文字版可搜索下拉：搜索框**钉在弹层顶部**（见 [`toolbar_searchable_dropdown`]）。
+#[allow(clippy::too_many_arguments)]
+pub fn toolbar_text_searchable_dropdown(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    anchor: Anchor,
+    options: Vec<MenuItemSpec>,
+    search_placeholder: Option<SharedString>,
+    on_pick: ValuePick,
+    cx: &App,
+) -> AnyElement {
+    let id = id.into();
+    let trigger = toolbar_text_dropdown_trigger(id.clone(), label, icon, cx);
+    SearchableDropdown::new(
+        searchable_popover_id(&id),
+        anchor,
+        trigger,
+        options,
+        search_placeholder,
+        on_pick,
+    )
+    .into_any_element()
+}
+
+/// 可搜索下拉弹层的元素 id：触发器 id 加前缀 —— 既不与按钮元素状态撞键，
+/// 也不与 `Popover` 内部的 keyed state 撞键（`DropdownMenuPopover` 同一款处置）。
+fn searchable_popover_id(trigger_id: &ElementId) -> SharedString {
+    SharedString::from(format!("searchable-dropdown:{trigger_id:?}"))
+}
+
+/// 下拉菜单的高度上限：候选再多，弹层也不长过这个高度（超出部分滚动）。
+///
+/// gpui-component 的 `PopupMenu` **只有 `scrollable(true)` 时才有 `max_h`**，且它的
+/// 默认值是 `min(半窗高, 450px)` —— 26 个类型候选排下来是一根 450px 的长条，找一项
+/// 得从头扫到尾；不调 `scrollable` 更是**完全不限高**（清单能长到屏幕外）。这里统一
+/// 收到一屏能一眼扫完的量，并顺手把纵向滚动条打开。
+pub const MENU_MAX_HEIGHT: f32 = 264.0;
+
+/// 候选超过这个数才在菜单顶部给搜索框。
+///
+/// 三个五个选项配一个搜索框只是多一层噪音；类型候选（26 项）、字段清单（动辄上百）
+/// 这类才需要。
+pub const MENU_SEARCH_THRESHOLD: usize = 8;
+
+/// 下拉菜单的一档候选。
+#[derive(Clone)]
+pub struct MenuItemSpec {
+    /// 选中时回传给回调的稳定值。
+    pub value: SharedString,
+    /// 展示文案；**搜索也按它匹配**（值只是回传口径，可能带前缀之类）。
+    pub label: SharedString,
+    /// 勾选态（多选菜单用；单选菜单恒 `false`）。
+    pub checked: bool,
+}
+
+impl MenuItemSpec {
+    pub fn new(value: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        let value = value.into();
+        Self {
+            label: label.into(),
+            value,
+            checked: false,
+        }
+    }
+
+    #[must_use]
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
+        self
+    }
+}
+
+/// 过滤口径：`label` 里含 `query`（大小写不敏感）；空查询即全通过。
+fn menu_label_matches(label: &str, query: &str) -> bool {
+    query.is_empty() || label.to_lowercase().contains(&query.to_lowercase())
+}
+
+/// 菜单项被选中：把该选项的 `value` 交回调用方。
+///
+/// 可搜索下拉（[`SearchableDropdown`]）与各下拉入口共用同一个
+/// 签名；不给别名的话 clippy 的 `type_complexity` 会在四处各报一遍
+/// （同 [`TabSelect`] / [`NavSelect`] 的处置）。
+type ValuePick = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
+
+/// 把候选装进菜单（PopupMenu 档，不带搜索）。
+fn fill_menu(menu: PopupMenu, options: &[MenuItemSpec], on_pick: &ValuePick) -> PopupMenu {
+    options.iter().fold(menu, |menu, option| {
+        let on_pick = Rc::clone(on_pick);
+        let value = option.value.clone();
+        menu.item(
+            PopupMenuItem::new(option.label.clone())
+                .checked(option.checked)
+                .on_click(move |_, window, cx| on_pick(value.clone(), window, cx)),
+        )
+    })
+}
+
+/// [`SearchableDropdown`] 弹层里的清单：**钉顶搜索行** + 限高滚动的候选行。
+///
+/// 独立实体的理由与被它替代的 `MenuSearch` 相同：搜索词一变就要重筛候选，而
+/// 「订阅输入变化」得有一条挂得住的生命周期 —— 只有实体自己的字段存得住它。
+/// 与 PopupMenu 版的差异：没有方向键 / 回车导航（PopupMenu 的 key context 不在了），
+/// 主路径与「选择列」一致 —— 打字过滤、点选。
+struct SearchList {
+    /// 搜索输入框（`None` = 候选没过 [`MENU_SEARCH_THRESHOLD`]，不出搜索行）。
+    input: Option<Entity<InputState>>,
+    options: Vec<MenuItemSpec>,
+    on_pick: ValuePick,
+    query: String,
+    /// 订阅自己拿着：实体活着，订阅就活着；弹层关掉（实体被丢）时一起释放。
+    _subscription: Option<Subscription>,
+}
+
+impl SearchList {
+    fn new(
+        options: Vec<MenuItemSpec>,
+        placeholder: Option<SharedString>,
+        on_pick: ValuePick,
+        searchable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        if !searchable {
+            return Self {
+                input: None,
+                options,
+                on_pick,
+                query: String::new(),
+                _subscription: None,
+            };
+        }
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder.unwrap_or_default()));
+        let subscription =
+            cx.subscribe_in(&input, window, |this, input, event: &InputEvent, _, cx| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                let query = input.read(cx).value().to_string();
+                if query == this.query {
+                    return;
+                }
+                this.query = query;
+                cx.notify();
+            });
+        Self {
+            input: Some(input),
+            options,
+            on_pick,
+            query: String::new(),
+            _subscription: Some(subscription),
+        }
+    }
+}
+
+impl Render for SearchList {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        let on_pick = self.on_pick.clone();
+        // 勾选标记占位：只要有一项带勾选态，所有行都留出同宽的左槽，标签才对得齐。
+        let any_checked = self.options.iter().any(|option| option.checked);
+
+        let search_row = self.input.clone().map(|input| {
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .items_center()
+                .gap(tokens.spacing.xs)
+                .pb(tokens.spacing.xs)
+                // 与清单分隔：参考「选择列」弹层的一条 hairline。
+                .border_b(extended.stroke.thin)
+                .border_color(extended.colors.hairline)
+                .child(
+                    Icon::new(DuckIcon::Search)
+                        .size(extended.icon.sm)
+                        .text_color(extended.colors.text_tertiary),
+                )
+                .child(
+                    div().flex_1().min_w_0().child(
+                        Input::new(&input)
+                            .appearance(false)
+                            .with_size(Size::Small)
+                            .w_full(),
+                    ),
+                )
+        });
+
+        let rows = self
+            .options
+            .iter()
+            .enumerate()
+            .filter(|(_, option)| menu_label_matches(&option.label, &self.query))
+            .map(|(index, option)| {
+                let on_pick = on_pick.clone();
+                let value = option.value.clone();
+                h_flex()
+                    .id(("searchable-option", index))
+                    .min_h(px(26.))
+                    .px(px(8.))
+                    .rounded(tokens.radius.sm)
+                    .cursor_pointer()
+                    .items_center()
+                    .gap(tokens.spacing.xs)
+                    .text_size(tokens.typography.sm.size)
+                    .text_color(tokens.colors.foreground)
+                    .role(Role::MenuItem)
+                    .aria_label(option.label.clone())
+                    .hover(move |style| style.bg(extended.colors.hover_tint))
+                    .on_click(move |_, window, cx| on_pick(value.clone(), window, cx))
+                    .when(any_checked, |row| {
+                        row.child(div().w(extended.icon.sm).flex_none().when(
+                            option.checked,
+                            |slot| {
+                                slot.child(
+                                    Icon::new(DuckIcon::CheckboxCheck)
+                                        .size(extended.icon.sm)
+                                        .text_color(tokens.colors.foreground),
+                                )
+                            },
+                        ))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(option.label.clone()),
+                    )
+            });
+
+        v_flex().w_full().min_w_0().children(search_row).child(
+            v_flex()
+                .id("searchable-list")
+                .w_full()
+                .min_w_0()
+                .max_h(px(MENU_MAX_HEIGHT))
+                .overflow_y_scroll()
+                .children(rows),
+        )
+    }
+}
+
+/// 可搜索下拉（**搜索框钉顶**档）：触发按钮 + 弹层 = 固定搜索行 + 限高滚动的候选
+/// 清单，观感与 gpui-component `Select`（结果区「选择列」）一致。
+///
+/// 为什么不走 `PopupMenu`（`searchable_menu` 那条路）：它的 `scrollable` 把搜索行
+/// （也是一个 menu item）和候选项装进**同一个**滚动容器，候选一多、随手一滚搜索框
+/// 就出屏（structure 编辑器的类型下拉实况）。这里搜索行钉在弹层顶部，不参与滚动。
+///
+/// 开关走 `Popover` 的**受控**档（`open` + `on_open_change`，见其文档约定）：开关
+/// 状态放在自己的 keyed state 里，选中候选时置回 `false` 关层。
+///
+/// 清单实体在 **`on_open_change`（开层那一刻，事件回调）** 里建一份、关层即丢 ——
+/// 重开按最新候选 / 勾选态重建，搜索词随之清空（旧 `searchable_menu`「每次打开
+/// 重跑构建闭包」的同一口径）。**不能**挪进 `content`：那是**渲染期**回调
+/// （`Popover::content` 文档明说别在里建实体），每次重绘都会走一遍。
+#[derive(IntoElement)]
+pub struct SearchableDropdown {
+    /// 弹层元素 id（由触发器 id 派生，见 [`searchable_popover_id`]）。
+    id: SharedString,
+    anchor: Anchor,
+    trigger: Button,
+    options: Vec<MenuItemSpec>,
+    search_placeholder: Option<SharedString>,
+    on_pick: ValuePick,
+}
+
+impl SearchableDropdown {
+    pub fn new(
+        id: impl Into<SharedString>,
+        anchor: Anchor,
+        trigger: Button,
+        options: Vec<MenuItemSpec>,
+        search_placeholder: Option<SharedString>,
+        on_pick: ValuePick,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            anchor,
+            trigger,
+            options,
+            search_placeholder,
+            on_pick,
+        }
+    }
+}
+
+impl RenderOnce for SearchableDropdown {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // ⚠️ keyed state 的键不能与 `Popover` 内部（用 `self.id` 原样）或触发按钮
+        // 元素撞键，所以各自加后缀。
+        let open_state = window.use_keyed_state(
+            SharedString::from(format!("{}:open", self.id)),
+            cx,
+            |_, _| false,
+        );
+        let list_state = window.use_keyed_state(
+            SharedString::from(format!("{}:list", self.id)),
+            cx,
+            |_, _| None::<Entity<SearchList>>,
+        );
+        let searchable =
+            self.search_placeholder.is_some() && self.options.len() > MENU_SEARCH_THRESHOLD;
+        let open = *open_state.read(cx);
+        // 候选 / 占位 / 回调要同时进两个闭包（开层回调建清单、content 只读渲染它），
+        // 走 `Rc` 共享：避免按帧整表克隆候选。
+        let options = Rc::new(self.options);
+        let placeholder = self.search_placeholder;
+        let on_pick = self.on_pick;
+
+        Popover::new(self.id.clone())
+            .anchor(self.anchor)
+            // `Popover` 外观档默认 `p_3`（12px），压回菜单密度。
+            .p_1()
+            .open(open)
+            .on_open_change({
+                let open_state = open_state.clone();
+                let list_state = list_state.clone();
+                let options = options.clone();
+                let placeholder = placeholder.clone();
+                let on_pick = on_pick.clone();
+                move |open, window, cx| {
+                    // 开层：**在这里**建清单实体（事件回调期），不在 `content` 里建。
+                    if *open && list_state.read(cx).is_none() {
+                        // 选中即关层：pick 包一层，回传值之后把受控开关置回 false。
+                        let pick: ValuePick = {
+                            let on_pick = on_pick.clone();
+                            let open_state = open_state.clone();
+                            Rc::new(move |value, window, cx| {
+                                on_pick(value, window, cx);
+                                open_state.update(cx, |slot, cx| {
+                                    *slot = false;
+                                    cx.notify();
+                                });
+                            })
+                        };
+                        let list = cx.new(|list_cx| {
+                            SearchList::new(
+                                (*options).clone(),
+                                placeholder.clone(),
+                                pick,
+                                searchable,
+                                window,
+                                list_cx,
+                            )
+                        });
+                        // 开层即定位到搜索框（与「选择列」一致）；短清单无框可 focus。
+                        if let Some(input) = list.read(cx).input.clone() {
+                            input.read(cx).focus_handle(cx).focus(window, cx);
+                        }
+                        list_state.update(cx, |slot, cx| {
+                            *slot = Some(list);
+                            cx.notify();
+                        });
+                    }
+                    open_state.update(cx, |slot, cx| {
+                        *slot = *open;
+                        cx.notify();
+                    });
+                    if !*open {
+                        list_state.update(cx, |slot, cx| {
+                            *slot = None;
+                            cx.notify();
+                        });
+                    }
+                }
+            })
+            .trigger(self.trigger)
+            .content({
+                let list_state = list_state.clone();
+                move |_, _, cx| {
+                    // 只读：清单要么在（开层时建好），要么为 None（未开 / 已关）。
+                    // `Popover` 在 `open == false` 时根本不渲染 content，这里的空态不落屏。
+                    v_flex()
+                        .min_w(px(DROPDOWN_MIN_WIDTH))
+                        .children(list_state.read(cx).clone())
+                }
+            })
+            .into_any_element()
+    }
 }
 
 /// 下拉选择按钮：`outline` 变体 + 统一控件高度 + 尾部 caret；菜单项带勾选态。
@@ -966,36 +1476,78 @@ pub fn dropdown_select(
     on_select: impl Fn(SharedString, &mut Window, &mut App) + 'static,
     cx: &App,
 ) -> AnyElement {
+    dropdown_select_with(id, options, current, None, on_select, cx)
+}
+
+/// 同 [`dropdown_select`]，但菜单顶部可搜索（候选多时自动出现搜索框）。
+///
+/// `search_placeholder` 是搜索框占位符 —— 文案由调用方给（本 crate 不做 i18n，
+/// 界面文案一律由页面用 `tr` 取词后传进来）。
+pub fn dropdown_select_searchable(
+    id: impl Into<ElementId>,
+    options: impl IntoIterator<Item = (SharedString, SharedString)>,
+    current: impl Into<SharedString>,
+    search_placeholder: impl Into<SharedString>,
+    on_select: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    dropdown_select_with(
+        id,
+        options,
+        current,
+        Some(search_placeholder.into()),
+        on_select,
+        cx,
+    )
+}
+
+/// [`dropdown_select`] 与 [`dropdown_select_searchable`] 的公共实现。
+fn dropdown_select_with(
+    id: impl Into<ElementId>,
+    options: impl IntoIterator<Item = (SharedString, SharedString)>,
+    current: impl Into<SharedString>,
+    search_placeholder: Option<SharedString>,
+    on_select: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
     let current: SharedString = current.into();
     let options: Vec<(SharedString, SharedString)> = options.into_iter().collect();
     let label = options
         .iter()
         .find(|(value, _)| *value == current)
         .map_or_else(|| current.clone(), |(_, label)| label.clone());
-    let on_select: Rc<dyn Fn(SharedString, &mut Window, &mut App)> = Rc::new(on_select);
-    // 选项多（字段名清单等动辄几十上百）时限高滚动 —— gpui-component 的 PopupMenu
-    // 只在 `scrollable` 时才套 `max_h`（默认 min(半窗高, 450px)），不滚动就是无限长。
-    let long_list = options.len() > 12;
-    Button::new(id)
+    let specs: Vec<MenuItemSpec> = options
+        .iter()
+        .map(|(value, label)| {
+            MenuItemSpec::new(value.clone(), label.clone()).checked(*value == current)
+        })
+        .collect();
+    let on_select: ValuePick = Rc::new(on_select);
+    let id = id.into();
+    let trigger = Button::new(id.clone())
         .outline()
         .control(cx)
         .label(label)
         .dropdown_caret(true)
-        .min_w(px(DROPDOWN_MIN_WIDTH))
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-            let menu = menu.scrollable(long_list);
-            options.iter().fold(menu, |menu, (value, label)| {
-                let checked = *value == current;
-                let value = value.clone();
-                let on_select = Rc::clone(&on_select);
-                menu.item(
-                    PopupMenuItem::new(label.clone())
-                        .checked(checked)
-                        .on_click(move |_, window, cx| on_select(value.clone(), window, cx)),
-                )
+        .min_w(px(DROPDOWN_MIN_WIDTH));
+    match search_placeholder {
+        // 可搜索档：搜索框钉顶（`SearchableDropdown`），不用 PopupMenu ——
+        // 它的滚动容器会把搜索行一起卷走。
+        Some(placeholder) => SearchableDropdown::new(
+            searchable_popover_id(&id),
+            Anchor::TopRight,
+            trigger,
+            specs,
+            Some(placeholder),
+            on_select,
+        )
+        .into_any_element(),
+        None => trigger
+            .dropdown_menu_with_anchor(Anchor::TopRight, {
+                move |menu, _, _| fill_menu(menu, &specs, &on_select)
             })
-        })
-        .into_any_element()
+            .into_any_element(),
+    }
 }
 
 /// 开关控件：选中底为强调色，与设置行的控件列同高。

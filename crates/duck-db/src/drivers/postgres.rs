@@ -20,11 +20,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::pki_types::pem::PemObject as _;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 
 use crate::cancel::CancelHandle;
-use crate::config::{ConnectionConfig, TlsMode};
+use crate::config::{AuthMode, ConnectionConfig, TlsMode};
 use crate::drivers::{
     CatalogTable, DatabaseObject, FilterOp, InstanceFact, InstanceOverview, InstanceTable,
     InstanceView, OrderBy, PkValues, PlaceholderStyle, RowCount, TableColumnMeta, TableFilter,
@@ -130,9 +131,11 @@ impl ServerCertVerifier for AcceptAnyServerCert {
 
 /// 按 TLS 档位造 rustls 配置（与 MySQL 侧同一取向：rustls + ring，不碰系统 OpenSSL）。
 ///
-/// 信任链用 `webpki-roots`（编译进二进制）而不是系统钥匙串：终端用户零系统依赖，
-/// 且与更新器 / 插件出网用的是同一份根集。
-fn tls_config(mode: TlsMode) -> Result<ClientConfig, DbError> {
+/// 信任链默认用 `webpki-roots`（编译进二进制）而不是系统钥匙串：终端用户零系统依赖。
+/// 档案里给了 **CA 证书**（PEM 文件）时改用它做根 —— 自签 CA 的库不必再退到
+/// 「接受任意证书」那一档。客户端证书 + 私钥（同为 PEM）用于**双向 TLS**；
+/// 私钥需为未加密格式（rustls 不在这层解口令）。
+fn tls_config(mode: TlsMode, cfg: &ConnectionConfig) -> Result<ClientConfig, DbError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()
@@ -144,8 +147,38 @@ fn tls_config(mode: TlsMode) -> Result<ClientConfig, DbError> {
             .with_no_client_auth(),
         _ => {
             let mut roots = RootCertStore::empty();
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            builder.with_root_certificates(roots).with_no_client_auth()
+            match cfg.ca_cert_path.as_deref().map(str::trim) {
+                Some(ca) if !ca.is_empty() => {
+                    let certs = CertificateDer::pem_file_iter(ca)
+                        .map_err(|err| DbError::Connect(format!("read ca cert {ca}: {err}")))?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|err| DbError::Connect(format!("parse ca cert {ca}: {err}")))?;
+                    for cert in certs {
+                        roots
+                            .add(cert)
+                            .map_err(|err| DbError::Connect(format!("ca cert {ca}: {err}")))?;
+                    }
+                }
+                _ => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+            }
+            let builder = builder.with_root_certificates(roots);
+            match (
+                cfg.client_cert_path.as_deref().map(str::trim),
+                cfg.client_key_path.as_deref().map(str::trim),
+            ) {
+                (Some(cert), Some(key)) if !cert.is_empty() && !key.is_empty() => {
+                    let certificate = CertificateDer::from_pem_file(cert).map_err(|err| {
+                        DbError::Connect(format!("parse client cert {cert}: {err}"))
+                    })?;
+                    let private_key = PrivateKeyDer::from_pem_file(key).map_err(|err| {
+                        DbError::Connect(format!("parse client key {key}: {err}"))
+                    })?;
+                    builder
+                        .with_client_auth_cert(vec![certificate], private_key)
+                        .map_err(|err| DbError::Connect(format!("client cert: {err}")))?
+                }
+                _ => builder.with_no_client_auth(),
+            }
         }
     };
     // 部分服务端（云 PG 的连接池 / 代理）要求 ALPN 协商到 `postgresql`。
@@ -154,15 +187,24 @@ fn tls_config(mode: TlsMode) -> Result<ClientConfig, DbError> {
 }
 
 impl PostgresConnection {
-    /// 建连。TLS 档位：`Disable` 走明文，其余两档走 rustls。
+    /// 建连。连接串模式整条直连；TLS 档位：`Disable` 走明文，其余两档走 rustls。
     pub(crate) fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self, DbError> {
-        let params = connection_string(cfg, password);
+        let params = match cfg.auth_mode {
+            AuthMode::ConnectionString => cfg
+                .connection_string
+                .as_deref()
+                .map(str::trim)
+                .filter(|raw| !raw.is_empty())
+                .ok_or_else(|| DbError::Config("connection string is empty".into()))?
+                .to_owned(),
+            _ => connection_string(cfg, password),
+        };
         let client = match cfg.tls {
             TlsMode::Disable => {
                 postgres::Client::connect(&params, postgres::NoTls).map_err(DbError::from)?
             }
             mode => {
-                let connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config(mode)?));
+                let connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config(mode, cfg)?));
                 postgres::Client::connect(
                     &params,
                     postgres_rustls::MakeTlsConnector::new(connector),

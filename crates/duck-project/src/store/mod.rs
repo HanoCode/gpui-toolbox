@@ -18,7 +18,7 @@ use rusqlite::Connection;
 use crate::error::{ProjectError, Result};
 use crate::models::{
     ArchiveRoot, BoardColumn, Group, Milestone, Priority, Project, ProjectStatus, Quadrant, Tag,
-    Task, TaskCounts, TaskStatus,
+    Task, TaskContext, TaskCounts, TaskStatus,
 };
 use crate::time::CalendarDate;
 
@@ -27,6 +27,7 @@ mod columns;
 mod groups;
 mod logs;
 mod milestones;
+mod plans;
 mod projects;
 mod tags;
 mod tasks;
@@ -82,6 +83,17 @@ impl ProjectStore {
     pub fn default_path() -> PathBuf {
         default_path()
     }
+
+    /// **测试专用**：直接对连接跑一段 SQL。
+    ///
+    /// 存在的理由只有一个 —— 单测要能伪造「外部工具把库改坏了」的场景（把状态列写成
+    /// 野值、把 JSON 数组截半）。读端对这类数据必须容错，而容错分支是常规写口
+    /// **造不出来**的，不用这个方法就只能靠注入。生产代码里没有调用点。
+    #[cfg(test)]
+    pub(crate) fn exec_raw(&self, sql: &str) -> Result<()> {
+        self.conn.execute_batch(sql)?;
+        Ok(())
+    }
 }
 
 /// `{app_data_dir}/projects.db`。
@@ -98,7 +110,8 @@ pub(crate) const TASK_COLUMNS: &str = "t.id, t.project_id, t.parent_id, t.title,
      t.status, t.priority, t.quadrant, t.start_date, t.due_date, t.due_time, \
      t.completed_at, t.progress, t.estimate_hours, t.actual_hours, t.sort_order, \
      t.created_at, t.updated_at, t.archived_at, t.archived_root, \
-     t.starred, t.block_reason, t.note";
+     t.starred, t.block_reason, t.note, \
+     t.git_branch, t.context_files, t.context_sql, t.context_tabs";
 
 /// `projects` 的列清单，顺序与 [`project_from_row`] 的下标严格对应。
 pub(crate) const PROJECT_COLUMNS: &str = "p.id, p.group_id, p.name, p.description, p.color, p.icon, \
@@ -133,6 +146,12 @@ pub(crate) fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         starred: row.get::<_, i64>(20)? != 0,
         block_reason: row.get(21)?,
         note: row.get(22)?,
+        git_branch: row.get(23)?,
+        context: TaskContext {
+            files: decode_files(&row.get::<_, String>(24)?),
+            sql: row.get(25)?,
+            tabs: decode_lines(&row.get::<_, String>(26)?),
+        },
         tags: Vec::new(),
         subtasks: crate::models::SubtaskProgress::default(),
     })
@@ -201,11 +220,16 @@ pub(crate) fn column_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Optio
 }
 
 /// 一行 `tags` → [`Tag`]；`usage_count` 由调用方填。
+///
+/// 第 4 列固定是 `is_favorite`：所有取标签的查询（`find_tag_by_name` / `hydrate`
+/// 的批量 / `tag_usage` 的聚合）都把这一列**放在第 4 位**，聚合查询把 `COUNT`
+/// 挪到第 5 位 —— 位置是这份映射的契约。
 pub(crate) fn tag_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tag> {
     Ok(Tag {
         id: row.get(0)?,
         name: row.get(1)?,
         color: row.get(2)?,
+        is_favorite: row.get::<_, i64>(3)? != 0,
         usage_count: 0,
     })
 }
@@ -214,6 +238,113 @@ pub(crate) fn tag_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tag> {
 /// 但外部工具改过的库不该让整个列表崩掉）。
 pub(crate) fn date_column(value: Option<String>) -> Option<CalendarDate> {
     value.as_deref().and_then(CalendarDate::parse)
+}
+
+// ---------------------------------------------------------------------------
+// 落盘的两种「轻量列表」形态（id 列表 / 标签列表）
+// ---------------------------------------------------------------------------
+//
+// 本 crate 不引 serde（内核零序列化依赖的既有口径），`work_logs.linked_task_ids`
+// 与 `weekly_plans.task_ids` 在 schema 里就是 JSON 数组文本，读写两端各用一个几行的
+// 手写编解码 —— 形态简单到只有 `[1,2,3]` 与 `[]` 两种，手写比拉一个依赖划算。
+//
+// 两个函数是 `pub(crate)` 的**共用实现**：日志与周计划都走它。分叉出第二份手写解析
+// 是最容易发生也最难发现的一类事故（一边能读懂另一边写的东西，只有边界值不同）。
+
+/// `[1,2,3]` / `[]` → id 列表；任何不合法的形态都按空表处理。
+pub(crate) fn parse_id_list(wire: &str) -> Vec<i64> {
+    let inner = wire.trim().trim_start_matches('[').trim_end_matches(']');
+    if inner.trim().is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split(',')
+        .filter_map(|part| part.trim().parse::<i64>().ok())
+        .collect()
+}
+
+/// id 列表 → `[1,2,3]`（与 schema 的 JSON 数组形态一致）。
+pub(crate) fn id_list_to_wire(ids: &[i64]) -> String {
+    let mut out = String::from("[");
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&id.to_string());
+    }
+    out.push(']');
+    out
+}
+
+/// 标签落盘形态：**逗号分隔**（`线上事故,复盘`），空列表 = 空串。
+///
+/// 为什么不用 JSON 数组：标签是用户手写的自由文本，JSON 就得处理引号/反斜杠的转义，
+/// 手写编解码容易漏；而逗号分隔只需要一条不变量「标签里不含逗号」—— 那条由
+/// [`normalize_tags`] 在**入口**保证（界面根本不让你把逗号敲进去），比在出口转义可靠。
+pub(crate) fn join_tags(tags: &[String]) -> String {
+    tags.join(",")
+}
+
+/// 逗号分隔 → 标签列表（去空白、丢空项；顺序保持）。
+pub(crate) fn split_tags(wire: &str) -> Vec<String> {
+    wire.split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 工作上下文的**逐行**落盘形态（`context_tabs` 用）：一行一个值，空列表 = 空串。
+///
+/// 「含换行的项直接不要」是写端与读端共同的口径（见 `db.rs` v4 迁移注释）：
+/// 链接里不该有换行，与其在库里留下一个回读不出来的字节，不如写时就丢掉。
+pub(crate) fn encode_lines(items: &[String]) -> String {
+    items.join("\n")
+}
+
+/// [`encode_lines`] 的逆：丢空行（尾巴上的换行是合法的落盘形态）。
+pub(crate) fn decode_lines(wire: &str) -> Vec<String> {
+    wire.split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 文件引用的落盘形态（`context_files` 用）：一行一个 `行:列:路径`（[`FileRef::to_line`]）。
+pub(crate) fn encode_files(files: &[crate::models::FileRef]) -> String {
+    files
+        .iter()
+        .map(crate::models::FileRef::to_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// [`encode_files`] 的逆：形状不对的行**直接丢**（「宁可丢也不猜」，路径里带
+/// 冒号 / Windows 盘符由 `from_line` 的「前两段必须是数字」判据兜住）。
+pub(crate) fn decode_files(wire: &str) -> Vec<crate::models::FileRef> {
+    wire.split('\n')
+        .filter_map(crate::models::FileRef::from_line)
+        .collect()
+}
+
+/// 清洗用户输入的标签：丢空项、**丢掉含逗号的项**、按出现顺序去重。
+///
+/// 入口处调用（写库前），让落盘形态的「标签里没有逗号」这条不变量在源头成立 ——
+/// 出口再做转义等于承认入口可以写坏数据。
+#[must_use]
+pub fn normalize_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in tags {
+        let tag = tag.trim();
+        if tag.is_empty() || tag.contains(',') {
+            continue;
+        }
+        if !out.iter().any(|existing| existing == tag) {
+            out.push(tag.to_owned());
+        }
+    }
+    out
 }
 
 /// 日期 → 可绑定的列值。
@@ -236,7 +367,7 @@ pub(crate) fn hydrate(conn: &Connection, tasks: &mut [Task]) -> Result<()> {
     let mut by_task: HashMap<i64, Vec<Tag>> = HashMap::new();
     {
         let sql = format!(
-            "SELECT tt.task_id, g.id, g.name, g.color FROM task_tags tt \
+            "SELECT tt.task_id, g.id, g.name, g.color, g.is_favorite FROM task_tags tt \
              JOIN tags g ON g.id = tt.tag_id WHERE tt.task_id IN ({placeholders}) \
              ORDER BY g.name COLLATE NOCASE ASC"
         );
@@ -248,6 +379,7 @@ pub(crate) fn hydrate(conn: &Connection, tasks: &mut [Task]) -> Result<()> {
                 id: row.get(1)?,
                 name: row.get(2)?,
                 color: row.get(3)?,
+                is_favorite: row.get::<_, i64>(4)? != 0,
                 usage_count: 0,
             });
         }
@@ -462,11 +594,14 @@ impl ProjectStore {
     /// 计数用 `COUNT(t.id)` 而不是 `COUNT(tt.task_id)`：后者会把「任务已被归档、
     /// 第二个 JOIN 没匹配上」的关系也数进去（`tt` 那个 JOIN 是无条件的）。
     pub fn tag_usage(&self) -> Result<Vec<TagUsage>> {
+        // 排序口径放内核（`is_favorite DESC, name`）：界面（左栏标签段、悬浮窗）直接
+        // 用这个顺序，不要各自再排一遍 —— 两处排序迟早排出两个结果。
         let mut statement = self.conn.prepare(
-            "SELECT g.id, g.name, g.color, COUNT(t.id) FROM tags g \
+            "SELECT g.id, g.name, g.color, g.is_favorite, COUNT(t.id) FROM tags g \
              LEFT JOIN task_tags tt ON tt.tag_id = g.id \
              LEFT JOIN tasks t ON t.id = tt.task_id AND t.archived_at IS NULL \
-             GROUP BY g.id, g.name, g.color ORDER BY g.name COLLATE NOCASE ASC",
+             GROUP BY g.id, g.name, g.color, g.is_favorite \
+             ORDER BY g.is_favorite DESC, g.name COLLATE NOCASE ASC",
         )?;
         let mut rows = statement.query([])?;
         let mut out = Vec::new();
@@ -476,9 +611,10 @@ impl ProjectStore {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     color: row.get(2)?,
+                    is_favorite: row.get::<_, i64>(3)? != 0,
                     usage_count: 0,
                 },
-                usage: row.get::<_, i64>(3)?.max(0) as u32,
+                usage: row.get::<_, i64>(4)?.max(0) as u32,
             });
         }
         Ok(out)

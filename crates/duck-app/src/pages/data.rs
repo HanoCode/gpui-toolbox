@@ -14,6 +14,7 @@
 //! 启动时装进内存的），所以两条成功提示里都写了「重启后生效」。
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use duck_components::{
     ButtonVariant, body_text, button, option_row, option_row_stacked, settings_section,
@@ -228,57 +229,78 @@ const fn reset_id(scope: ResetScope) -> &'static str {
 }
 
 /// 选目标路径 → 导出 → 提示。用户取消对话框时静默返回。
+///
+/// ⚠️ 文件面板走 gpui 的**异步**版（`crate::file_dialogs`），不用
+/// `duck_platform::save_file`：后者是 rfd 的同步模态（`NSSavePanel runModal`），从
+/// `App::update` 里弹会把 AppKit 的事件派发重入回 gpui —— 重入期间任何前台任务做
+/// `AsyncApp::update_entity` 都会撞上「RefCell already borrowed」并 abort。
 fn run_export(include_logs: bool, window: &mut Window, cx: &mut App) {
-    let Some(path) = duck_platform::save_file(backup::default_export_name()) else {
-        return;
-    };
     let dirs = DataDirs::from_platform();
     let options = ExportOptions {
         include_plugins: true,
         include_logs,
         include_ai_db: true,
     };
-    match backup::export(&with_tar_gz(path), &dirs, options, cx) {
-        Ok(report) => duck_components::notify::success(
-            trf(
+    let default_name = backup::default_export_name();
+    crate::file_dialogs::save_file_in_app(window, cx, &default_name, move |path, window, cx| {
+        match backup::export(&with_tar_gz(path), &dirs, options, cx) {
+            Ok(report) => duck_components::notify::success(
+                trf(
+                    cx,
+                    "已导出到 {}（{}）",
+                    &[
+                        &report.path.display().to_string(),
+                        &duck_theme::bytes(report.bytes),
+                    ],
+                ),
+                window,
                 cx,
-                "已导出到 {}（{}）",
-                &[
-                    &report.path.display().to_string(),
-                    &duck_theme::bytes(report.bytes),
-                ],
             ),
-            window,
-            cx,
-        ),
-        Err(error) => duck_components::notify::error(
-            trf(cx, "导出失败：{}", &[&error.to_string()]),
-            window,
-            cx,
-        ),
-    }
+            Err(error) => duck_components::notify::error(
+                trf(cx, "导出失败：{}", &[&error.to_string()]),
+                window,
+                cx,
+            ),
+        }
+    });
 }
 
 /// 选包 → 确认 → 导入 → 提示。
+///
+/// 文件面板与确认框都**不能**用 `duck_platform` 那两个（`open_file` / `confirm`）：
+/// 它们各自是 rfd 的同步系统模态（`NSOpenPanel` / `NSAlert` 的 `runModal`），从
+/// `App::update` 里弹会把事件派发重入回 gpui ⇒ 「RefCell already borrowed」abort。
 fn run_import(replace: bool, window: &mut Window, cx: &mut App) {
-    let Some(source) = duck_platform::open_file() else {
-        return;
-    };
-    let question = if replace {
-        tr(
-            cx,
-            "导入将完全以备份包为准，包里没有的设置会被清掉。导入前的数据会自动备份。继续？",
-        )
-    } else {
-        tr(
-            cx,
-            "导入会用包里的值覆盖同名设置，本机独有的设置保留。导入前的数据会自动备份。继续？",
-        )
-    };
-    if !duck_platform::confirm(tr(cx, "从备份导入？"), question) {
-        return;
-    }
+    crate::file_dialogs::open_file_in_app(
+        window,
+        cx,
+        tr(cx, "选择备份包"),
+        move |source, window, cx| {
+            let question = if replace {
+                tr(
+                    cx,
+                    "导入将完全以备份包为准，包里没有的设置会被清掉。导入前的数据会自动备份。继续？",
+                )
+            } else {
+                tr(
+                    cx,
+                    "导入会用包里的值覆盖同名设置，本机独有的设置保留。导入前的数据会自动备份。继续？",
+                )
+            };
+            crate::confirm::open_confirm(
+                tr(cx, "从备份导入？"),
+                question,
+                tr(cx, "导入"),
+                Rc::new(move |window, cx| import_backup(source.clone(), replace, window, cx)),
+                window,
+                cx,
+            );
+        },
+    );
+}
 
+/// 真正动手的那一半：按照用户确认过的来源与模式导入，然后报结果。
+fn import_backup(source: std::path::PathBuf, replace: bool, window: &mut Window, cx: &mut App) {
     let dirs = DataDirs::from_platform();
     let mode = if replace {
         ImportMode::Replace
@@ -312,16 +334,25 @@ fn run_import(replace: bool, window: &mut Window, cx: &mut App) {
 }
 
 /// 确认 → 重置 → 提示。
+///
+/// 确认走主题弹窗（`crate::confirm`）而不是 `duck_platform::confirm`：后者是 rfd 的
+/// 同步系统模态（`NSAlert runModal`），从 `App::update` 里弹会把事件派发重入回 gpui。
 fn run_reset(scope: ResetScope, window: &mut Window, cx: &mut App) {
-    if !duck_platform::confirm(
+    crate::confirm::open_confirm(
         tr(cx, "确认重置？"),
         tr(
             cx,
             "当前数据会先自动备份到上面那个目录。重置后需要重启应用才会完全生效。",
         ),
-    ) {
-        return;
-    }
+        tr(cx, "重置"),
+        Rc::new(move |window, cx| reset_data(scope, window, cx)),
+        window,
+        cx,
+    );
+}
+
+/// 用户确认之后真正动手的那一半：重置 + 报结果。
+fn reset_data(scope: ResetScope, window: &mut Window, cx: &mut App) {
     let dirs = DataDirs::from_platform();
     match backup::reset(scope, &dirs, cx) {
         Ok(report) => {

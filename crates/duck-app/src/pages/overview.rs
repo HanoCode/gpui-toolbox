@@ -4,7 +4,8 @@
 //! 实测值，读不到就显示空态文案（`—` + 一句说明），而不是摆一个好看的假数。
 
 use duck_components::{
-    ButtonVariant, DuckIcon, button, caption_heading, card, option_group, option_row, title_text,
+    ButtonVariant, DuckIcon, button, caption_heading, card, option_group, option_row,
+    selectable_text, title_text,
 };
 use duck_theme::{ThemePreference, active_theme, tr, trf};
 use gpui::{
@@ -90,10 +91,10 @@ impl Render for OverviewPage {
                     .text_size(tokens.typography.sm.size)
                     .line_height(tokens.typography.sm.line_height)
                     .text_color(muted)
-                    .child(tr(
+                    .child(selectable_text(tr(
                         cx,
                         "Duck Toolbox 的示例外壳：自绘标题栏、活动栏、可拖拽侧栏、工具栏与状态栏。",
-                    )),
+                    ))),
             );
 
         // ── 指标卡：三个数都来自真实记录 ──────────────────────────────────
@@ -228,7 +229,11 @@ impl Render for OverviewPage {
                         div()
                             .text_size(tokens.typography.sm.size)
                             .text_color(muted)
-                            .child(trf(cx, "{}%", &[&format!("{scale_percent:.0}")])),
+                            .child(selectable_text(trf(
+                                cx,
+                                "{}%",
+                                &[&format!("{scale_percent:.0}")],
+                            ))),
                         cx,
                     )
                     .into_any_element(),
@@ -248,7 +253,11 @@ impl Render for OverviewPage {
                         div()
                             .text_size(tokens.typography.sm.size)
                             .text_color(muted)
-                            .child(trf(cx, "{} 个", &[&icon_count.to_string()])),
+                            .child(selectable_text(trf(
+                                cx,
+                                "{} 个",
+                                &[&icon_count.to_string()],
+                            ))),
                         cx,
                     )
                     .into_any_element(),

@@ -64,6 +64,13 @@ impl SettingsWindowView {
                     "在任何程序里按一下都能把「随手看」悬浮窗叫出来，再按一次收起来。它不抢焦点，适合瞄一眼进行中与待办。",
                 ),
             ),
+            HotkeySlot::CalendarFloat => (
+                tr(cx, "启用日历浮窗快捷键"),
+                tr(
+                    cx,
+                    "在任何程序里按一下都能把日历浮窗叫出来，再按一次收起来。它不抢焦点，适合瞄一眼哪天有什么。",
+                ),
+            ),
         };
         option_row(
             title,
@@ -302,6 +309,7 @@ fn hotkey_status(
                 "在别的程序里也能用；Duck 已经在前台时再按一次会把它收起来。",
             ),
             HotkeySlot::TaskFloat => tr(cx, "在别的程序里也能用；再按一次会把它收起来。"),
+            HotkeySlot::CalendarFloat => tr(cx, "在别的程序里也能用；再按一次会把它收起来。"),
         }
         .into()
     }

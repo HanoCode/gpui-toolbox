@@ -69,7 +69,7 @@ use mongodb::options::ClientOptions;
 use mongodb::{Client, Collection, Cursor, IndexModel};
 
 use crate::cancel::CancelHandle;
-use crate::config::{ConnectionConfig, TlsMode};
+use crate::config::{AuthMode, ConnectionConfig, TlsMode};
 use crate::drivers::{
     BatchOutcome, CatalogTable, CellEdit, FilterOp, InsertRow, OrderBy, PkValues, RowCount,
     TableColumnMeta, TableFilter, TableIndex, TableKind, TableRef,
@@ -152,9 +152,18 @@ pub struct MongoConnection {
 }
 
 impl MongoConnection {
-    /// 建连：拼 URI → 起 runtime → 建客户端 → `ping` 一次（顺带取版本）。
+    /// 建连：拼 URI（连接串模式整条直用）→ 起 runtime → 建客户端 → `ping` 一次（顺带取版本）。
     pub(crate) fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self, DbError> {
-        let uri = build_uri(cfg, password)?;
+        let uri = match cfg.auth_mode {
+            AuthMode::ConnectionString => cfg
+                .connection_string
+                .as_deref()
+                .map(str::trim)
+                .filter(|raw| !raw.is_empty())
+                .ok_or_else(|| DbError::Config("connection string is empty".into()))?
+                .to_owned(),
+            _ => build_uri(cfg, password)?,
+        };
         let app_name = next_app_name(&cfg.id);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

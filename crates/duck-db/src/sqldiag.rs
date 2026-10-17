@@ -63,13 +63,22 @@ fn dialect_for(kind: DatabaseKind) -> &'static dyn sqlparser::dialect::Dialect {
         DatabaseKind::SqlServer => &MsSqlDialect {},
         // MongoDB / Elasticsearch 的编辑器内容不是 SQL（JSON 命令文档 / 控制台
         // 语法），语义诊断对它们没有定义——空名单，UI 层据此隐藏问题条。
-        DatabaseKind::Mongo | DatabaseKind::Elasticsearch => &GenericDialect {},
+        // agent 档同样走不到这里（见 `diagnose_sql` 的早退），它这一支只是为了让
+        // match 穷尽：真要给它挑方言得先知道背后是 Oracle 还是 Hive。
+        DatabaseKind::Mongo | DatabaseKind::Elasticsearch | DatabaseKind::Agent => {
+            &GenericDialect {}
+        }
     }
 }
 
 /// 对一段 SQL 做语义诊断。
 ///
 /// - 非 SQL 引擎（MongoDB / Elasticsearch）返回空；
+/// - **agent 档返回空**：它背后是几十个方言各异的引擎，而这里只拿得到
+///   [`DatabaseKind::Agent`] 一个值——按 `GenericDialect` 硬解会让 Oracle 的
+///   `NVL` / `(+)` / `ROWNUM`、Hive 的 `LATERAL VIEW` 这类**合法**写法报成语法错误。
+///   诊断是提示不是编译，但**假红比不红更糟**（用户会以为工具坏了），所以宁可不给。
+///   要补的话得先让 `Session` 把驱动键带下来，再按驱动挑方言；
 /// - 解析报错：每条 `Error` 级诊断（sqlparser 报第一个错就停）；
 /// - 目录**非空**时校验表引用：引用了目录（与 CTE）里都没有的表 → `Warning`。
 ///   目录为空（元数据没加载 / 加载失败）时**跳过**表校验——空目录报「全是未知
@@ -80,7 +89,10 @@ fn dialect_for(kind: DatabaseKind) -> &'static dyn sqlparser::dialect::Dialect {
 /// 正确的 SQL 标成问题。
 #[must_use]
 pub fn diagnose_sql(kind: DatabaseKind, sql: &str, tables: &[CatalogTable]) -> Vec<SqlDiagnostic> {
-    if matches!(kind, DatabaseKind::Mongo | DatabaseKind::Elasticsearch) {
+    if matches!(
+        kind,
+        DatabaseKind::Mongo | DatabaseKind::Elasticsearch | DatabaseKind::Agent
+    ) {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -281,6 +293,13 @@ mod tests {
         let tables = catalog(&[("users", None)]);
         assert!(diagnose_sql(DatabaseKind::Mongo, "db.users.find()", &tables).is_empty());
         assert!(diagnose_sql(DatabaseKind::Elasticsearch, "GET users/_search", &tables).is_empty());
+        // agent 档也恒空：只拿得到 `Agent` 一个 kind，挑不出方言（见 `diagnose_sql` 的
+        // 说明）。**这条断言是有意的**：哪天有人给它接上 GenericDialect，Oracle 的
+        // `(+)` 会被报成语法错，那比不报更糟。
+        assert!(
+            diagnose_sql(DatabaseKind::Agent, "SELECT NVL(a, 0) FROM t", &tables).is_empty(),
+            "agent 档不该产出诊断（方言未知，假红比不红更糟）"
+        );
     }
 
     #[test]

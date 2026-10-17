@@ -104,7 +104,11 @@ impl TerminalPage {
                     .flex_none()
                     .items_center()
                     .gap(spacing.md)
-                    .child(trf(cx, "v{}", &[env!("CARGO_PKG_VERSION")])),
+                    .child(selectable_text(trf(
+                        cx,
+                        "v{}",
+                        &[env!("CARGO_PKG_VERSION")],
+                    ))),
             )
             .into_any_element()
     }

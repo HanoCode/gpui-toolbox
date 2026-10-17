@@ -44,6 +44,7 @@ pub mod error;
 pub mod json_tree;
 pub mod jsonpath;
 pub mod monitor;
+pub mod pubsub;
 pub mod query;
 pub mod scan;
 pub mod server;
@@ -59,7 +60,7 @@ pub use config::{
     DEFAULT_PORT, EnvTag, MAX_DB, RedisConfig, SshTunnelConfig, TlsMode, WritePolicy,
 };
 pub use conn::{
-    AclProbe, KeyMeta, KeyObjectInfo, META_CHUNK_KEYS, RedisConnection, info_field,
+    AclProbe, BATCH_CHUNK, KeyMeta, KeyObjectInfo, META_CHUNK_KEYS, RedisConnection, info_field,
     object_info_from, parse_info_pairs, parse_info_sections, parse_meta_replies,
     split_command_args,
 };
@@ -72,6 +73,7 @@ pub use json_tree::{
 };
 pub use jsonpath::{JsonPathHit, JsonPathQuery, run as jsonpath_run};
 pub use monitor::{MonitorSession, POLL_TIMEOUT};
+pub use pubsub::{PubSubMessage, PubSubSession};
 pub use query::{QueryMode, ScanPlan, escape_glob, scan_plan};
 pub use scan::{
     AUTO_EXPAND_DEFAULT, ScanPage, TreeNode, build_tree, build_tree_sorted, build_tree_with_depth,

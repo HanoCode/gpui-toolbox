@@ -70,6 +70,7 @@ impl Credentials {
         Self {
             db: load_password(id).unwrap_or(None),
             ssh: load_ssh_password(id).unwrap_or(None),
+            ssh_key: load_ssh_key_passphrase(id).unwrap_or(None),
             proxy: load_proxy_password(id).unwrap_or(None),
         }
     }
@@ -176,13 +177,23 @@ pub(super) fn open_transport(
                 .ssh_tunnel
                 .as_ref()
                 .expect("ssh transport implies config");
+            // askpass 答的答案随认证方式走：口令档是登录口令，「私钥 + 口令」档是
+            // 私钥口令（留空回落登录口令 —— 有些「加密」私钥其实没设口令）。
+            let password = match tunnel.auth_method {
+                SshAuthMethod::KeyAndPassword => {
+                    creds.ssh_key.clone().or_else(|| creds.ssh.clone())
+                }
+                _ => creds.ssh.clone(),
+            };
             Some(Transport::Ssh(Arc::new(SshTunnel::open(SshTunnelSpec {
                 jump_host: tunnel.host.clone(),
                 jump_port: tunnel.port,
                 user: tunnel.user.clone(),
                 remote_host: tunnel.remote_host.clone(),
                 remote_port,
-                password: creds.ssh.clone(),
+                auth_method: tunnel.auth_method,
+                key_path: tunnel.key_path.clone(),
+                password,
             })?)))
         }
         TransportKind::Proxy => {
@@ -225,6 +236,25 @@ pub(super) fn probe_connection(
     Ok(conn.server_version().unwrap_or_default())
 }
 
+/// 「选择显示数据库」用：按给定配置**临时连一次**，拉取实例上的库清单。
+///
+/// 与 [`probe_connection`] 同一条链路（传输通道 → 连接），只是收尾换成 `list_databases`；
+/// 清单为空（引擎没有库层，比如 PG 只配了 schema 视角）时回落 `list_schemas`。
+/// 连接与传输通道都随函数返回一起释放，不留任何会话状态。
+pub(super) fn list_database_names(
+    cfg: &ConnectionConfig,
+    creds: &Credentials,
+) -> Result<Vec<String>, StageError> {
+    let (_transport, effective) = open_transport(cfg, creds).map_err(StageError::Transport)?;
+    let mut conn =
+        Connection::connect(&effective, creds.db.as_deref()).map_err(StageError::Session)?;
+    let names = conn.list_databases().unwrap_or_default();
+    if !names.is_empty() {
+        return Ok(names);
+    }
+    Ok(conn.list_schemas().unwrap_or_default())
+}
+
 /// 建连的实体动作：传输通道 → 连接 → 只读档 → 目录内省。
 ///
 /// 抽成自由函数是为了让钩子能插在这一串动作的两头：写成
@@ -251,6 +281,9 @@ pub(super) fn open_session(
         Introspection::load(&mut conn, effective.schema.as_deref()).unwrap_or_default();
     let database =
         (!effective.database.trim().is_empty()).then(|| effective.database.trim().to_owned());
+    // 标识符引号按**这条连接**取（agent 档问对端、内建七档看引擎），建连时取一次存进
+    // 会话：界面渲染路径不能去 `lock()` 这个连接（后台长查询一直握着锁）。
+    let quote = conn.identifier_quote();
     Ok(Session {
         conn: Arc::new(Mutex::new(conn)),
         version,
@@ -264,6 +297,7 @@ pub(super) fn open_session(
         database,
         schema: effective.schema.clone(),
         kind: effective.kind,
+        quote,
         transport,
         in_tx: false,
     })

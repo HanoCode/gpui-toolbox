@@ -1,4 +1,5 @@
 use super::*;
+use gpui_component::scroll::{Scrollbar, ScrollbarMode};
 
 /// 列模式（转置视图）的列宽拖拽载荷：只带**列下标**（0 = 名称，1 = 值，2 = 类型）。
 ///
@@ -105,7 +106,7 @@ impl DatabasePage {
                         this.put_on_clipboard(sql, tr(cx, "已复制该 SQL。"), cx);
                     });
                 })
-                .child(SharedString::from(one_line))
+                .child(selectable_text(SharedString::from(one_line)))
                 .into_any_element(),
         )
     }
@@ -302,9 +303,12 @@ impl DatabasePage {
                 self.mode == Mode::Table && self.table_ddl.is_some(),
                 |bar| {
                     bar.child(
-                        button(
+                        icon_text_button(
                             "db-result-ddl",
                             tr(cx, "修改表结构"),
+                            Icon::new(DuckIcon::Pencil)
+                                .size(extended.icon.sm)
+                                .text_color(tokens.colors.muted_foreground),
                             ButtonVariant::Ghost,
                             cx,
                         )
@@ -1067,7 +1071,11 @@ impl DatabasePage {
                                 .text_size(tokens.typography.sm.size)
                                 .line_height(tokens.typography.sm.line_height)
                                 .text_color(extended.colors.status_failed)
-                                .child(SharedString::from(trf(cx, "执行失败：{}", &[&message]))),
+                                .child(selectable_text(SharedString::from(trf(
+                                    cx,
+                                    "执行失败：{}",
+                                    &[&message],
+                                )))),
                         ),
                 )
                 .child(
@@ -1079,7 +1087,7 @@ impl DatabasePage {
                         .text_size(tokens.typography.xs.size)
                         .text_color(tokens.colors.muted_foreground)
                         .tooltip(move |window, cx| Tooltip::new(sql_tip.clone()).build(window, cx))
-                        .child(SharedString::from(sql_line)),
+                        .child(selectable_text(SharedString::from(sql_line))),
                 )
                 // 动作行（旧编辑器报错条的三件套原样搬来）：修错 / 解释注入真实
                 // 错误原文；「关闭」只收这条横幅，`last_error` 留给 AI 注入用
@@ -1281,7 +1289,9 @@ impl DatabasePage {
             // 宽度钉成内容总宽：行区与表头同宽，外层按子项边界算可滚距离。
             .w(px(total_width))
             .overflow_y_scroll()
-            .restrict_scroll_to_axis();
+            .restrict_scroll_to_axis()
+            // 纵向滚动条从这里读位置（句柄跨帧持久，见字段注释）。
+            .track_scroll(&self.result_columns_y_scroll);
         for (index, column) in visible_columns(&result.columns, &self.hidden_columns) {
             let cell = row
                 .get(index)
@@ -1334,7 +1344,7 @@ impl DatabasePage {
                         .truncate()
                         .text_size(mono_text)
                         .text_color(if null_cell { tertiary } else { fg })
-                        .child(SharedString::from(cell_value.clone()))
+                        .child(selectable_text(SharedString::from(cell_value.clone())))
                         .into_any_element(),
                 })
                 // 单击选中行；**双击**就地编辑（dbx 同款，与网格同一条提交路径）。
@@ -1457,7 +1467,7 @@ impl DatabasePage {
                             .truncate()
                             .text_size(body_text)
                             .text_color(fg)
-                            .child(SharedString::from(column.name.clone())),
+                            .child(selectable_text(SharedString::from(column.name.clone()))),
                     )
                     .child(value_cell)
                     .child(
@@ -1468,37 +1478,79 @@ impl DatabasePage {
                             .truncate()
                             .text_size(body_text)
                             .text_color(tertiary)
-                            .child(SharedString::from(column.type_name.clone())),
+                            .child(selectable_text(SharedString::from(
+                                column.type_name.clone(),
+                            ))),
                     ),
             );
         }
         // 外层横向滚动区：装下「表头 + 行区」，两者同一份横向偏移；表头 `flex_none`
         // 不参与纵向滚动，行区在内层自己滚自己的。
+        //
+        // ⚠️ gpui 的滚动容器不画系统滚动条，必须自己叠 `Scrollbar`（字段网格 /
+        // data_table 同款形态），否则超宽 / 超高的内容没有可拖动的东西。句柄由
+        // 页面状态持有（跨帧持久），absolute 兄弟节点叠加、外壳承托。
+        // ⚠️ 外壳必须是 **flex 容器**（`v_flex`）：块级 `div()` 不给子元素确定高度，
+        // 内层 x 滚动区的 `flex_1` 失效 ⇒ 行区纵向 `overflow_y_scroll` 永不触发。
         v_flex()
-            .id("db-result-columns-x")
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .overflow_x_scroll()
-            .restrict_scroll_to_axis()
-            .child(header)
-            .child(rows_list)
+            .relative()
+            .child(
+                v_flex()
+                    .id("db-result-columns-x")
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_x_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&self.result_columns_x_scroll)
+                    .child(header)
+                    .child(rows_list),
+            )
+            // 横向常驻（无溢出时 Scrollbar 自己隐藏）；`viewport_from_layout`
+            // 让轨道按内容实际占用区域计算。
+            .child(
+                div().absolute().inset_0().child(
+                    Scrollbar::horizontal(&self.result_columns_x_scroll)
+                        .id("db-result-columns-x-scrollbar")
+                        .mode(ScrollbarMode::Always)
+                        .viewport_from_layout(),
+                ),
+            )
+            // 纵向滚动时现身、停下淡出（行区同档）。
+            .child(
+                div().absolute().inset_0().child(
+                    Scrollbar::vertical(&self.result_columns_y_scroll)
+                        .id("db-result-columns-y-scrollbar")
+                        .mode(ScrollbarMode::Scrolling),
+                ),
+            )
             .into_any_element()
     }
 
-    /// JSON 模式：把当前行序列化成对象预览。
+    /// JSON 模式：把当前行铺成一份**可直接编辑**的 JSON 代码编辑器。
     ///
-    /// 复用内核的 [`ResultSet::to_json_pretty`]（与导出 JSON 同一套序列化口径），
-    /// 只把行裁成一行——不另写一份「值 → JSON」的手工拼接，避免两处口径漂移。
+    /// 复用内核的 [`ResultSet::to_json_pretty`]（与导出 JSON 同一套序列化口径）做
+    /// 编辑器初值——不另写一份「值 → JSON」的手工拼接，避免两处口径漂移。高亮、
+    /// 行号、软换行由编辑器内建（Redis 值编辑器同款，见 [`JsonEditor`]）；
+    /// 改动经「暂存更改」进与网格 / 右栏同一条暂存路径。
     ///
-    /// 版式是**两层**：上面是可就地改的字段表单（[`Self::render_json_form`]），下面是
-    /// 这份只读 JSON 预览。不是二选一：表单能改值，但嵌套结构 / 数组的真实形状只有
-    /// JSON 表达得清楚，砍掉预览等于把这一档的另一半用途丢了。
-    pub(super) fn render_result_json(&self, result: &ResultSet, cx: &Context<Self>) -> AnyElement {
+    /// ⚠️ 旧版「字段表单 + 只读预览」两层已收成这一层：嵌套结构 / 数组的真实形状
+    /// 只有用 JSON 表达得清楚，能看清就能直接改。
+    pub(super) fn render_result_json(
+        &self,
+        // 内容与可编辑性都由渲染入口同步好的 [`Self::json_editor`] 承载（它按
+        // `current_result()` 取数，与此处传入的结果集是同一份）；参数留着保持
+        // 与 `render_result_grid` / `render_result_columns` 同一档位签名。
+        _result: &ResultSet,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let extended = theme.extended();
-        let Some(row) = self.current_row(result) else {
+        let Some(form) = self.json_editor.as_ref() else {
             return empty_state(
                 DuckIcon::Code,
                 tr(cx, "这份结果没有可预览的行"),
@@ -1509,144 +1561,96 @@ impl DatabasePage {
             .flex_1()
             .into_any_element();
         };
-        // 与网格 / 列模式同一口径：藏起来的列不进 JSON。按**原始**下标同时裁列与裁值，
-        // 否则列名与值会错位半格（JSON 是「名字对值」的映射，错位比少一列严重得多）。
-        let mut columns = Vec::new();
-        let mut values = Vec::new();
-        for (index, column) in result.columns.iter().enumerate() {
-            if self.hidden_columns.contains(&column.name) {
-                continue;
-            }
-            columns.push(column.clone());
-            if let Some(value) = row.get(index) {
-                values.push(value.clone());
-            }
-        }
-        let single = ResultSet {
-            columns,
-            rows: vec![values],
-            truncated: false,
-        };
-        div()
+        let view = self.view.clone();
+        let row = form.row;
+        let editable = form.editable;
+        // 标题行：档位名 + 两个动作（暂存 / 删行）收在右端，编辑器占满剩余空间。
+        let header_row = h_flex()
+            .w_full()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .child(caption_heading(tr(cx, "JSON 预览"), cx))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap(tokens.spacing.xs)
+                    .child(
+                        button(
+                            "db-json-save",
+                            tr(cx, "暂存更改"),
+                            ButtonVariant::Primary,
+                            cx,
+                        )
+                        .disabled(self.busy || !editable)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ =
+                                    view.update(cx, |this, cx| this.stage_json_edits(window, cx));
+                            }
+                        }),
+                    )
+                    .child(
+                        button(
+                            "db-json-delete",
+                            tr(cx, "删除行"),
+                            ButtonVariant::Secondary,
+                            cx,
+                        )
+                        .disabled(self.busy || !editable)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.delete_current_row(row, window, cx);
+                                });
+                            }
+                        }),
+                    ),
+            );
+        v_flex()
             .id("db-result-json")
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .overflow_y_scroll()
             .p(tokens.spacing.sm)
+            .gap(tokens.spacing.xs)
             .border_t(extended.stroke.thin)
             .border_color(extended.colors.hairline)
+            .child(header_row)
+            // ⚠️ 编辑器必须挂在 **flex 容器**下（`v_flex`）：包一层 `display:block`
+            // 的 div 它的 `flex_1` 量不到高度（Redis 页同名注释的坑）。
             .child(
-                v_flex()
-                    .w_full()
-                    .gap(tokens.spacing.md)
-                    // ① 字段表单在前：进 JSON 档的主动作是**改这一行的字段**（嵌在一层
-                    //    JSON 文本里点不动任何东西，用户实测反馈）。
-                    .child(self.render_json_form(cx))
-                    // ② 只读预览在后：保留嵌套结构的真实形状。
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap(tokens.spacing.xs)
-                            .child(caption_heading(tr(cx, "JSON 预览"), cx))
-                            .child(
-                                div()
-                                    .text_size(tokens.typography.mono_md.size)
-                                    .line_height(tokens.typography.mono_md.line_height)
-                                    .text_color(tokens.colors.foreground)
-                                    .child(SharedString::from(single.to_json_pretty())),
-                            ),
-                    ),
+                v_flex().w_full().flex_1().min_h_0().min_w_0().child(
+                    Editor::new(&form.input)
+                        .appearance(false)
+                        .bordered(false)
+                        // 只读不是灰掉：外观不变、照常选中复制，只是拒绝改动。
+                        .readonly(!editable)
+                        .flex_1()
+                        .min_h_0()
+                        .text_size(tokens.typography.mono_md.size),
+                ),
             )
+            .child(meta_text(
+                tr(cx, "改动先暂存，点结果区上方的「提交」才落库。"),
+                cx,
+            ))
             .into_any_element()
     }
 
-    /// JSON 档的**字段表单**：把当前行铺成「字段名 + 输入框」，改完「暂存更改」进暂存区。
+    /// 让 JSON 档的编辑器跟上「现在显示的是哪一行」。
     ///
-    /// 走的是与网格就地编辑 / 右栏编辑卡**同一条**暂存路径
-    /// （[`DatabasePage::stage_json_edits`] → `pending_edits`），所以「提交」时一处写库、
-    /// 撤销栈算一步，不会多出一套口径。表单实体由渲染期同步（[`Self::sync_json_editor`]）。
-    fn render_json_form(&self, cx: &Context<Self>) -> AnyElement {
-        let theme = active_theme(cx);
-        let tokens = theme.tokens();
-        let view = self.view.clone();
-        let Some(form) = self.json_editor.as_ref() else {
-            // 表单没建起来 = 这一行不可编辑（多表 / 无主键 / 空结果）：如实说明，
-            // 别让用户对着只读的 JSON 猜「为什么点不动」。
-            return v_flex()
-                .w_full()
-                .child(meta_text(
-                    tr(cx, "这一行不可编辑（需要单表 + 主键），JSON 档只能查看。"),
-                    cx,
-                ))
-                .into_any_element();
-        };
-        let row = form.row;
-        let footer = h_flex()
-            .w_full()
-            .items_center()
-            .gap(tokens.spacing.xs)
-            .child(
-                button(
-                    "db-json-save",
-                    tr(cx, "暂存更改"),
-                    ButtonVariant::Primary,
-                    cx,
-                )
-                .disabled(self.busy)
-                .on_click({
-                    let view = view.clone();
-                    move |_, window, cx| {
-                        let _ = view.update(cx, |this, cx| this.stage_json_edits(window, cx));
-                    }
-                }),
-            )
-            .child(
-                button(
-                    "db-json-delete",
-                    tr(cx, "删除行"),
-                    ButtonVariant::Secondary,
-                    cx,
-                )
-                .disabled(self.busy)
-                .on_click({
-                    let view = view.clone();
-                    move |_, window, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.delete_current_row(row, window, cx);
-                        });
-                    }
-                }),
-            );
-        card(cx)
-            .id("db-json-editor")
-            .w_full()
-            .p(tokens.spacing.lg)
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap(tokens.spacing.sm)
-                    .child(caption_heading(tr(cx, "字段表单"), cx))
-                    .child(self.row_editor_fields(&form.cells, "json", cx))
-                    .child(meta_text(
-                        tr(cx, "改动先暂存，点结果区上方的「提交」才落库。"),
-                        cx,
-                    ))
-                    .child(footer),
-            )
-            .into_any_element()
-    }
-
-    /// 让 JSON 档的字段表单跟上「现在显示的是哪一行」。
+    /// 在**渲染期**做（`Render::render` 的头一行）：构造 `EditorState` 要
+    /// `&mut Window`，而渲染是页面唯一同时握着窗口与 `&mut self` 的时机（双击开行
+    /// 编辑器是同一个理由）。这里只改页面自己的字段、**不 notify** —— 渲染中发
+    /// 通知就是死循环。
     ///
-    /// 在**渲染期**做（`Render::render` 的头一行）：构造 `InputState` 要 `&mut Window`，
-    /// 而渲染是页面唯一同时握着窗口与 `&mut self` 的时机（双击开行编辑器是同一个理由）。
-    /// 这里只改页面自己的字段、**不 notify** —— 渲染中发通知就是死循环。
-    ///
-    /// 只有指纹对不上（[`specs_stamp`]）才整份重建：行没换就原样留着，用户正在输入框
-    /// 里敲的字不会被下一帧抹掉。
+    /// 只有指纹对不上（[`specs_stamp`]）才整份重建：行没换就原样留着，用户正在
+    /// 编辑器里敲的字不会被下一帧抹掉。
     pub(super) fn sync_json_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 只有 JSON 档要这份表单；切走时留着（切回来接着改），但**不再同步**。
+        // 只有 JSON 档要这份编辑器；切走时留着（切回来接着改），但**不再同步**。
         if self.result_view != ResultViewMode::Json {
             return;
         }
@@ -1654,17 +1658,16 @@ impl DatabasePage {
             self.json_editor = None;
             return;
         };
-        // 空结果 / 不可编辑（多表 / 无主键）都没有可编辑的行：表单跟着消失，由
-        // `render_json_form` 的空态如实说明。
+        // 空结果没有可显示的行：编辑器跟着消失，由 `render_result_json` 的空态如实说明。
         let Some(row) = self.current_row_index(rows) else {
             self.json_editor = None;
             return;
         };
-        let Some(specs) = self.row_editor_specs(row) else {
-            self.json_editor = None;
-            return;
-        };
+        // 可编辑与否不影响编辑器本身（只读时照常选中复制），specs 拿不到就空着
+        // ——暂存路径自己还有「结果集可编辑」的兜底。
+        let specs = self.row_editor_specs(row).unwrap_or_default();
         let stamp = specs_stamp(&specs);
+        let editable = self.edit_source().is_some();
         if self
             .json_editor
             .as_ref()
@@ -1672,26 +1675,50 @@ impl DatabasePage {
         {
             return;
         }
-        let cells = specs
-            .into_iter()
-            .map(|(column, original, was_null)| {
-                // 原值回填：编辑器的起点就是「库里现在是什么」（与双击开编辑同形）。
-                let input = cx.new(|cell_cx| InputState::new(&mut *window, cell_cx));
-                if !was_null {
-                    input.update(cx, |state, cx| {
-                        state.set_value(original.clone(), window, cx);
-                    });
+        // 编辑器初值 = 当前行（裁掉藏列）的美化 JSON，与旧只读预览同一序列化口径。
+        // 按**原始**下标同时裁列与裁值，否则列名与值会错位半格（JSON 是「名字对值」
+        // 的映射，错位比少一列严重得多）。
+        let text = self
+            .current_result()
+            .and_then(|result| {
+                let values = self.current_row(result)?;
+                let mut columns = Vec::new();
+                let mut row_values = Vec::new();
+                for (index, column) in result.columns.iter().enumerate() {
+                    if self.hidden_columns.contains(&column.name) {
+                        continue;
+                    }
+                    columns.push(column.clone());
+                    if let Some(value) = values.get(index) {
+                        row_values.push(value.clone());
+                    }
                 }
-                RowCell {
-                    column,
-                    original,
-                    was_null,
-                    input,
-                    null: Rc::new(std::cell::Cell::new(false)),
-                }
+                Some(
+                    ResultSet {
+                        columns,
+                        rows: vec![row_values],
+                        truncated: false,
+                    }
+                    .to_json_pretty(),
+                )
             })
-            .collect();
-        self.json_editor = Some(JsonEditor { row, stamp, cells });
+            .unwrap_or_default();
+        let input = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("json")
+                .line_number(true)
+                .soft_wrap(true)
+        });
+        input.update(cx, |state, cx| {
+            state.set_value(text, window, cx);
+        });
+        self.json_editor = Some(JsonEditor {
+            row,
+            stamp,
+            editable,
+            specs,
+            input,
+        });
     }
 
     /// 导出结果下拉（五档：TSV / CSV / Markdown / JSON / INSERT）+「导入 CSV…」。
@@ -2237,52 +2264,52 @@ impl DatabasePage {
         let muted = tokens.colors.muted_foreground;
         let hairline = extended.colors.hairline;
         let thin = extended.stroke.thin;
-        let list = uniform_list("db-summary-cols", list_columns.len(), move |range, _, _| {
-            range
-                .map(|index| {
-                    let column = &list_columns[index];
-                    let nulls = null_counts[index];
-                    h_flex()
-                        .id(SharedString::from(format!("db-summary-col-{index}")))
-                        .h(px(GRID_ROW_HEIGHT))
-                        // uniform_list 的行是 taffy 根节点：flex 根不会自动撑满可用
-                        // 宽度（只有 block 根会），不写 w_full 行就收缩成内容宽，
-                        // 固定列宽（类型 150 / 空值 90）与 `flex_1` 全部失效。
-                        .w_full()
-                        .px(row_pad)
-                        .items_center()
-                        .gap(col_gap)
-                        .border_b(thin)
-                        .border_color(hairline)
-                        .text_size(cell_text)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_color(fg)
-                                .child(SharedString::from(column.name.clone())),
-                        )
-                        .child(
-                            div()
-                                .w(px(150.))
-                                .flex_none()
-                                .truncate()
-                                .text_color(muted)
-                                .child(SharedString::from(column.type_name.clone())),
-                        )
-                        .child(
-                            div()
-                                .w(px(90.))
-                                .flex_none()
-                                .text_color(muted)
-                                .child(SharedString::from(nulls.to_string())),
-                        )
-                        .into_any_element()
-                })
-                .collect::<Vec<_>>()
-        })
-        .flex_1();
+        let list =
+            uniform_list("db-summary-cols", list_columns.len(), move |range, _, _| {
+                range
+                    .map(|index| {
+                        let column = &list_columns[index];
+                        let nulls = null_counts[index];
+                        h_flex()
+                            .id(SharedString::from(format!("db-summary-col-{index}")))
+                            .h(px(GRID_ROW_HEIGHT))
+                            // uniform_list 的行是 taffy 根节点：flex 根不会自动撑满可用
+                            // 宽度（只有 block 根会），不写 w_full 行就收缩成内容宽，
+                            // 固定列宽（类型 150 / 空值 90）与 `flex_1` 全部失效。
+                            .w_full()
+                            .px(row_pad)
+                            .items_center()
+                            .gap(col_gap)
+                            .border_b(thin)
+                            .border_color(hairline)
+                            .text_size(cell_text)
+                            .child(
+                                div().flex_1().min_w_0().truncate().text_color(fg).child(
+                                    selectable_text(SharedString::from(column.name.clone())),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .w(px(150.))
+                                    .flex_none()
+                                    .truncate()
+                                    .text_color(muted)
+                                    .child(selectable_text(SharedString::from(
+                                        column.type_name.clone(),
+                                    ))),
+                            )
+                            .child(
+                                div()
+                                    .w(px(90.))
+                                    .flex_none()
+                                    .text_color(muted)
+                                    .child(SharedString::from(nulls.to_string())),
+                            )
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .flex_1();
         v_flex()
             .flex_1()
             .min_h_0()
@@ -2392,7 +2419,7 @@ impl DatabasePage {
                                 .min_w_0()
                                 .truncate()
                                 .text_color(fg)
-                                .child(SharedString::from(entry.label.clone())),
+                                .child(selectable_text(SharedString::from(entry.label.clone()))),
                         )
                         .child(
                             div()
@@ -2400,14 +2427,11 @@ impl DatabasePage {
                                 .max_w(px(360.))
                                 .truncate()
                                 .text_color(muted)
-                                .child(SharedString::from(entry.detail.clone())),
+                                .child(selectable_text(SharedString::from(entry.detail.clone()))),
                         )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_color(muted)
-                                .child(SharedString::from(format!("{} ms", entry.elapsed_ms))),
-                        )
+                        .child(div().flex_none().text_color(muted).child(selectable_text(
+                            SharedString::from(format!("{} ms", entry.elapsed_ms)),
+                        )))
                         .into_any_element()
                 })
                 .collect::<Vec<_>>()
@@ -2728,7 +2752,10 @@ impl DatabasePage {
             tr(cx, "列名"),
             tr(cx, "类型"),
             tr(cx, "注释"),
-            tr(cx, "复制列名"),
+            tr(cx, "复制详情"),
+            // 详情卡复制出来的三行里标签与值之间的分隔符：中文全角冒号、英文
+            // 冒号加空格 —— 是文案不是标点常量，所以在这儿注入。
+            tr(cx, "："),
         )
     }
 
@@ -3864,11 +3891,13 @@ impl DatabasePage {
                 SharedString::from(trf(cx, "已选 {} 行", &[&selected.to_string()])),
                 cx,
             ))
+            // 同过滤条：Select 根是 size_full，定宽容器套外面才压得住。
             .child(
-                Select::new(&self.batch_column_select)
-                    .placeholder(tr(cx, "选择列"))
-                    .h(theme.density().control)
-                    .min_w(px(DROPDOWN_MIN_WIDTH)),
+                div().flex_none().w(px(DROPDOWN_MIN_WIDTH)).child(
+                    Select::new(&self.batch_column_select)
+                        .placeholder(tr(cx, "选择列"))
+                        .h(theme.density().control),
+                ),
             )
             .child(
                 h_flex()
@@ -4002,11 +4031,15 @@ impl DatabasePage {
             .child(meta_text(tr(cx, "过滤"), cx))
             // 「列」是可搜索下拉：选项与选中值由 `sync_select_pickers` 按指纹同步
             //（列多时下拉顶上有搜索框，见 `DbSelectState`）；确认走 `SelectEvent` 订阅。
+            // Select 的 `.w(...)` 只 refine 到**内部输入框**上，外层根仍是
+            // `size_full` —— 不套一层定宽容器，工具条剩余空间照旧被占满
+            //（后面的组件被推到最右），下拉弹层也按整条宽度展开。
             .child(
-                Select::new(&self.filter_column_select)
-                    .placeholder(tr(cx, "选择列"))
-                    .h(theme.density().control)
-                    .min_w(px(DROPDOWN_MIN_WIDTH)),
+                div().flex_none().w(px(DROPDOWN_MIN_WIDTH)).child(
+                    Select::new(&self.filter_column_select)
+                        .placeholder(tr(cx, "选择列"))
+                        .h(theme.density().control),
+                ),
             )
             .child(dropdown_select(
                 "db-filter-op",

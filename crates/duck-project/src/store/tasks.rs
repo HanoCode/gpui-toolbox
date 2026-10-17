@@ -55,6 +55,42 @@ impl ProjectStore {
         Ok(task)
     }
 
+    /// 按 id 取一批任务（含标签与子任务计数），**保持传入的 id 顺序**。
+    ///
+    /// 取不到的 id 直接跳过（不报错、也不补空行）：调用方是周计划 ——
+    /// 它记的是**历史上排过的**任务，其中某条可能已经被彻底删除。这时该少显示一行，
+    /// 而不是让整份计划打不开，也不该让界面拿到一个「标题为空的任务」。
+    ///
+    /// ⚠️ 这一条**不看归档**：已经归档但仍在计划里的任务照样取出来（界面上标出
+    /// 「已归档」），否则归档一条任务就会让那周的「计划 vs 实际」凭空少一项。
+    pub fn list_tasks_by_ids(&self, ids: &[i64]) -> Result<Vec<Task>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks t WHERE t.id IN ({})",
+            crate::store::query_placeholders(ids.len())
+        );
+        let mut found = {
+            let mut statement = self.conn.prepare(&sql)?;
+            let mut rows = statement.query(rusqlite::params_from_iter(ids.iter()))?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(task_from_row(row)?);
+            }
+            out
+        };
+        hydrate(&self.conn, &mut found)?;
+        // `IN` 不保证顺序（SQLite 实际按 rowid，但不该依赖），按传入顺序重排。
+        let mut ordered: Vec<Task> = Vec::with_capacity(found.len());
+        for id in ids {
+            if let Some(index) = found.iter().position(|task| task.id == *id) {
+                ordered.push(found.swap_remove(index));
+            }
+        }
+        Ok(ordered)
+    }
+
     /// 某个父任务的子任务（未归档，按手动顺序）。
     pub fn list_subtasks(&self, parent_id: i64) -> Result<Vec<Task>> {
         self.list_tasks(&TaskQuery::new().children_of(parent_id))
@@ -86,9 +122,10 @@ impl ProjectStore {
         transaction.execute(
             "INSERT INTO tasks(project_id, parent_id, title, description_md, status, priority, \
              quadrant, start_date, due_date, due_time, completed_at, progress, estimate_hours, \
-             actual_hours, sort_order, created_at, updated_at, starred, block_reason, note) \
+             actual_hours, sort_order, created_at, updated_at, starred, block_reason, note, \
+             git_branch, context_files, context_sql, context_tabs) \
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16, \
-             ?17, ?18, ?19)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             rusqlite::params![
                 new.project_id,
                 new.parent_id,
@@ -109,6 +146,10 @@ impl ProjectStore {
                 i64::from(new.starred),
                 new.block_reason,
                 new.note,
+                new.git_branch,
+                crate::store::encode_files(&new.context.files),
+                new.context.sql,
+                crate::store::encode_lines(&new.context.tabs),
             ],
         )?;
         let id = transaction.last_insert_rowid();
@@ -141,6 +182,8 @@ impl ProjectStore {
             note,
             sort_order,
             tag_ids,
+            git_branch,
+            context,
         } = patch;
 
         if let Some(title) = &title {
@@ -198,6 +241,20 @@ impl ProjectStore {
         set.push_optional("block_reason", block_reason, Value::Text);
         set.push_optional("note", note, Value::Text);
         set.push_optional("sort_order", sort_order, Value::Integer);
+        set.push_optional("git_branch", git_branch, Value::Text);
+        // 上下文三列**一起**换（模型注释：没有「只改一样」的入口）。`sql` 原样存 ——
+        // 它是三样里唯一可能带换行的，单独成列就不存在转义问题。
+        if let Some(context) = context {
+            set.push(
+                "context_files",
+                Value::Text(crate::store::encode_files(&context.files)),
+            );
+            set.push("context_sql", Value::Text(context.sql));
+            set.push(
+                "context_tabs",
+                Value::Text(crate::store::encode_lines(&context.tabs)),
+            );
+        }
 
         // 状态不走 `push_optional`：它还牵着 `completed_at` 与 `progress`，
         // 三者必须在同一条语句里落地 —— 否则「拖到已完成」会有一瞬间
@@ -841,6 +898,96 @@ mod tests {
         assert_eq!(counts.get(&TaskStatus::Doing), Some(&1));
         assert_eq!(counts.values().sum::<u32>(), 2);
         assert_eq!(store.task_counts_by_status(&[])?.values().sum::<u32>(), 2);
+        Ok(())
+    }
+
+    /// 按 id 批量取任务：保持传入顺序、跳过取不到的、**不跳过已归档的**。
+    #[test]
+    fn list_by_ids_keeps_order_skips_missing_and_keeps_archived() -> Result<()> {
+        let store = ProjectStore::open_in_memory()?;
+        let a = store.create_task(NewTask::new("A"))?;
+        let b = store.create_task(NewTask::new("B"))?;
+        let c = store.create_task(NewTask::new("C"))?;
+        store.archive_task(b)?;
+
+        let tasks = store.list_tasks_by_ids(&[c, a, b])?;
+        let ids: Vec<i64> = tasks.iter().map(|task| task.id).collect();
+        assert_eq!(ids, vec![c, a, b], "顺序跟随传入（`IN` 不保证顺序）");
+        assert!(
+            tasks.iter().any(|task| task.id == b && task.is_archived()),
+            "归档的任务也该取出来 —— 否则归档一条就让那周的计划少一项"
+        );
+
+        // 不存在的 id 跳过，而不是报错或补空行。
+        let partial = store.list_tasks_by_ids(&[a, 9_999_999, c])?;
+        let ids: Vec<i64> = partial.iter().map(|task| task.id).collect();
+        assert_eq!(ids, vec![a, c]);
+        assert!(store.list_tasks_by_ids(&[])?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn git_branch_and_context_round_trip() -> Result<()> {
+        use crate::models::{FileRef, TaskContext};
+        let store = ProjectStore::open_in_memory()?;
+        let context = TaskContext {
+            files: vec![
+                FileRef::position("/repo/src/main.rs", 12, 3),
+                FileRef::at("/repo/C:/weird path:x"), // 路径带冒号也不许被切开
+            ],
+            sql: "SELECT 1;\nSELECT 2;".to_owned(),
+            tabs: vec![
+                "https://example.com/a".to_owned(),
+                "https://example.com/b".to_owned(),
+            ],
+        };
+        let id = store.create_task(
+            NewTask::new("带上下文")
+                .git_branch("feat/import")
+                .context(context.clone()),
+        )?;
+        let task = store.get_task(id)?.expect("刚建的");
+        assert_eq!(task.git_branch, "feat/import");
+        assert_eq!(
+            task.context, context,
+            "三样都原样回来（含多行 SQL 与带冒号路径）"
+        );
+
+        // 不写就是空 —— `TaskContext::is_empty` 是界面空态的判据。
+        let bare = store.create_task(NewTask::new("裸的"))?;
+        let bare = store.get_task(bare)?.expect("刚建的");
+        assert_eq!(bare.git_branch, "");
+        assert!(bare.context.is_empty());
+
+        // patch 整体替换：换掉后旧文件不残留。
+        store.update_task(
+            id,
+            TaskPatch::new().git_branch("").context(TaskContext {
+                files: vec![FileRef::at("/repo/other.rs")],
+                sql: String::new(),
+                tabs: vec![],
+            }),
+        )?;
+        let task = store.get_task(id)?.expect("还在");
+        assert_eq!(task.git_branch, "");
+        assert_eq!(task.context.files, vec![FileRef::at("/repo/other.rs")]);
+        assert!(task.context.tabs.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn corrupted_context_and_bad_file_lines_are_dropped_not_fatal() -> Result<()> {
+        let store = ProjectStore::open_in_memory()?;
+        let id = store.create_task(NewTask::new("被外部改坏"))?;
+        // 测试专用后门：模拟外部工具往库里塞野值（正常写口造不出这些形态）。
+        store.exec_raw(&format!(
+            "UPDATE tasks SET context_files = 'not-a-number:/x\n3:2:/ok.rs\n\n' \
+             WHERE id = {id}"
+        ))?;
+        let task = store.get_task(id)?.expect("还在");
+        // 坏行直接丢、好行照读；空行不算坏。
+        assert_eq!(task.context.files.len(), 1);
+        assert_eq!(task.context.files[0].path, "/ok.rs");
         Ok(())
     }
 }

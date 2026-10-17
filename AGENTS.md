@@ -118,6 +118,14 @@ GPUI / gpui-component 的 API 以**当前源码为准**，不凭记忆或类比 
 升级任一 crate 时必须同步 `=` 约束，禁止局部升级导致内核与组件层错配。
 新增第三方依赖前，先核对版本号、许可证，并说明必要性。
 
+⚠️ **这三条（`gpui-base` / `gpui-component` / `gpui-kit-assets`）必须写 `=`，不许用默认的 `^`**：
+用 `^` 时一次 `cargo update` 就会把 `gpui-component` 抬到 0.7.2，而它要求 `gpui-base ^0.7.2`
+⇒ `[patch.crates-io]` 里 **0.7.1 的 vendor/gpui-base 整个失效**，Cargo 只留一行
+`[[patch.unused]]` 警告、**不报错**：邮件正文内联 CSS 补丁与文本选中的引擎修复会一起
+静默丢掉（`5d4011d` 就是这么丢的，两天没被发现）。自检一条命令：
+`cargo tree -i gpui-base | head -1` —— 必须打印 `gpui-base v0.7.1 (.../vendor/gpui-base)`；
+打印 `v0.7.2` 就是在跑上游而非本仓分叉。
+
 **GPUI 核心经 `[patch.crates-io]` 替换为 gpui-fast**（longbridge/gpui-fast，锁 rev）：
 版本号仍是 `=0.3.8`，只是实现来自 gpui-fast 的 compat 替身 crate（`gpui-pre` /
 `gpui-pre-platform` / `gpui-pre-macros` / `gpui-pre-sum-tree`）。升级 gpui-fast 时：

@@ -6,13 +6,24 @@
 //! 而界面里能触发它们的动作全都在 gpui 的 `App::update` 里面 —— 模态循环一开，
 //! AppKit 就把 gpui 的事件派发重入进来，`AsyncApp::update_entity` 再去
 //! `borrow_mut()` 撞上「RefCell already borrowed」并 abort（`try_borrow_mut`
-//! 那一路则静默丢事件）。实证：`~/Library/Application Support/DuckToolbox/logs/
-//! crash-2026-10-15.log` 12:46 那条，调用链
-//! `import_csv → duck_platform::dialog::open_file → rfd pick_file → run_modal`。
+//! 那一路则静默丢事件）。实证（同一条链上的两次闪退）：`crash-2026-10-15.log`
+//! 12:46 `import_csv → duck_platform::dialog::open_file → rfd pick_file → run_modal`；
+//! `crash-2026-10-16.log` 21:25 `DatabasePage::export_connections →
+//! duck_platform::dialog::save_file → NSSavePanel runModal`（重入期间邮件页的事件
+//! 轮询器被调度，`AsyncApp::update_entity` 直接 panic）。
 //!
 //! gpui 自己的 `prompt_for_new_path` / `prompt_for_paths` 走
 //! `NSSavePanel::beginWithCompletionHandler`（真异步回调，**不重入**事件循环），
 //! 结果经 oneshot channel 送回 —— 所以这里是界面代码唯一正确的那条路。
+//! 确认框同理走 [`crate::confirm::open_confirm`]（主题弹窗）。
+//!
+//! ## 两套签名：有没有页面实体
+//!
+//! | 调用点手里有的东西 | 用哪个 | 回调拿到 |
+//! | --- | --- | --- |
+//! | `&mut Context<T>`（页面方法） | [`save_file`] / [`open_file`] / [`open_files`] / [`pick_folder`] | `(路径, &mut T, &mut Context<T>)` |
+//! | 同上，且回调里要弹提示 | [`save_file_in_window`] | 上面那套 + `&mut Window` |
+//! | 只有 `&mut Window, &mut App`（`on_click` 里的裸 App） | [`save_file_in_app`] / [`open_file_in_app`] / [`pick_folder_in_app`] | `(路径, &mut Window, &mut App)` |
 //!
 //! ## 用之前先记住：对话框是异步的
 //!
@@ -28,7 +39,27 @@
 
 use std::path::PathBuf;
 
-use gpui::{Context, PathPromptOptions};
+use gpui::{App, AppContext as _, Context, PathPromptOptions, Window};
+
+/// 面板选项：`files` / `directories` / `multiple` 三种组合，`prompt` 是面板上的提示语。
+fn prompt_options(
+    files: bool,
+    directories: bool,
+    multiple: bool,
+    prompt: &str,
+) -> PathPromptOptions {
+    PathPromptOptions {
+        files,
+        directories,
+        multiple,
+        prompt: Some(prompt.to_owned().into()),
+    }
+}
+
+/// 取出「选中项的集合」里唯一那个；空集合按取消处理。
+fn only(mut paths: Vec<PathBuf>) -> Option<PathBuf> {
+    paths.pop()
+}
 
 /// 「另存为」：用户选定落点后回调 `(路径, 页面, 上下文)`。
 ///
@@ -51,6 +82,31 @@ where
     .detach();
 }
 
+/// [`save_file`] 的**带窗口**版本：回调额外拿到 `&mut Window`。
+///
+/// 需要在回调里弹提示（`notify::*` 全都要 `&mut Window`）的调用方用这个。窗口按
+/// `crate::update::on_notify_window` 的口径在**回调那一刻**挑（活跃窗口优先）——
+/// 与 `spawn_db` / `spawn_local` 的 `done` 拿到窗口走的是同一条路，不额外造一套口径。
+pub fn save_file_in_window<T, F>(cx: &mut Context<T>, default_name: &str, on_pick: F)
+where
+    T: 'static,
+    F: FnOnce(PathBuf, &mut Window, &mut T, &mut Context<T>) + 'static,
+{
+    let dir = duck_platform::default_dialog_dir();
+    let receiver = cx.prompt_for_new_path(&dir, Some(default_name));
+    cx.spawn(async move |this, cx| {
+        let Ok(Ok(Some(path))) = receiver.await else {
+            return;
+        };
+        cx.update(move |cx| {
+            crate::update::on_notify_window(cx, move |window, cx| {
+                let _ = this.update(cx, |this, cx| on_pick(path, window, this, cx));
+            });
+        });
+    })
+    .detach();
+}
+
 /// 「打开文件」（单选）：用户选定后回调 `(路径, 页面, 上下文)`。
 ///
 /// `prompt` 是面板上的提示语（macOS 显示在标题区）。面板给的是「选中项的集合」，
@@ -60,22 +116,116 @@ where
     T: 'static,
     F: FnOnce(PathBuf, &mut T, &mut Context<T>) + 'static,
 {
-    let options = PathPromptOptions {
-        files: true,
-        directories: false,
-        multiple: false,
-        prompt: Some(prompt.to_owned().into()),
-    };
-    let receiver = cx.prompt_for_paths(options);
+    let receiver = cx.prompt_for_paths(prompt_options(true, false, false, prompt));
     cx.spawn(async move |this, cx| {
-        let Ok(Ok(Some(mut paths))) = receiver.await else {
+        let Ok(Ok(Some(paths))) = receiver.await else {
             return;
         };
         // 面板给的是「选中项的集合」：单选下取唯一那个；空集合按取消处理。
-        let Some(path) = paths.pop() else {
+        let Some(path) = only(paths) else {
             return;
         };
         let _ = this.update(cx, |this, cx| on_pick(path, this, cx));
+    })
+    .detach();
+}
+
+/// 「选目录」：用户选定后回调 `(路径, 页面, 上下文)`。
+pub fn pick_folder<T, F>(cx: &mut Context<T>, prompt: &str, on_pick: F)
+where
+    T: 'static,
+    F: FnOnce(PathBuf, &mut T, &mut Context<T>) + 'static,
+{
+    let receiver = cx.prompt_for_paths(prompt_options(false, true, false, prompt));
+    cx.spawn(async move |this, cx| {
+        let Ok(Ok(Some(paths))) = receiver.await else {
+            return;
+        };
+        let Some(path) = only(paths) else {
+            return;
+        };
+        let _ = this.update(cx, |this, cx| on_pick(path, this, cx));
+    })
+    .detach();
+}
+
+/// 「打开文件」（多选）：用户选定后回调 `(路径集合, 页面, 上下文)`。
+///
+/// 空集合按取消处理（「选了个空」在语义上就是没选）。
+pub fn open_files<T, F>(cx: &mut Context<T>, prompt: &str, on_pick: F)
+where
+    T: 'static,
+    F: FnOnce(Vec<PathBuf>, &mut T, &mut Context<T>) + 'static,
+{
+    let receiver = cx.prompt_for_paths(prompt_options(true, false, true, prompt));
+    cx.spawn(async move |this, cx| {
+        let Ok(Ok(Some(paths))) = receiver.await else {
+            return;
+        };
+        if paths.is_empty() {
+            return;
+        }
+        let _ = this.update(cx, |this, cx| on_pick(paths, this, cx));
+    })
+    .detach();
+}
+
+/// 「另存为」的**无页面实体**版本：回调拿 `(路径, 窗口, App)`。
+///
+/// 给「点击处理器里只有 `&mut App`」的调用方（`data.rs` 的导入导出、`terminal_dialogs`
+/// 的选择按钮）。窗口句柄在**开面板那一刻**就取下来，回调里再用 `App::update_window`
+/// 还原 `&mut Window` —— 用户可能在面板上停留很久，也可能顺手把这个窗口关了，
+/// 所以还原失败（`Err`）时静默丢弃，不 panic。
+pub fn save_file_in_app<F>(window: &mut Window, cx: &mut App, default_name: &str, on_pick: F)
+where
+    F: FnOnce(PathBuf, &mut Window, &mut App) + 'static,
+{
+    let handle = window.window_handle();
+    let dir = duck_platform::default_dialog_dir();
+    let receiver = cx.prompt_for_new_path(&dir, Some(default_name));
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(path))) = receiver.await else {
+            return;
+        };
+        let _ = cx.update_window(handle, |_, window, cx| on_pick(path, window, cx));
+    })
+    .detach();
+}
+
+/// 「打开文件」（单选）的**无页面实体**版本，语义同 [`save_file_in_app`]。
+pub fn open_file_in_app<F>(window: &mut Window, cx: &mut App, prompt: &str, on_pick: F)
+where
+    F: FnOnce(PathBuf, &mut Window, &mut App) + 'static,
+{
+    let handle = window.window_handle();
+    let receiver = cx.prompt_for_paths(prompt_options(true, false, false, prompt));
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(paths))) = receiver.await else {
+            return;
+        };
+        let Some(path) = only(paths) else {
+            return;
+        };
+        let _ = cx.update_window(handle, |_, window, cx| on_pick(path, window, cx));
+    })
+    .detach();
+}
+
+/// 「选目录」的**无页面实体**版本，语义同 [`save_file_in_app`]。
+pub fn pick_folder_in_app<F>(window: &mut Window, cx: &mut App, prompt: &str, on_pick: F)
+where
+    F: FnOnce(PathBuf, &mut Window, &mut App) + 'static,
+{
+    let handle = window.window_handle();
+    let receiver = cx.prompt_for_paths(prompt_options(false, true, false, prompt));
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(paths))) = receiver.await else {
+            return;
+        };
+        let Some(path) = only(paths) else {
+            return;
+        };
+        let _ = cx.update_window(handle, |_, window, cx| on_pick(path, window, cx));
     })
     .detach();
 }

@@ -37,21 +37,33 @@ use gpui_component::{
 };
 
 use duck_components::{
-    ButtonVariant, ConfirmHandler, DuckIcon, FooterAction, button, caption_heading, dialog_footer,
-    dialog_footer_with_action, dialog_footer_with_hint, dialog_top_offset, dropdown_select,
-    field_hint, form_field, form_row, input_with_action, meta_text, modal_drag, modal_drag_area,
-    modal_offset, modal_title_row, notify::Tone, segmented_tabs,
+    ButtonVariant, ConfirmHandler, DuckIcon, FooterAction, button, caption_heading,
+    content::alert_block, dialog_footer, dialog_footer_with_action, dialog_footer_with_hint,
+    dialog_top_offset, dropdown_select, field_hint, form_field, form_row, input_with_action,
+    meta_text, modal_drag, modal_drag_area, modal_offset, modal_title_row, notify::Tone,
+    segmented_tabs, selectable_text,
 };
 use duck_project::{
-    BoardColumn, CalendarDate, ColumnSpec, LogKind, NewProject, NewTask, Priority, Project,
-    ProjectPatch, Quadrant, Tag, Task, TaskPatch, TaskStatus,
+    BoardColumn, CalendarDate, ColumnSpec, FileRef, LogKind, NewProject, NewTask, Priority,
+    Project, ProjectPatch, Quadrant, Tag, Task, TaskContext, TaskPatch, TaskStatus,
 };
 use duck_theme::{active_theme, color_from_hex, tr, trf};
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use duck_ai::provider::ChatRequest;
+use duck_ai::wire::ChatMessage;
+
+use crate::ai;
+
 use super::ProjectsPage;
+use super::ai_assist;
 use super::export::{ExportFormat, ExportScope};
-use super::quickparse::{self, ImportLine, QuickParse};
-use super::state::ProjectsState;
+use super::import::{self, ColumnMap, Field, Parsed, SourceFormat};
+use super::prefs;
+use super::quickparse::{self, QuickParse};
+use super::state::{ProjectsState, local_date};
 use super::widgets::progress_bar::task_progress_bar;
 use super::widgets::status_label;
 use super::widgets::task_detail_panel::milestone_row;
@@ -82,7 +94,11 @@ const FORM_WIDTH: f32 = 520.;
 ///
 /// 这个数字同时也是那句说明文案里的参数（经 [`trf`] 传进去），不写死在文案里 ——
 /// 改这个常量，界面上的「每天 N 小时」跟着变。
-const HOURS_PER_WORKDAY: u64 = 8;
+///
+/// `pub(crate)`：排期负载（`schedule::analyze` 的 `capacity`）用的也是它 ——
+/// 「一天 8 小时」全仓只有这一份真源，否则「编辑器的自动工时」与「排期面板的超载线」
+/// 会各说各话。
+pub(crate) const HOURS_PER_WORKDAY: u64 = 8;
 
 // ---------------------------------------------------------------------------
 // 共用小件
@@ -262,6 +278,36 @@ fn line_input(input: &Entity<InputState>, cx: &App) -> impl IntoElement {
         .child(Input::new(input).appearance(false).bordered(false).w_full())
 }
 
+/// 表单字段的小标题（「标签」这种）。
+///
+/// 是**铬件**，所以不包 `selectable_text`（见 `duck-components` 的可选中口径：
+/// 标题 / 按钮 / 菜单 / 徽章 / 表头都不报名）。
+fn form_label(text: &str, cx: &App) -> impl IntoElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    div()
+        .text_size(tokens.typography.xs.size)
+        .line_height(tokens.typography.xs.line_height)
+        .text_color(tokens.colors.muted_foreground)
+        .child(SharedString::from(text.to_owned()))
+}
+
+/// 表单字段下面的说明小字。
+///
+/// 与 [`form_label`] 分开只为一条：说明通常**是一句话**，必须 `w_full()` 才会换行
+/// （`v_flex()` 的 cross-axis 是 stretch，但 `h_flex` 里的裸 `div` 会按内容宽度撑开，
+/// 长句子就会把弹窗顶宽）。同样不包 `selectable_text`。
+fn form_hint(text: &str, cx: &App) -> impl IntoElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    div()
+        .w_full()
+        .text_size(tokens.typography.xs.size)
+        .line_height(tokens.typography.xs.line_height)
+        .text_color(tokens.colors.muted_foreground)
+        .child(SharedString::from(text.to_owned()))
+}
+
 /// 多行输入框（描述 / 备注 / 日志正文）。
 ///
 /// 高度按**行数 × 正文行高**算，不写死像素：行高是字阶 token 的一部分，跟着
@@ -334,6 +380,12 @@ pub(crate) struct TaskEditorForm {
     actual: Entity<InputState>,
     block: Entity<InputState>,
     note: Entity<TextareaState>,
+    /// 关联的 Git 分支（空串 = 没记；内核只是记一笔，不去问 git）。
+    git_branch: Entity<InputState>,
+    /// 工作上下文三件：文件（每行一个，可写 `行:列:路径`）/ SQL（原样）/ 链接（每行一个）。
+    ctx_files: Entity<TextareaState>,
+    ctx_sql: Entity<TextareaState>,
+    ctx_tabs: Entity<TextareaState>,
     project: Option<i64>,
     /// 父任务（内核只许一层嵌套：候选清单见 [`TaskEditorForm::parent_candidates`]）。
     parent: Option<i64>,
@@ -361,6 +413,9 @@ pub(crate) struct TaskEditorForm {
     estimate_auto: bool,
     /// 日期选择器 / 工时输入框的订阅句柄；丢一个就断一条联动。
     _subs: Vec<Subscription>,
+    /// AI 请求是否在跑（**防双击**，不是界面状态 —— 弹窗正文不因它重绘；
+    /// 结果回来后走回执与表单回填）。
+    ai_running: Arc<AtomicBool>,
 }
 
 /// 打开弹窗那一刻取好的三份清单。
@@ -394,6 +449,10 @@ impl TaskEditorForm {
             actual: new_input(window, cx, "0"),
             block: new_input(window, cx, "例如：等上游开权限"),
             note: new_area(window, cx, "只给自己看的提示…"),
+            git_branch: new_input(window, cx, "例如 feat/login"),
+            ctx_files: new_area(window, cx, "每行一个文件；要定位就写 行:列:路径"),
+            ctx_sql: new_area(window, cx, "上一次用过的 SQL，原样"),
+            ctx_tabs: new_area(window, cx, "每行一个链接"),
             project: preset_project,
             parent: None,
             status: preset_status,
@@ -408,6 +467,7 @@ impl TaskEditorForm {
             // 空输入框 = 「听日期的话」，所以新建态就是自动态。
             estimate_auto: true,
             _subs: Vec::new(),
+            ai_running: Arc::new(AtomicBool::new(false)),
         };
         form.watch_dates(window, cx);
         form.watch_estimate(cx);
@@ -449,6 +509,22 @@ impl TaskEditorForm {
         }
         fill_input(&form.block, &task.block_reason, window, cx);
         fill_area(&form.note, &task.note, window, cx);
+        fill_input(&form.git_branch, &task.git_branch, window, cx);
+        // 文件按落盘形态 `行:列:路径` 回填（`to_line` 就是写端格式），SQL / 链接原样。
+        fill_area(
+            &form.ctx_files,
+            &task
+                .context
+                .files
+                .iter()
+                .map(FileRef::to_line)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            window,
+            cx,
+        );
+        fill_area(&form.ctx_sql, &task.context.sql, window, cx);
+        fill_area(&form.ctx_tabs, &task.context.tabs.join("\n"), window, cx);
         // 两头都排了期、又没填过工时的任务：打开就按日期补一个（与新建态同一口径）。
         form.refresh_estimate(window, cx);
         form
@@ -558,6 +634,24 @@ impl TaskEditorForm {
             actual: parse_hours_input(&self.actual, cx),
             block: input_value(&self.block, cx),
             note: textarea_value(&self.note, cx),
+            git_branch: input_value(&self.git_branch, cx),
+            context: TaskContext {
+                // 文件行：能按 `行:列:路径` 解就带定位，解不了就只记路径（trim 后的
+                // 空行直接丢）。内核读端还会再丢一遍坏行 —— 这里是写端的「先洗一遍」。
+                files: textarea_value(&self.ctx_files, cx)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(|line| FileRef::from_line(line).unwrap_or_else(|| FileRef::at(line)))
+                    .collect(),
+                sql: textarea_value(&self.ctx_sql, cx),
+                tabs: textarea_value(&self.ctx_tabs, cx)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            },
             project: self.project,
             parent: self.parent,
             status: self.status,
@@ -579,6 +673,8 @@ pub(crate) struct CollectedTask {
     pub(crate) actual: Option<f64>,
     pub(crate) block: String,
     pub(crate) note: String,
+    pub(crate) git_branch: String,
+    pub(crate) context: TaskContext,
     pub(crate) project: Option<i64>,
     pub(crate) parent: Option<i64>,
     pub(crate) status: TaskStatus,
@@ -601,7 +697,9 @@ impl CollectedTask {
             .block_reason(self.block)
             .note(self.note)
             .progress(self.progress)
-            .tags(self.tags);
+            .tags(self.tags)
+            .git_branch(self.git_branch)
+            .context(self.context);
         if let Some(project_id) = self.project {
             new = new.project(project_id);
         }
@@ -623,7 +721,9 @@ impl CollectedTask {
             .block_reason(self.block)
             .note(self.note)
             .progress(self.progress)
-            .tags(self.tags);
+            .tags(self.tags)
+            .git_branch(self.git_branch)
+            .context(self.context);
         patch = match self.project {
             Some(project_id) => patch.project(project_id),
             None => patch.clear_project(),
@@ -638,12 +738,543 @@ impl CollectedTask {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 编辑器的 AI 三按钮（S6）
+// ---------------------------------------------------------------------------
+//
+// **分类 / 拆解 / 润色描述**。三条都走同一个骨架：点按钮 → 后台线程问模型 →
+// 结果回填表单（或往描述里追加）+ 页面弹一条回执。没配厂商时按钮禁用。
+//
+// 刻意不做的事：
+// - **不在表单里造子任务**：「拆解」往描述里写一份 `- [ ]` 清单（Markdown 里看得见、
+//   存了还能再拆成真子任务）—— 新建态还没有 task_id，内核的子任务挂不上去。
+// - **不画转圈**：弹窗正文的 `content` 闭包只跑一次（见本文件头部说明），忙碌态
+//   画上去就不会更新 —— 防双击用 `ai_running` 原子位，反馈靠页面回执条。
+
+/// 编辑器三按钮各自的语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiAction {
+    /// 按现有项目 / 标签给这条任务归档（回填项目与标签）。
+    Classify,
+    /// 把任务拆成 checklist 追加进描述。
+    Breakdown,
+    /// 重写描述（Markdown，保留事实、补齐背景）。
+    Polish,
+}
+
+/// 模型可用时给出 `(档案, key)`。没有配置过任何厂商 / 默认厂商已失效 → `None`
+/// （按钮据此画成禁用态）。
+fn ai_candidate(cx: &App) -> Option<(duck_ai::ProviderProfile, String)> {
+    let settings = ai::load_settings(cx);
+    let configured = ai::load_configured(cx);
+    let id = settings
+        .default_provider
+        .filter(|id| configured.iter().any(|known| known == id))
+        .or_else(|| configured.first().cloned())?;
+    let profile = ai::load_providers(cx).into_iter().find(|p| p.id == id)?;
+    let key = ai::load_api_key(cx, &id)?;
+    Some((profile, key))
+}
+
+/// 组一次请求的 (system, user)。纯读表单，`&App` 里就够。
+fn ai_prompt(action: AiAction, form: &TaskEditorForm, cx: &App) -> (String, String) {
+    let title = input_value(&form.title, cx);
+    let description = textarea_value(&form.desc, cx);
+    let system = "You are a concise task-management assistant inside a desktop app. \
+Answer with exactly what the user asks for and nothing else; never add commentary."
+        .to_owned();
+    let user = match action {
+        AiAction::Classify => {
+            let projects = form
+                .projects
+                .iter()
+                .map(|project| format!("- id={} name={}", project.id, project.name))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let tags = form
+                .available_tags
+                .iter()
+                .map(|tag| tag.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Task title: {title}\nTask description: {description}\n\n\
+Available projects:\n{projects}\n\nExisting tags: [{tags}]\n\n\
+Pick the best project and 0-3 existing tags for this task. \
+Reply with ONLY a JSON object: {{\"project_id\": <number or null>, \"tags\": [<existing tag names>]}}"
+            )
+        }
+        AiAction::Breakdown => format!(
+            "Task title: {title}\nTask description: {description}\n\n\
+Break this task into 3-6 concrete, ordered steps. \
+Reply with ONLY Markdown checklist lines, one per step, like \"- [ ] step\". No other text."
+        ),
+        AiAction::Polish => format!(
+            "Task title: {title}\nTask description: {description}\n\n\
+Rewrite the description in Markdown: keep every factual detail, fix structure and wording, \
+add acceptance criteria only if they are implied. Keep it under 15 lines. \
+Reply with ONLY the Markdown description."
+        ),
+    };
+    (system, user)
+}
+
+/// 发起一次 AI 动作。跑在后台线程；结果经 [`crate::update::on_notify_window`]
+/// 回填表单（`set_value` 要窗口），回执弹在页面提示条上。
+fn run_ai_action(
+    form: &Entity<TaskEditorForm>,
+    view: &WeakEntity<ProjectsPage>,
+    action: AiAction,
+    cx: &mut App,
+) {
+    // 防双击：上一发还没回来就不发第二发（弹窗正文不重绘，按钮点了没反应就是「在跑」）。
+    if form.read(cx).ai_running.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some((profile, key)) = ai_candidate(cx) else {
+        return;
+    };
+    let (system, user) = form.read_with(cx, |form, cx| ai_prompt(action, form, cx));
+    form.read(cx).ai_running.store(true, Ordering::SeqCst);
+
+    let form = form.downgrade();
+    let view = view.clone();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { ai_ask(&profile, &key, &system, user) })
+            .await;
+        let _ = form.update(cx, |form, cx| {
+            form.ai_running.store(false, Ordering::SeqCst);
+            match result {
+                Ok(text) => {
+                    let applied = crate::update::on_notify_window(cx, |window, cx| {
+                        form.apply_ai(action, &text, window, cx);
+                    });
+                    if let (true, Some(page)) = (applied, view.upgrade()) {
+                        page.update(cx, |page, cx| {
+                            page.show(Tone::Success, tr(cx, "AI 已更新表单。"), None, cx);
+                        });
+                    }
+                }
+                Err(error) => {
+                    if let Some(page) = view.upgrade() {
+                        page.update(cx, |page, cx| {
+                            page.show(Tone::Error, trf(cx, "AI 调用失败：{}", &[&error]), None, cx);
+                        });
+                    }
+                }
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// 一次同步补全。**只在后台线程调**（阻塞 HTTP，见 `duck-ai` 的模块头）。
+fn ai_ask(
+    profile: &duck_ai::ProviderProfile,
+    key: &str,
+    system: &str,
+    user: String,
+) -> Result<String, String> {
+    let request = ChatRequest::new(
+        profile.model.clone(),
+        vec![ChatMessage::system(system), ChatMessage::user(user)],
+    );
+    duck_ai::provider::complete(profile, key, &request, 60).map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// 「一问一回填」的通用骨架（S6 第二批：Spotlight 兜底 / 日志生成 / 周计划生成）
+// ---------------------------------------------------------------------------
+//
+// 与编辑器那三按钮（[`run_ai_action`]）是同一条路，差别只在「结果回填到哪」——
+// 那部分由调用方以闭包给（[`run_ai`]）。三条共同纪律：
+//
+// - **回填必须在窗口回调里**：`fill_input` / `fill_area` 要 `&mut Window`，而异步体里
+//   拿不到窗口 ⇒ 统一走 [`crate::update::on_notify_window`]；
+// - **弹窗正文闭包只跑一次**（见本文件头部）⇒ 忙碌态画不上去，防双击用 `busy` 原子位，
+//   反馈一律走页面回执条；
+// - **失败也是一种结果**：模型报的错原样带给用户（`Tone::Error`），不吞、不重试、
+//   不编一句更委婉的话。
+//
+// 没配厂商时**什么都不发生**：入口本来就不该画出来（各调用点先问 `ai_candidate`），
+// 这里再挡一道只是防「配置在另一个窗口被删掉」这种时间差。
+
+/// 发起一次「问模型 → 回主线程回填」的调用。
+///
+/// `apply` 收模型全文（未裁剪，各调用点自己决定怎么解释），跑在窗口回调里。
+fn run_ai(
+    view: &WeakEntity<ProjectsPage>,
+    busy: &Arc<AtomicBool>,
+    system: &str,
+    user: String,
+    cx: &mut App,
+    apply: impl Fn(&str, &mut Window, &mut App) + 'static,
+) {
+    if busy.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some((profile, key)) = ai_candidate(cx) else {
+        return;
+    };
+    let system = system.to_owned();
+    busy.store(true, Ordering::SeqCst);
+    let busy = busy.clone();
+    let view = view.clone();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { ai_ask(&profile, &key, &system, user) })
+            .await;
+        cx.update(move |cx| {
+            busy.store(false, Ordering::SeqCst);
+            match result {
+                Ok(text) => {
+                    crate::update::on_notify_window(cx, |window, cx| apply(&text, window, cx));
+                }
+                Err(error) => {
+                    if let Some(page) = view.upgrade() {
+                        page.update(cx, |page, cx| {
+                            page.show(Tone::Error, trf(cx, "AI 调用失败：{}", &[&error]), None, cx);
+                        });
+                    }
+                }
+            }
+        });
+    })
+    .detach();
+}
+
+/// Spotlight 的「AI 解析」：把一句话交给模型，结果**以记号文本写回输入框**。
+///
+/// 写回输入框而不是在旁边另存一份 AI 结果，理由见 [`quickparse::to_markers`]：输入框
+/// 已经是这个弹窗的唯一真源，预览 chips 与「创建」都从它现读；另存一份立刻就是双真源。
+///
+/// 模型没给出可用内容（或只给了空白标题）时**不动输入框**，只弹一条 `Tone::Warning` ——
+/// 用一段空结果清掉用户刚打的字是最糟的后果。
+fn run_ai_quick(form: &Entity<SpotlightForm>, view: &WeakEntity<ProjectsPage>, cx: &mut App) {
+    let (raw, projects, tags, today, input, busy) = {
+        let read = form.read(cx);
+        (
+            input_value(&read.input, cx),
+            read.projects.clone(),
+            read.tags.clone(),
+            read.today,
+            read.input.clone(),
+            read.ai_running.clone(),
+        )
+    };
+    if raw.is_empty() {
+        return;
+    }
+    let user = ai_assist::quick_prompt(&raw, &projects, &tags, today);
+    let view_for_apply = view.clone();
+    run_ai(
+        view,
+        &busy,
+        ai_assist::SYSTEM_PROMPT,
+        user,
+        cx,
+        move |text, window, cx| {
+            let Some(parsed) = ai_assist::quick_from_json(text, today) else {
+                report_ai_unparsed(&view_for_apply, cx);
+                return;
+            };
+            let markers = quickparse::to_markers(&parsed);
+            if markers.is_empty() {
+                report_ai_unparsed(&view_for_apply, cx);
+                return;
+            }
+            fill_input(&input, &markers, window, cx);
+            if let Some(page) = view_for_apply.upgrade() {
+                page.update(cx, |page, cx| {
+                    page.show(Tone::Success, tr(cx, "AI 已解析，可继续修改。"), None, cx);
+                });
+            }
+        },
+    );
+}
+
+/// 「模型这次没给出能用的东西」的统一回执。
+fn report_ai_unparsed(view: &WeakEntity<ProjectsPage>, cx: &mut App) {
+    if let Some(page) = view.upgrade() {
+        page.update(cx, |page, cx| {
+            page.show(Tone::Warning, tr(cx, "AI 这次没解析出可用内容。"), None, cx);
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 日志 / 周计划的「AI 生成」（S6 第二批，F27）
+// ---------------------------------------------------------------------------
+//
+// 与 Spotlight 那条路共用 `run_ai`；差别是回填对象是**多行正文**，以及结果要打上
+// `ai_generated` 的来源标记（见 `state::save_log`）。
+
+/// 生成草稿要用的 (system, user)，以及「有没有素材可写」。
+///
+/// # 为什么在**打开弹窗**时取快照，而不是点按钮时现取
+///
+/// 点按钮那一刻手上只有 `&mut App`，够不到 `page.state`。而打开时取反而更对：
+/// 「生成这一篇」读的是打开弹窗那一刻的事实 —— 中途在别的窗口改了任务，不该让同一句
+/// 话在两次点击下生成出不同的东西（用户会以为模型在胡说）。
+///
+/// 返回 `None` = 这段时间一条相关任务都没有：调用点据此画一句说明而不是摆一个
+/// 点了没反应的按钮。
+///
+/// # 用哪一批任务
+///
+/// 用**库里全部顶层任务**（[`ProjectsState::all_tasks`]），不是看板当前那一批：
+/// 「今天做了什么」不该随左栏筛选条变来变去。全量读失败时回落到当前视图的任务 ——
+/// 生成草稿这件事不该因为一次读失败而整个消失，而回落的结果用户看得见、也能改。
+fn generation_prompt(
+    page: &ProjectsPage,
+    kind: LogKind,
+    date: CalendarDate,
+    cx: &App,
+) -> Option<(String, String)> {
+    let state = page.state.read(cx);
+    let (from, to) = match kind {
+        LogKind::Daily => (date, date),
+        LogKind::Weekly => {
+            let monday = date.start_of_week();
+            (monday, monday.add_days(6))
+        }
+        // 周计划看的是**面板上那一周**（锚定周），不是某一天所在的周。
+        LogKind::Plan => {
+            let monday = state.plan_anchor().start_of_week();
+            (monday, monday.add_days(6))
+        }
+    };
+    let scope = ai_assist::SummaryScope {
+        from,
+        to,
+        today: state.today(),
+    };
+    let projects = state.projects().to_vec();
+    let tasks = state.all_tasks().unwrap_or_else(|_| state.tasks().to_vec());
+    let milestones = collect_milestones(state, &tasks, scope);
+    let summary = ai_assist::summarize(&tasks, &projects, &milestones, scope);
+    let no_facts = match kind {
+        LogKind::Plan => summary.plan_facts_empty(),
+        _ => summary.is_empty(),
+    };
+    if no_facts {
+        return None;
+    }
+    let user = match kind {
+        LogKind::Plan => ai_assist::plan_prompt(&summary, scope),
+        _ => ai_assist::log_prompt(kind, &summary, scope),
+    };
+    Some((ai_assist::SYSTEM_PROMPT.to_owned(), user))
+}
+
+/// 这段时间**真的动过**的任务的里程碑。
+///
+/// 先按状态 / 日期筛一道再查库：里程碑要一条任务一次查询（内核的
+/// `list_task_milestones` 只按 task_id 索引），几百条任务全查一遍是白花 ——
+/// 而九成任务根本没有里程碑，且只有会出现在 prompt 里的那几类才值得看。
+fn collect_milestones(
+    state: &ProjectsState,
+    tasks: &[Task],
+    scope: ai_assist::SummaryScope,
+) -> Vec<ai_assist::MilestoneLine> {
+    let mut out = Vec::new();
+    for task in tasks.iter().filter(|task| worth_looking_at(task, scope)) {
+        for milestone in state.task_milestones(task.id) {
+            let reached = milestone
+                .reached_at
+                .map(local_date)
+                .is_some_and(|day| day >= scope.from && day <= scope.to);
+            out.push(ai_assist::MilestoneLine {
+                task: task.title.clone(),
+                title: milestone.title,
+                reached,
+            });
+        }
+    }
+    out
+}
+
+/// 这条任务会不会出现在摘要的几个桶里（详见 [`collect_milestones`]）。
+fn worth_looking_at(task: &Task, scope: ai_assist::SummaryScope) -> bool {
+    match task.status {
+        TaskStatus::Cancelled => false,
+        TaskStatus::Done => task
+            .completed_at
+            .map(local_date)
+            .is_some_and(|day| day >= scope.from && day <= scope.to),
+        TaskStatus::Doing | TaskStatus::Blocked => true,
+        TaskStatus::Todo | TaskStatus::Deferred => {
+            task.is_overdue(scope.today)
+                || task
+                    .due_date
+                    .is_some_and(|due| due >= scope.from && due <= scope.to)
+        }
+    }
+}
+
+/// 一个「AI 生成」按钮行要的全部东西。
+///
+/// 打成一个结构体而不是七个参数：三样「开关位 / 实体 / 回调目标」本来就分不开，
+/// 摊平之后调用点会看不清哪个是哪个。
+///
+/// 两份**持有**（而不是借用）的实体是刻意的：按钮的 `on_click` 闭包要 `'static`，
+/// 借用会逼着调用点把 `Entity` 的生命周期也搬进结构体里 —— 而这里真正需要的只是
+/// 「点下去之后这两样还在」。
+struct GenerateRow {
+    /// 按钮的元素 id（两种弹窗各一个，不共用）。
+    id: &'static str,
+    /// 打开弹窗时算好的 (system, user)；`None` = 没素材，画 `empty_hint`。
+    prompt: Option<(String, String)>,
+    /// 没素材时那句说明。
+    empty_hint: &'static str,
+    /// 回填目标（正文输入框）。
+    body: Entity<TextareaState>,
+    /// 回执与跳转都回到页面。
+    view: WeakEntity<ProjectsPage>,
+    /// 防双击位。
+    busy: Arc<AtomicBool>,
+    /// 结果是不是 AI 写的（日志要落 `ai_generated`；周计划没有这一列，传 `None`）。
+    used: Option<Arc<AtomicBool>>,
+}
+
+/// 画「AI 生成」那一行。
+///
+/// 没配厂商 → 一句说明；没素材 → 另一句说明；两者都不摆点了没反应的按钮
+/// （与编辑器的 [`ai_buttons_row`] 同一条口径）。
+fn ai_generate_row(row: GenerateRow, cx: &App) -> AnyElement {
+    if ai_candidate(cx).is_none() {
+        return meta_text(
+            tr(
+                cx,
+                "AI：先在「设置 → AI」里配置一个厂商，这里才有草稿生成。",
+            ),
+            cx,
+        )
+        .into_any_element();
+    }
+    let GenerateRow {
+        id,
+        prompt,
+        empty_hint,
+        body,
+        view,
+        busy,
+        used,
+    } = row;
+    let Some((system, user)) = prompt else {
+        return meta_text(empty_hint, cx).into_any_element();
+    };
+    button(id, tr(cx, "AI 生成"), ButtonVariant::Ghost, cx)
+        .on_click(move |_, _window, cx| {
+            // 两份 `view`：一份给 `run_ai` 借（失败回执），一份进回填闭包（成功回执）。
+            // 同一个变量两用会被借用检查挡住 —— 它们本来就是两处用途。
+            let view_for_apply = view.clone();
+            let body = body.clone();
+            let used = used.clone();
+            run_ai(
+                &view,
+                &busy,
+                &system,
+                user.clone(),
+                cx,
+                move |text, window, cx| {
+                    let draft = text.trim();
+                    if draft.is_empty() {
+                        report_ai_unparsed(&view_for_apply, cx);
+                        return;
+                    }
+                    fill_area(&body, draft, window, cx);
+                    if let Some(flag) = &used {
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                    if let Some(page) = view_for_apply.upgrade() {
+                        page.update(cx, |page, cx| {
+                            page.show(
+                                Tone::Success,
+                                tr(cx, "AI 已生成草稿，可继续修改。"),
+                                None,
+                                cx,
+                            );
+                        });
+                    }
+                },
+            );
+        })
+        .into_any_element()
+}
+
+impl TaskEditorForm {
+    /// 把模型回复落到表单。`window` 由 [`crate::update::on_notify_window`] 给出
+    /// （回填输入框要它，见 `fill_area` / `fill_input`）。
+    fn apply_ai(&mut self, action: AiAction, text: &str, window: &mut Window, cx: &mut App) {
+        match action {
+            AiAction::Classify => {
+                // 只截第一对花括号之间的 JSON：模型偶尔带一句客套话，别让整段解析失败。
+                let Some(start) = text.find('{') else {
+                    return;
+                };
+                let Some(end) = text.rfind('}') else {
+                    return;
+                };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&text[start..=end])
+                else {
+                    return;
+                };
+                if let Some(project_id) = value.get("project_id").and_then(|v| v.as_i64())
+                    && self.projects.iter().any(|project| project.id == project_id)
+                {
+                    self.project = Some(project_id);
+                }
+                if let Some(names) = value.get("tags").and_then(|v| v.as_array()) {
+                    for name in names {
+                        let Some(name) = name.as_str().map(str::trim).filter(|v| !v.is_empty())
+                        else {
+                            continue;
+                        };
+                        if let Some(tag) = self
+                            .available_tags
+                            .iter()
+                            .find(|tag| tag.name.eq_ignore_ascii_case(name))
+                            && !self.tags.contains(&tag.id)
+                        {
+                            self.tags.push(tag.id);
+                        }
+                    }
+                }
+            }
+            AiAction::Breakdown => {
+                let mut current = textarea_value(&self.desc, cx);
+                if !current.trim().is_empty() {
+                    current.push_str("\n\n");
+                }
+                current.push_str(text.trim());
+                fill_area(&self.desc, &current, window, cx);
+            }
+            AiAction::Polish => {
+                let polished = text.trim();
+                if !polished.is_empty() {
+                    fill_area(&self.desc, polished, window, cx);
+                }
+            }
+        }
+    }
+}
+
 /// 打开任务编辑弹窗（新建或编辑）。
+///
+/// `preset_due` 只对**新建**有意义：日历格右键的「在这天新建任务」把该日期预填进截止日
+/// 选择器。编辑态忽略它 —— 既有任务的日期一律以库里那份为准，否则「在 11 号的格子里
+/// 右键 → 编辑这条 3 号到期的任务」就会把它的截止日悄悄改到 11 号。
 pub(crate) fn open_task_editor(
     page: &mut ProjectsPage,
     task_id: Option<i64>,
     preset_project: Option<i64>,
     preset_status: TaskStatus,
+    preset_due: Option<CalendarDate>,
     window: &mut Window,
     cx: &mut Context<ProjectsPage>,
 ) {
@@ -673,7 +1304,17 @@ pub(crate) fn open_task_editor(
     let form = match &existing {
         Some(task) => cx.new(|cx| TaskEditorForm::from_task(window, cx, task, catalogs)),
         None => {
-            cx.new(|cx| TaskEditorForm::new(window, cx, preset_project, preset_status, 0, catalogs))
+            let form = cx.new(|cx| {
+                TaskEditorForm::new(window, cx, preset_project, preset_status, 0, catalogs)
+            });
+            // 预置截止日安排在**订阅挂上之后**写：`set_picker_date` 会发
+            // `DatePickerEvent`，正好触发 `refresh_estimate` 把预估工时按这一天算出来
+            // —— 用户打开就能看到「这天 + 自动工时」，与手点一次选择器等价。
+            // （先把实体取出来再写：`form.read(cx)` 的借用要活到语句结束，与下面
+            // `&mut cx` 冲突。）
+            let due = form.read(cx).due.clone();
+            set_picker_date(&due, preset_due, window, cx);
+            form
         }
     };
 
@@ -835,6 +1476,7 @@ fn task_editor_body(
             None,
             cx,
         ))
+        .child(ai_buttons_row(form, view, cx))
         .child(form_row(
             [
                 form_field(tr(cx, "开始日期"), date_picker(&read.start), None, None, cx)
@@ -881,6 +1523,16 @@ fn task_editor_body(
             Some(SharedString::from(tr(
                 cx,
                 "状态为「阻塞」时显示在卡片与右栏。",
+            ))),
+            cx,
+        ))
+        .child(form_field(
+            tr(cx, "关联分支"),
+            line_input(&read.git_branch, cx),
+            None,
+            Some(SharedString::from(tr(
+                cx,
+                "只是记一笔这条任务在哪个分支上干的，不会去问 git。",
             ))),
             cx,
         ));
@@ -1097,7 +1749,39 @@ fn task_editor_body(
             None,
             None,
             cx,
-        ));
+        ))
+        .child(
+            // 工作上下文三件（「干到哪儿了」）：文件 / SQL / 链接。三样一起存、
+            // 一起换（内核的 TaskPatch 没有只改一样的口），界面也就摆成一整块。
+            v_flex()
+                .w_full()
+                .gap(tokens.spacing.xs)
+                .child(caption_heading(tr(cx, "工作上下文"), cx))
+                .child(form_field(
+                    tr(cx, "关联文件"),
+                    area_input(&read.ctx_files, 2, 4, cx),
+                    None,
+                    Some(SharedString::from(tr(
+                        cx,
+                        "每行一个；写「行:列:路径」可带定位。",
+                    ))),
+                    cx,
+                ))
+                .child(form_field(
+                    tr(cx, "上次 SQL"),
+                    area_input(&read.ctx_sql, 2, 4, cx),
+                    None,
+                    None,
+                    cx,
+                ))
+                .child(form_field(
+                    tr(cx, "相关链接"),
+                    area_input(&read.ctx_tabs, 2, 3, cx),
+                    None,
+                    None,
+                    cx,
+                )),
+        );
 
     v_flex()
         .w_full()
@@ -1117,6 +1801,55 @@ fn task_editor_body(
                 .child(left)
                 .child(right),
         )
+}
+
+/// 编辑器左列的 AI 三按钮（分类 / 拆解 / 润色描述）。
+///
+/// 没配任何厂商时整行退化为一句说明（「去哪儿开」），按钮根本不出现 —— 摆三个
+/// 点了没反应的按钮比不摆更糟；配了就走 [`run_ai_action`]。
+fn ai_buttons_row(
+    form: &Entity<TaskEditorForm>,
+    view: &WeakEntity<ProjectsPage>,
+    cx: &App,
+) -> AnyElement {
+    if ai_candidate(cx).is_none() {
+        return meta_text(
+            tr(
+                cx,
+                "AI：先在「设置 → AI」里配置一个厂商，这里才有分类 / 拆解 / 润色可用。",
+            ),
+            cx,
+        )
+        .into_any_element();
+    }
+    let mk = |id: &'static str, label: &'static str, action: AiAction| {
+        let form = form.clone();
+        let view = view.clone();
+        button(id, tr(cx, label), ButtonVariant::Ghost, cx).on_click(move |_, _window, cx| {
+            // `&mut App` 上下文里就能发起（后台线程 + 回执都在这条路上）。
+            run_ai_action(&form, &view, action, cx);
+        })
+    };
+    h_flex()
+        .w_full()
+        .flex_wrap()
+        .gap_2()
+        .child(mk(
+            "projects-task-editor-ai-classify",
+            "AI 分类",
+            AiAction::Classify,
+        ))
+        .child(mk(
+            "projects-task-editor-ai-breakdown",
+            "AI 拆解",
+            AiAction::Breakdown,
+        ))
+        .child(mk(
+            "projects-task-editor-ai-polish",
+            "AI 润色描述",
+            AiAction::Polish,
+        ))
+        .into_any_element()
 }
 
 /// 标签多选片：选中的用标签本色，未选中的中性描边。
@@ -1628,6 +2361,7 @@ fn tag_manager_body(
 ) -> impl IntoElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
+    let extended = theme.extended();
     // 清单**现读**：删除 / 换色后下一帧就是新清单（理由见模块头）。
     let tags: Vec<Tag> = view
         .read_with(cx, |page, cx| page.state.read(cx).tags().to_vec())
@@ -1641,13 +2375,46 @@ fn tag_manager_body(
         let color = color_from_hex(&tag.color).unwrap_or(tokens.colors.muted_foreground);
         let view_for_cycle = view.clone();
         let view_for_delete = view.clone();
+        let view_for_favorite = view.clone();
         let tag_id = tag.id;
+        let favorite = tag.is_favorite;
         list = list.child(
             h_flex()
                 .w_full()
                 .items_center()
                 .gap(tokens.spacing.sm)
                 .py(tokens.spacing.xxs)
+                // 收藏开关：实心星 = 已收藏（左栏排前面）。列表顺序就是内核给的
+                // 「收藏在前」，拨完开关重载后自动就位。
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "projects-tag-favorite-{tag_id}"
+                        )))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .role(Role::Button)
+                        .aria_label(if favorite {
+                            SharedString::from(tr(cx, "取消收藏"))
+                        } else {
+                            SharedString::from(tr(cx, "收藏"))
+                        })
+                        .child(Icon::new(DuckIcon::Star).size(extended.icon.sm).text_color(
+                            if favorite {
+                                theme.extended().colors.warning
+                            } else {
+                                tokens.colors.muted_foreground
+                            },
+                        ))
+                        .on_click(move |_, _, cx| {
+                            let _ = view_for_favorite.update(cx, |page, cx| {
+                                page.set_tag_favorite(tag_id, !favorite, cx)
+                            });
+                        }),
+                )
                 // 色点点击 = 换下一个色板色（就地保存）。
                 .child(
                     div()
@@ -1672,7 +2439,7 @@ fn tag_manager_body(
                         .truncate()
                         .text_size(tokens.typography.sm.size)
                         .line_height(tokens.typography.sm.line_height)
-                        .child(SharedString::from(tag.name.clone())),
+                        .child(selectable_text(SharedString::from(tag.name.clone()))),
                 )
                 .child(
                     div()
@@ -1680,11 +2447,11 @@ fn tag_manager_body(
                         .text_size(tokens.typography.xs.size)
                         .line_height(tokens.typography.xs.line_height)
                         .text_color(theme.extended().colors.text_tertiary)
-                        .child(SharedString::from(trf(
+                        .child(selectable_text(SharedString::from(trf(
                             cx,
                             "{} 项任务",
                             &[&tag.usage_count.to_string()],
-                        ))),
+                        )))),
                 )
                 .child(
                     button(
@@ -1964,6 +2731,7 @@ pub(crate) fn open_spotlight(
         tags,
         today,
         preset_project: preset_project.or(scope_project),
+        ai_running: Arc::new(AtomicBool::new(false)),
     });
 
     let drag = modal_drag(cx);
@@ -1974,6 +2742,7 @@ pub(crate) fn open_spotlight(
         let form_for_content = form.clone();
         let form_for_ok = form.clone();
         let view_for_ok = view.clone();
+        let view_for_content = view.clone();
 
         let confirm: ConfirmHandler = std::rc::Rc::new(move |_, cx| {
             let text = input_value(&form_for_ok.read(cx).input, cx);
@@ -2000,7 +2769,7 @@ pub(crate) fn open_spotlight(
             .content(move |content, _, cx| {
                 content.child(modal_drag_area(
                     &drag_for_content,
-                    spotlight_body(&form_for_content, &drag_for_content, cx),
+                    spotlight_body(&form_for_content, &drag_for_content, &view_for_content, cx),
                 ))
             })
             .footer(footer)
@@ -2013,11 +2782,14 @@ struct SpotlightForm {
     tags: Vec<Tag>,
     today: CalendarDate,
     preset_project: Option<i64>,
+    /// 「AI 解析」在跑吗（防双击；弹窗正文闭包只跑一次，画不出忙碌态）。
+    ai_running: Arc<AtomicBool>,
 }
 
 fn spotlight_body(
     form: &Entity<SpotlightForm>,
     drag: &Entity<duck_components::ModalDrag>,
+    view: &WeakEntity<ProjectsPage>,
     cx: &App,
 ) -> impl IntoElement {
     let theme = active_theme(cx);
@@ -2043,6 +2815,39 @@ fn spotlight_body(
             read.preset_project,
             cx,
         ))
+        .child(spotlight_ai_row(form, view, cx))
+}
+
+/// Spotlight 的「AI 解析」入口（F11 的「AI 仅作兜底」那一半）。
+///
+/// 摆在这里而不是藏进菜单：本地记号认不出的自然语言（「下周三把登录超时收一下」）
+/// 是这条路的**主要用法**，多一层折叠就等于没做。没配厂商时退化为一句话说明，
+/// 不摆点了没反应的按钮（与编辑器三按钮同一条口径）。
+fn spotlight_ai_row(
+    form: &Entity<SpotlightForm>,
+    view: &WeakEntity<ProjectsPage>,
+    cx: &App,
+) -> AnyElement {
+    if ai_candidate(cx).is_none() {
+        return meta_text(
+            tr(
+                cx,
+                "AI：先在「设置 → AI」里配置一个厂商，这里才有兜底解析。",
+            ),
+            cx,
+        )
+        .into_any_element();
+    }
+    let form = form.clone();
+    let view = view.clone();
+    button(
+        "projects-spotlight-ai",
+        tr(cx, "AI 解析"),
+        ButtonVariant::Ghost,
+        cx,
+    )
+    .on_click(move |_, _window, cx| run_ai_quick(&form, &view, cx))
+    .into_any_element()
 }
 
 /// 解析结果的 chips 预览（原型 `sp-res`）：一眼看出这句话会被拆成什么。
@@ -2123,7 +2928,7 @@ fn neutral_chip(label: SharedString, cx: &App) -> impl IntoElement {
         .text_size(tokens.typography.xs.size)
         .line_height(tokens.typography.xs.line_height)
         .text_color(tokens.colors.foreground)
-        .child(label)
+        .child(selectable_text(label))
 }
 
 // ---------------------------------------------------------------------------
@@ -2131,6 +2936,24 @@ fn neutral_chip(label: SharedString, cx: &App) -> impl IntoElement {
 // ---------------------------------------------------------------------------
 
 /// 打开某天（某一档）日志的编辑弹窗。
+///
+/// # 两块输入：正文 + 标签
+///
+/// 标签是**自由文本**（`线上事故` / `复盘`），不是任务标签表里的实体 —— 所以用一个
+/// 逗号分隔的单行输入框，落库形态见 `duck_project::store::join_tags`。中文用户习惯
+/// 用「、」分隔，所以两种分隔符都认；`#` 前缀顺手削掉（「#前端」这种写法很常见）。
+///
+/// # 草稿自动保存
+///
+/// 弹窗关掉（点外面 / `Esc`）时没有任何写库调用，刚打的字就没了。所以：
+///
+/// - **打开时**：库里那一篇为空、且草稿正好属于「这一天这一档」→ 用草稿预填；
+/// - **每次输入变化**：写一遍草稿（订阅挂在输入框实体上，**不是**每次渲染里 ——
+///   弹窗的 content 闭包是每帧重跑的 `Fn`，在那里订阅会一帧挂一个）；
+/// - **保存成功**：`submit_log` 里 `kv_delete` 掉草稿。
+///
+/// 库里已经有正文时**不**用草稿预填：那篇日志已经保存过了，草稿只可能是更早一次
+/// 编辑留下的残迹，用它盖掉真内容是最糟的后果。
 pub(crate) fn open_log_editor(
     page: &mut ProjectsPage,
     date: CalendarDate,
@@ -2138,30 +2961,83 @@ pub(crate) fn open_log_editor(
     window: &mut Window,
     cx: &mut Context<ProjectsPage>,
 ) {
-    let existing = {
+    let (existing, existing_tags) = {
         let state = page.state.read(cx);
-        state
-            .log_of(date, kind)
-            .map(|log| log.content_md.clone())
-            .unwrap_or_default()
+        match state.log_of(date, kind) {
+            Some(log) => (log.content_md.clone(), log.tags.clone()),
+            None => (String::new(), Vec::new()),
+        }
     };
+    // 只在「这一篇还是空的」时才认领草稿。
+    let draft = prefs::LogDraft::load(cx).filter(|draft| {
+        existing.trim().is_empty() && draft.belongs_to(date, kind) && !draft.is_empty()
+    });
+    let (content, tags) = match &draft {
+        Some(draft) => (draft.content().to_owned(), draft.tags()),
+        None => (existing, existing_tags),
+    };
+
     let body = cx.new(|cx| {
         // 直接构造 + 回填：`TextareaState` 是**状态本身**（不是 `Entity`），
         // 拿得到 `&mut` 就不必再绕一层 `Entity::update`。
         let mut state = TextareaState::new(window, cx);
-        state.set_value(SharedString::from(existing), window, cx);
+        state.set_value(SharedString::from(content), window, cx);
+        state
+    });
+    let tag_row = cx.new(|cx| {
+        let mut state = InputState::new(window, cx)
+            .placeholder(SharedString::from(tr(cx, "用逗号分隔，如：线上事故, 复盘")));
+        state.set_value(SharedString::from(tags_field(&tags)), window, cx);
         state
     });
 
+    // 边打边存草稿：订阅输入框自己的通知。`Context::observe` 内部持的是**弱引用**、
+    // 被观察实体销毁后回调返回 `false` 自动注销，所以这里 `detach()` 不会泄漏
+    // （与 `pages/settings/mod.rs` 的搜索框同一个用法）。
+    {
+        let draft_body = body.clone();
+        let draft_tags = tag_row.clone();
+        cx.observe(&body, move |_page, _, cx| {
+            save_log_draft(&draft_body, &draft_tags, date, kind, cx);
+        })
+        .detach();
+    }
+    {
+        let draft_body = body.clone();
+        let draft_tags = tag_row.clone();
+        cx.observe(&tag_row, move |_page, _, cx| {
+            save_log_draft(&draft_body, &draft_tags, date, kind, cx);
+        })
+        .detach();
+    }
+
+    // 打开弹窗前先把「正在打的东西」记一份：用户可能就是直接关窗走人。
+    save_log_draft(&body, &tag_row, date, kind, cx);
+
+    // 「AI 生成」的素材也在这一刻取（理由见 `generation_prompt`）。取不到就不摆按钮，
+    // 改画一句说明 —— 入口不该是一个点了没反应的按钮。
+    let prompt = generation_prompt(page, kind, date, cx);
+
     let drag = modal_drag(cx);
     let view = page.view.clone();
+    // 「点过 AI 生成」与「这一发在路上」两个开关位。前者要落 `ai_generated`
+    // （保存时读），后者防双击（弹窗正文闭包只跑一次，画不出忙碌态）。
+    let used = Arc::new(AtomicBool::new(false));
+    let busy = Arc::new(AtomicBool::new(false));
     let date_iso = date.to_iso();
     window.open_dialog(cx, move |dialog, _, cx| {
         let offset = modal_offset(&drag, cx);
         let drag_for_content = drag.clone();
         let body_for_content = body.clone();
+        let tags_for_content = tag_row.clone();
         let body_for_ok = body.clone();
+        let tags_for_ok = tag_row.clone();
         let view_for_ok = view.clone();
+        let view_for_content = view.clone();
+        let used_for_ok = used.clone();
+        let used_for_content = used.clone();
+        let busy_for_content = busy.clone();
+        let prompt_for_content = prompt.clone();
         let date_for_ok = date;
         let kind_for_ok = kind;
         let heading =
@@ -2169,8 +3045,10 @@ pub(crate) fn open_log_editor(
 
         let confirm: ConfirmHandler = std::rc::Rc::new(move |_, cx| {
             let text = textarea_value(&body_for_ok, cx);
+            let tags = parse_tags_field(&input_value(&tags_for_ok, cx));
+            let generated = used_for_ok.load(Ordering::SeqCst);
             let _ = view_for_ok.update(cx, |page, cx| {
-                page.submit_log(date_for_ok, kind_for_ok, &text, cx)
+                page.submit_log(date_for_ok, kind_for_ok, &text, &tags, generated, cx)
             });
             true
         });
@@ -2202,11 +3080,79 @@ pub(crate) fn open_log_editor(
                             heading.clone(),
                             cx,
                         ))
-                        .child(area_input(&body_for_content, 6, 14, cx)),
+                        .child(area_input(&body_for_content, 6, 14, cx))
+                        .child(ai_generate_row(
+                            GenerateRow {
+                                id: "projects-log-ai",
+                                prompt: prompt_for_content.clone(),
+                                empty_hint: tr(cx, "这段时间还没有可用于生成的任务。"),
+                                body: body_for_content.clone(),
+                                view: view_for_content.clone(),
+                                busy: busy_for_content.clone(),
+                                used: Some(used_for_content.clone()),
+                            },
+                            cx,
+                        ))
+                        .child(form_label(tr(cx, "标签"), cx))
+                        .child(line_input(&tags_for_content, cx))
+                        .child(
+                            div()
+                                .text_size(tokens.typography.xs.size)
+                                .line_height(tokens.typography.xs.line_height)
+                                .text_color(tokens.colors.muted_foreground)
+                                .child(SharedString::from(tr(
+                                    cx,
+                                    "Tag 只是贴在这篇日志上的分类词，不影响任务标签。",
+                                ))),
+                        ),
                 ))
             })
             .footer(footer)
     });
+}
+
+/// 标签输入框的初值：标签之间用「, 」分隔（写回时两种分隔符都认）。
+///
+/// 用「, 」而不是「,」是为了让用户一眼看出这里是**多个**标签；存回时不依赖这个空格
+/// （`parse_tags_field` 会 trim 每一项）。
+fn tags_field(tags: &[String]) -> String {
+    tags.join(", ")
+}
+
+/// 标签输入框的文本 → 标签列表。
+///
+/// 三种写法都认：`,` / `、` / `，`（中文逗号）。`#` 前缀削掉（「#前端」是常见写法），
+/// 每一项 trim。真正的不变量（不含逗号、去重、丢空项）在内核的
+/// `duck_project::normalize_tags`，这里只做「用户怎么打」这一层的宽容处理。
+pub(crate) fn parse_tags_field(text: &str) -> Vec<String> {
+    text.split([',', '、', '，'])
+        .map(|tag| tag.trim().trim_start_matches('#').trim())
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 把当前输入框里的内容存成草稿。
+///
+/// 正文与标签都空时**删掉**草稿而不是留一份空草稿：用户打开弹窗又什么都没打，
+/// 留一份空草稿只会让下次打开时多一次「草稿认领」判断，没有任何收益。
+fn save_log_draft(
+    body: &Entity<TextareaState>,
+    tags: &Entity<InputState>,
+    date: CalendarDate,
+    kind: LogKind,
+    cx: &App,
+) {
+    let content = textarea_value(body, cx);
+    // 入口就洗干净（丢空项、丢含逗号的项、去重）—— 与落库用的是同一个函数，
+    // 所以草稿里存下来的形态和将来写进库的形态必然一致。
+    let tags = duck_project::normalize_tags(&parse_tags_field(&input_value(tags, cx)));
+    let draft = prefs::LogDraft::new(date, kind, content, tags);
+    if draft.is_empty() {
+        prefs::LogDraft::clear(cx);
+    } else {
+        draft.save(cx);
+    }
 }
 
 /// 日志档位的中文名（弹窗标题与日志视图的 tab 共用一处真源）。
@@ -2216,6 +3162,116 @@ pub(crate) fn log_kind_label(kind: LogKind, cx: &App) -> &'static str {
         LogKind::Weekly => tr(cx, "周报"),
         LogKind::Plan => tr(cx, "周计划"),
     }
+}
+
+/// 打开当前锚定周的周计划正文编辑弹窗。
+///
+/// # 为什么不做草稿自动保存
+///
+/// 任务集在**面板上**（`view::render_plan` 的两栏），点一下加 / 减就立刻落库 ——
+/// 那是列表操作，天然是「即时生效」。正文若走草稿，就会出现「正文还在草稿里、
+/// 任务集已经落库」的半截状态：用户重开弹窗看到的字与面板上的任务对不上，
+/// 而且没有哪个动作能让他把两者对齐。所以这里与 [`open_log_editor`] 不同，
+/// 保存即写库（`upsert_plan` 是整行覆盖，正文与任务集一起写）。
+pub(crate) fn open_plan_editor(
+    page: &mut ProjectsPage,
+    window: &mut Window,
+    cx: &mut Context<ProjectsPage>,
+) {
+    let (week_key, existing) = {
+        let state = page.state.read(cx);
+        let week_key = state.plan_week_key();
+        let content = state
+            .current_plan()
+            .map(|plan| plan.content_md.clone())
+            .unwrap_or_default();
+        (week_key, content)
+    };
+
+    let body = cx.new(|cx| {
+        let mut state = TextareaState::new(window, cx).placeholder(SharedString::from(tr(
+            cx,
+            "这一周打算做什么？验收标准是什么？",
+        )));
+        state.set_value(SharedString::from(existing), window, cx);
+        state
+    });
+
+    // 「AI 生成」的素材在开弹窗这一刻取（与 [`open_log_editor`] 同一条口径）。
+    // 周计划看的是**锚定周**，所以区间由 `generation_prompt` 的 `LogKind::Plan` 那一支定。
+    let anchor = page.state.read(cx).plan_anchor();
+    let prompt = generation_prompt(page, LogKind::Plan, anchor, cx);
+    let busy = Arc::new(AtomicBool::new(false));
+
+    let drag = modal_drag(cx);
+    let view = page.view.clone();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let offset = modal_offset(&drag, cx);
+        let drag_for_content = drag.clone();
+        let body_for_content = body.clone();
+        let body_for_ok = body.clone();
+        let view_for_ok = view.clone();
+        let view_for_content = view.clone();
+        let busy_for_content = busy.clone();
+        let prompt_for_content = prompt.clone();
+        let week_for_heading = week_key.clone();
+        let heading = SharedString::from(trf(cx, "{} 的周计划", &[&week_for_heading]));
+
+        let confirm: ConfirmHandler = std::rc::Rc::new(move |_, cx| {
+            let text = textarea_value(&body_for_ok, cx);
+            let _ = view_for_ok.update(cx, |page, cx| page.submit_plan(&text, cx));
+            true
+        });
+        let footer = dialog_footer(
+            "projects-plan-editor",
+            tr(cx, "保存"),
+            ButtonVariant::Primary,
+            confirm,
+            cx,
+        );
+
+        dialog
+            .w(px(FORM_WIDTH))
+            .ml(offset.x)
+            .margin_top(dialog_top_offset(cx) + offset.y)
+            .opacity(offset.opacity)
+            .close_button(false)
+            .content(move |content, _, cx| {
+                let theme = active_theme(cx);
+                let tokens = theme.tokens();
+                content.child(modal_drag_area(
+                    &drag_for_content,
+                    v_flex()
+                        .w_full()
+                        .gap(tokens.spacing.sm)
+                        .child(modal_title_row(
+                            "projects-plan-editor-title",
+                            &drag_for_content,
+                            heading.clone(),
+                            cx,
+                        ))
+                        .child(area_input(&body_for_content, 8, 18, cx))
+                        .child(ai_generate_row(
+                            GenerateRow {
+                                id: "projects-plan-ai",
+                                prompt: prompt_for_content.clone(),
+                                empty_hint: tr(cx, "这一周没有可排的任务。"),
+                                body: body_for_content.clone(),
+                                view: view_for_content.clone(),
+                                busy: busy_for_content.clone(),
+                                // 周计划没有「来源」这一列，所以不记标记。
+                                used: None,
+                            },
+                            cx,
+                        ))
+                        .child(form_hint(
+                            tr(cx, "任务集在面板上直接加减，这里只写这一周的正文。"),
+                            cx,
+                        )),
+                ))
+            })
+            .footer(footer)
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -2347,7 +3403,10 @@ const PREVIEW_ROWS: f32 = 13.;
 
 /// 打开「导出任务」弹窗（原型 `openExport`）。
 ///
-/// 导出**不落盘**：只生成一段文本，「复制到剪贴板」交出去（理由见 [`super::export`]）。
+/// 出口有**两条**，都从这一个弹窗走：复制到剪贴板（旁路按钮，不关窗）与
+/// 「另存为…」（主按钮，关窗并弹系统保存面板）。早先只有复制 —— 那时落盘要自己
+/// 开个文本编辑器粘一遍，而「导出一份备份」正是最常见的诉求。
+///
 /// 任务在打开时**拍一次快照** —— 模态开着时底下的库不会变（用户在弹窗里改不了任务），
 /// 而弹窗内容闭包每帧重跑，每帧去查一次库纯属白付。
 pub(crate) fn open_export(
@@ -2392,27 +3451,33 @@ pub(crate) fn open_export(
         let offset = modal_offset(&drag, cx);
         let drag_for_content = drag.clone();
         let form_for_content = form.clone();
+        let form_for_copy = form.clone();
         let form_for_ok = form.clone();
+        let view_for_copy = view.clone();
         let view_for_ok = view.clone();
 
-        // 复制完就该走了：返回 `true` 让弹窗收掉（早先写成 `false`，那是「校验未过、
-        // 弹窗留着」的语义，结果复制完弹窗还杵在原地）。
+        // 旁路动作：复制不关窗 —— 用户常常「先复制一段看看，再决定要不要存文件」。
+        let copy: duck_components::ActionHandler = std::rc::Rc::new(move |_, cx| {
+            let text = export_text(&form_for_copy, cx);
+            let _ = view_for_copy.update(cx, |page, cx| page.copy_export(text, cx));
+        });
+
+        // 主按钮：另存为。内容在**点按钮时**算好再交给面板（面板回调里不许再回读页面）。
         let confirm: ConfirmHandler = std::rc::Rc::new(move |_, cx| {
-            let read = form_for_ok.read(cx);
-            let tasks = read.scope.tasks(&read.view_tasks, &read.all_tasks);
-            let text = super::export::render(
-                read.format,
-                read.today,
-                tr(cx, "任务导出"),
-                tasks,
-                |id| project_name_of(&read.projects, id),
-            );
-            let _ = view_for_ok.update(cx, |page, cx| page.copy_export(text, cx));
+            let text = export_text(&form_for_ok, cx);
+            let name =
+                default_export_name(form_for_ok.read(cx).format, form_for_ok.read(cx).today, cx);
+            let _ = view_for_ok.update(cx, |page, cx| page.save_export(text, name, cx));
             true
         });
-        let footer = dialog_footer(
+        let footer = dialog_footer_with_action(
             "projects-export",
-            tr(cx, "复制到剪贴板"),
+            FooterAction {
+                id: "projects-export-copy".into(),
+                text: tr(cx, "复制到剪贴板").into(),
+                on_click: copy,
+            },
+            tr(cx, "另存为…"),
             ButtonVariant::Primary,
             confirm,
             cx,
@@ -2429,6 +3494,118 @@ pub(crate) fn open_export(
                     &drag_for_content,
                     export_body(&form_for_content, &drag_for_content, cx),
                 ))
+            })
+            .footer(footer)
+    });
+}
+
+/// 导出弹窗当前选中的那份文本（两个出口共用一处拼装）。
+fn export_text(form: &Entity<ExportForm>, cx: &App) -> String {
+    let read = form.read(cx);
+    let tasks = read.scope.tasks(&read.view_tasks, &read.all_tasks);
+    super::export::render(
+        read.format,
+        read.today,
+        tr(cx, "任务导出"),
+        tasks,
+        |id| project_name_of(&read.projects, id),
+    )
+}
+
+/// 另存为面板里预填的文件名：`任务导出-2026-10-17.md`。
+///
+/// 带日期是因为「导出」几乎总是导出**当天的这一份**，落在一堆同名文件里靠修改时间
+/// 分辨太费事。
+fn default_export_name(format: ExportFormat, today: CalendarDate, cx: &App) -> String {
+    let extension = match format {
+        ExportFormat::Markdown => "md",
+        ExportFormat::Csv => "csv",
+        ExportFormat::Json => "json",
+    };
+    format!("{}-{}.{}", tr(cx, "任务导出"), today.to_iso(), extension)
+}
+
+/// 打开「导出报表」弹窗（报表筛选条右侧的按钮）。
+///
+/// 报表文本在**打开时拍一次快照**：筛选条上的口径就是文件里的口径，之后用户再去改
+/// 筛选也不该偷偷改掉这份预览（要新口径就再点一次导出）。
+pub(crate) fn open_report_export(
+    page: &mut ProjectsPage,
+    window: &mut Window,
+    cx: &mut Context<ProjectsPage>,
+) {
+    let (text, today) = {
+        let state = page.state.read(cx);
+        (super::view::report_markdown(state, cx), state.today())
+    };
+    let file_name = format!("{}-{}.md", tr(cx, "报表导出"), today.to_iso());
+
+    let drag = modal_drag(cx);
+    let view = page.view.clone();
+    let text_for_content = text.clone();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let offset = modal_offset(&drag, cx);
+        let drag_for_content = drag.clone();
+        let text_for_copy = text.clone();
+        let text_for_ok = text.clone();
+        let name_for_ok = file_name.clone();
+        let view_for_copy = view.clone();
+        let view_for_ok = view.clone();
+
+        let copy: duck_components::ActionHandler = std::rc::Rc::new(move |_, cx| {
+            let _ =
+                view_for_copy.update(cx, |page, cx| page.copy_export(text_for_copy.clone(), cx));
+        });
+        let confirm: ConfirmHandler = std::rc::Rc::new(move |_, cx| {
+            let _ = view_for_ok.update(cx, |page, cx| {
+                page.save_export(text_for_ok.clone(), name_for_ok.clone(), cx)
+            });
+            true
+        });
+        let footer = dialog_footer_with_action(
+            "projects-report-export",
+            FooterAction {
+                id: "projects-report-export-copy".into(),
+                text: tr(cx, "复制到剪贴板").into(),
+                on_click: copy,
+            },
+            tr(cx, "另存为…"),
+            ButtonVariant::Primary,
+            confirm,
+            cx,
+        );
+
+        dialog
+            .w(px(TEXT_DIALOG_WIDTH))
+            .ml(offset.x)
+            .margin_top(dialog_top_offset(cx) + offset.y)
+            .opacity(offset.opacity)
+            .close_button(false)
+            .content({
+                let text = text_for_content.clone();
+                move |content, _, cx| {
+                    content.child(modal_drag_area(
+                        &drag_for_content,
+                        v_flex()
+                            .w_full()
+                            .gap(active_theme(cx).tokens().spacing.sm)
+                            .child(modal_title_row(
+                                "projects-report-export-title",
+                                &drag_for_content,
+                                tr(cx, "导出报表"),
+                                cx,
+                            ))
+                            .child(field_hint(
+                                trf(
+                                    cx,
+                                    "Markdown · {} 字符 · 与屏幕上这份报表同一口径",
+                                    &[&text.chars().count().to_string()],
+                                ),
+                                cx,
+                            ))
+                            .child(preview_box(text.clone(), cx)),
+                    ))
+                }
             })
             .footer(footer)
     });
@@ -2540,7 +3717,7 @@ fn export_body(
         .child(field_hint(
             trf(
                 cx,
-                "{} · {} 字符 · 导出不写入本地库，只产生文本",
+                "{} · {} 字符 · 只产生文本：可复制，也可另存为文件",
                 &[read.format.label(), &text.chars().count().to_string()],
             ),
             cx,
@@ -2548,26 +3725,51 @@ fn export_body(
         .child(preview_box(text, cx))
 }
 
-/// 打开「从文本导入任务」弹窗（原型 `openImport`）。
+/// 打开「导入任务」弹窗（原型 `openImport`，`docs/projects-mock.html:2455`）。
 ///
-/// 与原型的一处**刻意不同**：原型把示例文本**填进**输入框（`value=`），照抄的话
-/// 用户什么都不做直接按「导入」就会真的把示例建进库里。这里改成占位文案
-/// （`placeholder`）+ 一个「填入示例」按钮 —— 示例还在，但不会被动地变成数据。
+/// 与原型的三处刻意不同，逐条给理由：
+///
+/// 1. **不把示例填进输入框**（原型是 `value=`）：照抄的话用户什么都不做、直接按
+///    「导入」就会真的把示例建进库里。这里改成占位文案 + 一个「填入示例」按钮 ——
+///    示例还在，但不会被动地变成数据。
+/// 2. **认 CSV / JSON / Markdown，不认 xlsx**：解析 xlsx 要一个几百 KB 的表格库
+///    （参考实现引的是 `xlsx` npm 包），为「一年用两次」的功能不值，也与本仓
+///    「不轻易加依赖」的纪律相冲。替代方案是**发模板**：拿模板在 Excel 里填好、
+///    另存为 CSV 就能导进来，整条路是通的。
+/// 3. **多一个「跳过同名任务」开关**（默认开）：导一份自己刚导过的文件是最常见的
+///    误操作，而它的后果（库里凭空多出一倍任务）很难手工收拾。
+///
+/// # 解析在渲染期现做，不缓存
+///
+/// 右侧预览与统计都从「输入框当前文本 + 当前格式」现算。想缓存也做不了：把 `Parsed`
+/// 存进表单实体需要**订阅输入框**，而 `Context::observe` 的回调只给
+/// `&mut Context<T>`，更新另一个实体要 `&mut App` —— gpui 没开这个口子
+/// （`Context` 只 `Deref` 到 `App`，没有 `DerefMut`）。所以与早先的版本一样逐帧解析：
+/// 弹窗只在用户操作时重绘，几百行表的解析是微秒级。真出现几十万行的大文件时，
+/// 该做的是把解析挪到后台，而不是在渲染期省一次。
 pub(crate) fn open_import(
     page: &mut ProjectsPage,
     window: &mut Window,
     cx: &mut Context<ProjectsPage>,
 ) {
-    let (projects, today) = {
+    let (projects, today, existing_keys) = {
         let state = page.state.read(cx);
-        (state.projects().to_vec(), state.today())
+        (
+            state.projects().to_vec(),
+            state.today(),
+            state.existing_title_keys(),
+        )
     };
-    // 先把占位文案算出来再建输入框：`new_area(window, cx, &import_sample(cx))` 会把
-    // `cx` 同时按 `&mut`（建实体）和 `&`（取翻译）借两次，直接撞 E0502。
-    let placeholder = import_sample(cx);
+    // 先把占位文案算出来再建输入框：`new_area(window, cx, &placeholder)` 会把 `cx`
+    // 同时按 `&mut`（建实体）和 `&`（取翻译）借两次，直接撞 E0502。
+    let placeholder = import_sample(SourceFormat::Markdown, cx);
     let text = new_area(window, cx, &placeholder);
     let form = cx.new(|_| ImportForm {
-        text,
+        text: text.clone(),
+        format: SourceFormat::Markdown,
+        file_name: None,
+        skip_duplicates: true,
+        existing_keys,
         today,
         projects,
     });
@@ -2579,12 +3781,46 @@ pub(crate) fn open_import(
         let drag_for_content = drag.clone();
         let form_for_content = form.clone();
         let form_for_ok = form.clone();
+        let view_for_content = view.clone();
         let view_for_ok = view.clone();
 
         let confirm: ConfirmHandler = std::rc::Rc::new(move |_, cx| {
-            let text = import_raw(&form_for_ok, cx);
-            let _ = view_for_ok.update(cx, |page, cx| page.submit_import(&text, cx));
-            true
+            let (text, format, skip_duplicates, today) = {
+                let read = form_for_ok.read(cx);
+                (
+                    import_raw(&form_for_ok, cx),
+                    read.format,
+                    read.skip_duplicates,
+                    read.today,
+                )
+            };
+            // 解析不出东西时**不关窗**（返回 `false`）：关掉再重开等于让用户重粘一遍。
+            // 这两种情况在预览区也写着同一句话，弹窗留着正好让他就地改。
+            match import::parse(&text, format, today) {
+                Ok(parsed) if parsed.rows.is_empty() => {
+                    let _ = view_for_ok.update(cx, |page, cx| {
+                        page.show(Tone::Warning, tr(cx, "没有可导入的行。"), None, cx);
+                    });
+                    false
+                }
+                Err(err) => {
+                    let _ = view_for_ok.update(cx, |page, cx| {
+                        page.show(
+                            Tone::Error,
+                            trf(cx, "解析失败：{}", &[&err.to_string()]),
+                            None,
+                            cx,
+                        );
+                    });
+                    false
+                }
+                Ok(_) => {
+                    let _ = view_for_ok.update(cx, |page, cx| {
+                        page.submit_import(&text, format, skip_duplicates, cx);
+                    });
+                    true
+                }
+            }
         });
         let footer = dialog_footer(
             "projects-import",
@@ -2603,31 +3839,120 @@ pub(crate) fn open_import(
             .content(move |content, _, cx| {
                 content.child(modal_drag_area(
                     &drag_for_content,
-                    import_body(&form_for_content, &drag_for_content, cx),
+                    import_body(&form_for_content, &view_for_content, &drag_for_content, cx),
                 ))
             })
             .footer(footer)
     });
 }
 
-/// 示例文本（原型的 `IMPORT_SAMPLE`）：占位文案与「填入示例」共用同一份真源。
+/// 「填入示例」的文本：**按格式给**，不共用一份。
 ///
-/// 逐行给、用 `join("\n")` 拼，**不写成一行带 `\n` 的字符串**：i18n 守卫逐字面量
-/// 按**源码原文**比对（`literals()` 把 `\"` 当转义但把 `\n` 原样留着），一行里塞
-/// `\n` 会让整串变成一个「带反斜杠 n」的怪 key —— 翻译时得跟着写 `\\n`，谁少写一个
-/// 反斜杠就静默漏翻。三行分开就都是干净的短句。
-fn import_sample(cx: &App) -> String {
-    [
-        tr(cx, "- [ ] 整理需求 #产品 @Alpha !P1 明天"),
-        tr(cx, "- [x] 提交周报"),
-        tr(cx, "- 修登录超时 @Alpha"),
-    ]
-    .join("\n")
+/// Markdown 那一份是手写的三行 —— 它演示的是**记号**（`#标签 @项目 !P1 明天 18:00`）；
+/// CSV / JSON 走 [`import::template`]，与「下载模板」拿到的是同一批字节（模板演示的是
+/// **列**）。两件事，各给各的。
+fn import_sample(format: SourceFormat, cx: &App) -> String {
+    if format == SourceFormat::Markdown {
+        return [
+            tr(cx, "- [ ] 整理需求 #产品 @Alpha !P1 明天"),
+            tr(cx, "- [x] 提交周报"),
+            tr(cx, "- 修登录超时 @Alpha"),
+        ]
+        .join("\n");
+    }
+    let (headers, rows) = import_template(cx);
+    import::template(format, &headers, &rows)
+}
+
+/// 模板 / 示例的列与样例行。
+///
+/// 表头是 [`Field::TEMPLATE`] 的顺序 + [`field_label`] 的中文名；样例行第一行把各类
+/// 取值都写一遍（让人一眼看出「进行中 / P1 / Q2」该长什么样），第二行故意留空几格
+/// （说明「空着就是没有」）。
+fn import_template(cx: &App) -> (Vec<String>, Vec<Vec<String>>) {
+    let headers = Field::TEMPLATE
+        .iter()
+        .map(|field| field_label(*field, cx).to_owned())
+        .collect();
+    let sample = |cells: [&str; 10]| cells.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let rows = vec![
+        sample([
+            tr(cx, "修登录超时 #后端"),
+            tr(cx, "Alpha"),
+            tr(cx, "进行中"),
+            tr(cx, "P1"),
+            tr(cx, "Q2"),
+            tr(cx, "线上事故, 复盘"),
+            tr(cx, "2026-10-13"),
+            tr(cx, "2026-10-20"),
+            tr(cx, "18:00"),
+            tr(cx, "40"),
+        ]),
+        sample([
+            tr(cx, "写周报"),
+            "",
+            tr(cx, "已完成"),
+            tr(cx, "P2"),
+            "",
+            "",
+            "",
+            tr(cx, "2026-10-18"),
+            "",
+            tr(cx, "100"),
+        ]),
+    ];
+    (headers, rows)
+}
+
+/// 字段的中文列名（模板表头与「列映射」那行共用一处真源）。
+///
+/// 这些字也是 `import_aliases` 认得的列名，所以「下模板 → 填 → 导回」是一条闭环。
+fn field_label(field: Field, cx: &App) -> &'static str {
+    match field {
+        Field::Title => tr(cx, "标题"),
+        Field::Project => tr(cx, "项目"),
+        Field::Status => tr(cx, "状态"),
+        Field::Priority => tr(cx, "优先级"),
+        Field::Quadrant => tr(cx, "四象限"),
+        Field::Tags => tr(cx, "标签"),
+        Field::Start => tr(cx, "开始日期"),
+        Field::Due => tr(cx, "截止日期"),
+        Field::Time => tr(cx, "截止时刻"),
+        Field::Progress => tr(cx, "进度"),
+        Field::Estimate => tr(cx, "预估工时"),
+        Field::Actual => tr(cx, "实际工时"),
+        Field::Starred => tr(cx, "置顶"),
+        Field::Description => tr(cx, "描述"),
+        Field::Note => tr(cx, "备注"),
+    }
+}
+
+/// 导入格式的一句话说明（格式选择器下方那行小字，随格式变）。
+fn import_format_hint(format: SourceFormat, cx: &App) -> &'static str {
+    match format {
+        SourceFormat::Markdown => tr(
+            cx,
+            "每行一个任务；记号与快速新建一致（#标签 @项目 !P1 明天 18:00）",
+        ),
+        SourceFormat::Csv => tr(cx, "首行可为表头，中英列名都认；没有表头时第一列当标题"),
+        SourceFormat::Json => tr(
+            cx,
+            "数组、带 tasks 的对象、或单个对象；键名与 CSV 列名同一套",
+        ),
+    }
 }
 
 /// 导入弹窗的表单状态。
 struct ImportForm {
     text: Entity<TextareaState>,
+    /// 当前格式。粘贴文本时默认 Markdown；选文件后按扩展名定，用户也能手动改。
+    format: SourceFormat,
+    /// 载入的文件名（`None` = 手打 / 粘贴的）。
+    file_name: Option<String>,
+    /// 跳过库里已有的（以及本批内重复的）同名任务。
+    skip_duplicates: bool,
+    /// 库里已有的标题比对键：打开弹窗时拍一次快照（弹窗开着时底下的库不会变）。
+    existing_keys: Vec<String>,
     today: CalendarDate,
     /// 项目表：预览里的项目色点要按名字查色。
     projects: Vec<Project>,
@@ -2635,6 +3960,7 @@ struct ImportForm {
 
 fn import_body(
     form: &Entity<ImportForm>,
+    view: &WeakEntity<ProjectsPage>,
     drag: &Entity<duck_components::ModalDrag>,
     cx: &App,
 ) -> impl IntoElement {
@@ -2642,14 +3968,111 @@ fn import_body(
     let tokens = theme.tokens();
     let read = form.read(cx);
     let text = import_raw(form, cx);
-    let rows = quickparse::parse_lines(&text, read.today);
+    // 解析结果与「会跳过多少条」都在这里现算：预览里画的与真的会被建出来的必然是同一批。
+    let outcome = import::parse(&text, read.format, read.today);
+    let parsed = outcome.as_ref().ok();
+    let skipped = parsed.map_or(0, |parsed| {
+        if read.skip_duplicates {
+            import::partition(&parsed.rows, &read.existing_keys).1
+        } else {
+            0
+        }
+    });
 
+    // ---- 动作行：选择文件 / 填入示例 / 清空 / 下载模板 -------------------
     let form_for_sample = form.clone();
     let form_for_clear = form.clone();
-    let sample = import_sample(cx);
+    let form_for_pick = form.clone();
+    let form_for_template = form.clone();
+    let view_for_pick = view.clone();
+    let view_for_template = view.clone();
+    let sample = import_sample(read.format, cx);
+    let open_prompt = tr(cx, "选择要导入的文件");
     let actions = h_flex()
         .w_full()
         .gap(tokens.spacing.xs)
+        .child(
+            button(
+                "projects-import-file",
+                tr(cx, "选择文件…"),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .on_click(move |_, window, cx| {
+                // 面板是**异步**的（gpui 自己的 `prompt_for_paths`，不是 rfd 的同步
+                // 模态）—— 理由与两次闪退的实证见 `crate::file_dialogs` 的模块头。
+                let form = form_for_pick.clone();
+                let view = view_for_pick.clone();
+                crate::file_dialogs::open_file_in_app(
+                    window,
+                    cx,
+                    open_prompt,
+                    move |path, window, cx| {
+                        // 扩展名判定放在**读文件之前**：不支持的文件不该先读进内存再报错，
+                        // 而且先把「支持哪些」说清楚比读完再说「解析失败」有用。
+                        let extension = path
+                            .extension()
+                            .map(|ext| ext.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let format = match SourceFormat::from_extension(&extension) {
+                            Ok(format) => format,
+                            // `Err` 带回来的是**裸扩展名**（已 trim），不是半句英文 ——
+                            // 这句话要中英双语，拼装在这儿（见 `import::SourceFormat`）。
+                            Err(extension) => {
+                                let _ = view.update(cx, |page, cx| {
+                                    page.show(
+                                        Tone::Warning,
+                                        trf(
+                                            cx,
+                                            "不支持 .{} 文件：导入只认 Markdown（.md/.txt）、CSV（.csv）与 JSON（.json）。",
+                                            &[&extension],
+                                        ),
+                                        None,
+                                        cx,
+                                    );
+                                });
+                                return;
+                            }
+                        };
+                        let content = match std::fs::read_to_string(&path) {
+                            Ok(content) => content,
+                            Err(err) => {
+                                let _ = view.update(cx, |page, cx| {
+                                    page.show(
+                                        Tone::Error,
+                                        trf(cx, "读取文件失败：{}", &[&err.to_string()]),
+                                        None,
+                                        cx,
+                                    );
+                                });
+                                return;
+                            }
+                        };
+                        let name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        // 占位文案跟着格式换（用户接下来再点「清空」时看到的就是对的）。
+                        let placeholder = import_sample(format, cx);
+                        // 内容**灌进输入框**而不是另开一条「文件内容」通路：用户在按
+                        // 「导入」之前还能就地改两行，预览也始终是同一份。
+                        form.update(cx, |form, cx| {
+                            form.format = format;
+                            form.file_name = Some(name);
+                            form.text.update(cx, |state, cx| {
+                                state.set_placeholder(
+                                    SharedString::from(placeholder.clone()),
+                                    window,
+                                    cx,
+                                );
+                                state.set_value(SharedString::from(content.clone()), window, cx);
+                            });
+                            cx.notify();
+                        });
+                    },
+                );
+            }),
+        )
         .child(
             button(
                 "projects-import-sample",
@@ -2671,32 +4094,106 @@ fn import_body(
             .on_click(move |_, window, cx| {
                 fill_import(&form_for_clear, "", window, cx);
             }),
+        )
+        .child(
+            button(
+                "projects-import-template",
+                tr(cx, "下载模板"),
+                ButtonVariant::Ghost,
+                cx,
+            )
+            .on_click(move |_, _, cx| {
+                let format = form_for_template.read(cx).format;
+                let (headers, rows) = import_template(cx);
+                let text = import::template(format, &headers, &rows);
+                let _ = view_for_template
+                    .update(cx, |page, cx| page.save_import_template(format, text, cx));
+            }),
         );
 
-    let left = v_flex()
-        .flex_1()
-        .min_w_0()
+    // ---- 格式三档 -------------------------------------------------------
+    let format_labels: Vec<SharedString> = SourceFormat::ALL
+        .iter()
+        .map(|format| SharedString::from(format.label()))
+        .collect();
+    let format_index = SourceFormat::ALL
+        .iter()
+        .position(|format| *format == read.format)
+        .unwrap_or_default();
+    let form_for_format = form.clone();
+    let format_tabs = segmented_tabs(
+        "projects-import-format",
+        format_labels,
+        format_index,
+        move |index, window, cx| {
+            let format = SourceFormat::ALL[index];
+            if form_for_format.read(cx).format == format {
+                return;
+            }
+            // 占位文案跟着格式走：Markdown 那三行喂给 CSV 只会让人以为格式没生效。
+            let placeholder = import_sample(format, cx);
+            form_for_format.update(cx, |form, cx| {
+                form.format = format;
+                form.file_name = None;
+                form.text.update(cx, |state, cx| {
+                    state.set_placeholder(SharedString::from(placeholder.clone()), window, cx);
+                    // 输入框自己也要重绘：`set_placeholder` 只改数据，不改画面。
+                    cx.notify();
+                });
+                cx.notify();
+            });
+        },
+        cx,
+    );
+
+    // ---- 跳过同名 -------------------------------------------------------
+    let form_for_skip = form.clone();
+    let skip_row = h_flex()
+        .w_full()
+        .items_center()
         .gap(tokens.spacing.xs)
-        .child(duck_components::body_text(tr(cx, "粘贴内容"), cx))
-        .child(form_field(
-            tr(cx, "支持 Markdown 清单，每行一个任务"),
-            area_input(&read.text, 12, 20, cx),
-            None,
-            Some(SharedString::from(tr(cx, "语法与快速新建一致"))),
+        .child(toggle_box(
+            "projects-import-skip",
+            read.skip_duplicates,
+            move |_, _, cx| {
+                form_for_skip.update(cx, |form, cx| {
+                    form.skip_duplicates = !form.skip_duplicates;
+                    cx.notify();
+                });
+            },
             cx,
         ))
-        .child(actions);
+        .child(duck_components::body_text(tr(cx, "跳过同名任务"), cx))
+        .child(field_hint(
+            tr(
+                cx,
+                "标题相同（不分大小写）就跳过 —— 导一份刚导过的文件不会翻倍。",
+            ),
+            cx,
+        ));
 
+    // ---- 预览 / 错误态 --------------------------------------------------
     let right = v_flex()
         .flex_1()
         .min_w_0()
         .gap(tokens.spacing.xs)
-        .child(duck_components::body_text(
-            trf(cx, "解析预览（{} 项）", &[&rows.len().to_string()]),
-            cx,
-        ))
-        .child(import_preview(&rows, &read.projects, cx))
-        .child(field_hint(tr(cx, "解析不出的部分原样作为标题。"), cx));
+        // `parsed` 为 `None` 只可能是解析失败（空结果也走 `Ok`，由预览区自己说
+        // 「没有可解析的行」），所以这里两个分支正好对齐两种情形。
+        .child(match &outcome {
+            Ok(parsed) => import_preview(&parsed.rows, &read.projects, cx).into_any_element(),
+            Err(err) => alert_block(
+                "projects-import-error",
+                Tone::Error,
+                trf(cx, "解析失败：{}", &[&err.to_string()]),
+                cx,
+            )
+            .into_any_element(),
+        });
+
+    let source = read
+        .file_name
+        .clone()
+        .unwrap_or_else(|| tr(cx, "粘贴的文本").to_owned());
 
     v_flex()
         .w_full()
@@ -2704,22 +4201,131 @@ fn import_body(
         .child(modal_title_row(
             "projects-import-title",
             drag,
-            tr(cx, "从文本导入任务"),
+            tr(cx, "导入任务"),
             cx,
         ))
+        .child(duck_components::body_text(
+            trf(cx, "来源：{}", &[&source]),
+            cx,
+        ))
+        .child(actions)
+        .child(form_field(
+            tr(cx, "格式"),
+            format_tabs,
+            None,
+            Some(SharedString::from(import_format_hint(read.format, cx))),
+            cx,
+        ))
+        .children(
+            parsed
+                .filter(|parsed| !parsed.columns.is_empty())
+                .map(|parsed| column_map_row(&parsed.columns, cx)),
+        )
+        .child(skip_row)
+        .children(parsed.map(|parsed| import_summary(parsed, skipped, read.skip_duplicates, cx)))
         .child(
             div()
                 .flex()
                 .flex_row()
                 .items_start()
                 .gap(tokens.spacing.md)
-                .child(left)
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(tokens.spacing.xs)
+                        .child(area_input(&read.text, 12, 20, cx)),
+                )
                 .child(right),
         )
 }
 
+/// 「列映射」那行：逐列写出「表头 → 字段」，认不出的标「未使用」。
+///
+/// 画出来是因为**自动映射会认错**（比如把 `时间` 认成截止时刻而不是创建时间）。
+/// 把结果摆在明面上，用户改一下表头重导就行 —— 比逐列下拉选一遍省事，而 90% 的情况
+/// （我们自己的导出、我们发的模板）本来就是对的。
+fn column_map_row(columns: &[ColumnMap], cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let arrow = tr(cx, "→");
+    let mut row = h_flex()
+        .w_full()
+        .flex_wrap()
+        .gap(tokens.spacing.xs)
+        .child(duck_components::body_text(tr(cx, "列映射"), cx));
+    for column in columns {
+        let name = column_name(column, cx);
+        let target = match column.field {
+            Some(field) => field_label(field, cx),
+            None => tr(cx, "未使用"),
+        };
+        row = row.child(
+            div()
+                .flex_none()
+                .px(tokens.spacing.xs)
+                .py(tokens.spacing.xxs)
+                .rounded(theme.components().input_radius)
+                .bg(extended.colors.hover_tint)
+                .text_size(tokens.typography.xs.size)
+                .line_height(tokens.typography.xs.line_height)
+                .text_color(if column.field.is_some() {
+                    tokens.colors.foreground
+                } else {
+                    tokens.colors.muted_foreground
+                })
+                .child(SharedString::from(format!("{name} {arrow} {target}"))),
+        );
+    }
+    row.into_any_element()
+}
+
+/// 一列在界面上的显示名：有表头就用表头，没有就说「第 N 列」（1 起）。
+fn column_name(column: &ColumnMap, cx: &App) -> String {
+    if column.header.is_empty() {
+        trf(cx, "第 {} 列", &[&(column.index + 1).to_string()])
+    } else {
+        column.header.clone()
+    }
+}
+
+/// 一行统计：共几条 / 会跳过几条 / 忽略了几行 / 标题列是不是猜的。
+///
+/// 拼一串短句再 `join(" · ")`，而不是拿一个大格式串去 `trf`：占位符一多，英文语序
+/// 就会拧巴；每段单独成句时译者只需要管自己那一小句。
+fn import_summary(parsed: &Parsed, skipped: usize, skip_duplicates: bool, cx: &App) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let mut parts = vec![trf(cx, "共 {} 条", &[&parsed.rows.len().to_string()]).to_owned()];
+    if skip_duplicates && skipped > 0 {
+        parts.push(trf(cx, "跳过 {} 条同名", &[&skipped.to_string()]).to_owned());
+    }
+    if parsed.dropped > 0 {
+        parts.push(trf(cx, "忽略 {} 行", &[&parsed.dropped.to_string()]).to_owned());
+    }
+    if parsed.title_guessed {
+        let guessed = parsed
+            .columns
+            .iter()
+            .find(|column| column.field == Some(Field::Title))
+            .map_or_else(
+                || tr(cx, "第一列").to_owned(),
+                |column| column_name(column, cx),
+            );
+        parts.push(trf(cx, "没找到标题列，暂用 {} 作标题", &[&guessed]).to_owned());
+    }
+    div()
+        .w_full()
+        .text_size(tokens.typography.sm.size)
+        .line_height(tokens.typography.sm.line_height)
+        .text_color(tokens.colors.muted_foreground)
+        .child(selectable_text(SharedString::from(parts.join(" · "))))
+        .into_any_element()
+}
+
 /// 解析预览（原型 `#im-prev`）：逐行画出将要建成的样子。
-fn import_preview(rows: &[ImportLine], projects: &[Project], cx: &App) -> impl IntoElement {
+fn import_preview(rows: &[import::Row], projects: &[Project], cx: &App) -> impl IntoElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let extended = theme.extended();
@@ -2741,15 +4347,11 @@ fn import_preview(rows: &[ImportLine], projects: &[Project], cx: &App) -> impl I
     }
 
     for row in rows {
-        let icon = if row.done {
+        let settled = row.resolved_status().is_settled();
+        let icon = if settled {
             DuckIcon::CheckboxCheck
         } else {
             DuckIcon::Square
-        };
-        let title = if row.parsed.title.is_empty() {
-            SharedString::from(tr(cx, "（空标题）"))
-        } else {
-            SharedString::from(row.parsed.title.clone())
         };
         let mut line = h_flex()
             .w_full()
@@ -2757,7 +4359,7 @@ fn import_preview(rows: &[ImportLine], projects: &[Project], cx: &App) -> impl I
             .py(tokens.spacing.xxs)
             .text_size(xs.size)
             .line_height(xs.line_height)
-            .child(Icon::new(icon).size(xs.size).text_color(if row.done {
+            .child(Icon::new(icon).size(xs.size).text_color(if settled {
                 extended.colors.success
             } else {
                 tokens.colors.muted_foreground
@@ -2766,14 +4368,23 @@ fn import_preview(rows: &[ImportLine], projects: &[Project], cx: &App) -> impl I
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_color(if row.done {
+                    .text_color(if settled {
                         tokens.colors.muted_foreground
                     } else {
                         tokens.colors.foreground
                     })
-                    .child(title),
+                    .child(selectable_text(SharedString::from(row.title.clone()))),
             );
-        if let Some(priority) = row.parsed.priority {
+        // 状态只画非终态的：`done` / `cancelled` 已经由左边那个勾表达过了。
+        if let Some(status) = row.status.filter(|status| !status.is_settled()) {
+            line = line.child(
+                div()
+                    .flex_none()
+                    .text_color(extended.colors.text_tertiary)
+                    .child(SharedString::from(status_label(status, cx))),
+            );
+        }
+        if let Some(priority) = row.priority {
             line = line.child(
                 div()
                     .flex_none()
@@ -2781,16 +4392,23 @@ fn import_preview(rows: &[ImportLine], projects: &[Project], cx: &App) -> impl I
                     .child(SharedString::from(format!("P{}", priority.as_i64()))),
             );
         }
-        if let Some(due) = row.parsed.due {
+        if !row.tags.is_empty() {
             line = line.child(
                 div()
                     .flex_none()
                     .text_color(extended.colors.text_tertiary)
-                    .child(SharedString::from(due.to_iso())),
+                    .child(SharedString::from(format!("#{}", row.tags.join(" #")))),
+            );
+        }
+        if let Some(due) = row.due {
+            line = line.child(
+                div()
+                    .flex_none()
+                    .text_color(extended.colors.text_tertiary)
+                    .child(selectable_text(SharedString::from(due.to_iso()))),
             );
         }
         if let Some(color) = row
-            .parsed
             .project
             .as_ref()
             .and_then(|name| {
@@ -2805,6 +4423,55 @@ fn import_preview(rows: &[ImportLine], projects: &[Project], cx: &App) -> impl I
         list = list.child(line);
     }
     list
+}
+
+/// 弹窗里的小勾选框：15px 圆角方块，勾上时整块转强调色底 + 勾号。
+///
+/// 与 `view.rs::check_box` 长得一样但**不是同一个函数**：那个是列表行专用的（要
+/// `on_mouse_down` 截住行级手势），这个是普通表单控件。两处各二十来行，为一个 15px
+/// 方格把它提升进 `duck-components` 不划算 —— 真要合并，等出现第三处再说。
+fn toggle_box(
+    id: &'static str,
+    checked: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Stateful<gpui::Div> {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let accent = tokens.colors.primary;
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(15.))
+        .rounded(px(4.))
+        .border(extended.stroke.thin)
+        .border_color(if checked {
+            accent
+        } else {
+            tokens.colors.border
+        })
+        .bg(if checked {
+            accent
+        } else {
+            tokens.colors.surface
+        })
+        .cursor_pointer()
+        .role(Role::CheckBox)
+        .aria_toggled(if checked {
+            Toggled::True
+        } else {
+            Toggled::False
+        })
+        .on_click(on_click)
+        .children(checked.then(|| {
+            Icon::new(DuckIcon::Check)
+                .size(px(11.))
+                .text_color(tokens.colors.primary_foreground)
+        }))
 }
 
 /// 只读文本预览框（原型 `.ta.mono`）：可滚动，字数一多也不会把弹窗撑破。
@@ -2834,7 +4501,7 @@ fn preview_box(text: String, cx: &App) -> impl IntoElement {
                 .map(|line| {
                     div()
                         .whitespace_nowrap()
-                        .child(SharedString::from(line.to_owned()))
+                        .child(selectable_text(SharedString::from(line.to_owned())))
                 })
                 .collect::<Vec<_>>(),
         )

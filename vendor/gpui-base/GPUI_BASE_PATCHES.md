@@ -102,6 +102,26 @@ gpui-pre 0.3.8，与工作区的 gpui-fast 补丁不同源，仅供测试，不�
   而给 `TableCell` 加 padding 还得同步改列宽测算（`CELL_PAD_PX` 那条缓存假设），
   为一个不可达路径不值得动。真数据表（Markdown 表格、未拍平的 HTML）保留上游行为。
 
+## 文本选中：光标与拖选性能（2026-10-16，`DUCK PATCH`）
+
+用户报「可选中的文字悬停时鼠标不变形」「拖选/复制十分卡顿」，两处都在
+上游的 `SelectableText::paint`：
+
+1. **I 型光标**（`src/selectable_text.rs`）：上游**从不**调
+   `Window::set_cursor_style`，可选文字悬停时仍是箭头。补上
+   `window.set_cursor_style(CursorStyle::IBeam, hitbox)` —— 用本 run 自己的
+   hitbox 申请，所以只有真有文字的地方才变形（导入 `CursorStyle`）。
+
+2. **拖选卡顿**（`src/selectable_text.rs` + `src/text_selection.rs`）：上游在
+   paint 里前后各调一次 `TextSelection::selected_text(window, cx)` 比对，据此
+   决定是否 `window.refresh()`。该函数是**全窗口聚合**（遍历每个参与者 →
+   clone 各自选中子串 → 排序 → join），而 paint 是**每个 run 每帧**都跑 ⇒
+   代价 O(runs × 选中长度)：全站上千个可选 run 时，拖选一格每帧要拷贝几十 KB
+   到几 MB 字符串，帧率直接塌。两次读之间只有**本 run 自己**的投影会变
+   （`update_runs` 只改自己那份），故新增 `TextSelectionHandle::projected_copy_text`
+   只读自己那份做比对 —— 语义等价（触发 `refresh` 的条件不变），代价降到
+   O(本文长度)。**不要**改回全窗口比对。
+
 ## 升级约定
 
 从上游重新拷入 0.7.x 后，按上表重放（检索 `DUCK PATCH`），并同步 `vendor/README.md` 的基线行。

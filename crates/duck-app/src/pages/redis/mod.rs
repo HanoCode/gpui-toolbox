@@ -160,13 +160,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use duck_components::{
-    ButtonVariant, ConfirmHandler, DuckIcon, SidebarPanel, SidebarState, body_text, button,
-    caption_heading,
+    ButtonVariant, ConfirmHandler, DuckIcon, SegmentItem, SidebarPanel, SidebarState, body_text,
+    button, caption_heading,
     content::{description_list, description_row, empty_state, neutral_tag},
-    dialog_top_offset, field_hint, field_label, form_field, form_gap, form_row, icon_button,
-    icon_text_button, meta_text, modal_drag, modal_drag_area, modal_offset, modal_title_row,
-    notify, segmented_tabs, sidebar_navigation_button, switch_control, toolbar_action_button,
-    toolbar_dropdown_button, toolbar_text_dropdown_button,
+    dialog_footer, dialog_footer_ok_only, dialog_top_offset, field_hint, field_label, form_field,
+    form_gap, form_row, icon_button, icon_text_button, meta_text, modal_drag, modal_drag_area,
+    modal_offset, modal_title_row, notify, segmented_tabs, segmented_tabs_with_icons,
+    sidebar_navigation_button, switch_control, toolbar_action_button, toolbar_dropdown_button,
+    toolbar_text_dropdown_button,
 };
 use duck_redis::capability::{AccessMode, Capability, DenyReason, Gate};
 use duck_redis::config::{
@@ -179,12 +180,12 @@ use duck_redis::value::KeyType;
 use duck_redis::{
     AclProbe, ClientInfo, ConfigEntry, ConfirmKind, DbKeyStats, JsonPathHit, JsonTreeNode,
     JsonTreeRow, KeyMeta, KeyObjectInfo, KeySort, KeyTags, MemoryOverview, MonitorSession,
-    QueryMode, RedisConnection, RedisError, RedisValue, ScanPlan, ServerFeatures, SlowlogEntry,
-    Sortable, StatusOverview, TagColor, TagFilter, TagStore, TrashEntry, TrashMeta, TrashStore,
-    TtlFilter, WRITE_UNLOCK_SECS, build_tree_sorted, confirm_kind, default_expanded, flatten,
-    format_ttl_chip, is_destructive, jsonpath_run, now_millis, parse_document, parse_info_sections,
-    payload_fits, scan_plan, should_auto_expand, should_stash, stamp_folder_tags, toggle_path,
-    tree_of, ttl_chip_kind,
+    PubSubSession, QueryMode, RedisConnection, RedisError, RedisValue, ScanPlan, ServerFeatures,
+    SlowlogEntry, Sortable, StatusOverview, TagColor, TagFilter, TagStore, TrashEntry, TrashMeta,
+    TrashStore, TtlFilter, WRITE_UNLOCK_SECS, build_tree_sorted, confirm_kind, default_expanded,
+    flatten, format_ttl_chip, is_destructive, jsonpath_run, now_millis, parse_document,
+    parse_info_sections, payload_fits, prefix_pattern, scan_plan, should_auto_expand, should_stash,
+    stamp_folder_tags, toggle_path, tree_of, ttl_chip_kind,
 };
 use duck_theme::{UnderMinute, active_theme, tf, tr, tr_relative_time, trf};
 use gpui::{
@@ -198,7 +199,7 @@ use gpui_component::{
     dialog::{DialogButtonProps, DialogFooter},
     h_flex, h_resizable,
     input::{Editor, EditorState, Input, InputEvent, InputState},
-    menu::PopupMenuItem,
+    menu::{PopupMenu, PopupMenuItem},
     resizable_panel, v_flex,
 };
 
@@ -307,6 +308,14 @@ const MONITOR_LINES_MAX: usize = 2_000;
 const MONITOR_TICK: Duration = Duration::from_millis(50);
 /// `MONITOR` 单轮最多收多少行（防止一次收太多把一帧拖长）。
 const MONITOR_BATCH: usize = 500;
+/// 订阅累积的消息条数上限（推送流是无限的，必须有界）。
+const PUBSUB_LINES_MAX: usize = 500;
+/// `SUBSCRIBE` 单轮最多收多少条消息（同 `MONITOR_BATCH` 的理由）。
+const PUBSUB_BATCH: usize = 200;
+/// 导出一个文件夹时单个值最多读取的元素条数（超出截断，JSON 里如实标注）。
+const EXPORT_VALUE_PAGE: usize = 10_000;
+/// 批量动作一次最多覆盖的键数（SCAN 收集的上限；再大先收窄前缀）。
+const BATCH_KEYS_MAX: usize = 100_000;
 /// 面板里「标签」列的宽度（配置项的 name、慢日志的元信息）。
 const PANEL_LABEL_WIDTH: f32 = 200.;
 /// 慢日志行左侧元信息（序号 / 耗时 / 时间）的宽度。
@@ -927,6 +936,38 @@ pub struct RedisPage {
     cli_scroll: ScrollHandle,
     /// 监控输出的滚动句柄（同上）。
     monitor_scroll: ScrollHandle,
+
+    // ── 值面板顶部分页（2026-10-16）─────────────────────────────────────
+    /// 当前分页（状态 / 键详情 / 命令行 / 慢日志 / 监控命令 / 发布订阅）。
+    ///
+    /// 「状态」「慢日志」「命令行」「监控命令」与「服务端」视图**共用同一份数据
+    /// 与同一条执行链**（两处共存是既定决策）；键详情即原有的值编辑器。
+    value_tab: KeyValueTab,
+    /// TTL 弹窗（单键「按时长设置」与「批量设置 TTL」共用）的秒数输入。
+    ///
+    /// 右栏「键管理」的 [`Self::ttl_input`](struct.RedisPage.html) 保持原样——
+    /// 那是常驻表单，这里是弹窗里的临时输入，两者不共用一个实体。
+    ttl_secs_input: Entity<InputState>,
+    /// 「按到期时刻设置」弹窗的日期时间输入（`YYYY-MM-DD HH:MM[:SS]`，本地时区）。
+    ttl_at_input: Entity<InputState>,
+
+    // ── 发布 / 订阅（专用连接，与 `MONITOR` 同一条纪律）──────────────────
+    /// 频道输入（空格分隔多个）。
+    pubsub_channel: Entity<InputState>,
+    /// 收到的消息行（上限 [`PUBSUB_LINES_MAX`]，超出丢最旧的）。
+    pubsub_lines: VecDeque<PubSubLine>,
+    /// 订阅是否在跑（决定按钮形态）。
+    pubsub_running: bool,
+    /// 订阅的停止位。**只置位、不丢任务**（同 `monitor_stop`）。
+    pubsub_stop: Option<Arc<AtomicBool>>,
+    /// 订阅轮询任务句柄；丢掉即停止循环。
+    pubsub_task: Option<Task<()>>,
+    /// 订阅轮询循环的生命周期轮次（快速「停→开」防旧循环回落状态）。
+    pubsub_generation: u64,
+    /// 订阅因错误中断时的原因。
+    pubsub_error: Option<String>,
+    /// 订阅输出的滚动句柄（新消息贴底）。
+    pubsub_scroll: ScrollHandle,
 }
 
 /// 需要二次确认的破坏性动作（连接档案开启「写入确认」时生效）。
@@ -958,6 +999,16 @@ enum PendingAction {
     SlowlogReset,
     /// 强制断开一条客户端连接（`CLIENT KILL ADDR`）。
     ClientKill { addr: String },
+    /// 批量删除键（键树右键「批量删除键」；键名列表在确认前冻结）。
+    DeleteKeys {
+        prefix: String,
+        keys: Arc<Vec<String>>,
+    },
+    /// 批量移除过期时间（键树右键「批量移除 TTL」）。
+    PersistKeys {
+        prefix: String,
+        keys: Arc<Vec<String>>,
+    },
 }
 
 impl PendingAction {
@@ -975,6 +1026,8 @@ impl PendingAction {
             Self::ConfigSet { .. } => tr(cx, "修改服务端配置"),
             Self::SlowlogReset => tr(cx, "清空慢日志"),
             Self::ClientKill { .. } => tr(cx, "断开客户端连接"),
+            Self::DeleteKeys { .. } => tr(cx, "批量删除键"),
+            Self::PersistKeys { .. } => tr(cx, "批量移除过期时间"),
         }
     }
 
@@ -1010,6 +1063,16 @@ impl PendingAction {
             ),
             Self::SlowlogReset => tr(cx, "将清空服务端的慢日志记录。").to_owned(),
             Self::ClientKill { addr } => trf(cx, "将强制断开客户端 {} 的连接。", &[addr]),
+            Self::DeleteKeys { prefix, keys } => trf(
+                cx,
+                "将永久删除前缀 {} 下的 {} 个键，此操作不可撤销（批量删除不进回收站）。",
+                &[prefix, &keys.len().to_string()],
+            ),
+            Self::PersistKeys { prefix, keys } => trf(
+                cx,
+                "将移除前缀 {} 下 {} 个键的过期时间，它们会永不过期。",
+                &[prefix, &keys.len().to_string()],
+            ),
         }
     }
 }
@@ -1018,6 +1081,18 @@ impl PendingAction {
 // 连接内主视图与服务端观测（M1.4）
 // ----------------------------------------------------------------------
 
+/// TTL 弹窗的目标（单键 / 批量）；弹窗打开那一刻冻结，确认期间不回读输入框。
+#[derive(Clone)]
+pub(super) enum TtlPromptTarget {
+    /// 单个键。
+    One { key: String },
+    /// 一批键（前缀下的全部；`keys` 已在收集时冻结）。
+    Many {
+        prefix: String,
+        keys: Arc<Vec<String>>,
+    },
+}
+
 /// 连接内的主视图：数据浏览 ↔ 服务端观测。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainView {
@@ -1025,6 +1100,64 @@ enum MainView {
     Data,
     /// 服务端观测面板族（M1.4）。
     Server,
+}
+
+/// 值面板顶部的分页（对齐 tiny-rdm 的键内容页签）。
+///
+/// 「状态 / 命令行 / 慢日志 / 监控命令」与「服务端」视图的对应面板**共用同一份
+/// `PanelData` 与同一条执行链**（`load_panel_for`），两处并存、互不复制；
+/// 「键详情」就是原有的值编辑器；「发布/订阅」是新增的专用连接流。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum KeyValueTab {
+    /// 服务端状态（`INFO` 分节）。
+    Status,
+    /// 键详情（值编辑器，缺省页）。
+    #[default]
+    KeyDetail,
+    /// redis-cli 命令行。
+    Cli,
+    /// 慢日志（`SLOWLOG GET`）。
+    Slowlog,
+    /// `MONITOR` 实时命令流。
+    Monitor,
+    /// 发布/订阅（`SUBSCRIBE`，专用连接）。
+    PubSub,
+}
+
+impl KeyValueTab {
+    /// 全部分页（页签顺序即此顺序）。
+    const ALL: [Self; 6] = [
+        Self::Status,
+        Self::KeyDetail,
+        Self::Cli,
+        Self::Slowlog,
+        Self::Monitor,
+        Self::PubSub,
+    ];
+
+    /// 页签文案。
+    fn label(self, cx: &App) -> &'static str {
+        match self {
+            Self::Status => tr(cx, "状态"),
+            Self::KeyDetail => tr(cx, "键详情"),
+            Self::Cli => tr(cx, "命令行"),
+            Self::Slowlog => tr(cx, "慢日志"),
+            Self::Monitor => tr(cx, "监控命令"),
+            Self::PubSub => tr(cx, "发布/订阅"),
+        }
+    }
+
+    /// 页签图标（对齐 tiny-rdm 的图标语义）。
+    fn icon(self) -> DuckIcon {
+        match self {
+            Self::Status => DuckIcon::Gauge,
+            Self::KeyDetail => DuckIcon::FileText,
+            Self::Cli => DuckIcon::SquareTerminal,
+            Self::Slowlog => DuckIcon::ListOrdered,
+            Self::Monitor => DuckIcon::Zap,
+            Self::PubSub => DuckIcon::Network,
+        }
+    }
 }
 
 /// 服务端观测的具体面板。
@@ -1118,6 +1251,17 @@ struct CliLine {
     error: bool,
     /// 正文。
     text: String,
+}
+
+/// 发布/订阅输出的一行。
+#[derive(Clone, PartialEq, Eq)]
+struct PubSubLine {
+    /// 频道名。
+    channel: String,
+    /// 载荷。
+    payload: String,
+    /// 收到时刻（Unix 秒，展示用）。
+    at: i64,
 }
 
 /// 树模式下一行（展平后，供 `uniform_list` 使用）。
@@ -1316,6 +1460,11 @@ impl RedisPage {
         let config_value = text_input(window, cx, tr(cx, "新值"));
         let memory_key = text_input(window, cx, tr(cx, "键名"));
         let cli_input = text_input(window, cx, tr(cx, "输入命令，如 INFO server"));
+        // TTL 弹窗（按时长 / 批量）与「按到期时刻设置」的输入；右栏键管理的
+        // `ttl_input` 保持独立（常驻表单 vs 临时弹窗，两个真源会互相污染）。
+        let ttl_secs_input = text_input(window, cx, tr(cx, "秒数，如 3600"));
+        let ttl_at_input = text_input(window, cx, tr(cx, "如 2026-12-31 23:59:59（本地时间）"));
+        let pubsub_channel = text_input(window, cx, tr(cx, "频道，如 chat.1（多个用空格分隔）"));
         // 备注框与上面那一排**不同**：它的内容跟着选中的键走（换键回填）。
         let note_input = text_input(window, cx, tr(cx, "给这个键写点备注，自动保存"));
         let jsonpath_input = text_input(window, cx, tr(cx, "如 $.store.book[*].title，回车执行"));
@@ -1524,6 +1673,17 @@ impl RedisPage {
             monitor_error: None,
             cli_scroll: ScrollHandle::new(),
             monitor_scroll: ScrollHandle::new(),
+            value_tab: KeyValueTab::default(),
+            ttl_secs_input,
+            ttl_at_input,
+            pubsub_channel,
+            pubsub_lines: VecDeque::new(),
+            pubsub_running: false,
+            pubsub_stop: None,
+            pubsub_task: None,
+            pubsub_generation: 0,
+            pubsub_error: None,
+            pubsub_scroll: ScrollHandle::new(),
         }
     }
 
@@ -1638,6 +1798,35 @@ impl RedisPage {
         cx.notify();
     }
 
+    /// 切值面板顶部分页。
+    ///
+    /// 与「服务端」视图共用的三块（状态 / 慢日志 / 命令行 / 监控）读同一份
+    /// `PanelData` 与同一条执行链；目标页的数据还没拉过时顺手拉一次。
+    /// 监控与订阅是**专用连接**上的流：离开页就停（与 `set_server_panel`
+    /// 离开 Monitor 面板即停同一条纪律）。
+    fn set_value_tab(&mut self, tab: KeyValueTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.value_tab == tab {
+            return;
+        }
+        if tab != KeyValueTab::Monitor {
+            self.stop_monitor(cx);
+        }
+        if tab != KeyValueTab::PubSub {
+            self.stop_pubsub(cx);
+        }
+        self.value_tab = tab;
+        match tab {
+            KeyValueTab::Status if self.panel_data.info_sections.is_empty() => {
+                self.load_panel_for(ServerPanel::Info, window, cx);
+            }
+            KeyValueTab::Slowlog if self.panel_data.slowlog.is_empty() => {
+                self.load_panel_for(ServerPanel::Slowlog, window, cx);
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
     /// 检查一个动作能不能做（分级锁写闸门）。
     fn check(&self, capability: Capability) -> Result<(), DenyReason> {
         match self.gate() {
@@ -1651,9 +1840,6 @@ impl RedisPage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // 只在测试里用：放模块内引，免得非测试构建多一条 unused import。
-    use duck_redis::scan::AUTO_EXPAND_DEFAULT;
-
     // `keys` 是私有子模块，`use super::*` 带不进来（孩子模块的私有项要靠路径显式点名）。
     use super::keys::flat_view;
 
@@ -1960,7 +2146,10 @@ mod tests {
 
         let mut nodes = fixture();
         stamp_folder_tags(&mut nodes, |key| tags.tag_of(key));
-        let rows = flatten_with_tags(&nodes, &meta, AUTO_EXPAND_DEFAULT, &tags);
+        // 阈值给正数：`AUTO_EXPAND_DEFAULT` 现在是 `0`（2026-10-15 定：缺省全折叠，
+        // 命名空间自己点开），拿它当阈值就会让 `user` 文件夹不展开、`user:1` 行整个
+        // 不进 `rows`。本用例测的是「标注有没有透传进行」，与折叠策略无关。
+        let rows = flatten_with_tags(&nodes, &meta, 100, &tags);
 
         let config = rows.iter().find(|row| row.label == "config").expect("键行");
         assert_eq!(config.tag, Some(TagColor::Green));

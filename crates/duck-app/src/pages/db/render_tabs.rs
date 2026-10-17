@@ -159,9 +159,7 @@ impl DatabasePage {
                         Some(TabKind::Dashboard(_)) => Icon::new(DuckIcon::Columns2)
                             .size(extended.icon.sm)
                             .into_any_element(),
-                        _ => kind_logo(cfg.kind)
-                            .element(extended.icon.sm)
-                            .into_any_element(),
+                        _ => engine_logo(EngineRef::from_config(cfg), extended.icon.sm, cx),
                     })
                     .child(div().min_w_0().truncate().child(title.clone()))
                     .child(close)
@@ -459,9 +457,9 @@ impl DatabasePage {
                                 });
                             })
                             // 多行 SQL 折成一行展示：列表是「认句子」用的，不是阅读器。
-                            .child(div().truncate().child(SharedString::from(
+                            .child(div().truncate().child(selectable_text(SharedString::from(
                                 sql.split_whitespace().collect::<Vec<_>>().join(" "),
-                            ))),
+                            )))),
                     );
                 }
             }
@@ -561,7 +559,9 @@ impl DatabasePage {
                                             .min_w_0()
                                             .truncate()
                                             .text_size(tokens.typography.sm.size)
-                                            .child(SharedString::from(display_name)),
+                                            .child(selectable_text(SharedString::from(
+                                                display_name,
+                                            ))),
                                     )
                                     .child(
                                         div()
@@ -569,12 +569,12 @@ impl DatabasePage {
                                             .truncate()
                                             .text_size(tokens.typography.mono_md.size)
                                             .text_color(tokens.colors.muted_foreground)
-                                            .child(SharedString::from(
+                                            .child(selectable_text(SharedString::from(
                                                 display_sql
                                                     .split_whitespace()
                                                     .collect::<Vec<_>>()
                                                     .join(" "),
-                                            )),
+                                            ))),
                                     ),
                             ),
                     );

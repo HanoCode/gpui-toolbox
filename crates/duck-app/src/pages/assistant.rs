@@ -34,7 +34,7 @@ use duck_components::{
     ButtonVariant, DuckIcon, SidebarPanel, SidebarState, button, card,
     content::{accent_tag, accordion, empty_state, neutral_tag, tag},
     detail_title_text, dropdown_select, icon_button, icon_text_button, meta_text, notify,
-    notify::Tone,
+    notify::Tone, selectable_text,
     sidebar_navigation_button,
 };
 use duck_theme::{DuckThemeState, active_theme, number, tr, trf};
@@ -1777,7 +1777,7 @@ impl AssistantPage {
                             .text_size(tokens.typography.xs.size)
                             .line_height(tokens.typography.xs.line_height)
                             .text_color(tokens.colors.foreground)
-                            .child(SharedString::from(value)),
+                            .child(selectable_text(SharedString::from(value))),
                     )
                     .into_any_element(),
             );
@@ -1923,7 +1923,7 @@ impl AssistantPage {
                             .text_size(tokens.typography.xs.size)
                             .line_height(tokens.typography.xs.line_height)
                             .text_color(extended.colors.text_tertiary)
-                            .child(SharedString::from(tool_label(&spec.name, cx))),
+                            .child(selectable_text(SharedString::from(tool_label(&spec.name, cx)))),
                     )
                     .into_any_element()
             })
@@ -1956,11 +1956,11 @@ impl AssistantPage {
                     .text_size(tokens.typography.xs.size)
                     .line_height(tokens.typography.xs.line_height)
                     .text_color(extended.colors.text_tertiary)
-                    .child(SharedString::from(trf(
+                    .child(selectable_text(SharedString::from(trf(
                         cx,
                         "工作目录：{}",
                         &[workspace.as_str()],
-                    ))),
+                    )))),
             );
         }
 

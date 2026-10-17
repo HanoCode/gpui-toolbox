@@ -10,6 +10,7 @@ mod app;
 mod assets;
 mod audit;
 mod backup;
+mod confirm;
 mod deeplink;
 mod diagnostics;
 mod file_dialogs;

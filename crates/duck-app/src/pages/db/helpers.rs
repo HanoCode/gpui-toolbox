@@ -1052,19 +1052,13 @@ pub(super) fn open_confirm(
         let title_for_content = title.clone();
         let message_for_content = message.clone();
         let on_ok_for_ok = on_ok.clone();
+        let on_ok_for_footer = on_ok.clone();
         dialog
             .w(px(CONFIRM_DIALOG_WIDTH))
             .ml(offset.x)
             .margin_top(dialog_top_offset(cx) + offset.y)
             .opacity(offset.opacity)
             .close_button(false)
-            .button_props(
-                DialogButtonProps::default()
-                    // `ok_text` 按值收：弹层闭包是 `Fn`，这里必须克隆一份出去。
-                    .ok_text(ok_text.clone())
-                    .cancel_text(tr(cx, "取消"))
-                    .show_cancel(true),
-            )
             .content(move |content, _, cx| {
                 content.child(modal_drag_area(
                     &drag_for_content,
@@ -1079,6 +1073,19 @@ pub(super) fn open_confirm(
                         .child(body_text(message_for_content.clone(), cx)),
                 ))
             })
+            // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+            // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+            .footer(dialog_footer(
+                "db-confirm",
+                ok_text.clone(),
+                ButtonVariant::Primary,
+                Rc::new(move |window, cx| {
+                    on_ok_for_footer(window, cx);
+                    true
+                }),
+                cx,
+            ))
+            // 键盘 ⏎ 走 base 的 `Confirm` action → 这里；鼠标点按钮走上面 footer。
             .on_ok(move |_, window, cx| {
                 // 确认之后才真正动手；视图已销毁（`update` 返回 `Err`）也照样关弹窗，
                 // 不让一个点不掉的确认框挂在屏幕上。

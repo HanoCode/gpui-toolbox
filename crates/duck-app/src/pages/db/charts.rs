@@ -1027,18 +1027,24 @@ impl DatabasePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let confirmed = duck_platform::confirm(
+        // 询问走主题确认框（异步），不用 `duck_platform::confirm` 的同步系统模态 ——
+        // 见 `crate::confirm` 模块头。回调是 `Fn`，所以 id / name 先克隆。
+        let id = id.to_string();
+        let question = trf(cx, "「{}」将被删除，确定继续吗？", &[name]);
+        crate::confirm::open_confirm_in(
             tr(cx, "删除已保存图表"),
-            &trf(cx, "「{}」将被删除，确定继续吗？", &[name]),
+            question,
+            tr(cx, "删除"),
+            move |this, window, cx| {
+                this.saved_charts.retain(|saved| saved.id != id);
+                this.persist_saved_charts(cx);
+                this.status = tr(cx, "已删除。").into();
+                notify::success(tr(cx, "已删除该图表。"), window, cx);
+                cx.notify();
+            },
+            window,
+            cx,
         );
-        if !confirmed {
-            return;
-        }
-        self.saved_charts.retain(|saved| saved.id != id);
-        self.persist_saved_charts(cx);
-        self.status = tr(cx, "已删除。").into();
-        notify::success(tr(cx, "已删除该图表。"), window, cx);
-        cx.notify();
     }
 
     /// 打开一块仪表板：落在**仪表板标签**里、拉一遍面板数据。
@@ -1102,15 +1108,14 @@ impl DatabasePage {
         let Some(session) = self.sessions.get(&conn_id) else {
             return;
         };
-        let kind = session.kind;
         let conn = session.conn.clone();
         // 折线 / 柱状这些面板的 SQL 是**替用户跑**的，该过只读闸门。但
         // [`duck_db::sqlintel::prove_read_only`] 靠解析 SQL，MongoDB / Elasticsearch 的
         // shell / DSL 语句永远证明不了——一律拒绝等于让这两条引擎的图表面板彻底不能用。
-        // 判据复用 `identifier_quote()`（它就是「这条引擎接不接 SQL」的同源口径），
+        // 判据复用**会话里的引号**（它就是「这条连接接不接 SQL」的同源口径），
         // 非 SQL 引擎退回与编辑器手动执行**同一条** `execute` 路径：面板的语句本就是
         // 用户自己存下来的，不存在"替用户写库"。
-        let sql_engine = kind.identifier_quote().is_some();
+        let sql_engine = session.quote.is_some();
 
         // 先把「要干什么」算成清单：后台闭包不该再读界面状态。
         let mut jobs: Vec<(u32, DashboardJob)> = Vec::new();
@@ -1528,39 +1533,43 @@ impl DatabasePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let confirmed = duck_platform::confirm(
+        // 确认走主题弹窗（异步）—— 见 `crate::confirm` 模块头。
+        let question = trf(cx, "「{}」将被删除，确定继续吗？", &[name]);
+        crate::confirm::open_confirm_in(
             tr(cx, "删除仪表板"),
-            &trf(cx, "「{}」将被删除，确定继续吗？", &[name]),
+            question,
+            tr(cx, "删除"),
+            move |this, window, cx| {
+                let panels: Vec<u32> = this
+                    .dashboards
+                    .iter()
+                    .find(|board| board.id == id)
+                    .map(|board| board.panels.iter().map(|panel| panel.id).collect())
+                    .unwrap_or_default();
+                this.dashboards.retain(|board| board.id != id);
+                for panel in panels {
+                    this.dashboard_collapsed.remove(&panel);
+                }
+                this.dashboard_results.retain(|(_, dash, _), _| *dash != id);
+                // 这块板的标签一起收掉（可能不止一张？不会 —— 同连接同板只留一张，但
+                // 收集后再关的顺序不能省：`close_tab` 会改 `this.tabs`，边遍历边关会漏）。
+                let stale: Vec<String> = this
+                    .tabs
+                    .iter()
+                    .filter(|tab| this.tab_kind.get(*tab) == Some(&TabKind::Dashboard(id)))
+                    .cloned()
+                    .collect();
+                for tab in stale {
+                    this.close_tab(&tab, window, cx);
+                }
+                this.persist_dashboards(cx);
+                this.status = tr(cx, "已删除。").into();
+                notify::success(tr(cx, "已删除该仪表板。"), window, cx);
+                cx.notify();
+            },
+            window,
+            cx,
         );
-        if !confirmed {
-            return;
-        }
-        let panels: Vec<u32> = self
-            .dashboards
-            .iter()
-            .find(|board| board.id == id)
-            .map(|board| board.panels.iter().map(|panel| panel.id).collect())
-            .unwrap_or_default();
-        self.dashboards.retain(|board| board.id != id);
-        for panel in panels {
-            self.dashboard_collapsed.remove(&panel);
-        }
-        self.dashboard_results.retain(|(_, dash, _), _| *dash != id);
-        // 这块板的标签一起收掉（可能不止一张？不会 —— 同连接同板只留一张，但
-        // 收集后再关的顺序不能省：`close_tab` 会改 `self.tabs`，边遍历边关会漏）。
-        let stale: Vec<String> = self
-            .tabs
-            .iter()
-            .filter(|tab| self.tab_kind.get(*tab) == Some(&TabKind::Dashboard(id)))
-            .cloned()
-            .collect();
-        for tab in stale {
-            self.close_tab(&tab, window, cx);
-        }
-        self.persist_dashboards(cx);
-        self.status = tr(cx, "已删除。").into();
-        notify::success(tr(cx, "已删除该仪表板。"), window, cx);
-        cx.notify();
     }
 
     /// 仪表板页：页头（查看 / 编辑、刷新、加面板）+ 12 栏网格。
@@ -1602,7 +1611,7 @@ impl DatabasePage {
                             .text_size(tokens.typography.md.size)
                             .line_height(tokens.typography.md.line_height)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(board.name.clone())),
+                            .child(selectable_text(SharedString::from(board.name.clone()))),
                     )
                     .child(meta_text(
                         if editing {
@@ -1877,7 +1886,7 @@ impl DatabasePage {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(tokens.colors.foreground)
                         .truncate()
-                        .child(SharedString::from(title.clone())),
+                        .child(selectable_text(SharedString::from(title.clone()))),
                 )
                 .child(div().flex_1());
             if editing {
@@ -1924,7 +1933,7 @@ impl DatabasePage {
                     .min_w_0()
                     .truncate()
                     .text_color(tokens.colors.muted_foreground)
-                    .child(SharedString::from(title)),
+                    .child(selectable_text(SharedString::from(title))),
             );
         if editing {
             head = head.child(self.dashboard_panel_controls(board, panel, cx));
@@ -2367,7 +2376,7 @@ impl DatabasePage {
             let row = check_row(
                 SharedString::from(format!("db-chart-series-{name}")),
                 selected,
-                div().child(SharedString::from(name.clone())),
+                div().child(selectable_text(SharedString::from(name.clone()))),
                 {
                     let view = view.clone();
                     move |_, _, cx| {
@@ -2639,7 +2648,7 @@ fn chart_frame(title: String, cx: &App) -> gpui::Div {
                 .text_size(tokens.typography.xs.size)
                 .text_color(tokens.colors.muted_foreground)
                 .truncate()
-                .child(SharedString::from(title)),
+                .child(selectable_text(SharedString::from(title))),
         )
 }
 

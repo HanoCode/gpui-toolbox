@@ -1,6 +1,9 @@
 # 项目管理模块设计（`projects`）
 
-> 状态：**S1 + S2 + S3-I + S3-II + S3-III + S4 已落地**（内核 crate `crates/duck-project` 103 单测；`duck-app` 侧 `pages/projects` 三件套（state / view / mod）+ 归档渲染 `archive.rs` + 偏好 `prefs.rs` + **7 个**页面私有组件 + **S4 新增**「随手看」悬浮窗 `float.rs` 与跨窗广播 `bus.rs`，`duck-app` 项目管理页 55 单测全绿，`duck-app` 全量 289 单测通过）
+> 状态：**S1 + S2 + S3-I + S3-II + S3-III + S4 + S5 + S5-a（提醒）+ S5-b（报表维度）+ S5-c（日历双模）+ S5-d（周计划与日志）+ S5-e（导入与导出）+ S5-f（键盘与多步撤销）+ S5-g（工作上下文 / 标签收藏 / 日历浮窗）已落地；**S6（AI）全部落地**（工具四件 + 编辑器三按钮 + Spotlight AI 兜底 + AI 生成日报 / 周报 / 周计划 + 排期负载）**
+> （内核 crate `crates/duck-project` **129 单测**；`duck-app` 侧 `pages/projects` 三件套（state / view / mod）+ 归档渲染 `archive.rs` + 偏好 `prefs.rs` + 导出 `export.rs` / 导入 `import.rs` / 导入别名表 `import_aliases.rs` / 导入弹窗 `dialogs.rs` + 快速解析 `quickparse.rs` + 提醒 `remind.rs` + 报表口径 `report.rs` + AI 辅助 `ai_assist.rs` / 排期负载 `schedule.rs` + 「随手看」悬浮窗 `float.rs` 与跨窗广播 `bus.rs` + **9 个**页面私有组件，`duck-app` 项目管理页 **198 单测**全绿）
+> ⚠️ **本行原写「S5 未做」，与磁盘不符** —— S5 实际做到了「六视图 + 完整编辑器 + 项目/标签/看板列管理 + 导入导出 + 批量」，逐条证据见 §9「S5 复核（以代码为准）」。
+> 本文其余章节的 §3 功能表 / §4.3 与 §9 各段「已知边界」里凡写「属 S5 / 未做」的，均以那一节的复核结论为准。
 > 六项拍板决议见 §8 · 对应路由 `PROJECTS_ROUTE = "projects"`（**已替换占位页**，见 §9 S2 记录）
 > S3 拆三批：**S3-I（归档中心 + 撤销条 + 快捷键 + 偏好落盘）已落地**（见 §9 S3-I 记录）；**S3-II（列表视图 + 筛选 chips + 主区搜索 + 排序切换器）已落地**（见 §9 S3-II 记录）；**S3-III（以 `docs/projects-mock.html` 为真源对齐左栏 / 工具条 / 状态栏 / 卡片菜单 / 看板列）已落地**（见 §9 S3-III 记录）
 > **S4（「随手看」悬浮窗，首发）已落地**：`pages/projects/float.rs`（300×550 无边框置顶、`focus: false` 不抢焦点、两段列表 + 内联详情 + 内联新建）+ `pages/projects/bus.rs`（进程内变更广播，主窗与悬浮窗各开一个 `duck-project` 连接靠它互相同步）+ 全局热键**单键槽位化**（`duck-platform/src/hotkey.rs` 从「一条绑定」改成「按 `Slot` 分槽」，`⌥⌘T` 唤起；见 §9 S4 记录）
@@ -64,7 +67,8 @@ Group（分组）1 ── n Project（项目）1 ── n Task（任务）1 ─�
 | **Milestone** | `id` `task_id` `project_id` `title` `description` `due_date` `progress_snapshot` `reached_at` `created_at` | `task_id` 为空表示挂在项目上的项目里程碑 |
 | **Tag** | `id` `name` `color` | 全局共享，跨项目复用；**使用次数现算**（不缓存，见 §9） |
 | **BoardColumn** | `id` `name` `status_key` `sort_order` `wip_limit` | 表为空 = 用内置默认四列；`name` 为 NULL = 用内置默认文案；`status_key` 映射到内置状态之一 |
-| **WorkLog** | `id` `date` `kind` `content_md` `ai_generated` `linked_task_ids` | `kind ∈ {daily, weekly, plan}`；M2 |
+| **WorkLog** | `id` `date` `kind` `content_md` `ai_generated` `linked_task_ids` `tags` | `kind ∈ {daily, weekly, plan}`；`date` 是 `YYYY-MM-DD` 文本；`tags` 是逗号分隔文本（**S5-d 新增**，与任务的 `Tag` 实体不是一回事，只是贴在这篇日志上的分类词） |
+| **WeeklyPlan** | `id` `week_key` `content_md` `task_ids` `original_task_ids` `status` `created_at` `updated_at` | **S5-d 新增**；`week_key` 是 ISO-8601 周键（`2026-W42`，库级 UNIQUE）；`original_task_ids` 是「首次以非空任务集定型」的快照，用来把原计划与后加的分开；`status ∈ {draft, confirmed}` |
 
 **字段设计说明**
 
@@ -304,7 +308,7 @@ Group（分组）1 ── n Project（项目）1 ── n Task（任务）1 ─�
 > 4. **右列多了「里程碑」区块**：清单**渲染期**从页面状态现读（弹窗开着时也能从下层「添加里程碑」弹窗里加一条），行复用右栏 `task_detail_panel::milestone_row`（达成 / 删除都在里面），**id 前缀换成 `projects-task-editor-milestone`** —— 两处会同时画同一批里程碑，`ElementId` 只在一个窗口内唯一。**新建态只给一句说明**（内核的里程碑挂在 `task_id` 上，凭空造不了），不摆点了没用的入口。
 > 5. **父任务下拉的候选 = 顶层任务且排除自身**：内核 `check_parent` 只许一层嵌套（父自己不能再有父），界面侧按同一条口径先筛，别等保存失败。选「顶层任务」= 明确摘掉父任务（走 `clear_parent`），不是「不动」。
 > 6. **底部左侧写「按 ⏎ 直接保存」，不是原型的 ⌘↵**：本仓弹窗的提交键绑定就是 ⏎（`gpui-base/src/dialog.rs:92`），照原型写会指错键。
-> 7. **AI 三按钮仍属 S6**（`pages/projects/mod.rs` 的已落地清单），编辑器里先不摆 —— 「点了没反应」的入口比不摆更糟。
+> 7. **AI 三按钮属 S6，已落地**：未配厂商时整行退化为一句说明，不摆「点了没反应」的入口。
 > 8. **预估工时随日期自动算**（2026-10-15 追加）：开始 / 截止都排上之后，预估工时按 `(截止 − 开始 + 1) × 8` 自动填 —— **含首尾两天**（10-01 → 10-02 = 2 天 = 16 小时）。每天的小时数是常量 `HOURS_PER_WORKDAY`，经 `trf` 传进说明文案，改常量界面上那句「每天 N 小时」跟着变，不留第二份真源。
 >    写入时机只有两种：**输入框为空**、或**当前值就是自动算出来的**。用户一旦手填过（`InputEvent::Change` 置 `estimate_auto = false`），日期再改也不再覆盖 —— 想拉回自动点同一格右侧的「按日期重算」。⚠️ 程序化回填走 `InputState::set_value`，它**不**发 `Change`，所以自动写进去的值不会把自己误标成「手填」（这是整套联动能成立的前提）。
 >    按钮**不随「日期排全没有」切换禁用态**：弹窗正文的 `content` 闭包只跑一次，日期选择器自己 `notify` 到不了那里，禁用态画上去就不会更新；「先排好期」这个前提写进说明文字，跨度不成立时按了没反应。**实际工时永远手填** —— 它记的是已经花掉的量，与排期无关。
@@ -351,8 +355,10 @@ Group（分组）1 ── n Project（项目）1 ── n Task（任务）1 ─�
 
 **⑥ 报表与工作日志（M2）**
 
-- 报表：顶部时间范围选择 → 指标卡 4 枚（已完成 / 进行中 / 逾期 / 平均周期）→ 完成趋势折线 → 按项目分布条形 → 逾期任务表
-- 工作日志：`segmented_tabs` 三态（日报 / 周报 / 周计划）→ 左编辑区（Markdown 编辑 ↔ 预览互切）+ 右 280px 时间轴（历史记录，可点击回填）
+- 报表（**已落地**，见 §9「报表维度」）：顶部筛选条（时间范围 3 档 / 状态 4 档 / 标签多选 + `导出报表`）→ 指标卡 5 枚（已完成 / 进行中 / 阻塞中 / 逾期 / **平均周期**）→ 完成趋势柱状图（近 7 / 30 天按日、近 90 天按周）→ 按项目分布 / 按标签分布条形 → 逾期清单 → 完成明细
+- 报表的口径由**筛选条**决定：状态 / 标签筛整份报表，时间范围只筛时间轴上的两块（趋势与明细）——理由见 `pages/projects/report.rs` 的模块头
+- 日历（**已落地**，见 §9「日历双模」）：工具条（`上/下一页` + `今天` + `月 / 周` 切换 + 标题 + 口径说明）→ 网格（月 6×7 / 周 1×7）→ 格内任务条（单击选中 / 双击开编辑器 / 右键任务菜单）→ **格空白处右键**给这一天的菜单（新建任务 / 日报 / 换画法 / 复制日期）
+- 工作日志（**已落地**，见 §9「周计划与日志」）：`segmented_tabs` 三态（日报 / 周报 / 周计划）→ 左清单 + 右正文；日志正文可贴 `#标签`；周计划档换成「周选择器 + 计划 vs 实际两栏 + 统计行」，并带草稿自动保存
 
 ---
 
@@ -400,6 +406,8 @@ Group（分组）1 ── n Project（项目）1 ── n Task（任务）1 ─�
 
 月视图：7 列 × 6 行网格，格内最多 2 条 + `+N`；今日格用强调色描边，选中格 `accent_tint` 底。周视图：7 列看板式，列头为星期 + 日期。
 
+> 落地情况（S5-c，2026-10-16）：除「**选中格 `accent_tint` 底**」外全部照做。本仓没有「选中的那一格」这个概念 —— 日历格的选中没有下游消费方（右栏认的是**任务**，不是某一天），为它留一个高亮只会让人以为「点了这格会发生什么」。日期格右键菜单里给了「在这天新建任务 / 打开这天的日报」，需要「对这一天做点什么」时走那里。
+
 ### 5.4 快捷键
 
 | 键 | 动作 |
@@ -411,8 +419,9 @@ Group（分组）1 ── n Project（项目）1 ── n Task（任务）1 ─�
 | `Space` | 切换选中任务完成态 |
 | `E` | 编辑选中任务 |
 | `⌫` | 删除选中任务（二次确认） |
-| `1`–`4` | 切视图（看板/列表/日历/时间线） |
-| `⌘Z` | 撤销最近一次变更（M2） |
+| `A` / `⇧A` | 归档选中任务 / 跳到归档中心 |
+| `1`–`6` | 切视图（看板/列表/日历/时间线/报表/工作日志） |
+| `⌘Z` | 撤销上一步变更；**可连按**（栈深 32 · 时限 60 秒，见 §9「键盘与多步撤销」） |
 
 均登记为页面级 key binding，不占用全局快捷键；全局唤起走 `app::toggle_launcher` 既有通道。
 
@@ -435,9 +444,10 @@ Group（分组）1 ── n Project（项目）1 ── n Task（任务）1 ─�
 | 恢复 / 彻底删除 | 归档中心每行右侧 |
 
 - **即时反馈 + 撤销**：归档后 `notify` 提示条带「撤销」动作（7s），撤销即恢复（与删除共用同一套撤销通道，但**归档的撤销不触发二次确认**）。
+  ⚠️ 这里的 7s 是**按钮**的存活时长，不是撤销通道的窗口：撤销栈本身留 60 秒（连按 `⌘Z` 可逐步往回退），见 §9「键盘与多步撤销」。
 - **可见性原则**：归档动作**不做二次确认**（它可逆且数据不丢）；只有「彻底删除」和「清空归档」需要二次确认。
 - **跨视图一致**：在看板归档卡片 → 该卡立即从当前列消失并计数减一；在列表归档 → 行移除；在日历归档 → 日期格上的条目移除。全部走同一状态变更，避免视图间不一致。
-- **键盘**：列表中选中后 `A` 归档（`⇧A` 查看归档中心）；`⌘Z` 可撤销最近一次归档。
+- **键盘**：列表中选中后 `A` 归档（`⇧A` 查看归档中心）；`⌘Z` 可撤销最近一次归档，**连按就是一路往回退**。
 
 ---
 
@@ -543,6 +553,21 @@ CREATE TABLE work_logs (                         -- M2；v1 先把表建好
   linked_task_ids TEXT NOT NULL DEFAULT '[]',
   UNIQUE (date, kind)
 );
+
+-- v3（S5-d）：独立的周计划表 + 日志标签列
+ALTER TABLE work_logs ADD COLUMN tags TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE weekly_plans (                      -- 一行一周（UNIQUE week_key 在库级钉住）
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  week_key TEXT NOT NULL UNIQUE,                 -- ISO-8601，如 '2026-W42'
+  content_md TEXT NOT NULL DEFAULT '',
+  task_ids TEXT NOT NULL DEFAULT '[]',
+  original_task_ids TEXT NOT NULL DEFAULT '[]',  -- 首次以非空任务集定型，此后只增不改
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX idx_weekly_plans_week_key ON weekly_plans(week_key);
+CREATE INDEX idx_weekly_plans_updated ON weekly_plans(updated_at DESC);
 ```
 
 > 几个索引都是**部分索引**（带 `WHERE`）。因为「归档即隐藏」让 `archived_at IS NULL` 成为
@@ -598,8 +623,15 @@ CREATE TABLE work_logs (                         -- M2；v1 先把表建好
 | S3-II | 列表视图（`ViewMode::List`）+ 筛选 chips + 主区搜索 + 排序切换器 | ✅ **已落地**（四项全通；另加视图切换 tab + `1` / `2` 两个快捷键 + 三分支空态；`duck-app` 项目管理页 50 单测全绿；详见 §9 S3-II 记录） |
 | S3-III | **按 `docs/projects-mock.html` 对齐呈现与操作路径**：左栏四段重写 + 搜索框移入左栏 + 智能列表（与范围互斥）+ 「显示已完成」独立开关 + 工具条范围 chips + 状态栏重写 + 卡片右键菜单 11 项 + 「更多」显式入口 + 看板列底「+ 添加任务」+ 卡片四象限 / 阻塞标记 + 排序补「按进度」档 + 子菜单标题 | ✅ **已落地**（差异清单 **13 项**全收口；`duck-app` bin **289 单测全绿**、`pages/projects` 55 个 `#[test]`；i18n EN 表本批 **+53 条**；详见 §9 S3-III 记录） |
 | S4 | **悬浮窗（"随手看"，首发）** | ✅ **已落地**（`⌥⌘T` 全局键唤起、再按一次收起；显示**未归档**的进行中（全部）+ 待办（前 5 条 + 「展开剩余 N 个任务」）；与主窗口经 `bus` 广播保持一致（四条不弹回执的写路径各自补广播）；窗口几何落 `kv: window.task_float`；本批新增 8 条单测（`float` 6 + `bus` 2）；四处刻意偏离原型已在 §4.3 ⑤ 与 §9 S4 记录写明；详见 §9 S4 记录） |
-| S5 | M2：日历 / 时间线 / 报表 / 工作日志 / 导入导出 | 逐项验收 |
-| S6 | M3：AI 分类 / 拆解 / 周报生成 / 自然语言查询 | AI 未配置时正确降级 |
+| S5 | M2：日历 / 时间线 / 报表 / 工作日志 / 导入导出 | ✅ **已落地**（六视图（`prefs.rs:52` 的 `TABS`）+ 完整任务编辑器（`dialogs.rs:642`）+ 项目 / 标签 / 看板列 / 里程碑编辑器 + 置顶 / 复制 + 列表批量条（`view.rs:1762`）+ Markdown / CSV / JSON 导入导出；逐条证据见 §9「S5 复核（以代码为准）」） |
+| S5-a | 到期 / 逾期 / 久未更新**提醒** | ✅ **已落地**（`remind.rs`：5 分钟扫描 + 一天只说一次 + 设置页开关与阈值；11 单测；详见 §9「提醒通道」） |
+| S5-b | **报表维度**：时间范围 / 状态 / 标签筛选 + 平均周期 + 完成明细 + 导出 | ✅ **已落地**（`report.rs`：三档范围、四档状态、标签多选、5 枚 KPI、自适应趋势分桶、按标签分布、Markdown 报表导出；19 单测；详见 §9「报表维度」） |
+| S5-c | **日历双模**：月 / 周两种画法 + 日期格右键（新建 / 日报 / 换画法 / 复制日期） | ✅ **已落地**（`prefs::CalendarMode`（落盘）+ `view.rs` 的 `CalendarLayout` + 新的 `widgets/calendar_menu.rs`；日期格「右键新建」把该日预填为截止日；详见 §9「日历双模」） |
+| S5-d | **周计划与日志**：`weekly_plans` 独立表（内核 v3）+ ISO 周编号 + 周选择器 + 计划 vs 实际两栏 + 日志标签 + 草稿自动保存 | ✅ **已落地**（内核 v3 迁移 `weekly_plans` + `work_logs.tags`；`time.rs` 的 `iso_week` / `week_key` / `from_week_key`（带回环校验）；`store/plans.rs` 五个读写口；`prefs::LogDraft` + `dialogs::open_plan_editor`；详见 §9「周计划与日志（S5-d）」） |
+| S5-e | **导入与导出**：导入选文件（Markdown / CSV / JSON，零新依赖）+ 自动列映射（映射结果画在预览上方）+ 模板下载 + 按标题去重；导出与报表导出都能**另存为**（不再只走剪贴板） | ✅ **已落地**（`import.rs`（29 单测）+ `import_aliases.rs`（输入侧别名表，8 单测）+ `file_dialogs::save_file_in_window` / `open_file_in_app`；详见 §9「导入与导出（S5-e）」） |
+| S5-f | **键盘补两键 + 多步撤销**：`Enter`（把选中项摆到右栏）/ `E`（开编辑弹窗）；`⌘Z` 从单槽扩成**栈**（连按逐步往回退） | ✅ **已落地**（`actions::OpenSelectedDetail / EditSelected / UndoLast`；`state::{UNDO_DEPTH, UNDO_RETENTION}` + `undo_stack`；详见 §9「键盘与多步撤销（S5-f）」） |
+| S5-g | **工作上下文 + 标签收藏 + 独立日历浮窗** | ✅ **已落地**（内核 v4：`tasks.git_branch` + `tasks.context_{files,sql,tabs}` + `tags.is_favorite`；编辑器 / 详情面板接入；左栏「收藏在前」排序口径在内核；日历浮窗 `⌥⌘C`；详见 §9「工作上下文与日历浮窗（S5-g）」） |
+| S6 | M3：AI 分类 / 拆解 / 周报生成 / 自然语言查询 | ✅ **已落地**：`ai_tools.rs` 注册项目管理四工具（`list_project_tasks` / `project_stats` 只读，`create_project_task` / `update_project_task` 需审批）→ AI 助手页即得「自然语言查询与写入」；任务编辑器三按钮（AI 分类 / 拆解 / 润色描述，未配厂商时整行退化为说明）；**Spotlight AI 兜底**（自然语言 → 记号回填输入框）；**AI 生成日报 / 周报 / 周计划草稿**（落 `ai_generated` 来源标记）；**排期负载与冲突提示**（纯算术，不做 AI）。 |
 
 **每阶段的门禁**（照仓库既有纪律）：`cargo test --locked`、`cargo clippy --all-targets`、单文件 `rustfmt --check`、下游 `cargo check`、licenses check、i18n guard；新增依赖须审计 `rust-version ≤ 1.85` 并重生成 `THIRD_PARTY_LICENSES.md`。
 
@@ -641,7 +673,7 @@ CREATE TABLE work_logs (                         -- M2；v1 先把表建好
 | `query.rs` | `TaskQuery` → SQL 的构建（筛选口径 + 排序 + 归档可见性，纯函数） |
 | `db.rs` | 打开连接、PRAGMA、`user_version` 迁移 |
 | `store/mod.rs` | `ProjectStore` 门面、行映射、统计口径、`SetBuilder` |
-| `store/{groups,projects,tasks,tags,milestones,columns,archive}.rs` | 按实体分的读写 |
+| `store/{groups,projects,tasks,tags,milestones,columns,archive,logs,plans}.rs` | 按实体分的读写（`plans.rs` 为 S5-d 新增） |
 
 **与设计初稿的 9 处差异**（都是实现时才看清的，逐条给出理由）：
 
@@ -660,6 +692,9 @@ CREATE TABLE work_logs (                         -- M2；v1 先把表建好
 **另外补齐的**：`work_logs` 表在 v1 就建好（读写属 M2，避免以后多一次迁移）；
 `milestones` 支持项目级（`task_id IS NULL`）；`TaskQuery` 的「今天 / 本周 / 逾期 / 未排期」
 四个口径全部落在内核并有单测（含「本周含逾期项」这个容易写错的地方）。
+**v3 追加**（S5-d）：`weekly_plans` 表 + `work_logs.tags` 列；`store/plans.rs` 五个读写口
+（`get_plan` / `list_plans` / `upsert_plan` / `set_plan_status` / `delete_plan`）；
+`time.rs` 补 ISO-8601 周编号三件套；`tasks.rs` 补 `list_tasks_by_ids`（保序、跳过缺失、不跳归档）。
 
 **门禁状态**（S1 本批）
 
@@ -973,7 +1008,7 @@ S3 拆两批的**第二批**：列表视图（`ViewMode::List`）+ 筛选 chips�
 - **不做**（→ 后续）：编辑弹窗（完整任务表单）、`Enter`（开详情）/ `E`（编辑）两键、
   列表视图的**列宽可拖**与**点表头排序**（当前排序走工具条下拉，`TaskSort` 六档已能覆盖全部口径）。
 - **不做**（→ S5）：日历 / 时间线 / 报表 / 工作日志 / 导入导出。
-- **不做**（→ S6）：AI 拆解与周报。
+- **S6 已落地**：AI 拆解、周报 / 日报 / 周计划生成、自然语言查询与写入（见 §9「AI 接入」与「AI 第二批」）。
 - 主区搜索是**边打边筛**（`InputEvent::Change` → `set_search` → `reload_tasks()`，与归档搜索同款），
   **未做输入去抖**；本地 SQLite 查询代价可接受，大库待观察。
 
@@ -1152,6 +1187,234 @@ S3 的**第三批**，也是唯一一批**不改功能范围、只改呈现与�
 - **详情里不发「编辑」**（完整任务编辑器属 S5）、**没有「重启后自动出现」设置项**（规格里写的是「默认关」，即当前行为；开关本身随设置页一起做）—— 后者严格说属于规格未交付项，登记在此。
 - 两段列表**都按优先级排**（`TaskSort::PriorityFirst`），手动顺序留给看板：这一窗存在的意义就是「我该干什么」。
 - 展开待办**不给「收起」**：原始形态就是「5 条 + 展开剩余」，收起只会让人再点一次。
+
+---
+
+### S5 复核（以代码为准，2026-10-16 回填）
+
+> §9 原先停在 S4，S5 由后续批次继续落地后**未回填**，导致 §3 / §4.3 与 `pages/projects` 的模块注释一度都写着「日历 / 时间线 / 报表 / 工作日志未做」。本节按**磁盘代码**逐条复核并给出证据；凡与本节冲突的旧表述，以本节为准。
+
+**已落地（S5）**
+
+| 能力 | 证据 |
+| --- | --- |
+| 六档视图（看板 / 列表 / 日历 / 时间线 / 报表 / 工作日志） | `pages/projects/prefs.rs:32-59`（`ViewMode` + `TABS: [Self; 6]`）；`view.rs:2123 / 1304 / 2297 / 2595 / 2875 / 3378` |
+| 完整任务编辑器（双列表单、`DatePicker` 日期、只可前进的进度滑块、里程碑区块、父任务） | `dialogs.rs:642 open_task_editor` + `783 task_editor_body` |
+| 项目编辑器（名称 / 一句话说明 / 8 色板 / 起止日期 / 删除项目） | `dialogs.rs:1357`（正文 `1463`） |
+| 标签管理（改色 / 删除 / 新建） | `dialogs.rs:1567` |
+| 看板列设置（列名 + WIP 上限 + 新增列） | `dialogs.rs:1730` |
+| 里程碑编辑器（只做添加，不做改名） | `dialogs.rs:2237` |
+| 快速新建 Spotlight（`#标签 @项目 !P0 今天/明天/HH:MM` 解析 + 预览） | `dialogs.rs:1942` + 解析器 `quickparse.rs` |
+| 工作日志（日报 / 周报 / 周计划三档 + 清单 + 正文 + 编辑器） | `view.rs:3378 render_log`、`dialogs.rs:2134` |
+| 导入（Markdown / CSV / JSON 文本 + 预览） | `dialogs.rs:2556`（示例 `2619`、预览 `2722`） |
+| 导出（Markdown / CSV / JSON） | `dialogs.rs:2353` + `export.rs`（三种格式，7 单测含 JSON 回解析） |
+| 置顶 / 复制任务 / 阻塞原因 | `duck-project/src/models.rs:441 / 443`；`mod.rs:553 set_starred` / `571 duplicate_task` |
+| 列表批量条（完成 / 改状态 / 改优先级 / 移项目 / 删除 / 取消选择） | `view.rs:1762 bulk_bar`、勾选 `1546 check_box` |
+| 分组切换（不分组 / 优先级 / 项目 / 状态） | `prefs.rs:129 GroupMode`、`view.rs:1388 grouped_tasks` |
+| 看板拖拽改状态 + 列底「+ 添加任务」+ 超 WIP 提示 | `widgets/task_card.rs:133`、`widgets/kanban_column.rs:91 / 193` |
+| 键位 `1`–`6` 切视图（另 `N` / `⇧N` / `J` / `K` / `Space` / `A` / `⇧A` / `⌫` / `Esc` / `⌘N` / `⌘Z`） | `mod.rs:171 bind_keys` |
+
+**S5 内仍然缺的（诚实清单，后续批次要补）**
+
+| 缺项 | 现状 |
+| --- | --- |
+| 日历「未排期任务显示在今天」 | **刻意不做**（`view.rs:2286` 注释：硬塞进某一天只会让那天的格子骗人）—— 与 §5.3 第 3 条相反，以代码为准 |
+
+> ⚠️ 上表在 2026-10-16 的三批增量中已收口三项：「报表的时间范围选择器 + 平均周期」
+> 「到期 / 逾期 / 僵尸任务提醒」「日历周视图 + 日期格右键新建」**均已落地**；
+> 2026-10-17 的第四批又收口一项：「日志的周选择器 / 计划 vs 实际 / 草稿自动保存 / 日志标签」
+> （证据见下面各节）；第五批又收口两项：「导入的文件选择 / xlsx / 模板下载 / 去重」
+> 与「导出的落盘」（见 §9「导入与导出（S5-e）」）；第六批再收口两项：
+> 「`Enter` / `E` 两键」与「`⌘Z` 的撤销面」（见 §9「键盘与多步撤销（S5-f）」）。
+> 原表把它们列在缺项里的表述已删；**表里只剩一项**（那一条是刻意不做）。
+> 参考项目仍有而本仓无的（任务工作上下文、Git 分支关联、标签收藏、独立日历浮窗、AI 全族）
+> 见 §8 与后续批次记录。
+
+### 提醒通道（S5-a，2026-10-16 落地）
+
+| 能力 | 证据 |
+| --- | --- |
+| 周期扫描（5 分钟一轮，首轮延后 20 秒让启动期先稳住） | `pages/projects/remind.rs`（`SCAN_INTERVAL` / `FIRST_SCAN_DELAY`） |
+| 四类提醒，按「到期三档 → 久未更新」优先，一轮最多 3 条 | `ReminderKind::{Overdue, DueToday, DueTomorrow, Stale}`、`MAX_PER_SCAN` |
+| 久未更新只认 `Todo`/`Doing` 且 `≤P1`（受阻 / 搁置不算，理由写在 `is_stale`） | 阈值默认 3 天，设置页可改（`KV_PROJECTS.stale_days`） |
+| **一天只说一次**：按 `{任务}:{档}:{日}` 去重，账本落 `kv: projects_reminders` | `ReminderLog::take_new` |
+| 双通道：应用内横幅 + 系统通知中心（各自看开关，历史只记一条） | `notify::system_with_toast` |
+| 设置页：「项目管理」模块（提醒开关 + 阈值） | `pages/module_settings.rs::projects_body`、`settings/mod.rs` 的 `PROJECTS_PAGE` |
+| 单测 | `remind.rs` **11** 条（去重 / 优先级 / stale 边界 / 只认高优先级 / 一天一条） |
+
+### 报表维度（S5-b，2026-10-16 落地）
+
+| 能力 | 证据 |
+| --- | --- |
+| 口径全部收在纯函数里（零 gpui、可单测） | `pages/projects/report.rs::build`；`Report` 一次性算好全部块 |
+| 时间范围三档（近 7 / 30 / 90 天；90 天按周分桶 → 13 根柱） | `prefs::ReportRange`（落盘 `kv: projects_ui` 的 `report_range`）；`report::window_days` |
+| 状态四档（全部 / 未完成 / 已完成 / 已取消）+ 标签**多选**（OR 语义） | `report::ReportStatus`、`ReportFilters::tags`（**不落盘**，一次性视角） |
+| KPI 5 枚（新增「平均周期」= 创建日 → 完成日的平均，附样本数） | `view.rs::report_kpis`（唯一文字来源，界面与导出共用） |
+| 趋势横轴自适应：30 根柱时 5 根一标、13 根柱时 2 根一标 | `report::label_stride` + `TrendBar.labelled`（单测数「画了几个字」） |
+| 新增「按标签分布」与「完成明细」（后者列周期、截断到 50 条并报真实总数） | `report::DETAIL_LIMIT`、`report.detail_truncated_note` |
+| 导出报表（Markdown，含口径行 + 六块表；表格竖线与换行已转义） | `report::to_markdown` + `view::report_markdown`；文案经 `ReportLabels` 由界面层翻译 |
+| 单测 | `report.rs` **19** 条（状态档 / 标签 OR / 桶数 / 窗口取整 / 平均周期四舍五入与负周期 / 逾期排序 / 分布取舍 / 明细截断 / 导出结构 / 空表 / 悬空外键）；`prefs` +2、`state` +3 |
+
+### 日历双模（S5-c，2026-10-16 落地）
+
+| 能力 | 证据 |
+| --- | --- |
+| 月 / 周两种画法，**共用同一个锚**（切画法停在原地，不跳回今天） | `prefs::CalendarMode`（`month` / `week`，落盘 `kv: projects_ui` 的 `calendar_mode`）；`state::calendar_anchor`（**不落盘**：翻到哪一页是一次性视角） |
+| 几何与容量收在一处（格数 / 高度 / 每格条数必须一起变） | `view.rs::CalendarLayout::of`（月 42 格 6 行 + 定高 92 + 2 条；周 7 格 1 行 + 撑满 + 6 条） |
+| 周视图列头为「星期 + 日期」，格子内不再重复日号 | `view.rs::week_header_row`；标题给这一周的起止日（跨年那周补结束年） |
+| 翻页量随画法（「上个月」/「上一周」），`今天` 两档都回到今天所在页 | `mod.rs::step_calendar`（月走整数月运算再夹回 1 号；周直接 ±7 天，锚不漂到周一） |
+| **日期格右键**：在这天新建任务（截止日预填）/ 打开这天的日报 / 换个画法看这一天 / 复制日期 | 新增 `widgets/calendar_menu.rs` + `ProjectsPage::{new_task_on, show_day_as, copy_date}`（`dialogs::open_task_editor` 新增 `preset_due`，**只在新建时有意义**） |
+| 任务条：单击选中 / 双击开编辑器 / 右键给**任务**菜单（与看板同一份 `task_menu`） | `view.rs::calendar_task_pill`；⚠️ 与日期格菜单的嵌套冲突靠「日期菜单挂绝对定位背景层 + 任务条 `.occlude()`」解决（理由见 `calendar_cell` 的文档注释） |
+| 今日格用强调色描边（§5.3 原定口径）；读屏描述「10 月 13 日 · 周二 · 3 个任务」 | `calendar_cell` 的 `border_color` 分支与 `day_cell_aria`（数量走 `trn`，英文单复数正确） |
+| 顺带修掉一个既有 i18n 漏洞：星期列头原先直出中文字面量 | `weekday_label`（`widgets/mod.rs`，7 条「周一…周日」进 EN 表） |
+| 单测 | `view.rs` **2** 条（两档布局的行数 / 定高 / 容量关系）；`prefs` +1、`state` +2 |
+
+### 周计划与日志（S5-d，2026-10-17 落地）
+
+> 这一批把「工作日志」从「三档 tab + 正文」补成**能排周计划、能贴标签、丢不掉草稿**的形态。原表里「日志的周选择器 / 计划 vs 实际 / 草稿自动保存 / 日志标签」四项一次收口。
+
+| 能力 | 证据 |
+| --- | --- |
+| **周计划是独立实体**，不是塞进 `work_logs` 的第四档：键不同（周键 vs 日期）、多两列语义（任务集 / 定型快照）、有状态机（草稿 → 已确认） | 内核 v3 迁移新建 `weekly_plans` 表（`db.rs`）；`models::WeeklyPlan` + `WeeklyPlanStatus`；理由写在 `db.rs` 迁移注释与 `store/plans.rs` 模块头 |
+| `original_task_ids` **首次以非空任务集定型**（此后加任务只进 `task_ids`），借它把「原计划」与「后加的」分开 | `store/plans.rs::upsert_plan` 内一条 SQL `CASE`：`original='[]' AND excluded<>'[]'` 才落值，读写共用一个事务，不靠先 SELECT 再判断（避免竞态） |
+| `status` 是**独立动作**（`set_plan_status`），改正文不会顺手动状态 | `store/plans.rs::set_plan_status`（`affected == 0` → `NotFound`，避免静默新建一条空计划） |
+| **ISO-8601 周编号**（周四年份 = 周编号年份）：`2026-01-01`（周四）属 `2026-W01`、`2025-12-29` 属 `2026-W01`、2026 年有 53 周 | 内核 `time.rs::iso_week` / `week_key` / `from_week_key`；⚠️ `from_week_key` 走**回环校验**（算出的周一 `week_key()` 必须等于入参），`2025-W53` 这类不存在的周被拒 |
+| 周选择器（`‹ 上一周` / `本周` / `下一周 ›`）+ 周键 + 起止范围 + 状态徽章 | `state.rs::{plan_week, plan_anchor, plan_week_key, set_plan_week}`（`plan_week` **不落盘**：翻到哪一周是一次性视角，与 `calendar_anchor` 同一口径）；`view.rs::plan_header` |
+| **计划 vs 实际**两栏：左「在计划里」（`planned_task_ids`）右「本周到期」（`DueFilter::ThisWeek` 的未完成项），右侧可「加入」、左侧可「移出」 | `state.rs::{plan_tasks, week_tasks, addable_tasks, plan_stats}`；`view.rs::{plan_column, plan_task_row}`（两栏 id 为 `projects-plan-column-planned` / `projects-plan-column-week`） |
+| 统计行「计划 N 项 · 已完成 M · 后加 K · 完成率 P%」（完成率为 0 时返回 0，不做除零兜底为 100） | `state.rs::PlanStats::completion_percent`（u64 中转四舍五入）；`view.rs::plan_summary` |
+| 任务集**保序、跳过取不到的、不看归档**（归档任务要能显示成「已归档」而不是凭空消失） | 新增内核口 `store/tasks.rs::list_tasks_by_ids`（用 `swap_remove` 按传入顺序重排） |
+| 日志**标签**：`work_logs.tags` 新列（`normalize_tags`：丢空项、**丢含逗号的项**、按序去重）；列表行显示 `#标签`、右栏正文上方给胶囊行 | 内核 `store/mod.rs::{join_tags, split_tags, normalize_tags}`；`view.rs::{log_tag_row, log_tag_chip}`（自绘胶囊，不复用 `neutral_tag` —— 语义不同） |
+| 标签输入认 `,` / `、` / `，` 三种分隔，削 `#` 前缀 | `dialogs.rs::parse_tags_field` |
+| **草稿自动保存**：正文与标签**边打边存**（`cx.observe(...).detach()`，弱引用订阅），落独立键 `kv: projects_log_draft`；成功才清、失败不清 | `dialogs.rs::save_log_draft` + `prefs::LogDraft`；清草稿走 `kv_delete`（写空串会留下一条"空草稿"记录，下次误判命中）；`mod.rs::submit_log` 只在成功后 `LogDraft::clear` |
+| 草稿按 `{日期}:{档}` 归属，只在「库里那篇为空且草稿属于这一天这一档且非空」时才认领 | `prefs::LogDraft::{belongs_to, is_empty}`；`dialogs.rs::open_log_editor` 的过滤器 |
+| ⚠️ **周计划编辑不做草稿**（只编辑正文）——正文走草稿会造成「正文还在草稿、任务集已经落库」的半截状态 | `dialogs.rs::open_plan_editor` 模块注释；任务集**只在面板上加减**（点按钮即落库） |
+| 删除周计划走主题 `Dialog`（`confirm::open_confirm_in`），**不碰任务本体** | `mod.rs::confirm_delete_plan`；单测 `deleting_the_plan_leaves_the_tasks_alone` |
+| 单测 | `duck-project` **125**（新增 17：time +2、models +2、db +3、plans +8、tasks +1、logs +1）；`pages/projects` **138**（新增 10：state +6、prefs +3、view +1） |
+
+**S5-d 的两条不变量（写下来是因为踩过）**
+
+1. **周键必须回环校验**，不能只做正则：`2025-W53` 形态完全合法但那一周不存在；只在 `from_week_key` 里做「算出的周一 → `week_key()` == 入参」才能拦住。
+2. **`kv` 里的「空」要与「没有」区分开**：草稿清空必须 `kv_delete`，否则留一条 `{}` 记录，下次 `load()` 命中一个看起来合法、其实什么都没有的草稿。
+
+### 导入与导出（S5-e，2026-10-17 落地）
+
+> 这一批把导入从「只支持粘贴文本」补成**能选文件、能自动认列、能下模板、能去重**，把导出的出口从「只复制剪贴板」补成**能落盘**。原缺项表里的「导入的文件选择 / xlsx / 模板下载 / 去重」与「导出的落盘」两项一次收口。
+
+| 能力 | 证据 |
+| --- | --- |
+| **三种来源 → 一种结果**：Markdown（含 `- [x]` 清单行）/ CSV / JSON 都产出同一个 `Row` 列表 | `import.rs::{parse, markdown, csv, json}`；`SourceFormat::ALL` 三档 |
+| **不引 xlsx**（参考项目逐行读 Excel 靠 `xlsx` npm 包）：Excel 填完另存为 CSV 即可导入，用「下载模板」补位 | 无新依赖 ⇒ MSRV 与 `THIRD_PARTY_LICENSES.md` 门禁都不动；模板表头就是导入侧认的列名 |
+| **手写 RFC 4180 状态机**（引号包裹、字段内逗号与换行、`""` 转义、BOM、CRLF、裸 `\r`），全空白行不入表 | `import.rs::read_csv` |
+| **自动列映射**：~90 条中英别名（`normalize` 抹掉空白 / `_` / `-` / `/` / 括号并转小写），同一字段只认第一列；**不做模糊匹配** | `import_aliases.rs::TABLE` + `field_of_header`；「不 `contains` 兜底」的理由写在函数头 —— `创建时间` 撞上 `时间` 会把时间戳当截止时刻导进去，而这种错在预览里看不出来 |
+| 表头一列都没认出来时把**第一个还没主的列**当标题，并在预览上说明 | `import.rs::map_columns`（`Parsed::title_guessed`） |
+| **映射结果画在预览上方**（`表头 → 字段` 胶囊，认不出的标「未使用」），不逐列下拉选 | `dialogs.rs::{column_map_row, column_name}`；参考实现也是自动映射（`row['任务标题'] || row['title']`） |
+| 标题里的**记号照认**（`#标签 @项目 !P1 明天 18:00`），两边冲突时**列赢**（列是明确填的，记号是顺手写的） | `import.rs::merge_markers` |
+| 取值也做翻译：`进行中` / `P1` / `重要不紧急` / `是` 都认；认不出的**保持原样不猜**（状态回落 Todo，其余留空） | `import_aliases.rs::{status_of, priority_of, quadrant_of, bool_of}` |
+| **按标题去重**（trim + 小写）默认开，**批内也去重** —— 导一份刚导过的文件不会翻倍 | `import.rs::{title_key, partition}` + `state.rs::existing_title_keys`（查失败返回空表：去重是便利，不能把导入拦下） |
+| 下载模板（三种格式各一份，能被自己的读入侧读回） | `dialogs.rs::import_template` → `mod.rs::save_import_template` → `save_export`；单测 `csv_template_quotes_every_cell_and_round_trips` |
+| 选文件走**异步面板**（`file_dialogs::open_file_in_app`），**扩展名在读文件之前**就判 | `dialogs.rs::open_import`；⚠️ 禁用 `duck_platform::save_file` / rfd 同步模态（AppKit 重入 ⇒ RefCell abort，理由与两次闪退实证见 `crate::file_dialogs` 模块头） |
+| 导出两个出口：**复制到剪贴板** + **另存为…**（`file_dialogs::save_file_in_window`），共用一个预览框与同一份文本 | `dialogs.rs::open_export`（`dialog_footer_with_action`） |
+| **报表导出**从「点一下就复制」改成**弹窗**：要落盘就得先看清将被写进文件的是什么（口径行、几块表、有没有截断） | `dialogs.rs::open_report_export` + `view.rs::report_export_button` |
+| 导出 / 导入**成对**：自家 CSV 表头（`id,title,project,status,priority,quadrant,tags,start,due,progress`）与 JSON 键名（含 `descriptionMd` / `note`）全部认得（`id` 除外，跨库搬 id 只会撞上本地主键） | 两条 round-trip 单测：`our_own_csv_export_round_trips` / `our_own_json_export_round_trips` |
+| 单测 | `import.rs` **29** + `import_aliases.rs` **8**（`quickparse` 的 3 条清单解析测试随之搬进 `import.rs`）；`pages/projects` 138 → **172** |
+
+**S5-e 的三个刻意偏离（对照参考项目 `TaskImport.vue`）**
+
+1. **不把示例填进输入框**：原型把示例写在 `value=` 上，用户直接按「导入」就会把示例建进库 ⇒ 改成占位文案 + 「填入示例」按钮。
+2. **不引 xlsx**：见上表；导出侧也一样 —— 格式由扩展名判，不猜内容。
+3. **多一个「跳过同名任务」开关（默认开）**：参考实现只回 `{success, failed, errors}`，重复导入会翻倍。
+
+**S5-e 的两条不变量（写下来是因为踩过）**
+
+1. **`ImportError` 只描述「解析这段文本失败」**，「扩展名认不出」发生在读文件之前 ⇒ 由 `SourceFormat::from_extension(…) -> Result<Self, String>` 里的 `Err(String)` 带出**裸扩展名**，界面再拼成中英双语的那一句话。⚠️ 两件事共用一条通道，结果是「不支持 .xlsx」被说成「解析失败」。
+2. **`import_aliases.rs` 进 `NON_UI_SOURCES` 豁免名单**：那里的中文是拿去和**用户文件里的表头 / 单元格**做比对的输入侧字面量，一个字节都不渲染；⚠️ 因此**界面文本一个字都不许写进那个文件**（写了不会被守卫拦下、也不会被翻译）。
+
+### 键盘与多步撤销（S5-f，2026-10-17 落地）
+
+> 这一批把 §5.4 快捷键表里**设计时就有、实现一直缺**的两个键补上，并把 `⌘Z` 从「只撤一步」扩成可连按的撤销栈。原缺项表里最后两条实质缺项（`Enter`/`E`、`⌘Z` 的撤销面）一次收口 —— 表里只剩「日历未排期任务显示在今天」那一条**刻意不做**的。
+
+| 能力 | 证据 |
+| --- | --- |
+| `Enter`：把选中那条的详情摆到右栏 | `mod.rs::{OpenSelectedDetail, open_selected_detail}`；⚠️ 右栏是 **shell 级区域**，页面够不到它的开合 ⇒ 走 [`crate::app::set_right_sidebar_open`]，返回 `false`（辅助窗口 / 主窗未建）时退一句回执而不是静默 |
+| `E`：打开选中那条的编辑弹窗（与双击卡片同一条路） | `mod.rs::{EditSelected, edit_selected}` → `open_task_editor(Some(id), …)`；归档中心里不做事（那里的「选中行」是**已归档记录**，与 `Space` 同一条判据） |
+| 两键都是**裸键**（`enter` / `e`），走 `KEY_CONTEXT_BARE` 的 `!Input` | `mod.rs::bind_keys`；输入框里回车是提交、按 `e` 就是打一个 `e`（理由见 `KEY_CONTEXT_BARE` 的注释） |
+| `⌘Z` 从**单槽**扩成**栈**：连按逐步往回退，最新的先退 | `state.rs::undo_stack`（`Vec<UndoSlot>`）+ `undo()` 改成 `pop()`；`undo_slot()` 变成「栈顶」读口，新增 `undo_depth()` |
+| 两重上界：**栈深 32**、**时限 60 秒**（每条自带 `expires_at`） | `state.rs::{UNDO_DEPTH, UNDO_RETENTION}`；剪枝在 `push_undo` 与 `reload()` 收口（`prune_undo(now)` 收 `now` 入参 ⇒ 单测能把「六十秒后」直接喂进来，不必真睡） |
+| 为什么**不能**留无限历史 | 栈只记**四类动作**（归档 / 恢复项目 / 改状态 / 复制），不记编辑正文、拖拽落点。留着一条十分钟前的归档槽，会让「改完标题顺手按 `⌘Z`」退到一个用户早就忘了的状态 —— 撤销是「刚才那几下」的退路，不是无限历史 |
+| 撤销后**「撤销」按钮接着挂**（栈里还有就继续挂），并在回执里报还剩几步 | `mod.rs::undo_last` → `trf(cx, "（还可撤销 {} 步）", …)` + `self.undo_seq(cx)` 作 `undo` 参数 |
+| ⚠️ **提示条那 7 秒不再作废历史**：从「撤销通道的窗口」收窄成「撤销按钮在屏幕上待多久」 | `mod.rs::show` 删掉 `state.expire_undo(seq)` 调用；`state.rs` 的 `expire_undo` 随之删除（§5.6 那一行也改了措辞） |
+| 失效条目按「同一个动作」整批摘掉（归档 → 撤销 → 再归档会存下多份同动作条目） | `state.rs::forget_undo` 改成 `retain`；`forget_undo_for_tasks` 同样 `retain`（只摘指向被删任务的） |
+| 清空归档 ⇒ 整个栈一起清（那些条目按下去必然失败） | `state.rs::clear_archive` |
+| 单测 | `state` +4（连按逐步退 / 栈深封顶丢最旧 / 超时当不存在 / 清空归档清栈），扣掉被替换的「旧定时器守卫」1 条，净 **+3**；`pages/projects` 172 → **175** |
+
+**S5-f 的两条不变量（写下来是因为会踩）**
+
+1. **撤销栈的剪枝不能拿 `archive_tasks` 当判据**：那张清单**只在归档中心可见时才读**（见 `reload_archive`），在看板上它是空的 —— 拿它判存在性会在看板上把整个栈剪空。按归档区清空走的是 `clear_archive` 那条路（整个栈一起清）。
+2. **`push_undo` 必须在 `reload()` 之前压、并且自己先剪一遍**：批量操作是在一个循环里连压十几条，先剪才有上界；而「压完之后」的 `reload()` 会带 `now_seconds()` 再剪一次（用同一条时限，不会把刚压的那条剪掉 —— `expires_at = now + 60 > now`）。
+
+### 工作上下文、标签收藏与日历浮窗（S5-g，2026-10-17 落地）
+
+> 这一批把参考项目仍余的「任务工作上下文、Git 分支关联、标签收藏、独立日历浮窗」一次收口。
+
+| 能力 | 证据 |
+| --- | --- |
+| 内核 v4：`tasks.git_branch` + `tasks.context_{files,sql,tabs}` **三列分开存**（不是一列 JSON） | `db.rs` v4 迁移（理由写在注释里：内核零 serde；`sql` 是唯一可能带换行的，单独成列就没有转义问题） |
+| 编解码 `store::{encode_files, decode_files, encode_lines, decode_lines}`：一行一个 `行:列:路径`，坏行**直接丢**（宁可丢也不猜） | `store/mod.rs`；`FileRef::{to_line, from_line}`（前两段必须是数字，Windows 盘符与带冒号路径因此安全） |
+| `NewTask::{git_branch, context}` / `TaskPatch::{git_branch, context}`（上下文**整表单替换**，没有只改一样的口） | `models.rs`；`store/tasks.rs` 的 INSERT 与 `SetBuilder` 写入 |
+| 编辑器接入：左列「关联分支」、右列「工作上下文」三块（文件 / SQL / 链接） | `dialogs.rs::TaskEditorForm`（回填走 `to_line`，保存走 `from_line` 洗一遍） |
+| 详情面板「工作上下文」段：有才画；文件带定位的给 `路径:行:列` | `widgets/task_detail_panel.rs`（`Paperclip` 图标） |
+| **标签收藏**：`tags.is_favorite`；排序口径在内核 `ORDER BY is_favorite DESC, name`（界面不自己排，两窗不会排出两个顺序） | `store/mod.rs::tag_usage`；`store/tags.rs::set_tag_favorite`；⚠️ 所有取标签的查询把 `is_favorite` 放**第 4 列**（`tag_from_row` 的位置契约，聚合查询把 `COUNT` 挪到第 5 位） |
+| 界面：标签管理弹窗的星形开关 + 左栏收藏标签的小星标 | `dialogs.rs::tag_manager_body` / `view.rs::tag_row`；`state::set_tag_favorite` |
+| **独立日历浮窗**（第三窗口形态）：与「随手看」同一条路子（PopUp / 不抢焦点 / 自开内核连接 / 订阅 bus / 几何落 `windows` 表 `calendar_float` 键） | `pages/projects/calendar_float.rs`（`month_grid` 纯函数 4 单测：周一起头 / 42 格 / 本月恰好一次 / 切月清选中）；`app.rs::{toggle,open,close}_calendar_float` + `WindowKind::CalendarFloat` |
+| 热键 `⌥⌘C`（`HotkeySlot::CalendarFloat`，平台层 `CALENDAR_SPEC`）+ 设置页第三行 | `duck-platform/src/hotkey.rs`（默认键位测试钉住三个 spec 互异）；`duck-app/src/hotkey.rs`；`pages/settings/pages_hotkey.rs` |
+| 入口：日历视图头部的「日历浮窗」按钮（只动 shell 层窗口注册表，不经页面实体转手） | `view.rs::calendar_header` |
+| 单测 | `duck-project` **129**（+4：标签收藏排序与合并 / 上下文回读 / 坏行容错）；`calendar_float.rs` **4**；`pages/projects` 共 **179** |
+
+### AI 接入（S6 核心，2026-10-17 落地）
+
+| 能力 | 证据 |
+| --- | --- |
+| **项目管理四工具**注册进 AI 助手（`tools_enabled` 开启后生效）：`list_project_tasks` / `project_stats`（`ReadOnly`）、`create_project_task` / `update_project_task`（`NeedsApproval` —— 审批闸门只认风险分级） | `ai_tools.rs`（工具线程自开 `ProjectStore::open_default()`，与「随手看」同一条口径；`task_line` / `arg_str` 纯函数有单测） |
+| 写工具的标签按名解析：已有的复用、没有的建（与快速新建 `#标签` 同口径） | `CreateProjectTaskTool::run` → `store.ensure_tag` |
+| 助手页由此获得「自然语言查询与写入」：模型可自行列任务 / 看统计 / 建任务 / 改状态 | `build_registry` 尾部四行 `register` |
+| **编辑器三按钮**：AI 分类（回填项目 + 标签，只认现有标签）/ AI 拆解（往描述追加 `- [ ]` 清单 —— 新建态没有 task_id，子任务挂不上去）/ AI 润色描述 | `dialogs.rs::{AiAction, ai_candidate, ai_prompt, run_ai_action, ai_ask, TaskEditorForm::apply_ai, ai_buttons_row}` |
+| 未配厂商的降级：三按钮整行退化为一句说明（「先在设置 → AI 里配置」），不摆点了没反应的按钮 | `ai_buttons_row` 的 `ai_candidate(cx).is_none()` 分支 |
+| 防双击：`ai_running` 原子位（**不是**界面状态 —— 弹窗正文 `content` 闭包只跑一次，忙碌态画上去不更新；反馈走页面回执条） | `TaskEditorForm.ai_running` + `run_ai_action` 的 `SeqCst` 位 |
+| 单测 | `ai_tools.rs` +1（行渲染与参数清洗）；`pages/projects` 计 **179** 不变（AI 代码在 `ai_tools.rs`） |
+
+> ✅ S6 第二批已收口（Spotlight 兜底 / 生成草稿 / 排期负载），见下一节；至此 §8 的六项拍板决议全部落地。
+
+### AI 第二批（S6 收口，2026-10-17 落地）
+
+| 能力 | 证据 |
+| --- | --- |
+| **Spotlight AI 兜底**：本地记号认不出的自然语言（「下周三把登录超时收一下」）交给模型，结果**以记号文本写回输入框**（`标题 @项目 #标签 !P1 2026-10-15 18:00`） | `dialogs.rs::{run_ai_quick, spotlight_ai_row}`；`quickparse::to_markers`（与 `parse` **互逆**，单测 `to_markers_round_trips_through_parse` 钉住「回填再解析 = 原结果」） |
+| 为什么写回输入框而不是旁边另存一份 AI 结果：输入框已是这个弹窗的唯一真源（预览 chips 与「创建」都从它现读），另存一份立刻双真源 | 同上 |
+| 模型给出空结果时**不动输入框**，只弹 `Tone::Warning` —— 用一段空结果清掉用户刚打的字是最糟的后果 | `dialogs::report_ai_unparsed` |
+| **AI 生成日报 / 周报 / 周计划草稿**：编辑弹窗里多一行「AI 生成」，素材是**打开弹窗那一刻**的任务快照（中途在别处改任务，不该让同一句话生成出两种东西） | `dialogs::{generation_prompt, ai_generate_row, GenerateRow}`；`ai_assist::{summarize, log_prompt, plan_prompt}` |
+| 摘要口径：已完成（按完成日落在区间）/ 进行中 / 逾期 / 本周到期 / 里程碑，每桶**封顶**（`BUCKET_LIMIT`）+ 「还有 N 条」；同优先级按行文本排 ⇒ 同一份数据两次调用给出**逐字相同**的 prompt | `ai_assist::summarize`（单测断言两次调用 `assert_eq!`） |
+| 日志落 `ai_generated`（`logs.ai_generated` 列）；周计划没有「来源」列，传 `None` | `state::save_log(…, ai_generated)`；`mod::submit_log(…, ai_generated, cx)` |
+| **排期负载与冲突提示**：未完成任务的**剩余工时**（`预估 × (100−进度)/100`）按截止日落到锚定周七天，与「每天 8 小时」（`dialogs::HOURS_PER_WORKDAY`，全仓唯一真源）比大小 | `schedule::{analyze, remaining_hours, ScheduleAdvice, DayLoad}`（6 单测：落点 / 超载 / 欠账 / 无截止日 / 无工时 / 浮点打平） |
+| 面板只在**有话说**时出现（超载 / 欠账 / 排不了期）：一周排得整整齐齐时多一块「一切正常」只会挤掉两栏任务 | `view::schedule_panel` 的 `has_findings()` 判据 |
+| 排期**刻意不做 AI**：这是加法题，同一份数据问两次必须同答案；模型该替人写字，不该替人算算术 | `schedule.rs` 模块头 |
+| 共用的三条纪律：回填必须在窗口回调里（`update::on_notify_window`）；弹窗正文闭包只跑一次 ⇒ 忙碌态用 `Arc<AtomicBool>` 防双击、反馈走页面回执条；失败原样带给用户（`Tone::Error`），不吞不重试 | `dialogs::run_ai` |
+| 单测 | `ai_assist` **10** · `schedule` **6** · `view::hours_text_keeps_at_most_one_decimal` **1**；`pages/projects` 179 → **198** |
+
+
+**单测规模（当前磁盘）**
+
+| 侧 | 条数 | 分布 |
+| --- | --- | --- |
+| `crates/duck-project` | **129** | tasks 21 · query 14 · archive 11 · time 11 · store 10 · plans 8 · projects 8 · milestones 7 · columns 7 · models 8 · tags 6 · db 8 · groups 5 · logs 4 |
+| `pages/projects` | **198** | state 63 · import 29 · report 19 · prefs 15 · remind 11 · **ai_assist 10** · import_aliases 8 · quickparse 8 · export 7 · **schedule 6** · float 6 · mod 4 · dialogs 3 · view 3 · bus 2（`widgets/**` 0） |
+
+> `duck-app` bin 全量：S5-f 收尾时为 **464 passed / 1 failed** —— 唯一红的是 `pages::redis::tests::tree_rows_carry_tag_favorite_and_note`，属**其它并发会话**正在改的 Redis 树，与本模块无关（本批改动全在 `pages/projects/**` 与 i18n 表内）。
+> i18n 守卫同一时刻被并发会话的 `pages/db/browse.rs`（3 条新中文未登记，mtime 晚于本批）判红，**不是本批** —— 本批新增的 3 条文案已全部进 `locales/en.toml`（当前 **3503** 条）。
+
+**与 §1「参考实现对照」的关系**：S5 落地后，本仓在「看板拖拽 / 列表视图 / 批量 / 归档 / 自定义列 / 标签合并 / 项目级里程碑 / 键盘全集」上**已超出**参考项目；参考项目仍有而本仓无的（任务工作上下文、Git 分支关联、僵尸任务提示、标签收藏、独立日历浮窗、AI 全族），见 §8 与后续批次记录。
+> ✅ S5-d 后「周计划独立存储」也已收口（原先列在本段）。
+> ✅ S5-e 后「导入的文件选择 / xlsx / 模板下载 / 去重」与「导出的落盘」也已收口。
+> ✅ S5-f 后「`Enter` / `E` 两键」与「`⌘Z` 的撤销面」也收口 —— 参考项目仍余的是**任务工作上下文（文件 / 最近 SQL / 浏览器页签）、Git 分支关联、僵尸任务提示、标签收藏、独立日历浮窗、AI 全族**（见 §8 与后续批次记录）。
 
 ---
 

@@ -119,6 +119,26 @@ pub fn dialog_footer(
     DialogFooter::new().children(cancel_and_ok(id_prefix, ok_text, ok_variant, confirm, cx))
 }
 
+/// 底部操作区：**只有一个主按钮**——纯提示弹窗用（「知道了」「完成」这类只读说明，
+/// 没有第二个答案可给）。与 [`dialog_footer`] 的差别就在不渲染「取消」。
+pub fn dialog_footer_ok_only(
+    id_prefix: &'static str,
+    ok_text: impl Into<SharedString>,
+    ok_variant: ButtonVariant,
+    confirm: ConfirmHandler,
+    cx: &App,
+) -> DialogFooter {
+    DialogFooter::new().child(
+        button(format!("{id_prefix}-ok"), ok_text, ok_variant, cx).on_click(
+            move |_, window, cx| {
+                if confirm(window, cx) {
+                    window.close_dialog(cx);
+                }
+            },
+        ),
+    )
+}
+
 /// 操作区里的一个**旁路动作**：点击后**不关窗**，只执行一次。
 ///
 /// 用来放「测试连接」这类「先验一下，再决定要不要按确认」的入口。它排在操作区

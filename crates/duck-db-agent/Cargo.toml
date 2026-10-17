@@ -1,0 +1,17 @@
+[package]
+name = "duck-db-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "驱动子进程运行时：JSON-RPC 2.0 over stdio（换行分帧）+ 会话管理（零 gpui、零 tokio）。"
+
+# 依赖纪律（AGENTS.md §1）：内核层，不得引入 gpui。
+# 这里**只依赖 serde/serde_json**：进程与管道都是标准库的东西，而阻塞式请求-应答
+# 用一把 Mutex + 每请求一个通道就够了 —— 不为此引入运行时。
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

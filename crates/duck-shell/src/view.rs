@@ -175,7 +175,10 @@ impl ShellRoute {
 
     /// 登记路由右侧栏的内容（状态由 shell 统一持有，顶栏开关在所有模块常显）。
     /// 未登记的路由展开后显示 shell 的占位文案。
-    pub fn with_right_sidebar(mut self, content: impl Fn(&App) -> AnyElement + 'static) -> Self {
+    pub fn with_right_sidebar(
+        mut self,
+        content: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
         self.right_content = Some(Rc::new(content));
         self
     }
@@ -190,7 +193,10 @@ type ShellActionColor = Rc<dyn Fn(&App) -> Hsla>;
 type ShellPopoverContent = Rc<dyn Fn(&App) -> AnyElement>;
 
 /// 路由右侧栏内容：按当前主题 / 语言每帧求值（例：工具箱按活跃工具渲染帮助与设置）。
-type RightSidebarContent = Rc<dyn Fn(&App) -> AnyElement>;
+///
+/// 带 `&mut Window`：右栏里也有**可编辑的代码框**（db 的构建器 SQL 预览），把生成
+/// 文本同步进编辑器要 `set_value(…, window, …)` —— 只给 `&App` 时这条路走不通。
+type RightSidebarContent = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
 /// 由应用装配并注入 shell 的窗口级活动栏动作。
 pub struct ShellAction {
@@ -1195,7 +1201,7 @@ impl ShellView {
             }
         };
         if panel.is_sidebar_visible() {
-            panel = panel.sidebar(self.render_right_sidebar_content(route, cx));
+            panel = panel.sidebar(self.render_right_sidebar_content(route, window, cx));
         }
         div()
             .h_full()
@@ -1207,9 +1213,14 @@ impl ShellView {
     }
 
     /// 活跃路由的右侧栏内容；路由未登记时给一句占位提示。
-    fn render_right_sidebar_content(&self, route: Option<&ShellRoute>, cx: &App) -> AnyElement {
+    fn render_right_sidebar_content(
+        &self,
+        route: Option<&ShellRoute>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
         if let Some(content) = route.and_then(|route| route.right_content.as_ref()) {
-            return content(cx);
+            return content(window, cx);
         }
         v_flex()
             .size_full()

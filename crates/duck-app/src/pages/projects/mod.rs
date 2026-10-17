@@ -22,10 +22,31 @@
 //! - **S4**：「随手看」悬浮窗（[`float`]，§4.3 ⑤）+ 两处视图之间的变更广播
 //!   （[`bus`]）+ 全局键 `⌥⌘T`（两槽位热键，见 `crate::hotkey`）。悬浮窗是**独立窗口、
 //!   独立连接**，所以两处视图靠广播互相同步 —— 本页既订阅它也广播它。
-//! - **S5-I（本增量）**：完整任务编辑器（`dialogs::open_task_editor` —— 新建 / 编辑
-//!   共用双列表单，日期走 gpui-component 的 `DatePicker`，不再手打 ISO 文本）。
-//! - **未做（见设计文档 §7）**：同属 S5 的日历 / 时间线 / 报表 / 工作日志；
-//!   AI 拆解与周报属 S6（编辑器里那三个 AI 按钮随它一起落地）。
+//! - **S5**：完整任务编辑器（`dialogs::open_task_editor` —— 新建 / 编辑共用双列表单，
+//!   日期走 gpui-component 的 `DatePicker`，不再手打 ISO 文本）、项目编辑器、标签管理、
+//!   看板列设置、里程碑编辑器、置顶 / 复制、列表批量条；视图补到**六档**
+//!   （看板 / 列表 / 日历 / 时间线 / 报表 / 工作日志，见 `prefs::ViewMode::TABS`）+
+//!   `1`–`6` 切视图；导入导出（Markdown / CSV / JSON）。
+//! - **S5 之后的六批增量**：
+//!   ①**到期 / 逾期 / 久未更新提醒**（[`remind`]：周期扫描 + 一天只说一次 + 设置页开关）；
+//!   ②**报表维度**（[`report`]：时间范围三档 + 状态 / 标签筛选 + 「平均周期」KPI +
+//!   完成明细 + 导出 Markdown 报表）；
+//!   ③**日历双模**（月 / 周两种画法 + 日期格右键「在这天新建任务」/ 看日报 / 换画法 /
+//!   复制日期，见 [`prefs::CalendarMode`] 与 `widgets::calendar_menu`；画法落盘、锚定日不落盘）；
+//!   ④**周计划独立存储**（内核 v3 的 `weekly_plans` 表 + 周选择器 + 「计划 vs 实际」
+//!   对比 + 日志标签 + 日志草稿自动保存，见 `state::PlanStats` 与 `view::render_plan`）；
+//!   ⑤**导入选文件 + 导出落盘**（[`import`]：CSV / JSON / Markdown 三种来源（中英列名
+//!   自动映射）+ 模板下载 + 按标题去重；导出与报表导出都能「另存为」，不再只走剪贴板）；
+//!   ⑥**`Enter` / `E` 两键 + 多步撤销**（`Enter` 把选中项摆到右栏、`E` 开编辑弹窗；
+//!   `⌘Z` 从「只撤一步」变成可连按的撤销**栈**，见 `state::UNDO_DEPTH` / `UNDO_RETENTION`）。
+//!   ⑦**工作上下文 / 标签收藏 / 独立日历浮窗**（S5-g：任务体上多出 Git 分支与
+//!   文件 / SQL / 链接三块上下文；标签收藏排在最前；`⌥⌘C` 唤起日历浮窗）。
+//! - **S6（AI）**：①`ai_tools.rs` 把项目管理四工具注册进 AI 助手（自然语言查询与写入）；
+//!   ②任务编辑器三按钮（分类 / 拆解 / 润色）；③**Spotlight AI 兜底**（[`ai_assist`] +
+//!   `dialogs::run_ai_quick`：本地记号认不出的自然语言交给模型，结果回填成记号）；
+//!   ④**AI 生成日报 / 周报 / 周计划草稿**（`ai_assist::log_prompt` / `plan_prompt`，
+//!   日志与计划编辑弹窗里的「AI 生成」）；⑤**排期负载与冲突提示**（[`schedule`]，
+//!   纯算术，周计划面板上的「排期负载」）。
 //!
 //! # 三条本页特有的口径
 //!
@@ -46,14 +67,29 @@
 //!    「唤起来看一眼」时对齐。
 
 mod archive;
-// `bus` / `float` 对 `app` 可见：跨窗广播（[`bus::notify`]）与「随手看」悬浮窗的
-// 唤起入口都挂在 shell 层（`app::open_task_float` / `app.rs` 的订阅），够不着私有模块。
+// `ai_assist` / `schedule` 与 `report` / `export` / `quickparse` / `remind` 同一个待遇：
+// **纯函数模块**（prompt 组装、AI 回复解析、排期负载算术），不碰 gpui 也不碰存储，
+// 于是口径能在单测里钉死；网络调用与回填留在 `dialogs.rs`。
+mod ai_assist;
+// `bus` / `float` / `calendar_float` 对 `app` 可见：跨窗广播（[`bus::notify`]）与两个
+// 悬浮窗的唤起入口都挂在 shell 层（`app::open_task_float` / `app::open_calendar_float`
+// / `app.rs` 的订阅），够不着私有模块。
 pub(crate) mod bus;
+pub(crate) mod calendar_float;
 mod dialogs;
 mod export;
 pub(crate) mod float;
+// `import` / `import_aliases` 是一对：前者是三种导入格式的解析（纯函数），后者是
+// **输入侧别名表**（含中文列名，因此豁免了 i18n 守卫 —— 理由写在它自己的模块头）。
+mod import;
+mod import_aliases;
 mod prefs;
 mod quickparse;
+// `remind` 对 `app` 可见：周期扫描挂在 `app::install` 上（**不依赖项目页是否打开**，
+// 提醒的价值正在于此）。
+pub(crate) mod remind;
+mod report;
+mod schedule;
 mod state;
 mod view;
 mod widgets;
@@ -78,13 +114,17 @@ use duck_components::{
     dialog_top_offset, modal_drag, modal_drag_area, modal_offset, modal_title_row,
 };
 use duck_project::{
-    ColumnSpec, LogKind, NewMilestone, Priority, Quadrant, TaskPatch, TaskSort, TaskStatus,
+    CalendarDate, ColumnSpec, LogKind, NewMilestone, Priority, Quadrant, TaskPatch, TaskSort,
+    TaskStatus, WeeklyPlanStatus,
 };
 use duck_theme::{active_theme, tr, trf, trn};
 
-use prefs::{GroupMode, ViewMode};
-use state::{ArchiveRow, BoardScope, ProjectsState, SmartFilter, UndoAction};
+use prefs::{CalendarMode, GroupMode, ReportRange, ViewMode};
+use report::ReportStatus;
+use state::{ArchiveRow, BoardScope, ImportOutcome, ProjectsState, SmartFilter, UndoAction};
 use widgets::status_label;
+
+use import::SourceFormat;
 
 /// 左栏宽度档位（与数据库 / Redis 页取同一档，切页面时侧栏不跳宽）。
 const SIDEBAR_WIDTH_RANGE: RangeInclusive<f32> = 184.0..=340.0;
@@ -147,8 +187,14 @@ actions!(
         DeleteSelected,
         /// `Esc`：从归档中心回到常规视图。
         LeaveArchive,
-        /// `⌘Z`：撤销最近一次归档。
-        UndoLastArchive,
+        /// `Enter`：把选中那条的详情摆到右栏（右栏本来就是详情面板，所以「开详情」
+        /// 等于「让右栏真的出现」）。
+        OpenSelectedDetail,
+        /// `E`：打开选中那条的编辑弹窗（与双击卡片同一条路）。
+        EditSelected,
+        /// `⌘Z`：撤销上一步可撤销的变更；**连按就是一路往回退**（栈深与时限见
+        /// `state::UNDO_DEPTH` / `UNDO_RETENTION`）。
+        UndoLast,
         /// `1`：切到看板。
         ViewBoard,
         /// `2`：切到列表。
@@ -182,6 +228,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // `⌘C` / `Ctrl-C`（已逐条核对），所以这一条不会与别处抢。
         KeyBinding::new("backspace", DeleteSelected, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("escape", LeaveArchive, Some(KEY_CONTEXT_BARE)),
+        // `Enter` / `E` 都是裸字母键（`!Input` 是必需的，理由见 [`KEY_CONTEXT_BARE`]）：
+        // 输入框里回车是提交、按 E 就是打一个 e。
+        KeyBinding::new("enter", OpenSelectedDetail, Some(KEY_CONTEXT_BARE)),
+        KeyBinding::new("e", EditSelected, Some(KEY_CONTEXT_BARE)),
         // `1`–`6` 切常规视图（原型状态栏那条提示的排法）。裸数字键同样要 `!Input`。
         KeyBinding::new("1", ViewBoard, Some(KEY_CONTEXT_BARE)),
         KeyBinding::new("2", ViewList, Some(KEY_CONTEXT_BARE)),
@@ -195,7 +245,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // `⌘Z` 在文本输入上下文里是上游的「撤销文字」，所以这一条也**不带** `!Input`：
         // 焦点在输入框里时更深的 `Input` 上下文先认领，退的是文本（与 db.rs 的
         // `⌘Z` 是同一套分层，无歧义——同一时刻只有一个上下文认领）。
-        KeyBinding::new(&format!("{modifier}-z"), UndoLastArchive, Some(KEY_CONTEXT)),
+        KeyBinding::new(&format!("{modifier}-z"), UndoLast, Some(KEY_CONTEXT)),
     ]);
 }
 
@@ -391,6 +441,46 @@ impl ProjectsPage {
         cx.notify();
     }
 
+    /// 换报表的时间范围档。与视图 / 排序 / 分组同属偏好，改完落盘。
+    pub(crate) fn set_report_range(&mut self, range: ReportRange, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, _| state.set_report_range(range));
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// 换报表的状态筛选档。
+    ///
+    /// **不落盘**：这是「我现在想看看未完成的那些」这一类的临时视角，与工具条的
+    /// 「显示已完成」同性质（偏好表里只留视图 / 排序 / 分组 / 报表范围四项）。
+    pub(crate) fn set_report_status(&mut self, status: ReportStatus, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, _| state.set_report_status(status));
+        cx.notify();
+    }
+
+    /// 报表的标签筛选（多选，再点一次取消）。不落盘，理由同上。
+    pub(crate) fn toggle_report_tag(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, _| state.toggle_report_tag(id));
+        cx.notify();
+    }
+
+    /// 清掉报表的标签筛选（「全部」那一枚 chip）。
+    pub(crate) fn clear_report_tags(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.clear_report_tags());
+        cx.notify();
+    }
+
+    /// 打开「导出报表」弹窗（报表筛选条右侧的按钮）。
+    ///
+    /// 原先那里是**点一下就复制**。改成弹窗的理由：报表要落盘时必须先看一眼将被写进
+    /// 文件的到底是什么（口径行、几块表、有没有截断），而「点一下偷偷复制了别的口径」
+    /// 是查不出来的。两个出口（复制 / 另存为）也从此与「导出任务」完全一致。
+    pub(crate) fn open_report_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::open_report_export(self, window, cx);
+    }
+
     /// 点左栏「智能列表」的一档：已选中就取消，否则换成它。
     ///
     /// 「再点一次取消」是这一列行的通用直觉（项目行也是这么回去的），少了它就得再给
@@ -416,8 +506,8 @@ impl ProjectsPage {
 
     /// 工具条「显示已完成」开关。
     ///
-    /// **不落盘**：与智能列表 / 搜索词同一类「一次性视角」，而不是长期偏好 ——
-    /// 偏好表里只留视图模式与排序两项（§6.2）。
+    /// **不落盘**：与智能列表 / 搜索词 / 报表的状态与标签筛选同一类「一次性视角」，
+    /// 而不是长期偏好 —— 偏好表里只留视图模式、排序、分组、报表范围四项（§6.2）。
     pub(crate) fn toggle_show_done(&mut self, cx: &mut Context<Self>) {
         let next = !self.state.read(cx).show_done();
         self.state.update(cx, |state, _| state.set_show_done(next));
@@ -874,11 +964,10 @@ impl ProjectsPage {
         }
     }
 
-    /// 新建项目。
+    /// 新建项目（只给名字、自动去重的快捷路径）。
     ///
-    /// 现在只给一条「点一下就有一个新项目」的路径（名字自动取且保证不重名）；
-    /// 带名称 / 颜色 / 日期的完整弹窗与重命名**仍未做** —— 不做「点了没反应」
-    /// 或者「只有演示文案」的控件（P3-6），所以宁可先不摆那个入口。
+    /// 带名称 / 颜色 / 日期的完整弹窗走 [`dialogs::open_project_editor`]（左栏项目行右键
+    /// 「项目设置…」），本函数是 `⇧N` 那条「先要一个项目、随后再改」的快路。
     pub(crate) fn create_project(&mut self, cx: &mut Context<Self>) {
         let base = tr(cx, "新项目").to_owned();
         let taken: Vec<String> = self
@@ -1234,6 +1323,40 @@ impl ProjectsPage {
         }
     }
 
+    /// `Enter`：把选中那条的详情摆到右栏。
+    ///
+    /// 右栏本来就是「当前选中项的详情面板」，所以「开详情」对页面来说只剩一件事：
+    /// **让右栏真的出现**。⚠️ 右栏是 shell 级区域，页面够不到它的开合，必须走
+    /// [`crate::app::set_right_sidebar_open`]；它返回 `false`（辅助窗口 / 主窗还没建）
+    /// 时退回一句回执，而不是静默 —— 按了没反应比说一句「这个窗口里打不开」难查得多。
+    fn open_selected_detail(&mut self, cx: &mut Context<Self>) {
+        if self.state.read(cx).selected().is_none() {
+            self.show(Tone::Warning, tr(cx, "先用 J / K 选中一条任务。"), None, cx);
+            return;
+        }
+        if !crate::app::set_right_sidebar_open(cx, true) {
+            self.show(Tone::Warning, tr(cx, "这个窗口里展开不了右栏。"), None, cx);
+        }
+        cx.notify();
+    }
+
+    /// `E`：打开选中那条的编辑弹窗（与双击卡片同一条路）。
+    ///
+    /// 键盘用户不该为了改一个字段去摸鼠标。归档中心里不做事：那里的「选中行」是一条
+    /// **已归档记录**，不是可编辑的任务（与 `Space` 同一条判据）。
+    fn edit_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        if state.view().is_archive() {
+            return;
+        }
+        let Some(id) = state.selected() else {
+            return;
+        };
+        // 后三个「预置项」只在新建时有意义（编辑态内核会把原值读回来，见
+        // [`Self::open_task_editor`]）—— 这里按最中性的值传。
+        self.open_task_editor(Some(id), None, TaskStatus::Todo, None, window, cx);
+    }
+
     /// `⌫`：看板 / 列表上删任务、归档中心里彻底删除 —— 两者都不可逆，都要二次确认。
     fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let scope = {
@@ -1250,10 +1373,10 @@ impl ProjectsPage {
         }
     }
 
-    /// `⌘Z`（以及提示条上的「撤销」）：把上一步可撤销的变更退回去。
+    /// `⌘Z`（以及提示条上的「撤销」）：把**栈顶**那一步退回去；连按就是一路往回退。
     ///
-    /// 撤销槽记的是**动作**（归档 / 改状态 / 复制），不是「上一次归档」——所以这里按动作
-    /// 分派回执文案，而不是一律说「已撤销归档」。
+    /// 撤销栈记的是**动作**（归档 / 恢复项目 / 改状态 / 复制），不是「上一次归档」——
+    /// 所以这里按动作分派回执文案，而不是一律说「已撤销归档」。
     fn undo_last(&mut self, cx: &mut Context<Self>) {
         let outcome = self.state.update(cx, |state, _| state.undo());
         match outcome {
@@ -1274,7 +1397,18 @@ impl ProjectsPage {
                         SharedString::from(tr(cx, "已删掉刚复制出来的那条。"))
                     }
                 };
-                self.show(Tone::Success, message, None, cx);
+                // 栈里还有就把「撤销」按钮**接着挂上**：连按比「再按一次 `⌘Z` 才发现
+                // 还能退」容易发现得多。剩下的步数一起报出来，免得退到一半不知道有没有底。
+                let depth = self.state.read(cx).undo_depth();
+                let message = match depth {
+                    0 => message,
+                    left => SharedString::from(format!(
+                        "{message}{}",
+                        trf(cx, "（还可撤销 {} 步）", &[&left.to_string()])
+                    )),
+                };
+                let again = self.undo_seq(cx);
+                self.show(Tone::Success, message, again, cx);
             }
             Ok(None) => self.show(Tone::Warning, tr(cx, "没有可撤销的操作。"), None, cx),
             Err(err) => self.show(
@@ -1404,34 +1538,66 @@ impl ProjectsPage {
     // 这件事会用到页面的私有字段（`state` / `view`），所以由页面转一手。
 
     /// 打开任务编辑弹窗（`task_id` 为 `None` = 新建）。
+    ///
+    /// `preset_due` 只在**新建**时有意义（编辑态内核会把原值读回来，见
+    /// [`dialogs::open_task_editor`]）；目前唯一的来源是日历格右键的「在这天新建任务」
+    /// —— 在某一格上点「新建」，期望的第一件事就是「截止日已经是这一天」。
     pub(crate) fn open_task_editor(
         &mut self,
         task_id: Option<i64>,
         preset_project: Option<i64>,
         preset_status: TaskStatus,
+        preset_due: Option<CalendarDate>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        dialogs::open_task_editor(self, task_id, preset_project, preset_status, window, cx);
+        dialogs::open_task_editor(
+            self,
+            task_id,
+            preset_project,
+            preset_status,
+            preset_due,
+            window,
+            cx,
+        );
     }
 
     /// 「新建任务」按钮 / `⌘N`：在当前范围里新建。
     pub(crate) fn new_task_in_scope(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (project, status) = {
-            let state = self.state.read(cx);
-            let project = match state.scope() {
-                BoardScope::Project(id) => Some(id),
-                BoardScope::All | BoardScope::Inbox => None,
-            };
-            // 落在看板的**第一列**（不是硬编码 `Todo`）：列是可自定义的，第一列才是
-            // 用户心里的「入口列」。
-            let status = state
-                .columns()
-                .first()
-                .map_or(TaskStatus::Todo, |column| column.status_key);
-            (project, status)
+        let (project, status) = self.new_task_defaults(cx);
+        self.open_task_editor(None, project, status, None, window, cx);
+    }
+
+    /// 在指定的那一天新建任务（日历格右键）。
+    ///
+    /// 与 [`Self::new_task_in_scope`] 只差一个预置截止日：落点仍沿用当前范围与看板第一列
+    /// —— 在日历上点「新建」，用户的注意力在「哪一天」，不在「哪个项目」。
+    pub(crate) fn new_task_on(
+        &mut self,
+        date: CalendarDate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (project, status) = self.new_task_defaults(cx);
+        self.open_task_editor(None, project, status, Some(date), window, cx);
+    }
+
+    /// 新建任务时预置的项目与状态列。
+    ///
+    /// 状态落在看板的**第一列**（不是硬编码 `Todo`）：列是可自定义的，第一列才是用户
+    /// 心里的「入口列」。（改前这段内联在 `new_task_in_scope` 里，日历格也要用同一份
+    /// 口径，抽出来免得两处各写一遍。）
+    fn new_task_defaults(&self, cx: &Context<Self>) -> (Option<i64>, TaskStatus) {
+        let state = self.state.read(cx);
+        let project = match state.scope() {
+            BoardScope::Project(id) => Some(id),
+            BoardScope::All | BoardScope::Inbox => None,
         };
-        self.open_task_editor(None, project, status, window, cx);
+        let status = state
+            .columns()
+            .first()
+            .map_or(TaskStatus::Todo, |column| column.status_key);
+        (project, status)
     }
 
     /// 任务编辑弹窗的「保存」。
@@ -1593,6 +1759,19 @@ impl ProjectsPage {
         self.report(outcome, tr(cx, "已删除标签。").to_owned(), cx);
     }
 
+    /// 收藏 / 取消收藏标签（左栏「收藏在前」的顺序由内核 `ORDER BY` 给出）。
+    pub(crate) fn set_tag_favorite(&mut self, id: i64, favorite: bool, cx: &mut Context<Self>) {
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.set_tag_favorite(id, favorite));
+        let message = if favorite {
+            tr(cx, "已收藏标签。").to_owned()
+        } else {
+            tr(cx, "已取消收藏。").to_owned()
+        };
+        self.report(outcome, message, cx);
+    }
+
     /// 打开看板列设置弹窗。
     pub(crate) fn open_column_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         dialogs::open_column_settings(self, window, cx);
@@ -1671,18 +1850,79 @@ impl ProjectsPage {
         );
     }
 
-    /// 打开「从文本导入任务」弹窗（工具条的导入按钮）。
+    /// 导出的「保存到文件…」：弹系统另存为面板，落盘后弹回执。
+    ///
+    /// 走 [`crate::file_dialogs::save_file_in_window`]（gpui 的异步面板）而不是
+    /// `duck_platform::save_file`（rfd 的同步模态）—— 后者会把 AppKit 的事件派发
+    /// 重入回 gpui，重入期间任何前台任务做 `update_entity` 都会 abort。理由与两次
+    /// 闪退的实证写在 `file_dialogs.rs` 的模块头。
+    ///
+    /// ⚠️ **内容必须在开面板之前固化**：用户可能在面板上停很久，回来时页面早翻页了。
+    /// 所以这里收的是算好的 `text` 字符串，回调里不再回读页面。
+    ///
+    /// 写盘失败（目录被删、没权限）走 `Tone::Error` 的同一句话 + 系统给的详情，
+    /// 不额外编一套文案。
+    pub(crate) fn save_export(
+        &mut self,
+        text: String,
+        default_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        let chars = text.chars().count();
+        crate::file_dialogs::save_file_in_window(cx, &default_name, move |path, _, page, cx| {
+            match std::fs::write(&path, text.as_bytes()) {
+                Ok(()) => page.show(
+                    Tone::Success,
+                    trf(
+                        cx,
+                        "已保存到 {}（{} 字符）。",
+                        &[&path.display().to_string(), &chars.to_string()],
+                    ),
+                    None,
+                    cx,
+                ),
+                Err(err) => page.show(
+                    Tone::Error,
+                    trf(cx, "保存失败：{}", &[&err.to_string()]),
+                    None,
+                    cx,
+                ),
+            }
+        });
+    }
+
+    /// 打开「从文件 / 文本导入任务」弹窗（工具条的导入按钮）。
     pub(crate) fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         dialogs::open_import(self, window, cx);
     }
 
-    /// 导入弹窗的「导入」：把粘贴的文本按行解析并落库。
+    /// 导入弹窗的「导入」：把文本按所选格式解析并落库。
     ///
     /// 落点优先级与快速新建一致：`@项目` > 当前范围（见 [`Self::submit_spotlight`]）。
-    pub(crate) fn submit_import(&mut self, text: &str, cx: &mut Context<Self>) {
+    ///
+    /// 解析失败（只有 JSON 会）走 `Tone::Error`；解析出 0 条走 `Tone::Warning` ——
+    /// 「文件坏了」与「文件里没有任务」是两件事，回执不该长得一样。
+    pub(crate) fn submit_import(
+        &mut self,
+        text: &str,
+        format: SourceFormat,
+        skip_duplicates: bool,
+        cx: &mut Context<Self>,
+    ) {
         let today = self.state.read(cx).today();
-        let lines = quickparse::parse_lines(text, today);
-        if lines.is_empty() {
+        let parsed = match import::parse(text, format, today) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                self.show(
+                    Tone::Error,
+                    trf(cx, "解析失败：{}", &[&err.to_string()]),
+                    None,
+                    cx,
+                );
+                return;
+            }
+        };
+        if parsed.rows.is_empty() {
             self.show(Tone::Warning, tr(cx, "没有可导入的行。"), None, cx);
             return;
         }
@@ -1690,19 +1930,14 @@ impl ProjectsPage {
             BoardScope::Project(id) => Some(id),
             BoardScope::All | BoardScope::Inbox => None,
         };
-        let outcome = self
-            .state
-            .update(cx, |state, _| state.import_lines(&lines, fallback));
+        let outcome = self.state.update(cx, |state, _| {
+            state.import_lines(&parsed.rows, fallback, skip_duplicates)
+        });
         match outcome {
-            Ok(created) => {
+            Ok(outcome) => {
                 // 导入是**批量**写入，自己广播一声（与快速新建同理：它不回执时不该静默）。
                 bus::notify(cx);
-                self.show(
-                    Tone::Success,
-                    trf(cx, "已导入 {} 个任务。", &[&created.to_string()]),
-                    None,
-                    cx,
-                );
+                self.show(Tone::Success, import_receipt(&outcome, cx), None, cx);
             }
             Err(err) => self.show(
                 Tone::Error,
@@ -1711,6 +1946,20 @@ impl ProjectsPage {
                 cx,
             ),
         }
+    }
+
+    /// 「下载模板」：把当前格式的模板文本另存为文件。
+    ///
+    /// 模板内容与弹窗里「填入示例」用的是同一批字（`dialogs::import_template`），
+    /// 所以「照模板填」和「照示例改」看到的是同一种写法 —— 两处各写一份，
+    /// 迟早会出现「模板里叫这个名字、示例里又叫那个」的分叉。
+    pub(crate) fn save_import_template(
+        &mut self,
+        format: SourceFormat,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_export(text, format.template_file_name(), cx);
     }
 
     /// 打开某天（某档）的工作日志编辑弹窗。
@@ -1730,11 +1979,17 @@ impl ProjectsPage {
         date: duck_project::CalendarDate,
         kind: LogKind,
         content: &str,
+        tags: &[String],
+        ai_generated: bool,
         cx: &mut Context<Self>,
     ) {
-        let outcome = self
-            .state
-            .update(cx, |state, _| state.save_log(date, kind, content));
+        let outcome = self.state.update(cx, |state, _| {
+            state.save_log(date, kind, content, tags, ai_generated)
+        });
+        // 保存成功才丢草稿：写失败时草稿是用户唯一的一份字。
+        if outcome.is_ok() {
+            prefs::LogDraft::clear(cx);
+        }
         self.report(outcome, tr(cx, "已保存日志。").to_owned(), cx);
     }
 
@@ -1750,25 +2005,71 @@ impl ProjectsPage {
         cx.notify();
     }
 
-    /// 换日历视图的锚月（`delta` = 前后翻几个月；`None` = 回到今天所在月）。
-    pub(crate) fn step_calendar_month(&mut self, delta: Option<i32>, cx: &mut Context<Self>) {
+    /// 换日历视图的锚（`delta` = 前后翻几页；`None` = 回到今天）。
+    ///
+    /// 「一页」随画法而变：月视图是一月、周视图是一周 —— 同一个箭头，用户在两种画法下
+    /// 期待的都是「往后翻一屏」，而不是「往后翻一个月（哪怕这屏只有七天）」。
+    ///
+    /// 月视图的锚是「整日」而翻月要落在**当月 1 号**：月份的加减走整数运算再夹回合法日
+    /// （`CalendarDate::new` 对越界的「1 月 31 日 + 1 月」是 `None`，先取当月 1 号就不会
+    /// 踩到）。周视图直接按天加减，锚保持「用户当时看着的那一天」，来回翻不会漂到周一。
+    pub(crate) fn step_calendar(&mut self, delta: Option<i32>, cx: &mut Context<Self>) {
         let next = match delta {
             None => None,
             Some(delta) => {
                 let state = self.state.read(cx);
-                let anchor = state.calendar_month().unwrap_or_else(|| state.today());
-                // 月份加减走整数运算再夹回合法日：`CalendarDate::new` 对越界的
-                // 「1 月 31 日 + 1 月」是 `None`，先取当月 1 号就不会踩到。
-                let total = i64::from(anchor.year()) * 12 + i64::from(anchor.month()) - 1
-                    + i64::from(delta);
-                let year = i32::try_from(total.div_euclid(12)).unwrap_or(anchor.year());
-                let month = u32::try_from(total.rem_euclid(12) + 1).unwrap_or(1);
-                duck_project::CalendarDate::new(year, month, 1)
+                let anchor = state.calendar_anchor().unwrap_or_else(|| state.today());
+                match state.calendar_mode() {
+                    CalendarMode::Week => Some(anchor.add_days(i64::from(delta) * 7)),
+                    CalendarMode::Month => {
+                        let total = i64::from(anchor.year()) * 12 + i64::from(anchor.month()) - 1
+                            + i64::from(delta);
+                        let year = i32::try_from(total.div_euclid(12)).unwrap_or(anchor.year());
+                        let month = u32::try_from(total.rem_euclid(12) + 1).unwrap_or(1);
+                        CalendarDate::new(year, month, 1)
+                    }
+                }
             }
         };
         self.state
-            .update(cx, |state, _| state.set_calendar_month(next));
+            .update(cx, |state, _| state.set_calendar_anchor(next));
         cx.notify();
+    }
+
+    /// 换日历的画法（工具条上的「月 / 周」切换）。画法是偏好，改完落盘。
+    ///
+    /// 锚定日**不动**：两种画法共享同一个锚，切画法停在原地（见 `state::set_calendar_mode`）。
+    pub(crate) fn set_calendar_mode(&mut self, mode: CalendarMode, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, _| state.set_calendar_mode(mode));
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// 换画法**并且**把锚挪到指定的那一天（日历格右键的「在周视图里查看这周」）。
+    ///
+    /// 与 [`Self::set_calendar_mode`] 分成两个方法：那一个的语义是「我只想换个看法」，
+    /// 这一个的语义是「我想看这一格 / 这一周」—— 后者必须同时挪锚，否则切完还在原来的
+    /// 月份上，用户会以为菜单点空了。
+    pub(crate) fn show_day_as(
+        &mut self,
+        mode: CalendarMode,
+        date: CalendarDate,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |state, _| {
+            state.set_calendar_mode(mode);
+            state.set_calendar_anchor(Some(date));
+        });
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// 复制某一天（YYYY-MM-DD）到剪贴板 —— 日历格右键的那一项。
+    ///
+    /// 复用 [`Self::copy_export`]：同一个出口、同一条回执（含字符数），差别只在内容。
+    pub(crate) fn copy_date(&mut self, date: CalendarDate, cx: &mut Context<Self>) {
+        self.copy_export(date.to_iso(), cx);
     }
 
     /// 打开某天日志的编辑弹窗（当前档位）。
@@ -1781,6 +2082,108 @@ impl ProjectsPage {
             (date, state.log_kind())
         };
         self.open_log_editor(date, kind, window, cx);
+    }
+
+    // -----------------------------------------------------------------------
+    // 周计划（`view::render_plan` 的动作层）
+    // -----------------------------------------------------------------------
+
+    /// 换周计划看的哪一周。
+    ///
+    /// `delta = None` 回本周，`Some(±1)` 前后翻一周。与日历的 [`Self::step_calendar`]
+    /// 分成两个方法而不是共用一个：那个还带「月视图按整数月运算」的分支，
+    /// 周计划只有周一种粒度，合并只会让两边都多一个用不上的参数。
+    pub(crate) fn step_plan_week(&mut self, delta: Option<i32>, cx: &mut Context<Self>) {
+        let next = match delta {
+            None => None,
+            Some(delta) => {
+                let anchor = self.state.read(cx).plan_anchor();
+                Some(anchor.add_days(i64::from(delta) * 7))
+            }
+        };
+        self.state.update(cx, |state, _| state.set_plan_week(next));
+        cx.notify();
+    }
+
+    /// 跳到左清单里某一周（按周键）。
+    ///
+    /// 从**周键**反解回周一，而不是让调用方传日期：左清单上显示的就是周键，两处
+    /// 用同一份换算（[`CalendarDate::from_week_key`]）才不会「点第 42 周跳到第 43 周」。
+    pub(crate) fn show_plan_week(&mut self, week_key: &str, cx: &mut Context<Self>) {
+        let Some(date) = CalendarDate::from_week_key(week_key) else {
+            return;
+        };
+        self.state
+            .update(cx, |state, _| state.set_plan_week(Some(date)));
+        cx.notify();
+    }
+
+    /// 打开周计划正文的编辑弹窗。
+    pub(crate) fn open_plan_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::open_plan_editor(self, window, cx);
+    }
+
+    /// 周计划弹窗的「保存」：写正文，任务集与状态原样带回。
+    pub(crate) fn submit_plan(&mut self, content: &str, cx: &mut Context<Self>) {
+        let (task_ids, status) = {
+            let state = self.state.read(cx);
+            match state.current_plan() {
+                Some(plan) => (plan.task_ids.clone(), plan.status),
+                None => (Vec::new(), WeeklyPlanStatus::Draft),
+            }
+        };
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.save_plan(content, &task_ids, status));
+        self.report(outcome, tr(cx, "已保存周计划。").to_owned(), cx);
+    }
+
+    /// 「确认」/「改回草稿」。
+    pub(crate) fn set_plan_status(&mut self, status: WeeklyPlanStatus, cx: &mut Context<Self>) {
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.set_plan_status(status));
+        let message = match status {
+            WeeklyPlanStatus::Confirmed => tr(cx, "已确认这周的计划。"),
+            WeeklyPlanStatus::Draft => tr(cx, "已改回草稿。"),
+        };
+        self.report(outcome, message.to_owned(), cx);
+    }
+
+    /// 删掉当前这一周的计划（先弹确认 —— 不可逆）。
+    pub(crate) fn confirm_delete_plan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let week = self.state.read(cx).plan_week_key();
+        crate::confirm::open_confirm_in(
+            tr(cx, "删除周计划"),
+            trf(
+                cx,
+                "确定删除 {} 的周计划？这一周的排期会一起消失，任务本身不受影响。",
+                &[&week],
+            ),
+            tr(cx, "删除"),
+            move |page, _window, cx| {
+                let outcome = page.state.update(cx, |state, _| state.delete_plan());
+                page.report(outcome, tr(cx, "已删除周计划。").to_owned(), cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// 把一条任务加进这一周的计划。
+    pub(crate) fn add_task_to_plan(&mut self, task_id: i64, cx: &mut Context<Self>) {
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.add_task_to_plan(task_id));
+        self.report(outcome, tr(cx, "已加入这一周的计划。").to_owned(), cx);
+    }
+
+    /// 把一条任务移出这一周的计划。
+    pub(crate) fn remove_task_from_plan(&mut self, task_id: i64, cx: &mut Context<Self>) {
+        let outcome = self
+            .state
+            .update(cx, |state, _| state.remove_task_from_plan(task_id));
+        self.report(outcome, tr(cx, "已移出计划。").to_owned(), cx);
     }
 
     /// 「改一个字段」类动作的公共收尾：成功给回执、失败报错，最后重绘。
@@ -1805,19 +2208,31 @@ impl ProjectsPage {
     // 偏好与提示条
     // ------------------------------------------------------------------
 
-    /// 把当前视图 / 排序 / 分组写进 `kv: projects_ui`（§6.2 的单键 JSON）。
+    /// 把当前视图 / 排序 / 分组 / 报表范围 / 日历画法写进 `kv: projects_ui`（§6.2 的单键 JSON）。
     ///
     /// 整份偏好是一个 JSON 对象，**所有字段永远一起写**：只写一半会把另一半写成
     /// 默认值 —— 比如「切个视图」不该把用户刚选的排序悄悄复位。
+    ///
+    /// 报表的**状态 / 标签**筛选刻意不在这里：它们是「我现在想看看这批」的一次性视角，
+    /// 与工具条的「显示已完成」同性质（见 `report::ReportStatus`）。日历的**锚定日**同理
+    /// ——「我现在翻到了 11 月」不是偏好，重进页面该回到今天（见 `state::calendar_anchor`）。
     fn save_prefs(&self, cx: &mut Context<Self>) {
-        let (view, sort, group) = {
+        let (view, sort, group, calendar, report) = {
             let state = self.state.read(cx);
-            (state.view(), state.sort(), state.group())
+            (
+                state.view(),
+                state.sort(),
+                state.group(),
+                state.calendar_mode(),
+                state.report_range(),
+            )
         };
         let prefs = prefs::ProjectsPrefs::default()
             .with_view(view)
             .with_sort(sort)
-            .with_group(group);
+            .with_group(group)
+            .with_calendar(calendar)
+            .with_report(report);
         prefs::ProjectsPrefs::save(cx, &prefs);
     }
 
@@ -1842,8 +2257,11 @@ impl ProjectsPage {
     /// 只有「还是自己那一条」才清 —— 少了它，7 秒内连做两次归档时第一条的定时器会把
     /// 第二条一起抹掉（第二条等于没给撤销的机会）。
     ///
-    /// 提示条超时也顺手作废状态里的撤销槽（[`ProjectsState::expire_undo`]，同样带序号
-    /// 守卫）：§5.6 的撤销窗口就是 7 秒，过了窗口 `⌘Z` 不该还能翻出一条十秒前的归档。
+    /// 提示条超时只会让**这一条提示**消失。
+    ///
+    /// 它**不再作废状态里的撤销栈**：§5.6 那 7 秒从「撤销通道」收窄成「撤销按钮在屏幕上
+    /// 待多久」—— 批量归档 5 条时回执早就过去了，而历史该留着（`⌘Z` 连按照样能一路退，
+    /// 时限是 `state::UNDO_RETENTION` 的 60 秒，见那里的说明）。
     pub(crate) fn show(
         &mut self,
         tone: Tone,
@@ -1876,9 +2294,6 @@ impl ProjectsPage {
                     return;
                 }
                 this.hint = None;
-                if let Some(slot) = undo {
-                    this.state.update(cx, |state, _| state.expire_undo(slot));
-                }
                 cx.notify();
             });
         })
@@ -2003,7 +2418,13 @@ impl Render for ProjectsPage {
             .on_action(cx.listener(|this, _: &LeaveArchive, _window, cx| {
                 this.leave_archive(cx);
             }))
-            .on_action(cx.listener(|this, _: &UndoLastArchive, _window, cx| {
+            .on_action(cx.listener(|this, _: &OpenSelectedDetail, _window, cx| {
+                this.open_selected_detail(cx);
+            }))
+            .on_action(cx.listener(|this, _: &EditSelected, window, cx| {
+                this.edit_selected(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &UndoLast, _window, cx| {
                 this.undo_last(cx);
             }))
             .on_action(cx.listener(|this, _: &ViewBoard, _window, cx| {
@@ -2081,6 +2502,24 @@ fn unique_name(base: &str, taken: &[String]) -> String {
         }
         index += 1;
     }
+}
+
+/// 导入成功后的回执文案。
+///
+/// 两个数分开报（建成 / 跳过），因为「文件里 20 条、其实 18 条重复」时只说
+/// 「已导入 2 个任务」会让人以为丢了数据。跳过的条数是 0 时不提它 —— 空口说一句
+/// 「跳过 0 条」只是噪音。
+fn import_receipt(outcome: &ImportOutcome, cx: &App) -> String {
+    let created = outcome.created.to_string();
+    if outcome.skipped == 0 {
+        return trf(cx, "已导入 {} 个任务。", &[&created]);
+    }
+    let skipped = outcome.skipped.to_string();
+    trf(
+        cx,
+        "已导入 {} 个任务，跳过 {} 个同名任务。",
+        &[&created, &skipped],
+    )
 }
 
 #[cfg(test)]

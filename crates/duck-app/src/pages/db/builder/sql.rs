@@ -13,7 +13,8 @@ use super::*;
 
 /// 目标引擎的 SQL 口味（构建器只关心这三件事）。
 ///
-/// `quote` 直接取 [`DatabaseKind::identifier_quote`]；`None` 的引擎（Mongo / Elasticsearch）
+/// `quote` 由调用方从**会话**取（`DatabasePage::active_quote`，agent 档只有连上才知道）；
+/// 连不上时它按引擎的静态值兜底，`None` 的引擎（Mongo / Elasticsearch）
 /// **没有 SQL 这一层**，`dialect_for` 返回 `None`，界面据此不给入口。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct BuilderDialect {
@@ -46,9 +47,16 @@ pub(super) enum LimitStyle {
     OffsetFetch,
 }
 
-/// 取引擎的构建器口味；`None` = 该引擎没有 SQL（Mongo / Elasticsearch）。
-pub(super) fn dialect_for(engine: DatabaseKind) -> Option<BuilderDialect> {
-    let quote = engine.identifier_quote()?;
+/// 取引擎的构建器口味；`None` = 这条连接没有 SQL 这一层（Mongo / Elasticsearch）。
+///
+/// **引号是入参而不是从这里查**：agent 档的引号只有连上之后才问得到
+/// （`Connection::identifier_quote` → 会话缓存），调用方拿着会话的真值传进来；
+/// 没连上时它按引擎的静态值兜底（只为能渲染预览）。
+///
+/// ⚠️ 别改成「从 kind 里查引号」——`DatabaseKind::Agent` 是一整个家族，那层永远答 `None`，
+/// 会让几十个 SQL 引擎的可视化构建器一起消失。
+pub(super) fn dialect_for(engine: DatabaseKind, quote: Option<char>) -> Option<BuilderDialect> {
+    let quote = quote?;
     Some(match engine {
         DatabaseKind::Sqlite => BuilderDialect {
             quote,
@@ -65,7 +73,17 @@ pub(super) fn dialect_for(engine: DatabaseKind) -> Option<BuilderDialect> {
             bool_literal: BoolLiteral::OneZero,
             limit: LimitStyle::OffsetFetch,
         },
-        // `identifier_quote()` 已经挡掉这两个，分支写全只为让编译器替我们守穷尽性。
+        // agent 档：`TRUE` / `FALSE` + `LIMIT` / `OFFSET` 是这一族里**最常见**的一支
+        // （Oracle / 达梦 / 金仓 / DB2 / Snowflake / Hive 都吃），也是唯一不用逐引擎
+        // 知道点什么就能给的选择。逐条驱动更精确的口味得等清单里加方言字段（见
+        // `supports_ddl` 的说明），当前不猜。
+        DatabaseKind::Agent => BuilderDialect {
+            quote,
+            bool_literal: BoolLiteral::TrueFalse,
+            limit: LimitStyle::LimitOffset,
+        },
+        // Mongo / Elasticsearch 没有 SQL：引号那一步就该返回 `None`，分支写全只为
+        // 让编译器替我们守穷尽性。
         DatabaseKind::Mongo | DatabaseKind::Elasticsearch => return None,
     })
 }
@@ -514,7 +532,7 @@ mod tests {
 
     #[test]
     fn sqlserver_uses_offset_fetch_only_when_ordered() {
-        let mssql = dialect_for(DatabaseKind::SqlServer).expect("SQL Server 有 SQL");
+        let mssql = dialect_for(DatabaseKind::SqlServer, Some('"')).expect("SQL Server 有 SQL");
         let mut spec = spec_with("users");
         spec.limit = Some(10);
         // 没排序：OFFSET/FETCH 不合法 ⇒ 不拼分页（面板会提示补 ORDER BY）。
@@ -541,7 +559,7 @@ mod tests {
         assert_eq!(literal("true", SQLITE), "1");
         assert_eq!(literal("o'brien", SQLITE), "'o''brien'");
         assert_eq!(literal("'already'", SQLITE), "'already'");
-        let pg = dialect_for(DatabaseKind::Postgres).expect("PG 有 SQL");
+        let pg = dialect_for(DatabaseKind::Postgres, Some('"')).expect("PG 有 SQL");
         assert_eq!(literal("true", pg), "TRUE");
         assert_eq!(literal("false", pg), "FALSE");
     }
@@ -580,20 +598,60 @@ mod tests {
         assert!(render(&spec, SQLITE).is_none());
     }
 
+    /// MongoDB / Elasticsearch 恒无方言 —— **引号给了也不给**。
+    ///
+    /// 与 agent 档的分别就在这里：那边的引号是「这条驱动接不接 SQL」的真判据
+    /// （对端报空串 = 图库 / 键值库，没有引号标识符这回事），所以引号有值就能出方言；
+    /// 这两档我们**自己知道**它不是 SQL 引擎（Mongo 走 JSON 命令、ES 走 REST 映射），
+    /// 不靠对端报什么 —— 分支不能只是「凑穷尽性」。
     #[test]
     fn mongo_and_elasticsearch_have_no_dialect() {
-        assert!(dialect_for(DatabaseKind::Mongo).is_none());
-        assert!(dialect_for(DatabaseKind::Elasticsearch).is_none());
+        assert!(dialect_for(DatabaseKind::Mongo, None).is_none());
+        assert!(dialect_for(DatabaseKind::Elasticsearch, None).is_none());
+        assert!(dialect_for(DatabaseKind::Mongo, Some('"')).is_none());
+        assert!(dialect_for(DatabaseKind::Elasticsearch, Some('"')).is_none());
     }
 
     #[test]
     fn identifier_quote_follows_the_engine() {
-        let mysql = dialect_for(DatabaseKind::Mysql).expect("MySQL 有 SQL");
+        // 引号由调用方从会话取：MySQL 是反引号。
+        let mysql = dialect_for(DatabaseKind::Mysql, Some('`')).expect("MySQL 有 SQL");
         let mut spec = spec_with("users");
         spec.alias = "u".to_owned();
         assert_eq!(
             render(&spec, mysql).expect("有表").sql,
             "SELECT * FROM `users` AS `u`;"
         );
+    }
+
+    /// agent 档的引号是**连上问来的**，所以同一个 `DatabaseKind::Agent` 换一个引号
+    /// 就该拼出不同的语句；布尔字面量与分页走通用那一支。
+    #[test]
+    fn agent_dialect_uses_the_quote_it_is_given() {
+        let oracle = dialect_for(DatabaseKind::Agent, Some('"')).expect("agent 有 SQL");
+        // 布尔字面量按通用那一支（`TRUE` / `FALSE`），不是 SQLite/T-SQL 的 `1` / `0`。
+        assert_eq!(literal("true", oracle), "TRUE");
+        let mut spec = spec_with("users");
+        spec.predicates = vec![PredicateRow {
+            column: "active".to_owned(),
+            op: FilterOp::Eq,
+            value: "1".to_owned(),
+            raw_value: false,
+        }];
+        spec.limit = Some(5);
+        spec.offset = 10;
+        assert_eq!(
+            render(&spec, oracle).expect("有表").sql,
+            "SELECT * FROM \"users\" WHERE \"active\" = 1 LIMIT 5 OFFSET 10;"
+        );
+        // 换成反引号（另一条驱动）就拼出另一种语句 —— 引号真的是从连接来的。
+        let mysql_ish = dialect_for(DatabaseKind::Agent, Some('`')).expect("agent 有 SQL");
+        assert_eq!(
+            render(&spec, mysql_ish).expect("有表").sql,
+            "SELECT * FROM `users` WHERE `active` = 1 LIMIT 5 OFFSET 10;"
+        );
+        // 引号拿不到（对端说「没有引号概念」）时，agent 档也不给方言 ——
+        // 这就是「图库走 Cypher，不该画 SQL 构建器」在代码里的落点。
+        assert!(dialect_for(DatabaseKind::Agent, None).is_none());
     }
 }

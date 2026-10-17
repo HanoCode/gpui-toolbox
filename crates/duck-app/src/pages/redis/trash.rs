@@ -337,7 +337,15 @@ impl RedisPage {
                 // 库默认会在面板右上角自画一个 ✕；关闭入口统一走 `modal_title_row`，
                 // 这里必须关掉，否则会同时出现两个关闭按钮（同连接编辑弹窗）。
                 .close_button(false)
-                .button_props(DialogButtonProps::default().ok_text(tr(cx, "完成")))
+                // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+                // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+                .footer(dialog_footer_ok_only(
+                    "redis-trash",
+                    tr(cx, "完成"),
+                    ButtonVariant::Primary,
+                    Rc::new(|_, _| true),
+                    cx,
+                ))
                 .content(move |content, _, cx| {
                     content.child(modal_drag_area(
                         &drag_for_content,

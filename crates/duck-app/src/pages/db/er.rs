@@ -162,7 +162,10 @@ impl DatabasePage {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(tokens.colors.foreground)
                     .truncate()
-                    .child(SharedString::from(format!("ER {}", data.namespace))),
+                    .child(selectable_text(SharedString::from(format!(
+                        "ER {}",
+                        data.namespace
+                    )))),
             )
             .child(neutral_tag(
                 SharedString::from(trf(cx, "{} 张表", &[&data.total_tables.to_string()])),
@@ -271,7 +274,7 @@ impl DatabasePage {
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.foreground)
                             .truncate()
-                            .child(SharedString::from(column.clone())),
+                            .child(selectable_text(SharedString::from(column.clone()))),
                     )
                     .child(
                         div()
@@ -280,7 +283,7 @@ impl DatabasePage {
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
                             .truncate()
-                            .child(SharedString::from(type_name.clone())),
+                            .child(selectable_text(SharedString::from(type_name.clone()))),
                     ),
             );
         }
@@ -346,10 +349,10 @@ impl DatabasePage {
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.foreground)
                             .truncate()
-                            .child(SharedString::from(format!(
+                            .child(selectable_text(SharedString::from(format!(
                                 "{first_column} → {}.{first_ref_column}",
                                 fk.ref_table
-                            ))),
+                            )))),
                     )
                     .role(Role::Button)
                     .aria_label(SharedString::from(format!(
@@ -412,7 +415,7 @@ impl DatabasePage {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(tokens.colors.foreground)
                             .truncate()
-                            .child(SharedString::from(name.clone())),
+                            .child(selectable_text(SharedString::from(name.clone()))),
                     ),
             )
             .child(rows)

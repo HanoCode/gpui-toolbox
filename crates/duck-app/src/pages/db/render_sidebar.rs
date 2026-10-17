@@ -8,7 +8,7 @@
 use super::*;
 
 impl DatabasePage {
-    pub(crate) fn render_right_sidebar(&self, cx: &App) -> AnyElement {
+    pub(crate) fn render_right_sidebar(&self, window: &mut Window, cx: &mut App) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let view = self.view.clone();
@@ -24,13 +24,15 @@ impl DatabasePage {
         // `scroll` 决定分段体是「内容自然高度 + 外层滚动」还是「自己占满、内部自理」：
         // 详情 / 历史 / 单元格 / 构建器都是前一种（内容有多长就多长，超出由外层滚）；
         // AI 助手是后一种（对话区自己滚、输入区钉在底部），套进外层滚动会被滚走。
-        let dock_shell = move |body: AnyElement, scroll: bool| {
+        // 分段头（`tabs`）由调用方先算好再传进来：`dock_shell` 不捕获 `self`/`cx`，
+        // 否则 `&mut App` 会被 move 进闭包，后面那些分支就没法再用它了。
+        let dock_shell = |tabs: AnyElement, body: AnyElement, scroll: bool| {
             v_flex()
                 .id("db-right-sidebar")
                 .size_full()
                 .min_h_0()
                 .min_w_0()
-                .child(self.render_right_dock_tabs(cx))
+                .child(tabs)
                 .child(
                     div()
                         .id("db-right-sidebar-body")
@@ -44,29 +46,45 @@ impl DatabasePage {
                 )
                 .into_any_element()
         };
-        let dock_body = |body: AnyElement| dock_shell(body, true);
 
         // AI 助手：不套滚动壳（见上），且与会话**无关** —— 还没连库时也该能打开它，
         // 看到欢迎语与「去哪配置厂商」那条提示。
         if self.right_dock == RightDock::Ai {
-            return dock_shell(self.render_ai_dock(cx), false);
+            return dock_shell(
+                self.render_right_dock_tabs(cx),
+                self.render_ai_dock(cx),
+                false,
+            );
         }
         if self.right_dock == RightDock::History {
-            return dock_body(self.render_history_dock(cx));
+            return dock_shell(
+                self.render_right_dock_tabs(cx),
+                self.render_history_dock(cx),
+                true,
+            );
         }
         // 单元格详情也**不依赖会话分支**（依赖的是当前结果集）：先于「未连接」
         // 早返回分流，否则「网格里刚点过 ⓘ、连接断了一下」详情就跟着消失。
         if self.right_dock == RightDock::Cell {
-            return dock_body(self.render_cell_detail_dock(cx));
+            return dock_shell(
+                self.render_right_dock_tabs(cx),
+                self.render_cell_detail_dock(cx),
+                true,
+            );
         }
         // 构建器同样**不依赖会话分支**：右栏停在构建器上时连接断了，已经拼了一半的
         // 条件不该跟着消失（构建器自己会说明「先选一张目标表」/ 列清单取不到）。
         if self.right_dock == RightDock::Builder {
-            return dock_body(self.render_builder_dock(cx));
+            return dock_shell(
+                self.render_right_dock_tabs(cx),
+                self.render_builder_dock(window, cx),
+                true,
+            );
         }
 
         let Some(session) = self.active_session() else {
-            return dock_body(
+            return dock_shell(
+                self.render_right_dock_tabs(cx),
                 empty_state(
                     DuckIcon::Database,
                     tr(cx, "尚未连接数据库"),
@@ -75,6 +93,7 @@ impl DatabasePage {
                     cx,
                 )
                 .into_any_element(),
+                true,
             );
         };
 
@@ -93,44 +112,36 @@ impl DatabasePage {
         // ── 结构管理入口：新建表 ──
         //
         // 只对**有 SQL DDL 的引擎**给按钮（MongoDB / Elasticsearch 没有这一层，
-        // 不给入口而不是给了再报错）。生成语句的表名落点跟随当前命名空间，
-        // 与用户在树里看到的那一层保持一致。
-        let new_table_button =
-            self.active_config()
-                .map(|cfg| cfg.kind)
-                .filter(|engine| supports_ddl(*engine))
-                .and_then(|engine| {
-                    let quote = engine.identifier_quote()?;
-                    let namespace = self
-                        .selected_table
-                        .as_ref()
-                        .and_then(|table| table.schema.clone())
-                        .or_else(|| session.schema.clone())
-                        .or_else(|| session.database.clone());
-                    let target = match namespace {
-                        Some(schema) => TableRef::in_schema(schema, "new_table"),
-                        None => TableRef::bare("new_table"),
-                    };
-                    let qualified = quote_qualified(&target, quote).ok()?;
-                    let template = create_table_template(engine, &qualified)?;
-                    let entry = view.clone();
-                    Some(
-                        button("db-new-table", tr(cx, "新建表"), ButtonVariant::Ghost, cx)
-                            .on_click(move |_, window, cx| {
-                                let Some(entity) = entry.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    this.stage_sql(
-                                        template.clone(),
-                                        tr(cx, "已生成建表骨架，改好表名与列后执行。").into(),
-                                        window,
-                                        cx,
-                                    );
-                                });
-                            }),
-                    )
-                });
+        // 不给入口而不是给了再报错）。落点跟随当前命名空间，与用户在树里看到的
+        // 那一层保持一致。点击直接开「新建表」标签（dbx 同款：可视化网格建表，
+        // 不再往编辑器塞骨架）。
+        let new_table_button = self
+            .active_config()
+            .map(|cfg| cfg.kind)
+            .filter(|engine| supports_ddl(*engine))
+            .filter(|_| self.active_quote().is_some())
+            .map(|_| {
+                let namespace = self
+                    .selected_table
+                    .as_ref()
+                    .and_then(|table| table.schema.clone())
+                    .or_else(|| session.schema.clone())
+                    .or_else(|| session.database.clone());
+                let entry = view.clone();
+                button("db-new-table", tr(cx, "新建表"), ButtonVariant::Ghost, cx).on_click(
+                    move |_, window, cx| {
+                        let Some(entity) = entry.upgrade() else {
+                            return;
+                        };
+                        entity.update(cx, |this, cx| {
+                            let Some(conn_id) = this.active.clone() else {
+                                return;
+                            };
+                            this.open_new_table_tab(&conn_id, namespace.clone(), window, cx);
+                        });
+                    },
+                )
+            });
 
         // 对象树已经**整体迁到左栏**（连接 → 库 → 分类 → 对象，对齐 DBFlux / DBX）：
         // 右栏只承担「选中对象的详情」（DDL / 表元信息 / 行）与连接信息 —— 同一个
@@ -144,7 +155,8 @@ impl DatabasePage {
             None => self.readonly_row_detail(cx),
         };
 
-        dock_body(
+        dock_shell(
+            self.render_right_dock_tabs(cx),
             v_flex()
                 .w_full()
                 .gap(tokens.spacing.lg)
@@ -162,10 +174,14 @@ impl DatabasePage {
                                     let mut rows = vec![
                                         description_row(
                                             tr(cx, "引擎"),
-                                            kind_label(
-                                                self.active_config()
-                                                    .map(|cfg| cfg.kind)
-                                                    .unwrap_or(DatabaseKind::Sqlite),
+                                            // 引擎名走 `EngineRef`：agent 档的真名在驱动清单里。
+                                            self.active_config().map_or_else(
+                                                // 没档案时按 SQLite 兜底（与 `builder_engine` 同一口径）。
+                                                || {
+                                                    EngineRef::new(DatabaseKind::Sqlite, None)
+                                                        .label()
+                                                },
+                                                |cfg| tr(cx, EngineRef::from_config(cfg).label()),
                                             ),
                                         ),
                                         description_row(tr(cx, "版本"), session.version.clone()),
@@ -272,7 +288,7 @@ impl DatabasePage {
                                             div()
                                                 .text_size(tokens.typography.mono_md.size)
                                                 .text_color(tokens.colors.muted_foreground)
-                                                .child(SharedString::from(ddl)),
+                                                .child(selectable_text(SharedString::from(ddl))),
                                         ),
                                 )
                         }),
@@ -286,6 +302,7 @@ impl DatabasePage {
                         .child(panel)
                 }))
                 .into_any_element(),
+            true,
         )
     }
 }

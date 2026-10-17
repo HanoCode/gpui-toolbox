@@ -25,7 +25,7 @@ use gpui_component::{
 
 use duck_components::{
     ButtonVariant, DuckIcon, button, caption_heading, content::empty_state, meta_text,
-    toolbar_action_button,
+    selectable_text, toolbar_action_button,
 };
 use duck_project::{ArchivedProject, ArchivedTask, now_seconds};
 use duck_theme::{UnderMinute, active_theme, tr, tr_relative_time, trf, trn};
@@ -213,7 +213,7 @@ fn task_row(
                 .text_size(tokens.typography.xs.size)
                 .line_height(tokens.typography.xs.line_height)
                 .text_color(extended.colors.text_tertiary)
-                .child(SharedString::from(name.clone())),
+                .child(selectable_text(SharedString::from(name.clone()))),
         );
     }
     if entry.cascaded_subtasks > 0 {
@@ -317,7 +317,7 @@ fn archive_row(
                 .text_size(tokens.typography.sm.size)
                 .line_height(tokens.typography.sm.line_height)
                 .text_color(tokens.colors.foreground)
-                .child(title),
+                .child(selectable_text(title)),
         )
         .child(meta)
         .child(
@@ -466,7 +466,7 @@ pub(crate) fn render_archive_right_sidebar(
                 .text_size(tokens.typography.sm.size)
                 .line_height(tokens.typography.sm.line_height)
                 .text_color(tokens.colors.foreground)
-                .child(title),
+                .child(selectable_text(title)),
         );
 
     for (label, value) in meta {
@@ -490,7 +490,7 @@ pub(crate) fn render_archive_right_sidebar(
                         .text_size(tokens.typography.xs.size)
                         .line_height(tokens.typography.xs.line_height)
                         .text_color(tokens.colors.foreground)
-                        .child(value),
+                        .child(selectable_text(value)),
                 ),
         );
     }
@@ -538,7 +538,7 @@ pub(crate) fn render_archive_right_sidebar(
                 .text_size(tokens.typography.xs.size)
                 .line_height(tokens.typography.xs.line_height)
                 .text_color(extended.colors.text_tertiary)
-                .child(tr(cx, "彻底删除后无法恢复。")),
+                .child(selectable_text(tr(cx, "彻底删除后无法恢复。"))),
         )
         .into_any_element()
 }

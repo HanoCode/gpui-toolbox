@@ -1,10 +1,11 @@
-//! 项目管理页的 8 个领域组件。
+//! 项目管理页的 9 个领域组件。
 //!
 //! 拍板 Q4：**页面私有**（整个模块只在 `pages::projects` 内可见），不进
 //! `duck-components` 公共库 —— 它们的语义只对看板成立（列 / 卡片 / 优先级点 /
-//! 标签片 / 象限徽标 / 进度条 / 详情面板 / 右键菜单），进公共库会让「通用组件」里
-//! 混进领域概念。
+//! 标签片 / 象限徽标 / 进度条 / 详情面板 / 右键菜单 / 日历格菜单），进公共库会让
+//! 「通用组件」里混进领域概念。
 
+pub(crate) mod calendar_menu;
 pub(crate) mod kanban_column;
 pub(crate) mod priority_dot;
 pub(crate) mod progress_bar;
@@ -14,7 +15,7 @@ pub(crate) mod task_card;
 pub(crate) mod task_detail_panel;
 pub(crate) mod task_menu;
 
-use duck_project::{BoardColumn, CalendarDate, Quadrant, Task, TaskStatus};
+use duck_project::{BoardColumn, CalendarDate, Quadrant, Task, TaskStatus, Weekday};
 use duck_theme::{active_theme, tr, trf};
 use gpui::{App, ClickEvent, Hsla, SharedString};
 
@@ -120,6 +121,23 @@ pub(crate) fn due_label(task: &Task, today: CalendarDate, cx: &App) -> (SharedSt
             theme.extended().colors.warning,
         ),
         _ => (SharedString::from(mmdd(due)), normal),
+    }
+}
+
+/// 星期的短名（周一起，与内核的 [`Weekday`] 同序）。
+///
+/// 日历的列头（月视图）与周视图的列头、日期格菜单共用一份：三处各写一遍
+/// `match weekday` 的话，迟早有一处把周日排到周一前面 —— 而 `Weekday` 的顺序是
+/// 内核定的（`index_from_monday`），界面只能跟着它走。
+pub(crate) fn weekday_label(weekday: Weekday, cx: &App) -> &'static str {
+    match weekday {
+        Weekday::Monday => tr(cx, "周一"),
+        Weekday::Tuesday => tr(cx, "周二"),
+        Weekday::Wednesday => tr(cx, "周三"),
+        Weekday::Thursday => tr(cx, "周四"),
+        Weekday::Friday => tr(cx, "周五"),
+        Weekday::Saturday => tr(cx, "周六"),
+        Weekday::Sunday => tr(cx, "周日"),
     }
 }
 

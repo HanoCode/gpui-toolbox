@@ -44,6 +44,7 @@ use duck_ai::kb::KbIndex;
 use duck_ai::tool::{Tool, ToolDetail, ToolOutcome, ToolRegistry, ToolRisk, ToolSpec};
 use duck_ai::wire::ToolCall;
 use duck_db::{DbError, ExecOutcome};
+use duck_project::{NewTask, ProjectStore, Task, TaskPatch, TaskQuery};
 use gpui::App;
 
 use crate::ai;
@@ -778,6 +779,410 @@ impl Tool for RunSqlReadonlyTool {
 }
 
 // ---------------------------------------------------------------------------
+// 项目管理工具（S6：助手能看见 / 建起 / 改动任务）
+// ---------------------------------------------------------------------------
+//
+// 四个工具都**自开一条内核连接**（`ProjectStore::open_default`，后台线程里跑，
+// 与「随手看」悬浮窗同一条口径 —— 不借页面那份状态，注册表会随线程转移所有权）。
+// 读的两个是 `ReadOnly`；写的两个是 `NeedsApproval` —— 审批闸门只认风险分级，
+// 所以「建任务 / 改任务」会先弹确认，模型自己无法静默写库。
+
+/// 每次调用自开一条内核连接。失败原样把错误交回模型（英文，与内核同待遇）。
+fn project_store() -> Result<ProjectStore, String> {
+    ProjectStore::open_default().map_err(|error| format!("cannot open the project store: {error}"))
+}
+
+/// 「今天」（用户时区）。工具线程里自算 —— `pages/projects::state::local_today` 够不着
+/// （那个模块私有），三行复写比把模块改公开划算。
+fn local_today() -> duck_project::CalendarDate {
+    let now = duck_project::now_seconds();
+    duck_project::CalendarDate::from_local_unix_seconds(
+        now,
+        duck_platform::local_utc_offset_seconds(now),
+    )
+}
+
+/// 一行任务的可读形态（`#id [状态] 优先级 标题 (截止, 进度)`）。
+fn task_line(task: &Task) -> String {
+    let due = task
+        .due_date
+        .map(|date| date.to_iso())
+        .unwrap_or_else(|| "no due date".to_owned());
+    format!(
+        "#{} [{}] P{} {} (due {}, progress {}%)",
+        task.id,
+        task.status.as_str(),
+        task.priority.as_i64(),
+        task.title,
+        due,
+        task.progress
+    )
+}
+
+/// 取参：字符串字段（trim 后非空才算给了）。
+fn arg_str<'a>(input: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    input
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// 列任务（只读）。过滤器全可选；什么都不给 = 全部未归档任务（默认截 50 条）。
+#[derive(Default)]
+pub struct ListProjectTasksTool;
+
+impl Tool for ListProjectTasksTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "list_project_tasks".to_owned(),
+            description: "List the user's tasks from the project management module. Filters are \
+                 all optional; combine them to answer questions like \"what is due this week\" \
+                 or \"which P1 tasks are still open\"."
+                .to_owned(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "description": "Filter by status: todo, doing, blocked, deferred, done, cancelled."
+                    },
+                    "priority": {
+                        "type": "string",
+                        "description": "Filter by priority: P0, P1, P2 or P3."
+                    },
+                    "project_id": {
+                        "type": "integer",
+                        "description": "Filter by project id (see the project list in the stats tool)."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Free-text search over titles and descriptions."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max tasks to return. Defaults to 50, capped at 200."
+                    }
+                }
+            }),
+            risk: ToolRisk::ReadOnly,
+        }
+    }
+
+    fn run(&self, input: &serde_json::Value, cancel: &AtomicBool) -> ToolOutcome {
+        if cancel.load(Ordering::Relaxed) {
+            return ToolOutcome::error("cancelled before execution");
+        }
+        let store = match project_store() {
+            Ok(store) => store,
+            Err(error) => return ToolOutcome::error(error),
+        };
+        let mut query = TaskQuery::new().archive(duck_project::ArchiveScope::Live);
+        if let Some(status) = arg_str(input, "status") {
+            match duck_project::TaskStatus::parse(status) {
+                Some(parsed) => query = query.statuses([parsed]),
+                None => {
+                    return ToolOutcome::error(format!(
+                        "unknown status {status:?}; use one of: todo, doing, blocked, deferred, done, cancelled"
+                    ));
+                }
+            }
+        }
+        if let Some(priority) = arg_str(input, "priority") {
+            match duck_project::Priority::parse(priority) {
+                Some(parsed) => query = query.priorities([parsed]),
+                None => {
+                    return ToolOutcome::error(format!(
+                        "unknown priority {priority:?}; use P0, P1, P2 or P3"
+                    ));
+                }
+            }
+        }
+        if let Some(project_id) = input.get("project_id").and_then(serde_json::Value::as_i64) {
+            query = query.projects([project_id]);
+        }
+        if let Some(term) = arg_str(input, "query") {
+            query = query.search(term);
+        }
+        let limit = input
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 200) as usize;
+        match store.list_tasks(&query) {
+            Ok(tasks) => {
+                if tasks.is_empty() {
+                    return ToolOutcome::text("No tasks matched the filters.");
+                }
+                let mut text = format!("{} task(s):\n", tasks.len());
+                for task in tasks.iter().take(limit) {
+                    text.push_str(&task_line(task));
+                    text.push('\n');
+                }
+                if tasks.len() > limit {
+                    text.push_str(&format!(
+                        "(…and {} more; narrow the filters to see them)\n",
+                        tasks.len() - limit
+                    ));
+                }
+                ToolOutcome::text(text)
+            }
+            Err(error) => ToolOutcome::error(error.to_string()),
+        }
+    }
+}
+
+/// 项目概览（只读）：各状态计数 + 项目清单 + 高频标签。模型回答「我最近怎么样」
+/// 类问题的第一站 —— 一次调用拿到全景，省掉它自己拼多次 list。
+#[derive(Default)]
+pub struct ProjectStatsTool;
+
+impl Tool for ProjectStatsTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "project_stats".to_owned(),
+            description: "Overview of the project management module: task counts per status, \
+                 the list of projects (with ids, for the list/create filters) and the most \
+                 used tags. Read-only."
+                .to_owned(),
+            schema: serde_json::json!({"type": "object", "properties": {}}),
+            risk: ToolRisk::ReadOnly,
+        }
+    }
+
+    fn run(&self, _input: &serde_json::Value, cancel: &AtomicBool) -> ToolOutcome {
+        if cancel.load(Ordering::Relaxed) {
+            return ToolOutcome::error("cancelled before execution");
+        }
+        let store = match project_store() {
+            Ok(store) => store,
+            Err(error) => return ToolOutcome::error(error),
+        };
+        let mut text = String::new();
+        match store.board_stats(local_today()) {
+            Ok(stats) => {
+                text.push_str(&format!(
+                    "Tasks: {} todo, {} doing, {} blocked, {} deferred, {} done, {} cancelled.\n",
+                    stats.todo,
+                    stats.doing,
+                    stats.blocked,
+                    stats.deferred,
+                    stats.done,
+                    stats.cancelled
+                ));
+            }
+            Err(error) => return ToolOutcome::error(error.to_string()),
+        }
+        match store.list_projects(duck_project::ArchiveScope::Live) {
+            Ok(projects) => {
+                if projects.is_empty() {
+                    text.push_str("Projects: (none).\n");
+                } else {
+                    text.push_str("Projects:\n");
+                    for project in &projects {
+                        text.push_str(&format!("#{} {}\n", project.id, project.name));
+                    }
+                }
+            }
+            Err(error) => return ToolOutcome::error(error.to_string()),
+        }
+        match store.tag_usage() {
+            Ok(tags) => {
+                let used: Vec<&duck_project::TagUsage> =
+                    tags.iter().filter(|entry| entry.usage > 0).collect();
+                if used.is_empty() {
+                    text.push_str("Tags: (none in use).\n");
+                } else {
+                    text.push_str("Tags in use:\n");
+                    for entry in used.iter().take(10) {
+                        text.push_str(&format!("{} ({} task(s))\n", entry.tag.name, entry.usage));
+                    }
+                }
+            }
+            Err(error) => return ToolOutcome::error(error.to_string()),
+        }
+        ToolOutcome::text(text)
+    }
+}
+
+/// 建任务（写：需要审批）。标题必填；其余全可选。
+#[derive(Default)]
+pub struct CreateProjectTaskTool;
+
+impl Tool for CreateProjectTaskTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "create_project_task".to_owned(),
+            description: "Create a task in the project management module. Only the title is \
+                 required. **This writes to the user's data and requires approval.**"
+                .to_owned(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Task title (required)."},
+                    "project_id": {"type": "integer", "description": "Project id (see project_stats)."},
+                    "priority": {"type": "string", "description": "P0, P1, P2 (default) or P3."},
+                    "due": {"type": "string", "description": "Due date as YYYY-MM-DD."},
+                    "description": {"type": "string", "description": "Markdown description."},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag names; missing ones are created (see project_stats for existing names)."
+                    }
+                },
+                "required": ["title"]
+            }),
+            risk: ToolRisk::NeedsApproval,
+        }
+    }
+
+    fn run(&self, input: &serde_json::Value, cancel: &AtomicBool) -> ToolOutcome {
+        if cancel.load(Ordering::Relaxed) {
+            return ToolOutcome::error("cancelled before execution");
+        }
+        let Some(title) = arg_str(input, "title") else {
+            return ToolOutcome::error("missing required argument: title");
+        };
+        let store = match project_store() {
+            Ok(store) => store,
+            Err(error) => return ToolOutcome::error(error),
+        };
+        let mut new = NewTask::new(title);
+        if let Some(description) = arg_str(input, "description") {
+            new = new.description(description);
+        }
+        if let Some(priority) = arg_str(input, "priority") {
+            match duck_project::Priority::parse(priority) {
+                Some(parsed) => new = new.priority(parsed),
+                None => {
+                    return ToolOutcome::error(format!(
+                        "unknown priority {priority:?}; use P0, P1, P2 or P3"
+                    ));
+                }
+            }
+        }
+        let due = match arg_str(input, "due") {
+            Some(text) => match duck_project::CalendarDate::parse(text) {
+                Some(date) => Some(date),
+                None => {
+                    return ToolOutcome::error(format!(
+                        "cannot parse due date {text:?}; use YYYY-MM-DD"
+                    ));
+                }
+            },
+            None => None,
+        };
+        new = new.dates(None, due);
+        if let Some(project_id) = input.get("project_id").and_then(serde_json::Value::as_i64) {
+            new = new.project(project_id);
+        }
+        // 标签按名解析：已有的复用、没有的建（与快速新建的 `#标签` 同一条口径）。
+        if let Some(names) = input.get("tags").and_then(serde_json::Value::as_array) {
+            for name in names {
+                let Some(name) = name.as_str().map(str::trim).filter(|v| !v.is_empty()) else {
+                    continue;
+                };
+                match store.ensure_tag(name, "#6B7280") {
+                    Ok(tag_id) => new = new.tags([tag_id]),
+                    Err(error) => return ToolOutcome::error(format!("tag {name:?}: {error}")),
+                }
+            }
+        }
+        match store.create_task(new) {
+            Ok(id) => ToolOutcome::text(format!("Created task #{id}: {title}")),
+            Err(error) => ToolOutcome::error(error.to_string()),
+        }
+    }
+}
+
+/// 改任务（写：需要审批）。给了哪个字段改哪个；状态迁移的合法性由内核把关。
+#[derive(Default)]
+pub struct UpdateProjectTaskTool;
+
+impl Tool for UpdateProjectTaskTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "update_project_task".to_owned(),
+            description: "Update one task: change status, progress, due date, priority or note. \
+                 Only the fields you provide are changed. **This writes to the user's data and \
+                 requires approval.**"
+                .to_owned(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer", "description": "Task id (from list_project_tasks)."},
+                    "status": {"type": "string", "description": "todo, doing, blocked, deferred, done or cancelled."},
+                    "progress": {"type": "integer", "description": "0-100."},
+                    "due": {"type": "string", "description": "YYYY-MM-DD, or the literal \"none\" to clear."},
+                    "priority": {"type": "string", "description": "P0, P1, P2 or P3."},
+                    "note": {"type": "string", "description": "Replaces the private note (empty string clears it)."}
+                },
+                "required": ["id"]
+            }),
+            risk: ToolRisk::NeedsApproval,
+        }
+    }
+
+    fn run(&self, input: &serde_json::Value, cancel: &AtomicBool) -> ToolOutcome {
+        if cancel.load(Ordering::Relaxed) {
+            return ToolOutcome::error("cancelled before execution");
+        }
+        let Some(id) = input.get("id").and_then(serde_json::Value::as_i64) else {
+            return ToolOutcome::error("missing required argument: id");
+        };
+        let store = match project_store() {
+            Ok(store) => store,
+            Err(error) => return ToolOutcome::error(error),
+        };
+        let mut patch = TaskPatch::new();
+        if let Some(status) = arg_str(input, "status") {
+            match duck_project::TaskStatus::parse(status) {
+                Some(parsed) => patch = patch.status(parsed),
+                None => {
+                    return ToolOutcome::error(format!(
+                        "unknown status {status:?}; use one of: todo, doing, blocked, deferred, done, cancelled"
+                    ));
+                }
+            }
+        }
+        if let Some(progress) = input.get("progress").and_then(serde_json::Value::as_u64) {
+            patch = patch.progress(progress.clamp(0, 100) as u8);
+        }
+        if let Some(priority) = arg_str(input, "priority") {
+            match duck_project::Priority::parse(priority) {
+                Some(parsed) => patch = patch.priority(parsed),
+                None => {
+                    return ToolOutcome::error(format!(
+                        "unknown priority {priority:?}; use P0, P1, P2 or P3"
+                    ));
+                }
+            }
+        }
+        if let Some(due) = arg_str(input, "due") {
+            if due.eq_ignore_ascii_case("none") {
+                patch = patch.dates(None, None);
+            } else {
+                match duck_project::CalendarDate::parse(due) {
+                    Some(date) => patch = patch.dates(None, Some(date)),
+                    None => {
+                        return ToolOutcome::error(format!(
+                            "cannot parse due date {due:?}; use YYYY-MM-DD or \"none\""
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(note) = input.get("note").and_then(serde_json::Value::as_str) {
+            patch = patch.note(note);
+        }
+        match store.update_task(id, patch) {
+            Ok(()) => ToolOutcome::text(format!("Updated task #{id}.")),
+            Err(error) => ToolOutcome::error(error.to_string()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 装配
 // ---------------------------------------------------------------------------
 
@@ -815,6 +1220,12 @@ pub fn build_registry(cx: &App) -> ToolRegistry {
     }
     registry.register(SearchKbTool::default());
     registry.register(RunSqlReadonlyTool);
+    // 项目管理四件（S6）：读两个直接执行，写两个走审批闸门。它们不依赖工作目录
+    // 与已发布的连接 —— 项目库是自管的，随工具线程自开。
+    registry.register(ListProjectTasksTool);
+    registry.register(ProjectStatsTool);
+    registry.register(CreateProjectTaskTool);
+    registry.register(UpdateProjectTaskTool);
     registry
 }
 
@@ -825,7 +1236,15 @@ pub fn build_registry(cx: &App) -> ToolRegistry {
 #[must_use]
 pub fn call_summary(call: &ToolCall) -> String {
     let arguments = call.parsed_arguments();
-    for key in ["path", "query", "sql", "connection"] {
+    for key in [
+        "path",
+        "query",
+        "sql",
+        "connection",
+        "title",
+        "id",
+        "status",
+    ] {
         if let Some(value) = arguments.get(key).and_then(serde_json::Value::as_str)
             && !value.trim().is_empty()
         {
@@ -844,6 +1263,49 @@ fn display(path: &Path) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    /// 项目工具的参数清洗与行渲染（store 行为归内核单测管，这里只钉适配层）。
+    #[test]
+    fn task_line_and_arg_str_are_shape_stable() {
+        let task = Task {
+            id: 7,
+            project_id: None,
+            parent_id: None,
+            title: "修复登录超时".to_owned(),
+            description_md: String::new(),
+            status: duck_project::TaskStatus::Doing,
+            priority: duck_project::Priority::P1,
+            quadrant: duck_project::Quadrant::Q1,
+            start_date: None,
+            due_date: duck_project::CalendarDate::parse("2026-10-20"),
+            due_time: None,
+            completed_at: None,
+            progress: 40,
+            estimate_hours: None,
+            actual_hours: None,
+            sort_order: 0,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+            archived_root: None,
+            starred: false,
+            block_reason: String::new(),
+            note: String::new(),
+            git_branch: String::new(),
+            context: duck_project::TaskContext::default(),
+            tags: Vec::new(),
+            subtasks: duck_project::SubtaskProgress::default(),
+        };
+        let line = task_line(&task);
+        assert!(line.starts_with("#7 [doing] P1 修复登录超时"), "{line}");
+        assert!(line.contains("due 2026-10-20"), "{line}");
+
+        let input = serde_json::json!({"status": "  doing  ", "query": "", "n": null});
+        assert_eq!(arg_str(&input, "status"), Some("doing"));
+        assert_eq!(arg_str(&input, "query"), None, "空串不算给了");
+        assert_eq!(arg_str(&input, "n"), None);
+        assert_eq!(arg_str(&input, "missing"), None);
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()

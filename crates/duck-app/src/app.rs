@@ -79,6 +79,10 @@ pub enum WindowKind {
     /// 与 [`Self::Palette`] 分开而不是共用一个「浮窗」槽：两个窗口可以**同时**开着
     /// （一边打字搜命令、一边瞥待办），共用一个槽位会让后开的那个把先开的句柄顶掉。
     Float,
+    /// 项目管理页的日历浮窗（`⌥⌘C`；同上：自己关自己，句柄可能陈旧）。
+    ///
+    /// 与 [`Self::Float`] 分开是同一个理由：两块浮窗可以同时摆在桌面上。
+    CalendarFloat,
 }
 
 /// 跨窗口跳转目标。
@@ -214,6 +218,12 @@ impl Desktop {
     #[must_use]
     pub(crate) fn float_window(cx: &App) -> Option<WindowHandle<Root>> {
         Self::window_handle(cx, WindowKind::Float)
+    }
+
+    /// 日历浮窗的句柄快照（与 [`Self::float_window`] 同形，句柄可能陈旧）。
+    #[must_use]
+    pub(crate) fn calendar_float_window(cx: &App) -> Option<WindowHandle<Root>> {
+        Self::window_handle(cx, WindowKind::CalendarFloat)
     }
 
     // ── 跨窗口跳转队列（§6.1 pending_jumps 队列） ──────────────────────────
@@ -524,6 +534,10 @@ pub fn install(cx: &mut App) {
     // 放在这里而不是页面构造里 —— 它是**进程级**的，两个视图必须拿到同一个实例。
     crate::pages::projects::bus::install(cx);
 
+    // 任务的到期 / 逾期 / 久未更新提醒：进程级周期扫描（自带一个 `duck-project` 连接），
+    // 走通知双通道。挂在 app 上而不是项目页里，是为了**没打开项目页时也能提醒**。
+    crate::pages::projects::remind::install(cx);
+
     // 更新器状态：更新源与阶段。后台顺带清扫上一次安装留下的旧 bundle。
     crate::update::init(cx);
 
@@ -583,7 +597,10 @@ fn on_window_closed(cx: &mut App, id: WindowId) {
             // 不需要先把 `desktop` 释放。
             Desktop::remember_aux_open(cx);
         }
-        WindowKind::Onboarding | WindowKind::Palette | WindowKind::Float => {
+        WindowKind::Onboarding
+        | WindowKind::Palette
+        | WindowKind::Float
+        | WindowKind::CalendarFloat => {
             // 引导窗 / 调色盘 / 悬浮窗各自有「自关」语义，无须额外收尾。
         }
     }
@@ -866,6 +883,57 @@ pub fn close_task_float(cx: &mut App) {
     }
 }
 
+/// 日历浮窗的开 / 收（全局键 `⌥⌘C`）。与 [`toggle_task_float`] 同一套直觉：
+/// 同一个键按第二遍是收起来；同样**不抢焦点**（「瞄一眼哪天有什么」不该切走前台）。
+pub fn toggle_calendar_float(cx: &mut App) {
+    if calendar_float_is_open(cx) {
+        close_calendar_float(cx);
+        return;
+    }
+    open_calendar_float(cx);
+}
+
+/// 日历浮窗是否开着；句柄陈旧时返回 `false`（与 [`float_window_is_open`] 同形）。
+fn calendar_float_is_open(cx: &mut App) -> bool {
+    Desktop::calendar_float_window(cx).is_some_and(|handle| handle.update(cx, |_, _, _| {}).is_ok())
+}
+
+/// 开日历浮窗；已经开着则只把它抬到前面并保持打开（与 [`open_task_float`] 同形，
+/// 包括最后那一次 `bus` 广播 —— 唤起即重读）。
+pub fn open_calendar_float(cx: &mut App) {
+    if let Some(handle) = Desktop::calendar_float_window(cx)
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        crate::pages::projects::bus::notify(cx);
+        return;
+    }
+    match cx.open_window(
+        crate::pages::projects::calendar_float::calendar_float_window_options(cx),
+        |window, cx| {
+            let float = cx.new(|cx| {
+                crate::pages::projects::calendar_float::CalendarFloatWindow::new(window, cx)
+            });
+            observe_system_appearance(window);
+            cx.new(|cx| Root::new(float, window, cx))
+        },
+    ) {
+        Ok(handle) => {
+            Desktop::set_window(cx, WindowKind::CalendarFloat, handle);
+            crate::pages::projects::bus::notify(cx);
+        }
+        Err(error) => report_window_failure("日历浮窗", &error, cx),
+    }
+}
+
+/// 收起日历浮窗。
+pub fn close_calendar_float(cx: &mut App) {
+    if let Some(handle) = Desktop::calendar_float_window(cx) {
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+    }
+}
+
 /// 让某个窗口跟随系统外观：系统在浅色 / 深色之间切换时，若偏好是「跟随系统」
 /// 就重新解析主题并重绘全部窗口。
 ///
@@ -958,7 +1026,7 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
         )
         .with_label_fn(|cx| SharedString::from(tr(cx, "工具箱")))
         .with_sidebar(toolbox_sidebar)
-        .with_right_sidebar(move |cx| toolbox_right_view.read(cx).render_right_sidebar(cx))
+        .with_right_sidebar(move |_window, cx| toolbox_right_view.read(cx).render_right_sidebar(cx))
         .with_content_left(move |cx| toolbox_layout.read(cx).content_left()),
         ShellRoute::new(
             SSH_ROUTE,
@@ -970,7 +1038,7 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
         )
         .with_label_fn(|cx| SharedString::from(tr(cx, "SSH 终端")))
         .with_sidebar(ssh_sidebar)
-        .with_right_sidebar(move |cx| ssh_right_view.read(cx).render_right_sidebar(cx)),
+        .with_right_sidebar(move |_window, cx| ssh_right_view.read(cx).render_right_sidebar(cx)),
         ShellRoute::new(
             DATABASE_ROUTE,
             "duck-route-database",
@@ -981,7 +1049,9 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
         )
         .with_label_fn(|cx| SharedString::from(tr(cx, "数据库")))
         .with_sidebar(db_sidebar)
-        .with_right_sidebar(move |cx| db_right_view.read(cx).render_right_sidebar(cx)),
+        .with_right_sidebar(move |window, cx| {
+            db_right_view.update(cx, |page, cx| page.render_right_sidebar(window, cx))
+        }),
         ShellRoute::new(
             REDIS_ROUTE,
             "duck-route-redis",
@@ -992,7 +1062,7 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
         )
         .with_label_fn(|cx| SharedString::from(tr(cx, "Redis")))
         .with_sidebar(redis_sidebar)
-        .with_right_sidebar(move |cx| redis_right_view.read(cx).render_right_sidebar(cx)),
+        .with_right_sidebar(move |_window, cx| redis_right_view.read(cx).render_right_sidebar(cx)),
         ShellRoute::new(
             PROJECTS_ROUTE,
             "duck-route-projects",
@@ -1003,7 +1073,9 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
         )
         .with_label_fn(|cx| SharedString::from(tr(cx, "项目管理")))
         .with_sidebar(projects_sidebar)
-        .with_right_sidebar(move |cx| projects_right_view.read(cx).render_right_sidebar(cx)),
+        .with_right_sidebar(move |_window, cx| {
+            projects_right_view.read(cx).render_right_sidebar(cx)
+        }),
         ShellRoute::new(
             ASSISTANT_ROUTE,
             "duck-route-assistant",
@@ -1014,7 +1086,9 @@ fn build_main_window(window: &mut Window, cx: &mut App) -> Entity<Root> {
         )
         .with_label_fn(|cx| SharedString::from(tr(cx, "AI 助手")))
         .with_sidebar(assistant_sidebar)
-        .with_right_sidebar(move |cx| assistant_right_view.read(cx).render_right_sidebar(cx)),
+        .with_right_sidebar(move |_window, cx| {
+            assistant_right_view.read(cx).render_right_sidebar(cx)
+        }),
         // 邮箱：活动栏最末一条（`⌘8`），现有 ⌘1–⌘7 不动。
         ShellRoute::new(
             EMAIL_ROUTE,

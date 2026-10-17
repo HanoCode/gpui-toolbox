@@ -1,14 +1,26 @@
 //! 任务导出（原型 `exportText` / `openExport`，`docs/projects-mock.html:2453`）。
 //!
-//! 三种格式都是**纯文本**：Markdown 清单 / CSV / JSON。导出**不写库、不落盘**，
-//! 只产生一段文本让用户复制走 —— 所以这一层是纯函数（数据进、`String` 出），
-//! 单测里可以把每一列 / 每一行钉死。
+//! 三种格式都是**纯文本**：Markdown 清单 / CSV / JSON。这一层只产生一段文本
+//! （数据进、`String` 出），所以是纯函数，单测里可以把每一列 / 每一行钉死。
+//! **落点不在这里**：出口（剪贴板 / 另存为）由弹窗决定，见
+//! `dialogs::open_export` 与 `ProjectsPage::{copy_export, save_export}`。
 //!
-//! # 为什么不落文件
+//! # 出口是两个，不是两个实现
 //!
-//! 落文件要弹系统保存对话框（`rfd`），而 `duck-platform` 的模态**不能在 render 里
-//! 调**；更要紧的是原型本来就没这么做（`docs/projects-mock.html:2496` 的按钮是
-//! 「复制到剪贴板」）。把文本交到剪贴板，用户想落盘、想贴进别处都行，出口只有一个。
+//! 「复制到剪贴板」与「另存为…」共用**同一份** `render` 输出，弹窗里也共用同一个
+//! 预览框 —— 于是「我看到的」与「我存下来的」永远是同一段文字。早先只有复制：
+//! 落盘要自己开个文本编辑器粘一遍，而「导出一份备份」正是最常见的诉求。
+//!
+//! ⚠️ 保存面板是 gpui 的**异步**面板（`crate::file_dialogs`），所以文本必须在
+//! **打开面板之前**就拼好交出去；面板回调里不许再回读页面（用户可能在面板上停很久，
+//! 回来时页面早翻页了）。
+//!
+//! # 一个刻意的重复
+//!
+//! [`csv_field`] 与 `import::csv_escape` 是同一套规则的两份实现（各 6 行）。不合成
+//! 公共函数：一份管「写出去」、一份管「写进模板」，两边都短到一眼能核完，而跨模块
+//! 暴露一个 CSV 转义工具会让「谁在用它」变得不清楚。要改规则时**两处一起改** ——
+//! `import.rs` 的单测 `csv_template_quotes_every_cell_and_round_trips` 会盯着。
 
 use duck_project::{CalendarDate, Task};
 
@@ -277,6 +289,8 @@ mod tests {
             starred: false,
             block_reason: String::new(),
             note: String::new(),
+            git_branch: String::new(),
+            context: duck_project::TaskContext::default(),
             tags: Vec::new(),
             subtasks: SubtaskProgress { total: 0, done: 0 },
         }
@@ -301,6 +315,7 @@ mod tests {
             id: 7,
             name: "后端".to_owned(),
             color: "#112233".to_owned(),
+            is_favorite: false,
             usage_count: 1,
         }];
         let mut done = task(2, "写周报");
@@ -328,6 +343,7 @@ mod tests {
             id: 1,
             name: "a".to_owned(),
             color: "#000000".to_owned(),
+            is_favorite: false,
             usage_count: 0,
         }];
 

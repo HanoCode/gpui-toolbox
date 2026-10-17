@@ -71,7 +71,10 @@ impl TerminalPage {
                             .font_features(tabular_numbers())
                             .text_color(tokens.colors.muted_foreground)
                             .text_center()
-                            .child(format!("{:.0} px", self.terminal_font_size)),
+                            .child(selectable_text(format!(
+                                "{:.0} px",
+                                self.terminal_font_size
+                            ))),
                     )
                     .child(
                         toolbar_action_button(

@@ -83,7 +83,7 @@ use base64::Engine as _;
 use serde_json::{Map, Value as Json};
 
 use crate::cancel::CancelHandle;
-use crate::config::{ConnectionConfig, TlsMode};
+use crate::config::{AuthMode, ConnectionConfig, TlsMode};
 use crate::drivers::{
     BatchOutcome, CatalogTable, CellEdit, FilterOp, InsertRow, OrderBy, PkValues, RowCount,
     TableColumnMeta, TableFilter, TableIndex, TableKind, TableRef, url_encode,
@@ -885,12 +885,21 @@ fn build_endpoint(cfg: &ConnectionConfig, password: Option<&str>) -> Endpoint {
     };
 
     let user = cfg.user.trim();
-    // 有些单机 / 开发集群没开安全 → 不填用户名就不发认证头（发了反而会被拒）。
-    let auth = (!user.is_empty()).then(|| {
-        let raw = format!("{user}:{}", password.unwrap_or_default());
-        let encoded = base64::engine::general_purpose::STANDARD.encode(raw);
-        format!("Basic {encoded}")
-    });
+    // 认证头随认证方式走：口令档 = Basic（有些单机集群没开安全 → 不填用户名不发头，
+    // 发了反而会被拒）；API Key 档 = `ApiKey <key>`（key 原文走口令那格）；
+    // 无认证档显式不发任何头 —— 用户名留着也不发。
+    let auth = match cfg.auth_mode {
+        AuthMode::ApiKey => {
+            let key = password.unwrap_or_default().trim();
+            (!key.is_empty()).then(|| format!("ApiKey {key}"))
+        }
+        AuthMode::Password => (!user.is_empty()).then(|| {
+            let raw = format!("{user}:{}", password.unwrap_or_default());
+            let encoded = base64::engine::general_purpose::STANDARD.encode(raw);
+            format!("Basic {encoded}")
+        }),
+        AuthMode::None_ | AuthMode::ConnectionString => None,
+    };
 
     let mut builder = ureq::Agent::config_builder()
         .http_status_as_error(false)

@@ -207,7 +207,7 @@ impl DatabasePage {
         let Some(session) = self.sessions.get(conn_id) else {
             return;
         };
-        if session.kind == DatabaseKind::Sqlite || session.kind.identifier_quote().is_none() {
+        if session.kind == DatabaseKind::Sqlite || session.quote.is_none() {
             return;
         }
         let input = text_input(window, cx, tr(cx, "数据库名"));
@@ -280,7 +280,7 @@ impl DatabasePage {
         let Some(session) = self.sessions.get(&conn_id) else {
             return;
         };
-        let Some(quote) = session.kind.identifier_quote() else {
+        let Some(quote) = session.quote else {
             return;
         };
         let sql = match duck_db::drivers::quote_identifier(&name, quote) {
@@ -344,7 +344,7 @@ impl DatabasePage {
         let Some(session) = self.sessions.get(conn_id) else {
             return;
         };
-        let Some(quote) = session.kind.identifier_quote() else {
+        let Some(quote) = session.quote else {
             return;
         };
         let kind = session.kind;
@@ -448,6 +448,120 @@ impl DatabasePage {
         );
     }
 
+    /// 把 CSV **追加进已存在的表**（表节点右键「导入数据」；与
+    /// [`Self::import_csv_new_table`] 同一条解析 / 批量落库管线，只是不建表）。
+    ///
+    /// 列对齐按**列名**：CSV 表头与表列做交集（顺序无关，多的 CSV 列忽略）；
+    /// 一列都对不上就报错——按序硬塞进结构不对的表只会写出一堆错位数据。
+    /// 表里不在 CSV 里的列交给数据库默认值。
+    pub(super) fn import_csv_append(
+        &mut self,
+        conn_id: &str,
+        table: TableRef,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get(conn_id) else {
+            return;
+        };
+        let Some(quote) = session.quote else {
+            return;
+        };
+        let conn = session.conn.clone();
+        let status_path = path.display().to_string();
+        let table_label = table.display();
+        self.status = trf(cx, "正在导入 {}…", &[&status_path]).into();
+        cx.notify();
+        self.spawn_db(
+            cx,
+            move || -> Result<usize, DbError> {
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|error| DbError::Config(format!("read csv failed: {error}")))?;
+                let rows = duck_db::parse_csv(&text);
+                let header = rows
+                    .first()
+                    .ok_or_else(|| DbError::Config("csv file is empty".into()))?;
+                if header.is_empty() {
+                    return Err(DbError::Config("csv header row is empty".into()));
+                }
+                let qualified = duck_db::drivers::quote_qualified(&table, quote)?;
+                // 列名对齐：CSV 表头 ∩ 表列（按**表**的真实列清单，不按 CSV 顺序）。
+                let table_columns: Vec<String> = {
+                    let mut guard = conn.lock().expect("连接锁不应中毒");
+                    guard
+                        .table_columns(&table)?
+                        .into_iter()
+                        .map(|column| column.name)
+                        .collect()
+                };
+                let matched: Vec<(usize, String)> = header
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, cell)| {
+                        let name = cell.as_deref()?.trim();
+                        table_columns
+                            .iter()
+                            .find(|column| column.as_str() == name)
+                            .map(|column| (index, (*column).clone()))
+                    })
+                    .collect();
+                if matched.is_empty() {
+                    return Err(DbError::Config(
+                        "no csv header matches the table columns".into(),
+                    ));
+                }
+                let column_list = matched
+                    .iter()
+                    .map(|(_, name)| duck_db::drivers::quote_identifier(name, quote))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                let mut statements = Vec::with_capacity(rows.len());
+                for row in rows.iter().skip(1) {
+                    let values = matched
+                        .iter()
+                        .map(|(index, _)| {
+                            row.get(*index)
+                                .and_then(|value| value.as_deref())
+                                .map_or_else(
+                                    || "NULL".to_owned(),
+                                    |value| format!("'{}'", value.replace('\'', "''")),
+                                )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    statements.push(format!(
+                        "INSERT INTO {qualified} ({column_list}) VALUES ({values})"
+                    ));
+                }
+                let row_count = statements.len();
+                let mut guard = conn.lock().expect("连接锁不应中毒");
+                let options = duck_db::SqlBatchOptions {
+                    transaction: duck_db::BatchTransaction::Single,
+                    ..duck_db::SqlBatchOptions::new(1)
+                };
+                duck_db::execute_batch(&mut guard, &statements, &options, &|| false, &mut |_| {})?;
+                Ok(row_count)
+            },
+            move |this, result, window, cx| match result {
+                Ok(row_count) => {
+                    let detail = trf(
+                        cx,
+                        "已导入 {} 行到表 {}。",
+                        &[&row_count.to_string(), &table_label],
+                    );
+                    this.status = detail.clone().into();
+                    notify::success(detail, window, cx);
+                    cx.notify();
+                }
+                Err(error) => {
+                    let reason = error.to_string();
+                    this.status = trf(cx, "导入失败：{}", &[&reason]).into();
+                    notify::error(trf(cx, "导入失败：{}", &[&reason]), window, cx);
+                }
+            },
+        );
+    }
+
     /// 连接一条档案（后台建连 + 版本 + 目录）。
     ///
     /// 带上 `database` 时按那个库建连（覆盖档案里的值，且不写档案）——
@@ -461,11 +575,16 @@ impl DatabasePage {
         &mut self,
         id: &str,
         database: Option<String>,
-        window: &mut Window,
+        // 本函数不再自己弹窗（原先挡重复点击用的 toast 已改成左栏圆点），
+        // 窗口只经 `spawn_connect` 的回投闭包用到 —— 形参保留，供调用点统一。
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy {
-            notify::info(tr(cx, "有数据库操作正在进行，请稍候。"), window, cx);
+        // ⚠️ 不查全局 `busy`（建连不占它，见 [`DbShell::connecting`] 的文档）：
+        // 等远端回话的这几秒里，用户理应能去连别的档案、跑已有连接上的查询。
+        // 只挡**同一条**的重复点击 —— 在途时行首圆点已经是「进行中」色，再点
+        // 没有新信息，静默忽略。
+        if self.connecting.contains(id) {
             return;
         }
         let Some(cfg) = self.connections.iter().find(|c| c.id == id).cloned() else {
@@ -487,7 +606,8 @@ impl DatabasePage {
         self.status = trf(cx, "正在连接 {}…", &[&cfg.display_name()]).into();
         cx.notify();
         let done_cfg = cfg.clone();
-        self.spawn_db(
+        self.spawn_connect(
+            id.to_owned(),
             cx,
             move || -> ConnectAttempt {
                 let facts = hook_facts(&cfg);
@@ -658,6 +778,9 @@ impl DatabasePage {
                 );
                 // 连接状态读数只在 globalbar 右端一处（用户明确要求去掉工具条中间
                 // 这份重复）；连接成功的即时反馈交给通知气泡。
+                // 并发建连时这里只写下「这一条」的结果：状态栏是一条全局读数，等所有
+                // 在途的都收工才算「没有连接在跑」，所以一律清空 —— 「哪条还在连」
+                // 由左栏圆点回答（琥珀 = 在途），不靠一行会过时的文案。
                 this.status = SharedString::from("");
                 notify::success(trf(cx, "已连接 {}。", &[&cfg.display_name()]), window, cx);
                 cx.notify();
@@ -796,6 +919,34 @@ impl DatabasePage {
         self.open_structure(table, cx);
     }
 
+    /// 打开一个**新建表**标签（dbx `openTableStructure(…, "")` 同款：不弹窗，
+    /// 直接进结构编辑器的建表模式）。
+    ///
+    /// 建表标签**永不复用**——dbx 对空表名同样每次新开（连点两次 = 两个草稿，
+    /// 用户可能正照着两份不同的设计各建各的）。新标签装好后由
+    /// [`Self::open_new_table`] 起一份空草稿；应用成功后标签原地转正
+    /// （见 `install_query_result` 消费 [`DatabasePage::create_applied`]）。
+    pub(super) fn open_new_table_tab(
+        &mut self,
+        conn_id: &str,
+        schema: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.sessions.contains_key(conn_id) {
+            return;
+        }
+        self.spawn_tab_for(
+            conn_id,
+            TabKind::NewTable {
+                schema: schema.clone(),
+            },
+            window,
+            cx,
+        );
+        self.open_new_table(schema, window, cx);
+    }
+
     /// 打开（或复用）某个库 / schema 的**库标签**：点左栏数据库节点的伴随动作。
     ///
     /// 同连接同名复用；新标签是空白查询态，标题带库名。复用已有标签时**不重置**
@@ -906,6 +1057,8 @@ impl DatabasePage {
                 Some(namespace) => format!("结构 {}@{}", object.name, namespace),
                 None => format!("结构 {}", object.name),
             },
+            // 建表标签：还没落库，名字就是动作本身（重名靠后置去重加序号）。
+            Some(TabKind::NewTable { .. }) => tr(cx, "新建表").to_owned(),
             Some(TabKind::Database { name }) => name.clone(),
             // 三张工具页：标题直说这是谁的 ER / 从哪比到哪 / 从哪传到哪
             //（连接名带库，同一标签条上不同连接的同名库可辨）。
@@ -1176,6 +1329,21 @@ impl DatabasePage {
     /// 活跃会话的连接句柄（SQL 补全的后台取列用）。
     pub(super) fn active_conn(&self) -> Option<Arc<Mutex<Connection>>> {
         self.active_session().map(|session| session.conn.clone())
+    }
+
+    /// 活跃会话的**标识符引号** —— 「这条引擎接不接 SQL」与「拿什么引号拼标识符」
+    /// 的统一判据（`is_some()` / `unwrap_or('"')` 两种用法都在各调用点上）。
+    ///
+    /// ⚠️ 没有活跃会话时返回 `None`，这与「引擎没有引号概念」是同一个值 —— 调用点
+    /// 若是**渲染**路径（没有会话时本来也不该画那条 SQL 入口），这样是对的；
+    /// 若调用点必须在「还没连上」时也知道，得另走 [`DatabasePage::quote_of`] 那种按 id 的取法。
+    pub(super) fn active_quote(&self) -> Option<char> {
+        self.active_session().and_then(|session| session.quote)
+    }
+
+    /// 某条连接（按 id）的标识符引号；没有会话就是 `None`。
+    pub(super) fn quote_of(&self, conn_id: &str) -> Option<char> {
+        self.sessions.get(conn_id).and_then(|session| session.quote)
     }
 
     /// 当前展示的结果集（SQL 结果或表页）。

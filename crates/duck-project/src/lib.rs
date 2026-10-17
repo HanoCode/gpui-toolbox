@@ -56,14 +56,14 @@ pub mod time;
 
 pub use error::{ProjectError, Result};
 pub use models::{
-    ArchiveRoot, BoardColumn, ColumnSpec, DEFAULT_PROJECT_COLOR, Group, LogKind, Milestone,
-    NewGroup, NewMilestone, NewProject, NewTag, NewTask, Priority, Project, ProjectPatch,
-    ProjectStatus, Quadrant, SubtaskProgress, Tag, Task, TaskCounts, TaskPatch, TaskStatus,
-    WorkLog,
+    ArchiveRoot, BoardColumn, ColumnSpec, DEFAULT_PROJECT_COLOR, FileRef, Group, LogKind,
+    Milestone, NewGroup, NewMilestone, NewProject, NewTag, NewTask, Priority, Project,
+    ProjectPatch, ProjectStatus, Quadrant, SubtaskProgress, Tag, Task, TaskContext, TaskCounts,
+    TaskPatch, TaskStatus, WeeklyPlan, WeeklyPlanStatus, WorkLog,
 };
 pub use query::{ArchiveScope, DueFilter, TaskQuery, TaskSort};
 pub use store::{
     ArchiveCounts, ArchivedProject, ArchivedTask, BoardStats, ClearScope, ProjectStore,
-    ProjectTree, TagUsage, default_column_specs,
+    ProjectTree, TagUsage, default_column_specs, normalize_tags,
 };
 pub use time::{CalendarDate, Weekday, now_seconds};

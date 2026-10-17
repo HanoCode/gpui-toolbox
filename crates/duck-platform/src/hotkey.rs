@@ -90,6 +90,16 @@ pub const FLOAT_SPEC: &str = if cfg!(target_os = "macos") {
     "control+alt+KeyT"
 };
 
+/// 日历浮窗（`calendar_float` 槽）的默认键位。
+///
+/// 与前两个同一套直觉：「一个字母 + 两个修饰键」。macOS 取 `⌥⌘C`（calendar）；
+/// Windows / Linux 取 `Ctrl+Alt+C`（`Ctrl+Alt+C` 在两端的常见软件里都不占）。
+pub const CALENDAR_SPEC: &str = if cfg!(target_os = "macos") {
+    "alt+super+KeyC"
+} else {
+    "control+alt+KeyC"
+};
+
 /// 键表：`(gpui 键名, 注册库键名, 给人看的名字)`。
 ///
 /// gpui 的 `Keystroke::key` 是「键帽上印的字符」的小写形式（`space` / `f1` / `a`），
@@ -726,8 +736,8 @@ fn label_of(code: Code) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Code, FLOAT_SPEC, HotKey, Hotkey, HotkeyError, KEYS, LAUNCHER_SPEC, ModifierState,
-        Modifiers, has_real_modifier, is_modifier_key_name, label_of, spec_owner,
+        CALENDAR_SPEC, Code, FLOAT_SPEC, HotKey, Hotkey, HotkeyError, KEYS, LAUNCHER_SPEC,
+        ModifierState, Modifiers, has_real_modifier, is_modifier_key_name, label_of, spec_owner,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -735,7 +745,7 @@ mod tests {
     fn the_default_specs_round_trip() {
         // 两个默认键位都必须是「规范形」：常量与存档要是同一个形状，否则重启后
         // 读档会得到一个「看起来设过了、其实登记不上」的键位。
-        for spec in [LAUNCHER_SPEC, FLOAT_SPEC] {
+        for spec in [LAUNCHER_SPEC, FLOAT_SPEC, CALENDAR_SPEC] {
             let parsed = Hotkey::parse(spec).unwrap_or_else(|error| {
                 panic!("默认键位 {spec} 必须可登记：{error}");
             });

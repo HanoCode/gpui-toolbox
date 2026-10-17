@@ -12,6 +12,10 @@
 //!
 //! 解析是**纯函数**：`&str` 进、[`QuickParse`] 出，不碰库也不碰 gpui，所以可以在
 //! 单测里把每类记号钉死。界面侧（Spotlight 弹窗）只负责把结果画成 chips 并落地。
+//!
+//! ⚠️ **Markdown 清单的逐行解析不在这里**，在 [`super::import`] —— 那是「导入」
+//! 这件事的一环（三种来源之一），而这里只管「一句话里的记号」。两边共用的是
+//! [`parse`] 本身，所以记号语法永远只有一套。
 
 use duck_project::{CalendarDate, Priority};
 
@@ -82,9 +86,66 @@ pub(crate) fn parse(input: &str, today: CalendarDate) -> QuickParse {
     out
 }
 
+/// [`QuickParse`] → 记号文本（[`parse`] 的**反向**渲染）。
+///
+/// 用途只有一个：**AI 兜底解析的结果写回 Spotlight 输入框**（见 `dialogs::run_ai_quick`）。
+///
+/// # 为什么写回文本，而不是在弹窗旁边另存一份结果
+///
+/// 输入框已经是这个弹窗的唯一真源 —— 预览 chips 与 `submit_spotlight` 都从它现读。
+/// AI 结果若另存一份，立刻就是双真源：chips 显示 AI 那份、落库用输入框那份（或反过来），
+/// 而两者在用户改一个字之后就再也对不上。写回文本之后，预览与提交自动跟着走，而且
+/// 用户可以顺手改 AI 认错的那一个记号 —— 比只给一个只读摘要可控得多。
+///
+/// # 已知边界：标题里**恰好**长得像记号的词会被再解析一次
+///
+/// 记号语法没有转义符（`#x` 永远是标签），所以标题是 `2026-01-01 上线` 这种样子时，
+/// 回填出去会被 [`parse`] 认成「截止日 + 标题『上线』」。两条防线：① prompt 里明确要求
+/// 模型别把日期 / `#` / `@` / `!` 写进标题；② 回填后用户看到的就是 chips 的真实解析，
+/// 一眼能发现并改掉。**刻意不加转义语法** —— 为了一个边角情况把整张记号表变复杂，
+/// 换算下来不划算。
+pub(crate) fn to_markers(parsed: &QuickParse) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(4 + parsed.tags.len());
+    if !parsed.title.trim().is_empty() {
+        parts.push(parsed.title.trim().to_owned());
+    }
+    if let Some(name) = parsed
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        parts.push(format!("@{name}"));
+    }
+    for name in &parsed.tags {
+        let name = name.trim();
+        if !name.is_empty() {
+            parts.push(format!("#{name}"));
+        }
+    }
+    if let Some(priority) = parsed.priority {
+        parts.push(format!("!P{}", priority.as_i64()));
+    }
+    if let Some(due) = parsed.due {
+        parts.push(due.to_iso());
+    }
+    if let Some(time) = parsed
+        .due_time
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        parts.push(time.to_owned());
+    }
+    parts.join(" ")
+}
+
 /// 日期记号：`YYYY-MM-DD` / `MM-DD`（年份取今天所在年，跨年不回绕）/ `今天` /
 /// `明天` / `后天`。
-fn parse_date(token: &str, today: CalendarDate) -> Option<CalendarDate> {
+///
+/// `pub(super)`：`ai_assist` 把模型给的 `due` 字段交给它，于是「哪些日期写法算数」
+/// 全仓只有这一份 —— 不在 AI 那条路上再抄一遍 `CalendarDate::parse` + 相对词的匹配。
+pub(super) fn parse_date(token: &str, today: CalendarDate) -> Option<CalendarDate> {
     match token {
         "今天" => return Some(today),
         "明天" => return Some(today.add_days(1)),
@@ -105,7 +166,9 @@ fn parse_date(token: &str, today: CalendarDate) -> Option<CalendarDate> {
 }
 
 /// 时刻记号：`HH:MM`，`00`–`23` 与 `00`–`59` 之外不认（`18:00` 可以，`99:99` 不行）。
-fn parse_time(token: &str) -> Option<String> {
+///
+/// `pub(super)` 的理由同 [`parse_date`]。
+pub(super) fn parse_time(token: &str) -> Option<String> {
     let (hour, minute) = token.split_once(':')?;
     if hour.len() != 2 || minute.len() != 2 {
         return None;
@@ -116,71 +179,6 @@ fn parse_time(token: &str) -> Option<String> {
         return None;
     }
     Some(format!("{hour:02}:{minute:02}"))
-}
-
-/// 「从文本导入」里的一行。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ImportLine {
-    /// 勾选态：`- [x]` / `- [X]` 为 `true`，`- [ ]` 与没有勾选框为 `false`。
-    pub(crate) done: bool,
-    /// 逐行解析的结果（标题已剥掉全部记号）。
-    pub(crate) parsed: QuickParse,
-}
-
-/// 把一段粘贴文本按行解析成任务（原型 `openImport` 的 `rows()`，
-/// `docs/projects-mock.html:2470` 一带）。
-///
-/// 语法与快速新建**同一套**（[`parse`]），额外认 Markdown 清单前缀：
-///
-/// | 写法 | 结果 |
-/// |---|---|
-/// | `- [ ] 修登录 #后端` | 待办 |
-/// | `- [x] 写周报` / `- [X] 写周报` | 已完成 |
-/// | `- 修登录` / `* 修登录` / `+ 修登录` | 待办（裸清单项） |
-/// | `修登录` | 待办（光秃秃一行也算一条） |
-///
-/// 空行与纯空白行丢掉。**不含任何前缀的行照样成一条**：直接粘一串标题是最常见的
-/// 用法，要求用户先加 `- ` 只会把人挡在门外。
-pub(crate) fn parse_lines(input: &str, today: CalendarDate) -> Vec<ImportLine> {
-    input
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let (done, body) = split_checkbox(line);
-            ImportLine {
-                done,
-                parsed: parse(body, today),
-            }
-        })
-        .collect()
-}
-
-/// 剥掉清单前缀，返回「勾选态 + 剩余文字」。
-///
-/// 认不出的括号（`[!]`）**不当勾选框**：整行原样留在标题里，免得把一个正常标题
-/// 的方括号吃掉。
-fn split_checkbox(line: &str) -> (bool, &str) {
-    let Some(mark) = line.chars().next() else {
-        return (false, line);
-    };
-    if !matches!(mark, '-' | '*' | '+') {
-        return (false, line);
-    }
-    // 标记本身是 ASCII，切一个字节安全；后面的空白（`-   x` 也认）一并吃掉。
-    let rest = line[mark.len_utf8()..].trim_start();
-    let Some(after_bracket) = rest.strip_prefix('[') else {
-        return (false, rest);
-    };
-    let Some((inside, after)) = after_bracket.split_once(']') else {
-        return (false, rest);
-    };
-    let done = match inside.trim() {
-        "" => false,
-        "x" | "X" => true,
-        _ => return (false, rest),
-    };
-    (done, after.trim_start())
 }
 
 #[cfg(test)]
@@ -258,39 +256,27 @@ mod tests {
     }
 
     #[test]
-    fn import_reads_markdown_checklists_and_plain_lines() {
-        let text = "# 备忘\n\n- [ ] 修登录 #后端\n- [x] 写周报\n- 没勾选框的一行\n* 星号项\n+ 加号项\n裸标题\n";
-        let rows = super::parse_lines(text, today());
-        assert_eq!(rows.len(), 7, "空行丢掉，其余逐行成条：{rows:?}");
-        // 光秃秃的 `#` 是「标签记号为空的记号」，按既有口径丢掉，剩下的是标题。
-        assert_eq!(rows[0].parsed.title, "备忘");
-        assert!(!rows[1].done);
-        assert_eq!(rows[1].parsed.title, "修登录");
-        assert_eq!(rows[1].parsed.tags, ["后端"]);
-        assert!(rows[2].done);
-        assert_eq!(rows[2].parsed.title, "写周报");
-        assert!(!rows[3].done);
-        assert_eq!(rows[3].parsed.title, "没勾选框的一行");
-        assert_eq!(rows[4].parsed.title, "星号项");
-        assert_eq!(rows[5].parsed.title, "加号项");
-        assert_eq!(rows[6].parsed.title, "裸标题");
+    fn to_markers_round_trips_through_parse() {
+        let parsed = parse("修复登录超时 #后端 #网关 @Alpha !P1 明天 18:00", today());
+        let text = super::to_markers(&parsed);
+        assert_eq!(text, "修复登录超时 @Alpha #后端 #网关 !P1 2026-10-15 18:00");
+        // 回填出去再解析一遍，必须与原结果逐字段相同 —— 这是「写回输入框」这条路
+        // 能成立的全部依据（预览与落库都只看输入框）。
+        assert_eq!(parse(&text, today()), parsed);
     }
 
     #[test]
-    fn unknown_brackets_are_not_checkboxes() {
-        // `[!]` 不是勾选框 —— 整行（含方括号）留在标题里，不把正常标题啃掉一块。
-        let rows = super::parse_lines("- [!] 重要的事", today());
-        assert_eq!(rows.len(), 1);
-        assert!(!rows[0].done);
-        assert_eq!(rows[0].parsed.title, "[!] 重要的事");
-        // 没闭合的方括号同理。
-        let rows = super::parse_lines("- [x 半截", today());
-        assert_eq!(rows[0].parsed.title, "[x 半截");
-    }
+    fn to_markers_drops_empty_pieces_and_keeps_a_bare_title() {
+        let only_title = parse("只是标题", today());
+        assert_eq!(super::to_markers(&only_title), "只是标题");
 
-    #[test]
-    fn blank_input_imports_nothing() {
-        assert!(super::parse_lines("  \n\n\t\n", today()).is_empty());
-        assert!(super::parse_lines("", today()).is_empty());
+        // 空标题 + 只有记号时不留前导空格。
+        let mut markers_only = QuickParse::default();
+        markers_only.priority = Some(Priority::P0);
+        markers_only.due = Some(today());
+        assert_eq!(super::to_markers(&markers_only), "!P0 2026-10-14");
+
+        // 全空的解析结果回填成空串（调用方据此判断「没解析出东西」）。
+        assert_eq!(super::to_markers(&QuickParse::default()), "");
     }
 }

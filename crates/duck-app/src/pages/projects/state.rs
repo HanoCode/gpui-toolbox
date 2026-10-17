@@ -18,11 +18,12 @@ use duck_project::{
     ArchiveCounts, ArchivedProject, ArchivedTask, BoardColumn, BoardStats, CalendarDate,
     ClearScope, ColumnSpec, DueFilter, Group, LogKind, Milestone, NewMilestone, Project,
     ProjectPatch, ProjectStore, Tag, Task, TaskCounts, TaskPatch, TaskQuery, TaskSort, TaskStatus,
-    WorkLog, now_seconds,
+    WeeklyPlan, WeeklyPlanStatus, WorkLog, now_seconds,
 };
 use gpui::App;
 
-use super::prefs::{self, GroupMode, ViewMode};
+use super::prefs::{self, CalendarMode, GroupMode, ReportRange, ViewMode};
+use super::report::{ReportFilters, ReportStatus};
 
 /// 左栏选中的范围。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -172,10 +173,25 @@ impl UndoAction {
     }
 }
 
-/// 最近一次**可撤销**的变更（设计文档 §5.6 的撤销通道）。
+/// 撤销栈最多留几步。
 ///
-/// 归档可逆且不丢数据，所以归档后给一条带「撤销」的提示条；`seq` 是定时器的守卫
-/// —— 7 秒到点时只有「还是自己那一条」才清，否则连做两次归档时，第一条的定时器
+/// 32 不是算出来的：批量操作一次最多也就勾十几条，32 足够退完一整批还多；再深既不
+/// 会用到，也会让「按了十次 `⌘Z` 还没到底」变成一种困惑。
+const UNDO_DEPTH: usize = 32;
+
+/// 一条撤销槽的存活时长（秒）。
+///
+/// 与提示条那 7 秒（`mod.rs` 的 `UNDO_WINDOW`）是**两件事**：那个决定「撤销」按钮在
+/// 屏幕上待多久，这个决定「这一步还能不能退」。按钮消失了不该把历史也一起抹掉 ——
+/// 批量归档 5 条要看回执时早就过 7 秒了。60 秒的取值见
+/// [`ProjectsState::push_undo`] 上方的说明（要够退完一批，又不能长到让人按 `⌘Z`
+/// 退进一个早已忘记的状态）。
+const UNDO_RETENTION: i64 = 60;
+
+/// 撤销栈里的一格（设计文档 §5.6 的撤销通道）。
+///
+/// 归档可逆且不丢数据，所以归档后给一条带「撤销」的提示条；`seq` 是提示条定时器的
+/// 守卫 —— 到点时只有「还是自己那一条」才动手，否则连做两次归档时，第一条的定时器
 /// 会把第二条一起抹掉（`pages/db.rs` 的 `toast_seq` 是同一套）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UndoSlot {
@@ -185,6 +201,8 @@ pub(crate) struct UndoSlot {
     pub(crate) action: UndoAction,
     /// 连带影响的数量：归档项目时是随它归档的任务数，归档任务时是 0。
     pub(crate) cascaded: u32,
+    /// 过了这一刻（Unix 秒）这一步就退不动了。
+    pub(crate) expires_at: i64,
 }
 
 /// 用户眼中的「今天」。
@@ -257,14 +275,46 @@ pub(crate) struct ProjectsState {
     search: String,
     /// 主区显示哪一块（看板 / 列表 / 归档中心）。
     view: ViewMode,
-    /// 日历视图锚定的月份（取锚定日所在月；`None` = 本地今天所在月）。
-    calendar_month: Option<CalendarDate>,
+    /// 日历视图锚定的那一天（月视图取它所在月、周视图取它所在周；`None` = 本地今天）。
+    ///
+    /// 存的是**整日**而不是「年 + 月」：周视图的锚是「某一周」，月份对它是过粗的粒度。
+    /// 月视图从它取 `year()` / `month()`，翻月时把锚定日夹回当月 1 号（见
+    /// `ProjectsPage::step_calendar`）。
+    calendar_anchor: Option<CalendarDate>,
+    /// 日历的画法（月网格 / 周网格）。**落盘**，见 [`CalendarMode`]。
+    calendar_mode: CalendarMode,
     /// 工作日志视图最近一段的日志（读口径见 [`Self::reload_logs`]）。
     logs: Vec<WorkLog>,
     /// 工作日志视图当前看的是哪一档（日报 / 周报 / 周计划）。
     log_kind: LogKind,
     /// 工作日志视图选中的那一篇（`None` = 落该档最近的一篇）。
     log_selected: Option<i64>,
+    /// 周计划视图锚定的那一周（存的是该周内的某一天；`None` = 本地今天所在周）。
+    ///
+    /// **不落盘**（与日历锚同一个待遇）：周计划是「我现在要排这一周」，下次进来回到
+    /// 当周才是对的 —— 记住上个月看的那一周只会让人以为计划没了。
+    plan_week: Option<CalendarDate>,
+    /// 最近写过的周计划（读口径见 [`Self::reload_plans`]），按周键倒序。
+    plans: Vec<WeeklyPlan>,
+    /// 当前这一周计划里那些任务的**现状**（顺序跟随计划里的 `task_ids`）。
+    ///
+    /// 与 [`Self::tasks`] 是两回事：那一份是「当前看板筛选下的任务」，这一份只认
+    /// 计划里记的 id（含已归档的、也含当前筛选之外的 —— 计划是历史事实）。
+    plan_tasks: Vec<Task>,
+    /// 当前这一周里到期的任务（「＋ 加入计划」的候选池，**排除已完成 / 已取消**）。
+    week_tasks: Vec<Task>,
+    /// 报表的时间范围档（`report.rs` 用它决定趋势桶数和「范围内完成」的口径）。
+    ///
+    /// **落盘**（见 `prefs::ReportRange`）：它表达的是「我平时就这么看报表」。
+    report_range: ReportRange,
+    /// 报表的状态筛选档（**只在内存里活着、不落盘**）：与工具条那个「显示已完成」同一类
+    /// 一次性视角，不是长期偏好。
+    report_status: ReportStatus,
+    /// 报表的标签筛选（多选 OR；空 = 不限）。同样**不落盘**。
+    ///
+    /// 用 `Vec` 而不是 `BTreeSet`：它是「勾了哪几个」的一张小列表，行数是个位数，
+    /// 界面按标签本身的名字顺序画 chips，不依赖这里的顺序。
+    report_tags: Vec<i64>,
     /// 归档中心的搜索词（空串 = 不筛）。
     ///
     /// 与左栏的项目过滤框**不是**同一份：左栏那个筛项目，归档中心的这个筛档案，
@@ -278,8 +328,18 @@ pub(crate) struct ProjectsState {
     archive_counts: ArchiveCounts,
     /// 归档中心的选中行（`⌫` 与 J/K 用）。
     archive_selected: Option<ArchiveRow>,
-    /// 最近一次可撤销的变更。
-    undo: Option<UndoSlot>,
+    /// **可撤销的变更，最新的在末尾**（`⌘Z` 一路往回退）。
+    ///
+    /// 早先只有一个槽（撤完就空）。改成栈是因为「批量归档 5 条，连按 5 次 `⌘Z`」是真实
+    /// 用法，单槽只能退回最后一次。两重上界：
+    ///
+    /// - 深度 [`UNDO_DEPTH`]（超出丢最旧的）；
+    /// - 时限 [`UNDO_RETENTION`]（每条自带截止时刻，过了就当没有）。
+    ///
+    /// ⚠️ 时限不是可选装饰：这个栈只记**四类动作**（归档 / 恢复项目 / 改状态 / 复制），
+    /// 不记编辑正文、拖拽落点这类路径。留着一条几分钟前的归档槽，会让用户「改完标题顺手
+    /// 按 `⌘Z`」退到一个他早就忘了的状态 —— 撤销是「刚才那几下」的退路，不是无限历史。
+    undo_stack: Vec<UndoSlot>,
     /// 撤销槽的序号源。
     undo_seq: u64,
     /// 列表视图里被勾选的任务（原型 `S.checked`）。
@@ -323,16 +383,24 @@ impl ProjectsState {
             sidebar: SidebarCounts::default(),
             search: String::new(),
             view: prefs.view_mode(),
-            calendar_month: None,
+            calendar_anchor: None,
+            calendar_mode: prefs.calendar(),
             logs: Vec::new(),
             log_kind: LogKind::Daily,
             log_selected: None,
+            plan_week: None,
+            plans: Vec::new(),
+            plan_tasks: Vec::new(),
+            week_tasks: Vec::new(),
+            report_range: prefs.report(),
+            report_status: ReportStatus::default(),
+            report_tags: Vec::new(),
             archive_search: String::new(),
             archive_tasks: Vec::new(),
             archive_projects: Vec::new(),
             archive_counts: ArchiveCounts::default(),
             archive_selected: None,
-            undo: None,
+            undo_stack: Vec::new(),
             undo_seq: 0,
             checked: BTreeSet::new(),
         };
@@ -401,6 +469,12 @@ impl ProjectsState {
         self.reload_tasks();
         self.reload_archive();
         self.reload_logs();
+        // 撤销栈的时限在这里落地（每条自带截止时刻）。放在收口处而不是各个写口：
+        // 「读一次能不能撤」永远发生在 `reload()` 之后，剪在这里就不会漏。
+        // ⚠️ 不做「按归档区清单剪」那一版：`archive_tasks` **只在归档中心可见时才读**
+        // （见 [`Self::reload_archive`]），拿它当判据会在看板上把栈整个剪空。归档区被
+        // 清空走的是 [`Self::clear_archive`] 那条路（整个栈一起清）。
+        self.prune_undo(now_seconds());
     }
 
     /// 读左栏那两处计数（底部三格 + 智能列表四条）。
@@ -619,6 +693,34 @@ impl ProjectsState {
         self.tag
     }
 
+    /// 报表的时间范围档。
+    pub(crate) const fn report_range(&self) -> ReportRange {
+        self.report_range
+    }
+
+    /// 报表的状态筛选档。
+    pub(crate) const fn report_status(&self) -> ReportStatus {
+        self.report_status
+    }
+
+    /// 报表的标签筛选（空 = 不限）。
+    pub(crate) fn report_tags(&self) -> &[i64] {
+        &self.report_tags
+    }
+
+    /// 报表当前的全部筛选条件（`report::build` 的入参）。
+    ///
+    /// 现拼一份而不是在状态里养一个 [`ReportFilters`] 字段：三格筛选的**真源**是状态里
+    /// 那三个字段，再存一份拼好的就成了第二处真源 —— 改了一处忘了另一处，报表就会跟
+    /// 筛选条上亮着的 chips 对不上。标签那一列是个位数的列表，每帧克隆一次的代价可以忽略。
+    pub(crate) fn report_filters(&self) -> ReportFilters {
+        ReportFilters {
+            range: self.report_range,
+            status: self.report_status,
+            tags: self.report_tags.clone(),
+        }
+    }
+
     /// 左栏「标签」段的数据（按名称升序，带使用次数）。
     pub(crate) fn tags(&self) -> &[Tag] {
         &self.tags
@@ -698,9 +800,17 @@ impl ProjectsState {
         self.archive_selected
     }
 
-    /// 最近一次可撤销的变更。
-    pub(crate) const fn undo_slot(&self) -> Option<UndoSlot> {
-        self.undo
+    /// 撤销栈顶那一步（提示条的「撤销」按钮与 `⌘Z` 都作用在它上面）；空栈 = `None`。
+    ///
+    /// ⚠️ 读它之前不过期检查：这里只回答「栈顶是谁」，而「还能不能退」由 [`Self::undo`]
+    /// 自己先剪一遍再答（剪枝要读时钟，读口保持纯粹更省心）。
+    pub(crate) fn undo_slot(&self) -> Option<UndoSlot> {
+        self.undo_stack.last().copied()
+    }
+
+    /// 还能退几步（提示条上写「还可撤销 N 步」）。
+    pub(crate) fn undo_depth(&self) -> usize {
+        self.undo_stack.len()
     }
 
     /// 选中的归档行是不是这一条。
@@ -801,6 +911,34 @@ impl ProjectsState {
         self.selected = id;
     }
 
+    /// 换报表的时间范围档。
+    ///
+    /// **不重读任务**：范围只是换一种分桶方式去算已经查出来的那一批，筛选与排序都没动
+    /// （理由同 [`Self::set_group`]）。
+    pub(crate) fn set_report_range(&mut self, range: ReportRange) {
+        self.report_range = range;
+    }
+
+    /// 换报表的状态筛选档（纯界面态，同样不重读）。
+    pub(crate) fn set_report_status(&mut self, status: ReportStatus) {
+        self.report_status = status;
+    }
+
+    /// 报表的标签筛选：已勾中就取消，否则加上（**多选**）。
+    pub(crate) fn toggle_report_tag(&mut self, id: i64) {
+        match self.report_tags.iter().position(|current| *current == id) {
+            Some(index) => {
+                self.report_tags.remove(index);
+            }
+            None => self.report_tags.push(id),
+        }
+    }
+
+    /// 清掉报表的全部标签筛选。
+    pub(crate) fn clear_report_tags(&mut self) {
+        self.report_tags.clear();
+    }
+
     /// 切主区视图。进归档中心时才读那两份清单（见 [`Self::reload_archive`]）。
     pub(crate) fn set_view(&mut self, view: ViewMode) {
         if self.view == view {
@@ -813,6 +951,7 @@ impl ProjectsState {
         }
         self.reload_archive();
         self.reload_logs();
+        self.reload_plans();
     }
 
     /// 读工作日志（只在日志视图可见时读；口径 = 最近 30 天，含今天）。
@@ -829,6 +968,50 @@ impl ProjectsState {
             Ok(logs) => self.logs = logs,
             Err(err) => self.fail(err),
         }
+    }
+
+    /// 读周计划（只在日志视图的「周计划」档可见时读）。
+    ///
+    /// 一次读三份：最近写过的计划（左清单）、当前这一周计划里任务的**现状**、
+    /// 当前这一周到期的任务（候选池）。分三次查而不是拼一条大 SQL：
+    /// 三份的来源与过滤条件都不同，粘在一起只会得到一条谁都改不动的语句。
+    fn reload_plans(&mut self) {
+        if self.view != ViewMode::Log || self.log_kind != LogKind::Plan {
+            return;
+        }
+        let Some(store) = &self.store else {
+            return;
+        };
+        let anchor = self.plan_week.unwrap_or(self.today);
+        let plans = match store.list_plans(PLAN_LIST_LIMIT) {
+            Ok(plans) => plans,
+            Err(err) => {
+                self.fail(err);
+                return;
+            }
+        };
+        let task_ids = plans
+            .iter()
+            .find(|plan| plan.week_key == anchor.week_key())
+            .map(|plan| plan.task_ids.clone())
+            .unwrap_or_default();
+        match store.list_tasks_by_ids(&task_ids) {
+            Ok(tasks) => self.plan_tasks = tasks,
+            Err(err) => {
+                self.fail(err);
+                return;
+            }
+        }
+        // 候选池复用内核对「本周到期」的口径（`DueFilter::ThisWeek` 自带「未完成 /
+        // 未取消」），不在这里另写一条 `BETWEEN`。
+        match store.list_tasks(&TaskQuery::new().due(DueFilter::ThisWeek).today(anchor)) {
+            Ok(tasks) => self.week_tasks = tasks,
+            Err(err) => {
+                self.fail(err);
+                return;
+            }
+        }
+        self.plans = plans;
     }
 
     /// 改归档中心的搜索词。
@@ -932,14 +1115,38 @@ impl ProjectsState {
         Ok(cascaded)
     }
 
-    /// 压一条撤销槽（序号自增，供撤销条的定时器守卫比对）。
+    /// 压一条撤销槽。
+    ///
+    /// 两件事顺手做掉（而不是留给读口）：序号自增（提示条定时器的守卫）、盖上截止时刻。
+    ///
+    /// 压之前**先剪一遍**：截断到 [`UNDO_DEPTH`]、丢掉过期的。放在这里而不是只放在
+    /// `undo()` 里，是因为批量操作会在一个循环里连压十几条 —— 先剪能让栈长有个上界。
+    ///
+    /// 60 秒（[`UNDO_RETENTION`]）够不够：批量归档 5 条之后一条条按 `⌘Z` 退回来，
+    /// 手速再慢也在十秒内；而不设时限的话，一次「改完标题顺手按 `⌘Z`」会退到一个用户
+    /// 早就忘了的归档动作上（见字段 `undo_stack` 的注记）。
     fn push_undo(&mut self, action: UndoAction, cascaded: u32) {
+        let now = now_seconds();
+        self.prune_undo(now);
         self.undo_seq += 1;
-        self.undo = Some(UndoSlot {
+        self.undo_stack.push(UndoSlot {
             seq: self.undo_seq,
             action,
             cascaded,
+            expires_at: now + UNDO_RETENTION,
         });
+        let overflow = self.undo_stack.len().saturating_sub(UNDO_DEPTH);
+        if overflow > 0 {
+            self.undo_stack.drain(..overflow);
+        }
+    }
+
+    /// 把过期的撤销槽剪掉。
+    ///
+    /// `now` 由调用方给（而不是这里读时钟）：单测要能把「六十秒后」这一步直接喂进来，
+    /// 不必真的睡一分钟。
+    fn prune_undo(&mut self, now: i64) {
+        self.undo_stack.retain(|slot| slot.expires_at > now);
     }
 
     // ------------------------------------------------------------------
@@ -1003,8 +1210,9 @@ impl ProjectsState {
         };
         let cleared = store.clear_archive(scope)?;
         self.archive_selected = None;
-        // 归档区整个清空了，任何「撤销归档」都不可能再成功。
-        self.undo = None;
+        // 归档区整个清空了，栈里任何「撤销归档」都不可能再成功 —— 一次清干净，
+        // 而不是留给 `undo()` 一条条去撞「记录不存在」。
+        self.undo_stack.clear();
         self.reload();
         Ok(cleared)
     }
@@ -1209,18 +1417,26 @@ impl ProjectsState {
         Ok(())
     }
 
-    /// 撤销最近一次可撤销的变更（§5.6 的撤销通道）。
+    /// 撤销**栈顶**那一步（§5.6 的撤销通道）。连按 `⌘Z` 就是一路往回退。
     ///
-    /// - 没有可撤的 → `Ok(None)`（按 `⌘Z` 是空操作，不算错）；
+    /// - 没有可撤的（空栈，或栈里的都过期了）→ `Ok(None)`（按 `⌘Z` 是空操作，不算错）；
     /// - 槽位指向的对象已经不在归档里（被别处恢复了 / 被彻底删了）→ `Err`，同时把
     ///   这条没用的槽放下 —— 留着一个按下去必然失败的按钮比没有按钮更糟。
+    ///   只放下**这一条**：栈里更早的那些该留着，它们指向别的对象。
+    /// - 库没打开 → `Err` 且**把槽放回去**：这一次撤不动不是「这一步撤不了」，
+    ///   白吃一步会让 `⌘Z` 莫名其妙地少退一层。
     ///
-    /// 撤销**本身不再压新槽**：撤销就是「把上一步退回去」，再按一次不该又走一遍。
+    /// 撤销**本身不再压新槽**：撤销就是「把上一步退回去」，再按一次不该又走一遍
+    /// （也因此连按就是逐步往回退，不会原地打转）。
     pub(crate) fn undo(&mut self) -> duck_project::Result<Option<UndoAction>> {
-        let Some(action) = self.undo.as_ref().map(|slot| slot.action) else {
+        // 先剪再取：过期的那一步当它不存在，而不是取出来再报「撤销失败」。
+        self.prune_undo(now_seconds());
+        let Some(slot) = self.undo_stack.pop() else {
             return Ok(None);
         };
+        let action = slot.action;
         let Some(store) = &self.store else {
+            self.undo_stack.push(slot);
             return Err(store_not_open());
         };
         let outcome: duck_project::Result<u32> = match action {
@@ -1230,50 +1446,32 @@ impl ProjectsState {
             UndoAction::RevertStatus { id, status } => store.move_task(id, status, 0).map(|()| 0),
             UndoAction::RemoveCreated(id) => store.delete_task(id).map(|()| 0),
         };
-        self.undo = None;
         match outcome {
             Ok(_) => {
                 self.reload();
                 Ok(Some(action))
             }
+            // 这条已经弹出去了（见文档注释）：失败即作废，不再放回。
             Err(err) => Err(err),
         }
     }
 
-    /// 撤销条超时：只有「还是自己那一条」才清。
-    ///
-    /// 少了这个守卫，7 秒内连做两次归档时，第一条的定时器会把第二条的撤销槽一起抹掉
-    /// —— 第二条等于没给撤销的机会。
-    pub(crate) fn expire_undo(&mut self, seq: u64) -> bool {
-        if self.undo.as_ref().is_some_and(|slot| slot.seq == seq) {
-            self.undo = None;
-            return true;
-        }
-        false
-    }
-
-    /// 这条撤销槽已经被别处兑现 / 作废 ⇒ 放下它。
+    /// 这条撤销槽已经被别处兑现 / 作废 ⇒ 从栈里摘掉**所有**同动作的条目。
     ///
     /// 判据只认「同一个动作」：恢复任务 3 不该顺手把「撤销归档项目 7」也清掉。
+    /// 是 `retain` 而不是「只看栈顶」：栈里可能存着同一动作的多份（归档 → 撤销 →
+    /// 再归档），它们指向同一个对象，一条被兑现了其余几份同样按不动。
     fn forget_undo(&mut self, action: UndoAction) {
-        if self.undo.as_ref().is_some_and(|slot| slot.action == action) {
-            self.undo = None;
-        }
+        self.undo_stack.retain(|slot| slot.action != action);
     }
 
-    /// 刚删掉一批任务 ⇒ 指向其中任何一条的撤销槽都作废（见 [`UndoAction::task_id`]）。
+    /// 刚删掉一批任务 ⇒ 指向其中任何一条的撤销条目都作废（见 [`UndoAction::task_id`]）。
     ///
     /// 收口成一批而不是逐条：`bulk_delete` 要在**循环里**删（`store` 的借用出不了循环），
-    /// 而借还没还完就动 `self.undo` 会被借用检查拦下。
+    /// 而借还没还完就动 `undo_stack` 会被借用检查拦下。
     fn forget_undo_for_tasks(&mut self, ids: &[i64]) {
-        let stale = self
-            .undo
-            .as_ref()
-            .and_then(|slot| slot.action.task_id())
-            .is_some_and(|id| ids.contains(&id));
-        if stale {
-            self.undo = None;
-        }
+        self.undo_stack
+            .retain(|slot| slot.action.task_id().is_none_or(|id| !ids.contains(&id)));
     }
 
     /// 切换一条任务的完成态（`Space`）。
@@ -1343,7 +1541,8 @@ impl ProjectsState {
     }
 
     // ------------------------------------------------------------------
-    // S5：完整表单 / 置顶 / 复制 / 里程碑 / 看板列 / 标签管理 / 工作日志
+    // S5 已落地：完整表单 / 置顶 / 复制 / 里程碑 / 看板列 / 标签管理 / 工作日志
+    // （复活弹窗、重命名、复制任务都在这一段里；未做的项见设计文档 §9「S5 复核」）
     // ------------------------------------------------------------------
 
     /// 用完整表单的字段建项目（项目编辑弹窗「创建」）。
@@ -1445,34 +1644,43 @@ impl ProjectsState {
         }
     }
 
-    /// 「从文本导入」：把解析好的每一行落成任务，返回**真正建成**的条数。
+    /// 「从文件 / 文本导入」：把解析好的每一行落成任务。
     ///
     /// `fallback_project` 是「没写 `@项目`」时的落点（调用方给当前范围）—— 与快速新建
     /// 同一条口径（见 `ProjectsPage::submit_spotlight`），比原型更贴手：在某个项目下
     /// 粘一串任务，八成就是想把它们放进这个项目。
     ///
-    /// 勾选态直接落成状态：`- [x]` 建出来就是「已完成」（进度同步给 100，否则卡片上
-    /// 会出现「已完成但 0%」这种自相矛盾的读数）。
+    /// `skip_duplicates` 打开时按**标题**跳过库里已有的（以及本批里重复的）——
+    /// 比对键由 [`super::import::title_key`] 定（trim + 小写），批内去重也在那里。
+    /// 「导一份自己刚导过的文件」是最常见的误操作，默认开。
+    ///
+    /// 状态与进度直接来自行（`Row::resolved_*`）：`- [x]` 与 `status=done` 建出来就是
+    /// 「已完成 + 100%」，不给卡片留「已完成但 0%」这种自相矛盾的读数。
     ///
     /// ⚠️ 一条失败就**整体停下**并把错误原样交回调用方：半截导入比没导入更糟
     /// （用户不知道从第几行重来）。已经建成的那些**不回滚** —— 内核的 `create_task`
     /// 每条一个事务，删掉它们会连用户自己刚建的条目一起误伤。
     pub(crate) fn import_lines(
         &mut self,
-        lines: &[super::quickparse::ImportLine],
+        rows: &[super::import::Row],
         fallback_project: Option<i64>,
-    ) -> duck_project::Result<usize> {
+        skip_duplicates: bool,
+    ) -> duck_project::Result<ImportOutcome> {
+        let (rows, skipped) = if skip_duplicates {
+            super::import::partition(rows, &self.existing_title_keys())
+        } else {
+            (rows.to_vec(), 0)
+        };
         // 收成一个闭包：`store` 是对 `self` 的不可变借用，而收尾的 `self.reload()`
         // 要可变借用 —— 借用不能跨过终点，先把整段写入跑完再落收尾。
         let outcome = (|| -> duck_project::Result<usize> {
-            if lines.is_empty() {
+            if rows.is_empty() {
                 return Ok(0);
             }
             let store = self.store.as_ref().ok_or_else(store_not_open)?;
             let mut created = 0;
-            for line in lines {
-                let project_id = line
-                    .parsed
+            for row in &rows {
+                let project_id = row
                     .project
                     .as_ref()
                     .and_then(|name| {
@@ -1483,29 +1691,38 @@ impl ProjectsState {
                     })
                     .or(fallback_project);
                 let mut tag_ids = Vec::new();
-                for name in &line.parsed.tags {
+                for name in &row.tags {
                     tag_ids.push(store.ensure_tag(name, duck_project::DEFAULT_PROJECT_COLOR)?);
                 }
-                let status = if line.done {
-                    TaskStatus::Done
-                } else {
-                    TaskStatus::Todo
-                };
-                let mut new = duck_project::NewTask::new(line.parsed.title.clone())
+                let status = row.resolved_status();
+                let mut new = duck_project::NewTask::new(row.title.clone())
                     .status(status)
-                    .progress(if line.done { 100 } else { 0 })
+                    .progress(row.resolved_progress())
+                    .starred(row.starred)
                     .tags(tag_ids);
                 if let Some(project_id) = project_id {
                     new = new.project(project_id);
                 }
-                if let Some(priority) = line.parsed.priority {
+                if let Some(priority) = row.priority {
                     new = new.priority(priority);
                 }
-                if line.parsed.due.is_some() {
-                    new = new.dates(None, line.parsed.due);
+                if let Some(quadrant) = row.quadrant {
+                    new = new.quadrant(quadrant);
                 }
-                if let Some(time) = &line.parsed.due_time {
+                if row.start.is_some() || row.due.is_some() {
+                    new = new.dates(row.start, row.due);
+                }
+                if let Some(time) = &row.due_time {
                     new = new.due_time(time.clone());
+                }
+                if row.estimate_hours.is_some() || row.actual_hours.is_some() {
+                    new = new.hours(row.estimate_hours, row.actual_hours);
+                }
+                if let Some(description) = &row.description {
+                    new = new.description(description.clone());
+                }
+                if let Some(note) = &row.note {
+                    new = new.note(note.clone());
                 }
                 store.create_task(new)?;
                 created += 1;
@@ -1514,7 +1731,27 @@ impl ProjectsState {
         })();
         // 成败都重读：失败前可能已经建成前几条，界面得反映真实库存。
         self.reload();
-        outcome
+        outcome.map(|created| ImportOutcome { created, skipped })
+    }
+
+    /// 库里**全部**未归档顶层任务的标题比对键，给导入去重用。
+    ///
+    /// 走 `TaskQuery::top_level_only()`（与 [`Self::all_tasks`] 同一条查询）：
+    /// 子任务也去重只会把「修登录（子任务）」挡在门外，而用户根本看不到它。
+    /// 查询失败时返回空表 —— 去重是**便利**，查不到就不去重，不能因此把导入整个拦下。
+    pub(crate) fn existing_title_keys(&self) -> Vec<String> {
+        let Some(store) = &self.store else {
+            return Vec::new();
+        };
+        store
+            .list_tasks(&TaskQuery::new().top_level_only())
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .map(|task| super::import::title_key(&task.title))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 复制任务：新建一条字段相同（含标签 / 优先级 / 四象限 / 日期 / 工时 / 进度）
@@ -1644,6 +1881,17 @@ impl ProjectsState {
         Ok(())
     }
 
+    /// 收藏 / 取消收藏标签。排序口径在内核（`list_tags` 的 `ORDER BY
+    /// is_favorite DESC, name`），这里只拨开关、重载后顺序自动就位。
+    pub(crate) fn set_tag_favorite(&mut self, id: i64, favorite: bool) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.set_tag_favorite(id, favorite)?;
+        self.reload();
+        Ok(())
+    }
+
     /// 更新项目（项目编辑弹窗「保存」）。
     pub(crate) fn update_project(
         &mut self,
@@ -1671,14 +1919,25 @@ impl ProjectsState {
         Ok(())
     }
 
-    /// 日历视图锚定的月份；`None` = 今天所在月。
-    pub(crate) fn calendar_month(&self) -> Option<CalendarDate> {
-        self.calendar_month
+    /// 日历视图锚定的那一天；`None` = 本地今天。
+    pub(crate) fn calendar_anchor(&self) -> Option<CalendarDate> {
+        self.calendar_anchor
     }
 
-    /// 换日历视图的锚月（前后翻页 / 回到今天）。
-    pub(crate) fn set_calendar_month(&mut self, anchor: Option<CalendarDate>) {
-        self.calendar_month = anchor;
+    /// 换日历视图的锚定日（翻页 / 回到今天 / 右键「查看这周」）。
+    pub(crate) fn set_calendar_anchor(&mut self, anchor: Option<CalendarDate>) {
+        self.calendar_anchor = anchor;
+    }
+
+    /// 日历的画法（月 / 周）。
+    pub(crate) const fn calendar_mode(&self) -> CalendarMode {
+        self.calendar_mode
+    }
+
+    /// 换日历的画法。**只改画法、不动锚定日**：锚是整日，两种画法共用同一个锚
+    /// ——月 ↔ 周互切时停在原地，而不是跳回今天。
+    pub(crate) fn set_calendar_mode(&mut self, mode: CalendarMode) {
+        self.calendar_mode = mode;
     }
 
     /// 工作日志视图当前档位。
@@ -1690,18 +1949,25 @@ impl ProjectsState {
     ///
     /// 换档时**放下选中项**：选中态是「某档里的一篇」，跨档沿用会指到一篇不在清单里的
     /// 日志上（右栏就会空着，看着像坏了）。
+    ///
+    /// 进「周计划」档要顺手读一次周计划：那一档的右栏不是日志正文，而是计划面板，
+    /// 数据源也不同（`weekly_plans` 表）。不在这里读的话，切过去只会看到上一次留下的
+    /// 空面板。
     pub(crate) fn set_log_kind(&mut self, kind: LogKind) {
         if self.log_kind == kind {
             return;
         }
         self.log_kind = kind;
         self.log_selected = None;
+        if kind == LogKind::Plan {
+            self.reload_plans();
+        }
     }
 
     /// 当前档位下的日志，按日期倒序。
     pub(crate) fn logs_of_kind(&self, kind: LogKind) -> Vec<&WorkLog> {
         let mut rows: Vec<&WorkLog> = self.logs.iter().filter(|log| log.kind == kind).collect();
-        rows.sort_by(|a, b| b.date.days_since_epoch().cmp(&a.date.days_since_epoch()));
+        rows.sort_by_key(|log| std::cmp::Reverse(log.date.days_since_epoch()));
         rows
     }
 
@@ -1719,11 +1985,14 @@ impl ProjectsState {
     pub(crate) fn selected_log(&self) -> Option<&WorkLog> {
         let kind = self.log_kind;
         if let Some(id) = self.log_selected {
-            // ⚠️ 不写 `let` 链：`let_chains` 到 1.88 才稳定，本仓 MSRV 是 1.85。
-            if let Some(log) = self.logs.iter().find(|log| log.id == id) {
-                if log.kind == kind {
-                    return Some(log);
-                }
+            // ⚠️ 两个条件合成**一条谓词**，不是两层 `if`：分开写会被 clippy 判
+            // `collapsible_if`，而它建议的 `let` 链到 1.88 才稳定（本仓 MSRV 1.85）。
+            if let Some(log) = self
+                .logs
+                .iter()
+                .find(|log| log.id == id && log.kind == kind)
+            {
+                return Some(log);
             }
         }
         self.logs
@@ -1738,18 +2007,223 @@ impl ProjectsState {
     }
 
     /// 写某天某档的日志（工作日志编辑弹窗「保存」），写完重读日志清单。
+    ///
+    /// `ai_generated` 只记**来源**：弹窗里点过「AI 生成」就是 `true`。它不影响任何
+    /// 行为（内核那列的注释也这么写），界面据实展示而已 —— 一句「这段是 AI 写的」
+    /// 比事后猜有用。
     pub(crate) fn save_log(
         &mut self,
         date: CalendarDate,
         kind: LogKind,
         content: &str,
+        tags: &[String],
+        ai_generated: bool,
     ) -> duck_project::Result<()> {
         let Some(store) = &self.store else {
             return Err(store_not_open());
         };
-        store.upsert_log(date, kind, content, false, &[])?;
+        store.upsert_log(date, kind, content, ai_generated, &[], tags)?;
         self.reload_logs();
         Ok(())
+    }
+}
+
+/// 周计划左清单最多列几周（约一年）。
+///
+/// 与「本周 / 上周」这种随手翻不同，左清单是「我以前排过什么」的入口；一年足够回溯，
+/// 再多就该去报表看了（那里有真正的区间统计）。
+const PLAN_LIST_LIMIT: usize = 52;
+
+/// 「计划 vs 实际」的计数（面板顶部那条摘要）。
+///
+/// 口径都在这里，界面不自己数：一旦界面各数一遍，「后加」是按 `original_task_ids`
+/// 还是按「今天才创建的」这种分歧就会长得不一样。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PlanStats {
+    /// 计划里现在有几项。
+    pub(crate) total: u32,
+    /// 其中已完成的。
+    pub(crate) done: u32,
+    /// 其中是**原计划**（首次定型时就在里面）。
+    pub(crate) planned: u32,
+    /// 其中是后来加的。
+    pub(crate) added: u32,
+}
+
+/// 一次导入的结果。
+///
+/// 两个数分开报：只说「已导入 N 个」会让「文件里 20 条、其实 18 条重复」看起来
+/// 像丢了数据。界面把 `skipped` 拼在同一句里。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ImportOutcome {
+    /// 真正建成的条数。
+    pub(crate) created: usize,
+    /// 因标题重复被跳过的条数（去重关掉时恒为 0）。
+    pub(crate) skipped: usize,
+}
+
+impl PlanStats {
+    /// 完成率（0–100）。没有任务时返回 0（与 `BoardStats::completion_percent` 同口径）。
+    #[must_use]
+    pub(crate) fn completion_percent(&self) -> u32 {
+        if self.total == 0 {
+            return 0;
+        }
+        ((u64::from(self.done) * 100 + u64::from(self.total) / 2) / u64::from(self.total)) as u32
+    }
+}
+
+impl ProjectsState {
+    /// 周计划视图锚定的那一周（存的是该周内的某一天；`None` = 本地今天所在周）。
+    pub(crate) const fn plan_week(&self) -> Option<CalendarDate> {
+        self.plan_week
+    }
+
+    /// 当前锚定周（`None` 时回落到今天 —— 「本周」是这一档的默认视角）。
+    pub(crate) fn plan_anchor(&self) -> CalendarDate {
+        self.plan_week.unwrap_or(self.today)
+    }
+
+    /// 当前锚定周的周键（`2026-W42`）。周计划的所有读写都以它为准。
+    pub(crate) fn plan_week_key(&self) -> String {
+        self.plan_anchor().week_key()
+    }
+
+    /// 换周计划看的哪一周（`None` = 回到本周）；换完重读三份数据。
+    pub(crate) fn set_plan_week(&mut self, week: Option<CalendarDate>) {
+        if self.plan_week == week {
+            return;
+        }
+        self.plan_week = week;
+        self.reload_plans();
+    }
+
+    /// 最近写过的周计划（左清单）。
+    pub(crate) fn plans(&self) -> &[WeeklyPlan] {
+        &self.plans
+    }
+
+    /// 当前锚定周的那份计划；没写过就是 `None`（界面据此显示「这一周还没排」）。
+    pub(crate) fn current_plan(&self) -> Option<&WeeklyPlan> {
+        let key = self.plan_week_key();
+        self.plans.iter().find(|plan| plan.week_key == key)
+    }
+
+    /// 当前计划里那些任务的现状（顺序跟随计划里的 `task_ids`）。
+    pub(crate) fn plan_tasks(&self) -> &[Task] {
+        &self.plan_tasks
+    }
+
+    /// 候选池里**还没进计划**的那些（「＋ 加入计划」要列的就是它们）。
+    ///
+    /// 这是候选池唯一对外的读口：要「全部候选」和「还没加进去的」都从这里出去，
+    /// 免得两个读口各有一套过滤口径（周键改判据时只改一处）。
+    pub(crate) fn addable_tasks(&self) -> Vec<&Task> {
+        match self.current_plan() {
+            Some(plan) => self
+                .week_tasks
+                .iter()
+                .filter(|task| !plan.task_ids.contains(&task.id))
+                .collect(),
+            None => self.week_tasks.iter().collect(),
+        }
+    }
+
+    /// 「计划 vs 实际」的计数。
+    pub(crate) fn plan_stats(&self) -> PlanStats {
+        let total = self.plan_tasks.len() as u32;
+        let done = self
+            .plan_tasks
+            .iter()
+            .filter(|task| task.status == duck_project::TaskStatus::Done)
+            .count() as u32;
+        let (planned, added) = match self.current_plan() {
+            Some(plan) => (
+                plan.planned_task_ids().len() as u32,
+                plan.added_task_ids().len() as u32,
+            ),
+            None => (0, 0),
+        };
+        PlanStats {
+            total,
+            done,
+            planned,
+            added,
+        }
+    }
+
+    /// 这一周写过计划吗（没写过时界面把「任务集」当作空表，但**不**显示状态徽章）。
+    pub(crate) fn has_plan(&self) -> bool {
+        self.current_plan().is_some()
+    }
+
+    /// 写当前这一周的计划（正文 + 任务集 + 状态）。
+    ///
+    /// 全量写：正文与任务集由调用方一起给。`original_task_ids` 的定型在内核里
+    /// （见 `duck_project::store::plans`），这里不重复实现一遍。
+    pub(crate) fn save_plan(
+        &mut self,
+        content: &str,
+        task_ids: &[i64],
+        status: WeeklyPlanStatus,
+    ) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.upsert_plan(&self.plan_week_key(), content, task_ids, status)?;
+        self.reload_plans();
+        Ok(())
+    }
+
+    /// 只改当前这一周计划的状态（「确认」/「改回草稿」）。
+    pub(crate) fn set_plan_status(&mut self, status: WeeklyPlanStatus) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.set_plan_status(&self.plan_week_key(), status)?;
+        self.reload_plans();
+        Ok(())
+    }
+
+    /// 删掉当前这一周的计划。
+    pub(crate) fn delete_plan(&mut self) -> duck_project::Result<()> {
+        let Some(store) = &self.store else {
+            return Err(store_not_open());
+        };
+        store.delete_plan(&self.plan_week_key())?;
+        self.reload_plans();
+        Ok(())
+    }
+
+    /// 把一条任务加进当前这一周的计划（已在里面就什么都不做）。
+    ///
+    /// 「什么都不做」而不是报错：界面上的「＋ 加入计划」与右键菜单可能同时到达
+    /// （菜单点完清单还没重绘），把它当成幂等动作比弹一个「已经在计划里」更有用。
+    pub(crate) fn add_task_to_plan(&mut self, task_id: i64) -> duck_project::Result<()> {
+        self.edit_plan_tasks(|ids| {
+            if !ids.contains(&task_id) {
+                ids.push(task_id);
+            }
+        })
+    }
+
+    /// 把一条任务移出当前这一周的计划。
+    pub(crate) fn remove_task_from_plan(&mut self, task_id: i64) -> duck_project::Result<()> {
+        self.edit_plan_tasks(|ids| ids.retain(|id| *id != task_id))
+    }
+
+    /// 改计划里的任务集（其余字段原样写回）。
+    ///
+    /// 正文与状态**照现在的值原样回写**，不在这里改它们：这个方法的调用方是
+    /// 「加一条 / 去一条」，顺手动正文会让「点一下加号」变成一次看不见的内容改写。
+    fn edit_plan_tasks(&mut self, edit: impl FnOnce(&mut Vec<i64>)) -> duck_project::Result<()> {
+        let (mut ids, content, status) = match self.current_plan() {
+            Some(plan) => (plan.task_ids.clone(), plan.content_md.clone(), plan.status),
+            // 这一周还没写过：从空表与草稿状态起一份。
+            None => (Vec::new(), String::new(), WeeklyPlanStatus::Draft),
+        };
+        edit(&mut ids);
+        self.save_plan(&content, &ids, status)
     }
 }
 
@@ -1824,16 +2298,24 @@ mod tests {
             sidebar: SidebarCounts::default(),
             search: String::new(),
             view: ViewMode::Board,
-            calendar_month: None,
+            calendar_anchor: None,
+            calendar_mode: CalendarMode::Month,
             logs: Vec::new(),
             log_kind: LogKind::Daily,
             log_selected: None,
+            plan_week: None,
+            plans: Vec::new(),
+            plan_tasks: Vec::new(),
+            week_tasks: Vec::new(),
+            report_range: ReportRange::Days7,
+            report_status: ReportStatus::All,
+            report_tags: Vec::new(),
             archive_search: String::new(),
             archive_tasks: Vec::new(),
             archive_projects: Vec::new(),
             archive_counts: ArchiveCounts::default(),
             archive_selected: None,
-            undo: None,
+            undo_stack: Vec::new(),
             undo_seq: 0,
             checked: BTreeSet::new(),
         };
@@ -2040,23 +2522,75 @@ mod tests {
         assert_eq!(state.undo_slot(), None, "槽指向的任务没了 ⇒ 槽跟着作废");
     }
 
+    /// `⌘Z` 一次退一步，最新的先退（不是「一次性全还原」）。
     #[test]
-    fn a_stale_timer_does_not_clear_a_newer_undo() {
+    fn undo_walks_back_one_step_at_a_time() {
         let mut state = memory_state();
         let first = add_task(&mut state, "one");
         let second = add_task(&mut state, "two");
 
         state.archive_task(first).unwrap();
-        let stale = state.undo_slot().unwrap().seq;
         state.archive_task(second).unwrap();
+        assert_eq!(state.task_total(), 0);
+        assert_eq!(state.undo_depth(), 2, "两次归档 = 两步历史");
 
-        assert!(!state.expire_undo(stale), "旧定时器不该清掉新槽");
+        assert_eq!(state.undo().unwrap(), Some(UndoAction::RestoreTask(second)));
+        assert_eq!(state.task_total(), 1, "只回来一条");
+        assert_eq!(state.undo_depth(), 1);
+
+        assert_eq!(state.undo().unwrap(), Some(UndoAction::RestoreTask(first)));
+        assert_eq!(state.task_total(), 2);
+        assert_eq!(state.undo().unwrap(), None, "退到底了");
+        assert_eq!(state.undo_depth(), 0);
+    }
+
+    /// 栈深封顶，超出时丢**最旧的**（撤销是「刚才那几下」的退路，不是无限历史）。
+    #[test]
+    fn the_undo_stack_keeps_only_the_newest_steps() {
+        let mut state = memory_state();
+        let pushes = UNDO_DEPTH as i64 + 8;
+        for id in 1..=pushes {
+            state.push_undo(UndoAction::RemoveCreated(id), 0);
+        }
+
+        assert_eq!(state.undo_depth(), UNDO_DEPTH, "封顶");
         assert_eq!(
             state.undo_slot().map(|slot| slot.action),
-            Some(UndoAction::RestoreTask(second))
+            Some(UndoAction::RemoveCreated(pushes)),
+            "栈顶永远是最新压的那条"
         );
-        assert!(state.expire_undo(state.undo_slot().unwrap().seq));
+        assert_eq!(
+            state.undo_stack.first().map(|slot| slot.action),
+            Some(UndoAction::RemoveCreated(pushes - UNDO_DEPTH as i64 + 1)),
+            "被挤掉的是最早那几条"
+        );
+    }
+
+    /// 过了时效的那一步当它不存在 —— `⌘Z` 答「没有可撤销的操作」，不是「撤销失败」。
+    #[test]
+    fn undo_steps_expire_after_the_retention_window() {
+        let mut state = memory_state();
+        let id = add_task(&mut state, "t");
+        state.archive_task(id).unwrap();
+        assert!(state.undo_slot().is_some());
+
+        // 不真的等一分钟：把「六十秒后」直接喂进剪枝口。
+        state.prune_undo(now_seconds() + UNDO_RETENTION + 1);
         assert_eq!(state.undo_slot(), None);
+        assert_eq!(state.undo().unwrap(), None);
+        assert_eq!(state.task_total(), 0, "没真撤销：任务还在归档里");
+    }
+
+    /// 归档区整个清空 ⇒ 栈里那些「撤销归档」全都不可能成功。
+    #[test]
+    fn clearing_the_archive_empties_the_undo_stack() {
+        let mut state = memory_state();
+        let id = add_task(&mut state, "t");
+        state.archive_task(id).unwrap();
+        assert_eq!(state.undo_depth(), 1);
+
+        state.clear_archive(ClearScope::All).unwrap();
+        assert_eq!(state.undo_depth(), 0);
     }
 
     #[test]
@@ -2690,5 +3224,262 @@ mod tests {
             0,
             "待办列不再有它"
         );
+    }
+
+    #[test]
+    fn the_report_filters_are_wired_straight_into_the_build_input() {
+        // 三格筛选没有第二份真源：`report_filters()` 现拼出来的必须与三个字段一致。
+        let mut state = memory_state();
+        state.set_report_range(ReportRange::Days90);
+        state.set_report_status(ReportStatus::Open);
+        state.toggle_report_tag(7);
+
+        let filters = state.report_filters();
+        assert_eq!(filters.range, ReportRange::Days90);
+        assert_eq!(filters.status, ReportStatus::Open);
+        assert_eq!(filters.tags, vec![7]);
+    }
+
+    #[test]
+    fn report_tags_are_a_multi_select_that_toggles_off() {
+        let mut state = memory_state();
+        state.toggle_report_tag(7);
+        state.toggle_report_tag(8);
+        assert_eq!(state.report_tags(), &[7, 8], "多选：两个都留着");
+
+        state.toggle_report_tag(7);
+        assert_eq!(state.report_tags(), &[8], "再点一次就取消那一个");
+
+        state.clear_report_tags();
+        assert!(state.report_tags().is_empty());
+    }
+
+    #[test]
+    fn the_report_range_defaults_to_seven_days_and_reads_back() {
+        let state = memory_state();
+        assert_eq!(state.report_range(), ReportRange::Days7);
+        assert_eq!(state.report_status(), ReportStatus::All);
+    }
+
+    #[test]
+    fn the_calendar_defaults_to_the_month_grid_without_an_anchor() {
+        let state = memory_state();
+        assert_eq!(state.calendar_anchor(), None, "None = 跟着今天走");
+        assert_eq!(state.calendar_mode(), CalendarMode::Month);
+    }
+
+    #[test]
+    fn switching_the_calendar_mode_keeps_the_anchor_in_place() {
+        // 月 ↔ 周共享同一个锚：切画法该停在原地，而不是跳回今天（那是「今天」按钮的事）。
+        let mut state = memory_state();
+        let anchor = CalendarDate::new(2026, 11, 3).expect("合法日期");
+        state.set_calendar_anchor(Some(anchor));
+        state.set_calendar_mode(CalendarMode::Week);
+        assert_eq!(state.calendar_mode(), CalendarMode::Week);
+        assert_eq!(state.calendar_anchor(), Some(anchor));
+        state.set_calendar_mode(CalendarMode::Month);
+        assert_eq!(state.calendar_anchor(), Some(anchor));
+    }
+
+    // -----------------------------------------------------------------------
+    // 周计划
+    // -----------------------------------------------------------------------
+
+    /// 周计划档的状态：视图要在日志档、档位要在周计划，否则 `reload_plans` 直接返回
+    /// （那是刻意的 —— 没显示这一档时读三份数据纯属浪费）。
+    fn plan_state() -> ProjectsState {
+        let mut state = memory_state();
+        state.set_view(ViewMode::Log);
+        state.set_log_kind(LogKind::Plan);
+        state
+    }
+
+    /// 建一条**本周内到期**的任务，并重读周计划的三份数据。
+    ///
+    /// 候选池的口径是内核的 `DueFilter::ThisWeek`（2026-10-12 ~ 10-18 到期且未完成），
+    /// 所以 `day` 要落在 12–18 里。
+    fn add_due_this_week(state: &mut ProjectsState, title: &str, day: u32) -> i64 {
+        let due = CalendarDate::new(2026, 10, day).expect("2026-10 的合法日子");
+        let id = state
+            .store
+            .as_ref()
+            .unwrap()
+            .create_task(NewTask::new(title).dates(None, Some(due)))
+            .unwrap();
+        state.reload_plans();
+        id
+    }
+
+    /// 锚`None` = 跟着今天走；换成别的周只影响周键，不动任务筛选。
+    #[test]
+    fn the_plan_week_defaults_to_today_and_follows_the_anchor() {
+        let mut state = plan_state();
+        assert_eq!(state.plan_week(), None, "None = 跟着今天走");
+        assert_eq!(state.plan_anchor(), fixture_today());
+        assert_eq!(state.plan_week_key(), "2026-W42", "2026-10-14 落在第 42 周");
+
+        // 往前一周：锚是整日，周键跟着走。
+        state.set_plan_week(Some(fixture_today().add_days(-7)));
+        assert_eq!(state.plan_week_key(), "2026-W41");
+        // 同一周里换一天不该换周键（锚是「那一周」，不是「那一天」）。
+        state.set_plan_week(Some(fixture_today().add_days(-5)));
+        assert_eq!(state.plan_week_key(), "2026-W41");
+        // 回本周。
+        state.set_plan_week(None);
+        assert_eq!(state.plan_week_key(), "2026-W42");
+    }
+
+    /// 候选池 = 本周到期且未完成；已完成的、下周的不进来。
+    #[test]
+    fn the_candidate_pool_is_this_weeks_open_tasks_only() {
+        let mut state = plan_state();
+        let monday = add_due_this_week(&mut state, "周一的事", 12);
+        let sunday = add_due_this_week(&mut state, "周日的事", 18);
+        // 下周与今天之后很远的都不算。
+        add_due_this_week(&mut state, "下周一的事", 19);
+        let done = add_due_this_week(&mut state, "已经做完的", 13);
+        state
+            .store
+            .as_ref()
+            .unwrap()
+            .set_task_status(done, TaskStatus::Done)
+            .unwrap();
+        state.reload_plans();
+
+        // 顺序与过滤直接读字段：`addable_tasks` 是给界面的读口（计划为空时两者相同，
+        // 见下面那条断言），而这条要钉的是**池子本身**的形态。
+        let ids: Vec<i64> = state.week_tasks.iter().map(|task| task.id).collect();
+        assert_eq!(ids, vec![monday, sunday], "按截止日升序，且只有未完成的");
+
+        // 还没进计划时，候选池 = 全部可加项。
+        let addable: Vec<i64> = state.addable_tasks().iter().map(|task| task.id).collect();
+        assert_eq!(addable, vec![monday, sunday]);
+    }
+
+    /// 空的一周没有计划；把任务加进去就自动起一份（草稿态、空正文）。
+    #[test]
+    fn an_empty_week_has_no_plan_until_a_task_is_added() {
+        let mut state = plan_state();
+        assert!(!state.has_plan());
+        assert_eq!(state.plan_stats(), PlanStats::default());
+        assert!(state.plans().is_empty());
+
+        let task = add_due_this_week(&mut state, "写周报", 14);
+        state.add_task_to_plan(task).expect("写入成功");
+        assert!(state.has_plan());
+        let plan = state.current_plan().expect("刚起的计划");
+        assert_eq!(plan.task_ids, vec![task]);
+        assert_eq!(plan.status, WeeklyPlanStatus::Draft, "自动起的是草稿");
+        assert!(plan.content_md.is_empty());
+
+        // 加第二次是幂等的（界面上的按钮与右键菜单可能同时到达）。
+        state.add_task_to_plan(task).expect("再写一次也不报错");
+        assert_eq!(
+            state.current_plan().expect("在").task_ids,
+            vec![task],
+            "不该出现两条一样的 id"
+        );
+
+        // 加进来之后候选池里就没有它了。
+        assert!(state.addable_tasks().is_empty());
+        assert_eq!(state.plan_tasks().len(), 1, "计划内任务的现状读出来了");
+
+        // 移出之后计划还在（只剩空任务集），候选池又回来。
+        state.remove_task_from_plan(task).expect("写入成功");
+        assert!(state.current_plan().expect("在").task_ids.is_empty());
+        assert_eq!(state.addable_tasks().len(), 1);
+    }
+
+    /// 计划 vs 实际：定型时的算「原计划」，之后的算「后加」；完成数按当前状态数。
+    #[test]
+    fn added_tasks_are_split_from_the_original_ones() {
+        let mut state = plan_state();
+        let a = add_due_this_week(&mut state, "A", 12);
+        let b = add_due_this_week(&mut state, "B", 13);
+        // 第一次以非空任务集保存 → 定型。
+        state
+            .save_plan("这周先把 A、B 收掉", &[a, b], WeeklyPlanStatus::Draft)
+            .expect("写入成功");
+        // 之后再加一条。
+        let c = add_due_this_week(&mut state, "C", 14);
+        state.add_task_to_plan(c).expect("写入成功");
+
+        let stats = state.plan_stats();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.planned, 2, "A、B 是定型时的原计划");
+        assert_eq!(stats.added, 1, "C 是后来加的");
+        assert_eq!(stats.done, 0);
+        assert_eq!(stats.completion_percent(), 0);
+
+        // 完成 A：完成数与完成率跟着走，但「原计划 / 后加」的分档不动。
+        state
+            .store
+            .as_ref()
+            .unwrap()
+            .set_task_status(a, TaskStatus::Done)
+            .unwrap();
+        state.reload_plans();
+        let stats = state.plan_stats();
+        assert_eq!(stats.done, 1);
+        assert_eq!(stats.planned, 2);
+        assert_eq!(stats.added, 1);
+        assert_eq!(stats.completion_percent(), 33);
+    }
+
+    /// 保存正文**不动任务集与状态**（`submit_plan` 靠这条把两者一起带回）。
+    #[test]
+    fn saving_the_body_keeps_the_task_set() {
+        let mut state = plan_state();
+        let task = add_due_this_week(&mut state, "只改正文", 14);
+        state.add_task_to_plan(task).expect("写入成功");
+        state
+            .set_plan_status(WeeklyPlanStatus::Confirmed)
+            .expect("确认成功");
+
+        state
+            .save_plan("改了正文", &[task], WeeklyPlanStatus::Confirmed)
+            .expect("写入成功");
+        let plan = state.current_plan().expect("在");
+        assert_eq!(plan.content_md, "改了正文");
+        assert_eq!(plan.task_ids, vec![task]);
+        assert!(plan.is_confirmed());
+    }
+
+    /// 删计划只删计划，任务本身留着。
+    #[test]
+    fn deleting_the_plan_leaves_the_tasks_alone() {
+        let mut state = plan_state();
+        let task = add_due_this_week(&mut state, "留下我", 14);
+        state.add_task_to_plan(task).expect("写入成功");
+        state.delete_plan().expect("删除成功");
+        assert!(!state.has_plan());
+        assert!(state.plans().is_empty());
+        assert!(state.plan_tasks().is_empty());
+        assert_eq!(state.addable_tasks().len(), 1, "任务还在候选池里");
+        assert!(
+            state
+                .store
+                .as_ref()
+                .unwrap()
+                .get_task(task)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// 完成率四舍五入到整数，空计划不除零。
+    #[test]
+    fn plan_completion_percent_rounds_and_guards_against_zero() {
+        let stats = |total, done| PlanStats {
+            total,
+            done,
+            planned: total,
+            added: 0,
+        };
+        assert_eq!(PlanStats::default().completion_percent(), 0, "空计划不除零");
+        assert_eq!(stats(3, 1).completion_percent(), 33);
+        assert_eq!(stats(3, 2).completion_percent(), 67, "四舍五入");
+        assert_eq!(stats(1, 1).completion_percent(), 100);
+        assert_eq!(stats(7, 6).completion_percent(), 86);
     }
 }

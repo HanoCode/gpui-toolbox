@@ -18,7 +18,7 @@ use duck_components::content::{
 };
 use duck_components::{
     ButtonVariant, DuckIcon, SidebarPanel, SidebarState, beta_badge, body_text, button,
-    caption_number, icon_button, meta_text, notify, option_row, settings_section,
+    caption_number, icon_button, meta_text, notify, option_row, selectable_text, settings_section,
     sidebar_navigation_button, switch_control, tabular_numbers,
 };
 use duck_shell::left_edge_probe;
@@ -985,7 +985,7 @@ impl ToolboxPage {
                 .items_center()
                 .gap(spacing.xxs)
                 .child(Icon::new(icon).size(icon_size).text_color(muted))
-                .child(text)
+                .child(selectable_text(text))
         };
 
         Some(
@@ -1076,7 +1076,11 @@ impl ToolboxPage {
                                 .line_height(tokens.typography.sm.line_height)
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(colors.foreground)
-                                .child(trf(cx, "已识别为「{}」", &[t(lang, tool_name)])),
+                                .child(selectable_text(trf(
+                                    cx,
+                                    "已识别为「{}」",
+                                    &[t(lang, tool_name)],
+                                ))),
                         )
                         .child(
                             div()

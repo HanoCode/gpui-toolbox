@@ -17,8 +17,9 @@
 //!    `NSPanel`），`focus: false` 只影响**刚弹出那一下**：之后点它照样能拿键盘
 //!    （gpui 的 `acceptsFirstMouse` 返回 YES，第一下点击就送进内容区）。代价是
 //!    `Esc` 收不起来（它压根不是 key window），收起只有再按一次全局键、点 ✕ 两条路。
-//! 2. **内联详情不放开「编辑」按钮**：完整任务编辑器属 S5，摆一个点了没反应的按钮
-//!    比不摆更糟（P3-6）。详情里给的是「开始 / 暂停 / 完成 / 返回」四个都真会动数据的键。
+//! 2. **内联详情不放开「编辑」按钮**：这一窗的定位是「瞄一眼 + 就地改状态」，完整编辑器
+//!    在主窗（双击卡片 / 卡片菜单）；在 300pt 宽的窗里再叠一层双列表单没有可用面积。详情里
+//!    给的是「开始 / 暂停 / 完成 / 返回」四个都真会动数据的键。
 //! 3. **「新增」是窗口内联的一行输入**，不是主窗那个新建弹窗：300pt 宽的窗里再套一层
 //!    对话框会把可用面积压到没法看，而输入框只有一行。
 
@@ -39,6 +40,7 @@ use gpui_component::{
 
 use duck_components::DuckIcon;
 use duck_components::content::neutral_tag;
+use duck_components::selectable_text;
 use duck_project::{
     ArchiveScope, CalendarDate, NewTask, Project, ProjectStore, Task, TaskQuery, TaskSort,
     TaskStatus,
@@ -602,7 +604,11 @@ fn error_line(error: &str, cx: &App) -> AnyElement {
         .text_size(tokens.typography.xs.size)
         .line_height(tokens.typography.xs.line_height)
         .text_color(tokens.colors.destructive)
-        .child(trf(cx, "打不开项目库，下面显示的是临时数据：{}", &[error]))
+        .child(selectable_text(trf(
+            cx,
+            "打不开项目库，下面显示的是临时数据：{}",
+            &[error],
+        )))
         .into_any_element()
 }
 
@@ -642,7 +648,7 @@ fn section_head(label: &'static str, count: u32, dot: gpui::Hsla, cx: &App) -> A
                 .text_size(tokens.typography.xs.size)
                 .line_height(tokens.typography.xs.line_height)
                 .text_color(tokens.colors.muted_foreground)
-                .child(SharedString::from(count.to_string())),
+                .child(selectable_text(SharedString::from(count.to_string()))),
         )
         .into_any_element()
 }
@@ -802,7 +808,7 @@ fn float_card(
                 .text_size(tokens.typography.sm.size)
                 .line_height(tokens.typography.sm.line_height)
                 .text_color(tokens.colors.foreground)
-                .child(SharedString::from(task.title.clone())),
+                .child(selectable_text(SharedString::from(task.title.clone()))),
         )
         .when(task.progress > 0, |card| {
             card.child(task_progress(
@@ -871,7 +877,7 @@ fn detail_card(
                 .text_size(tokens.typography.sm.size)
                 .line_height(tokens.typography.sm.line_height)
                 .text_color(tokens.colors.foreground)
-                .child(SharedString::from(task.title.clone())),
+                .child(selectable_text(SharedString::from(task.title.clone()))),
         )
         .child(
             div()
@@ -921,7 +927,9 @@ fn detail_card(
                 .text_size(tokens.typography.xs.size)
                 .line_height(tokens.typography.xs.line_height)
                 .text_color(tokens.colors.muted_foreground)
-                .child(SharedString::from(clip_detail(&task.description_md))),
+                .child(selectable_text(SharedString::from(clip_detail(
+                    &task.description_md,
+                )))),
         );
     }
     if task.subtasks.total > 0 {
@@ -943,7 +951,7 @@ fn detail_card(
 
 /// 详情里的动作行：开始 / 暂停 · 完成 · 返回。
 ///
-/// 不发「编辑」：完整编辑器属 S5，摆一个点了没反应的按钮比不摆更糟（P3-6）。
+/// 不发「编辑」：完整编辑器在主窗（双击卡片 / 卡片菜单），这一窗只做「瞄一眼 + 就地改状态」。
 fn action_row(task: &Task, view: &WeakEntity<FloatWindow>, cx: &App) -> AnyElement {
     let tokens = active_theme(cx).tokens();
     let id = task.id;
@@ -1035,7 +1043,7 @@ fn footer(this: &FloatWindow, view: &WeakEntity<FloatWindow>, cx: &App) -> AnyEl
                     .text_size(tokens.typography.xs.size)
                     .line_height(tokens.typography.xs.line_height)
                     .text_color(color)
-                    .child(message.clone()),
+                    .child(selectable_text(message.clone())),
             );
         }
         None => bar = bar.child(div().flex_1()),
@@ -1144,7 +1152,7 @@ fn meta_text(text: impl Into<SharedString>, color: gpui::Hsla) -> AnyElement {
         .text_size(px(11.))
         .line_height(px(14.))
         .text_color(color)
-        .child(text.into())
+        .child(selectable_text(text.into()))
         .into_any_element()
 }
 
@@ -1388,6 +1396,8 @@ mod tests {
             updated_at: 0,
             archived_at: None,
             archived_root: None,
+            git_branch: String::new(),
+            context: duck_project::TaskContext::default(),
             tags: Vec::new(),
             subtasks: duck_project::SubtaskProgress::default(),
             starred: false,

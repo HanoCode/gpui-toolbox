@@ -57,9 +57,9 @@ use duck_components::{
         accent_tag, description_list, description_row, empty_state, neutral_tag, progress_bar,
         status_cell,
     },
-    dialog_top_offset, icon_button, icon_text_button, meta_text, modal_drag, modal_drag_area,
-    modal_offset, modal_title_row, notify, sidebar_navigation_button, tabular_numbers,
-    toolbar_action_button,
+    dialog_footer, dialog_top_offset, icon_button, icon_text_button, meta_text, modal_drag,
+    modal_drag_area, modal_offset, modal_title_row, notify, selectable_text,
+    sidebar_navigation_button, tabular_numbers, toolbar_action_button,
 };
 use duck_theme::{Lang, active_theme, t, tf, tr, trf};
 use gpui::{
@@ -69,9 +69,7 @@ use gpui::{
     Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
-    Icon, Sizable as _, Size, WindowExt as _,
-    dialog::DialogButtonProps,
-    h_flex,
+    Icon, Sizable as _, Size, WindowExt as _, h_flex,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
     v_flex,

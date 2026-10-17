@@ -170,33 +170,38 @@ impl SettingsWindowView {
             )
             .on_click(cx.listener(|this, _, window, cx| {
                 let count = this.audit_rows.len();
-                if !duck_platform::confirm(
+                // 确认走主题弹窗（异步），不用 `duck_platform::confirm` 的同步系统模态 ——
+                // 见 `crate::confirm` 模块头。
+                crate::confirm::open_confirm_in(
                     tr(cx, "清空审计日志？"),
-                    &trf(
+                    trf(
                         cx,
                         "当前筛选下的 {} 条记录会全部删除（整个表都会清空，不只是筛出来的这些）。",
                         &[&count.to_string()],
                     ),
-                ) {
-                    return;
-                }
-                duck_store::audit_clear(cx);
-                // 清空后立刻记一笔：同批里「清空」先于写入执行，所以这一条不会被自己擦掉。
-                crate::audit::record(
+                    tr(cx, "清空审计"),
+                    move |this, window, cx| {
+                        duck_store::audit_clear(cx);
+                        // 清空后立刻记一笔：同批里「清空」先于写入执行，所以这一条不会被自己擦掉。
+                        crate::audit::record(
+                            cx,
+                            duck_store::AuditEntry::new(
+                                crate::audit::AuditKind::Query.key(),
+                                crate::audit::action::CLEAR,
+                                duck_store::AuditOutcome::Ok,
+                                "",
+                                trf(cx, "清空审计日志（原有 {} 条）", &[&count.to_string()]),
+                            ),
+                        );
+                        // 这一笔的 `detail` 是中文：它由**界面**产生、只给人看，不参与筛选与比较
+                        // （筛选走 kind / action / outcome / trace 这些英文键）。
+                        this.reload_audit(cx);
+                        cx.notify();
+                        duck_components::notify::success(tr(cx, "审计日志已清空"), window, cx);
+                    },
+                    window,
                     cx,
-                    duck_store::AuditEntry::new(
-                        crate::audit::AuditKind::Query.key(),
-                        crate::audit::action::CLEAR,
-                        duck_store::AuditOutcome::Ok,
-                        "",
-                        trf(cx, "清空审计日志（原有 {} 条）", &[&count.to_string()]),
-                    ),
                 );
-                // 这一笔的 `detail` 是中文：它由**界面**产生、只给人看，不参与筛选与比较
-                // （筛选走 kind / action / outcome / trace 这些英文键）。
-                this.reload_audit(cx);
-                cx.notify();
-                duck_components::notify::success(tr(cx, "审计日志已清空"), window, cx);
             })),
             cx,
         );

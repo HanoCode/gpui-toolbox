@@ -42,7 +42,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use duck_components::{
-    ButtonVariant, DuckIcon, button, content, dropdown_select, meta_text, switch_control,
+    ButtonVariant, DuckIcon, button, content, dropdown_select, meta_text, selectable_text,
+    switch_control,
 };
 use duck_shell::AuxiliaryWindowView;
 use duck_theme::{Lang, active_theme, tr, trf};
@@ -385,26 +386,34 @@ impl LogView {
             })
             .unwrap_or_else(|| String::from("duck-log"));
         let stem = source.strip_suffix(LOG_SUFFIX).unwrap_or(&source);
-        // 用户取消对话框：静默返回，这不是错误。
-        let Some(path) = duck_platform::save_file(format!("{stem}-view.txt")) else {
-            return;
-        };
-        match std::fs::write(&path, self.visible.as_ref()) {
-            Ok(()) => duck_components::notify::success(
-                trf(
+        // ⚠️ 不用 `duck_platform::save_file`：rfd 的同步模态（`NSSavePanel runModal`）
+        // 从 `App::update` 里弹会把事件派发重入回来 ⇒ 「RefCell already borrowed」abort。
+        // 走 gpui 自己的异步面板（不重入）。
+        let default_name = format!("{stem}-view.txt");
+        // 导出的是**此刻眼里看到的这份文本**：面板是异步的，内容与行数在开面板前就冻住，
+        // 回调里不再回读 `self`（用户可能开着面板又去改了过滤条件或换了文件）。
+        let text = self.visible.to_string();
+        let lines = self.visible_lines;
+        crate::file_dialogs::save_file_in_window(
+            cx,
+            &default_name,
+            move |path, window, _this, cx| match std::fs::write(&path, &text) {
+                Ok(()) => duck_components::notify::success(
+                    trf(
+                        cx,
+                        "已导出到 {}（{} 行）",
+                        &[&path.display().to_string(), &lines.to_string()],
+                    ),
+                    window,
                     cx,
-                    "已导出到 {}（{} 行）",
-                    &[&path.display().to_string(), &self.visible_lines.to_string()],
                 ),
-                window,
-                cx,
-            ),
-            Err(error) => duck_components::notify::error(
-                trf(cx, "导出失败：{}", &[&error.to_string()]),
-                window,
-                cx,
-            ),
-        }
+                Err(error) => duck_components::notify::error(
+                    trf(cx, "导出失败：{}", &[&error.to_string()]),
+                    window,
+                    cx,
+                ),
+            },
+        );
     }
 
     /// 语言切换后同步搜索框的占位文案（占位只在构建时定型）。
@@ -788,7 +797,7 @@ impl LogView {
                     .text_size(tokens.typography.xs.size)
                     .line_height(tokens.typography.xs.line_height)
                     .text_color(tokens.colors.foreground)
-                    .child(self.visible.clone()),
+                    .child(selectable_text(self.visible.clone())),
             )
             .into_any_element()
     }
@@ -824,13 +833,16 @@ impl LogView {
             (Some(detail), _) => vec![
                 div()
                     .text_color(tokens.colors.destructive)
-                    .child(trf(cx, "读取失败：{}", &[detail.as_str()]))
+                    .child(selectable_text(trf(cx, "读取失败：{}", &[detail.as_str()])))
                     .into_any_element(),
             ],
             (None, true) => vec![
                 div()
                     .text_color(muted)
-                    .child(tr(cx, "只显示文件末尾，更早的内容没有载入。"))
+                    .child(selectable_text(tr(
+                        cx,
+                        "只显示文件末尾，更早的内容没有载入。",
+                    )))
                     .into_any_element(),
             ],
             (None, false) => Vec::new(),

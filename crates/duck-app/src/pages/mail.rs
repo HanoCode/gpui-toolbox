@@ -115,11 +115,11 @@ use std::time::{Duration, Instant};
 
 use duck_components::{
     ButtonVariant, ConfirmHandler, ControlExt as _, DuckIcon, MailLogo, SidebarPanel, SidebarState,
-    button, caption_heading, content::accent_tag, content::empty_state, dialog_top_offset,
-    field_error, field_hint, field_success, form_field, form_gap, form_row, icon_button,
-    icon_text_button, meta_text, modal_drag, modal_drag_area, modal_offset, modal_title_row,
-    notify, segmented_tabs, status_button, status_button_content, tabular_numbers,
-    toolbar_action_button, toolbar_dropdown_button,
+    button, caption_heading, content::accent_tag, content::empty_state, dialog_footer,
+    dialog_footer_ok_only, dialog_top_offset, field_error, field_hint, field_success, form_field,
+    form_gap, form_row, icon_button, icon_text_button, meta_text, modal_drag, modal_drag_area,
+    modal_offset, modal_title_row, notify, segmented_tabs, selectable_text, status_button,
+    status_button_content, tabular_numbers, toolbar_action_button, toolbar_dropdown_button,
 };
 use duck_mail::{
     Account, ConnectionSecurity, Draft, DraftAttachmentRef, DraftMode, DraftRecord, DraftSummary,
@@ -1940,12 +1940,6 @@ impl MailPage {
                 .margin_top(dialog_top_offset(cx) + offset.y)
                 .opacity(offset.opacity)
                 .close_button(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(tr(cx, "创建"))
-                        .cancel_text(tr(cx, "取消"))
-                        .show_cancel(true),
-                )
                 .content(move |content, _, cx| {
                     content.child(modal_drag_area(
                         &drag_for_content,
@@ -1966,6 +1960,16 @@ impl MailPage {
                             )),
                     ))
                 })
+                // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+                // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+                .footer(dialog_footer(
+                    "mail-label",
+                    tr(cx, "创建"),
+                    ButtonVariant::Primary,
+                    Rc::clone(&confirm),
+                    cx,
+                ))
+                // 键盘 ⏎ 走 base 的 `Confirm` action → 这里；鼠标点按钮走上面 footer。
                 .on_ok(move |_, window, cx| confirm(window, cx))
         });
     }
@@ -2030,11 +2034,11 @@ impl MailPage {
         );
     }
 
-    /// 移除当前账户：走系统确认框（**不可撤销**——连同本地缓存邮件一起删）。
+    /// 移除当前账户：走主题确认框（**不可撤销**——连同本地缓存邮件一起删）。
     ///
-    /// 确认框是**模态**的（`duck-platform` 走原生对话框）：不能在 `render` 里调，
-    /// 只能在点击回调里调——所以这个函数要 `&mut Context`，不能拿 `&App`。
-    fn remove_active_account(&mut self, cx: &mut Context<Self>) {
+    /// 确认框是异步的主题弹窗（[`crate::confirm`]），不会像 `duck_platform::confirm`
+    /// 那样把 AppKit 的事件派发重入回 gpui —— 拿 `window` 只是为了给弹窗一个落点。
+    fn remove_active_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(core) = self.core.clone() else {
             return;
         };
@@ -2045,17 +2049,22 @@ impl MailPage {
             return;
         };
         let email = account.email.clone();
-        let confirmed = duck_platform::confirm(
+        crate::confirm::open_confirm_in(
             tr(cx, "移除邮箱账户"),
-            &trf(
+            trf(
                 cx,
                 "将移除 {}（含本地缓存的邮件与凭据）。这个动作无法撤销。",
                 &[&email],
             ),
+            tr(cx, "移除"),
+            move |this, _window, cx| this.remove_account_now(core.clone(), account_id, cx),
+            window,
+            cx,
         );
-        if !confirmed {
-            return;
-        }
+    }
+
+    /// 用户点了「移除」之后真正动手的那一半。
+    fn remove_account_now(&mut self, core: MailCore, account_id: i64, cx: &mut Context<Self>) {
         self.spawn(
             cx,
             move || core.remove_account(account_id),
@@ -2450,7 +2459,15 @@ impl MailPage {
                 .margin_top(dialog_top_offset(cx) + offset.y)
                 .opacity(offset.opacity)
                 .close_button(false)
-                .button_props(DialogButtonProps::default().ok_text(tr(cx, "知道了")))
+                // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+                // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+                .footer(dialog_footer_ok_only(
+                    "mail-search-help",
+                    tr(cx, "知道了"),
+                    ButtonVariant::Primary,
+                    Rc::new(|_, _| true),
+                    cx,
+                ))
                 .content(move |content, _, cx| {
                     content.child(modal_drag_area(
                         &drag_for_content,
@@ -2554,60 +2571,61 @@ impl MailPage {
     /// `spawn_local`（不点亮列表条上的同步按钮）。
     fn pick_attachments(&mut self, form: &Entity<ComposeForm>, cx: &mut Context<Self>) {
         // 用户取消 = 什么都不做，也不弹提示（同 `save_attachment`）。
-        let Some(paths) = duck_platform::open_files() else {
-            return;
-        };
-        if paths.is_empty() {
-            return;
-        }
+        //
+        // ⚠️ 面板走 gpui 的**异步**版：`duck_platform::open_files` 是 rfd 的同步模态
+        // （`NSOpenPanel runModal`），从 `App::update` 里弹会把 AppKit 的事件派发重入回
+        // gpui ⇒ 重入期间任何前台任务做 `AsyncApp::update_entity` 都会撞
+        // 「RefCell already borrowed」并 abort。下面整段搬进回调（面板关掉之后才跑）。
         let work_form = form.clone();
-        self.spawn_local(
-            cx,
-            move || {
-                let mut read = Vec::new();
-                let mut failure = None;
-                for path in &paths {
-                    match OutgoingAttachment::from_path(path) {
-                        Ok(payload) => read.push(ComposeAttachment {
-                            // 路径**当场**记下：存草稿只落 `draft_attachments.file_path`，
-                            // 等真去存的时候再回头问系统，文件可能已经被挪走了。
-                            source: path.clone(),
-                            payload,
-                        }),
-                        // 只记**第一个**失败原因，且**不丢弃**其余读成功的文件——
-                        // 一次挑了五个、其中一个刚被删掉，不该整批退回。
-                        Err(error) => {
-                            failure.get_or_insert_with(|| error.to_string());
+        crate::file_dialogs::open_files(cx, tr(cx, "选择附件"), move |paths, this, cx| {
+            this.spawn_local(
+                cx,
+                move || {
+                    let mut read = Vec::new();
+                    let mut failure = None;
+                    for path in &paths {
+                        match OutgoingAttachment::from_path(path) {
+                            Ok(payload) => read.push(ComposeAttachment {
+                                // 路径**当场**记下：存草稿只落 `draft_attachments.file_path`，
+                                // 等真去存的时候再回头问系统，文件可能已经被挪走了。
+                                source: path.clone(),
+                                payload,
+                            }),
+                            // 只记**第一个**失败原因，且**不丢弃**其余读成功的文件——
+                            // 一次挑了五个、其中一个刚被删掉，不该整批退回。
+                            Err(error) => {
+                                failure.get_or_insert_with(|| error.to_string());
+                            }
                         }
                     }
-                }
-                (read, failure)
-            },
-            move |_this, (read, failure), window, cx| {
-                let added = work_form.update(cx, |form, cx| {
-                    let before = form.attachments.len();
-                    for attachment in read {
-                        // 同名只留一个：清单上两行一模一样的文件名分不清谁是谁，而
-                        // 「同一封邮件挂两份同名文件」在实践里只能是误操作。
-                        if !form.attachments.iter().any(|existing| {
-                            existing.payload.filename == attachment.payload.filename
-                        }) {
-                            form.attachments.push(attachment);
+                    (read, failure)
+                },
+                move |_this, (read, failure), window, cx| {
+                    let added = work_form.update(cx, |form, cx| {
+                        let before = form.attachments.len();
+                        for attachment in read {
+                            // 同名只留一个：清单上两行一模一样的文件名分不清谁是谁，而
+                            // 「同一封邮件挂两份同名文件」在实践里只能是误操作。
+                            if !form.attachments.iter().any(|existing| {
+                                existing.payload.filename == attachment.payload.filename
+                            }) {
+                                form.attachments.push(attachment);
+                            }
                         }
+                        let added = form.attachments.len() - before;
+                        if added > 0 {
+                            cx.notify();
+                        }
+                        added
+                    });
+                    if let Some(reason) = failure {
+                        notify::error(trf(cx, "有附件读不出来：{}", &[&reason]), window, cx);
+                    } else if added == 0 {
+                        notify::info(tr(cx, "这些文件都已经在附件里了"), window, cx);
                     }
-                    let added = form.attachments.len() - before;
-                    if added > 0 {
-                        cx.notify();
-                    }
-                    added
-                });
-                if let Some(reason) = failure {
-                    notify::error(trf(cx, "有附件读不出来：{}", &[&reason]), window, cx);
-                } else if added == 0 {
-                    notify::info(tr(cx, "这些文件都已经在附件里了"), window, cx);
-                }
-            },
-        );
+                },
+            );
+        });
     }
 
     /// 打开一条草稿：读库 → 逐份重读附件 → 用整条草稿开撰写弹窗。
@@ -2788,43 +2806,47 @@ impl MailPage {
             return;
         };
         // 用户取消 = 什么都不做，**也不弹提示**。点了取消还被告知「已取消」是噪音。
-        let Some(dest) = duck_platform::save_file(filename) else {
-            return;
-        };
-        // 落点选定后才进入「下载中」态：原生对话框阻塞期间用户还没确认要存。
-        self.saving_attachment = Some(attachment_id);
-        self.attachment_error = None;
-        self.spawn(
-            cx,
-            move || core.download_attachment(attachment_id, &dest),
-            move |this, result, window, cx| {
-                // 只清掉**这一条**附件的高亮：同一封邮件里连点两个附件时，先回来的那个
-                // 不该把后一个还在下载的态一起抹掉。
-                if this.saving_attachment == Some(attachment_id) {
-                    this.saving_attachment = None;
-                }
-                match result {
-                    Ok(saved) => {
-                        this.attachment_error = None;
-                        let path = saved.path.display().to_string();
-                        // 记下用户选的落点，附件行据此多出一个「在访达中显示」。
-                        // 同一个附件重复另存时以最后一次为准（去重后追加，不涨行数）。
-                        this.saved_attachments
-                            .retain(|(id, _)| *id != attachment_id);
-                        this.saved_attachments
-                            .push((attachment_id, saved.path.clone()));
-                        notify::success(trf(cx, "已保存到 {}", &[&path]), window, cx);
+        // ⚠️ 不用 `duck_platform::save_file`：rfd 的同步模态（`NSSavePanel runModal`）
+        // 从 `App::update` 里弹会把 AppKit 的事件派发重入回 gpui ⇒ 重入期间任何前台任务
+        // 做 `AsyncApp::update_entity` 都撞「RefCell already borrowed」并 abort
+        // （2026-10-16 那次闪退就是这条链，只是入口在 db 页）。落点选定后的整段搬进回调。
+        let default_name = filename.to_owned();
+        crate::file_dialogs::save_file(cx, &default_name, move |dest, this, cx| {
+            // 落点选定后才进入「下载中」态：面板期间用户还没确认要存。
+            this.saving_attachment = Some(attachment_id);
+            this.attachment_error = None;
+            this.spawn(
+                cx,
+                move || core.download_attachment(attachment_id, &dest),
+                move |this, result, window, cx| {
+                    // 只清掉**这一条**附件的高亮：同一封邮件里连点两个附件时，先回来的那个
+                    // 不该把后一个还在下载的态一起抹掉。
+                    if this.saving_attachment == Some(attachment_id) {
+                        this.saving_attachment = None;
                     }
-                    Err(error) => {
-                        // 失败态停在那一行（再点一次即重试），同时给一条可读的提示。
-                        let reason: SharedString =
-                            trf(cx, "保存附件失败：{}", &[&error.to_string()]).into();
-                        this.attachment_error = Some((attachment_id, reason.clone()));
-                        notify::error(reason, window, cx);
+                    match result {
+                        Ok(saved) => {
+                            this.attachment_error = None;
+                            let path = saved.path.display().to_string();
+                            // 记下用户选的落点，附件行据此多出一个「在访达中显示」。
+                            // 同一个附件重复另存时以最后一次为准（去重后追加，不涨行数）。
+                            this.saved_attachments
+                                .retain(|(id, _)| *id != attachment_id);
+                            this.saved_attachments
+                                .push((attachment_id, saved.path.clone()));
+                            notify::success(trf(cx, "已保存到 {}", &[&path]), window, cx);
+                        }
+                        Err(error) => {
+                            // 失败态停在那一行（再点一次即重试），同时给一条可读的提示。
+                            let reason: SharedString =
+                                trf(cx, "保存附件失败：{}", &[&error.to_string()]).into();
+                            this.attachment_error = Some((attachment_id, reason.clone()));
+                            notify::error(reason, window, cx);
+                        }
                     }
-                }
-            },
-        );
+                },
+            );
+        });
     }
 }
 
@@ -4003,7 +4025,9 @@ fn render_compose_form(
                 .w_full()
                 .text_size(tokens.typography.sm.size)
                 .line_height(tokens.typography.sm.line_height)
-                .child(SharedString::from(mailbox_field_text(&state.sender))),
+                .child(selectable_text(SharedString::from(mailbox_field_text(
+                    &state.sender,
+                )))),
             None,
             Some(SharedString::from(tr(cx, "取自账户档案，不在这里更改。"))),
             cx,
@@ -4157,7 +4181,9 @@ fn render_compose_attachments(
                         .min_w_0()
                         .truncate()
                         .text_size(tokens.typography.xs.size)
-                        .child(SharedString::from(attachment.payload.filename.clone())),
+                        .child(selectable_text(SharedString::from(
+                            attachment.payload.filename.clone(),
+                        ))),
                 )
                 .child(
                     div()
@@ -4165,7 +4191,9 @@ fn render_compose_attachments(
                         .font_features(tabular_numbers())
                         .text_size(tokens.typography.xs.size)
                         .text_color(extended.colors.text_tertiary)
-                        .child(SharedString::from(bytes(attachment.payload.len() as u64))),
+                        .child(selectable_text(SharedString::from(bytes(
+                            attachment.payload.len() as u64,
+                        )))),
                 )
                 .child(remove),
         );
@@ -4479,8 +4507,8 @@ impl MailPage {
                     cx,
                 )
                 .disabled(active.is_none())
-                .on_click(move |_, _, cx| {
-                    let _ = view.update(cx, |this, cx| this.remove_active_account(cx));
+                .on_click(move |_, window, cx| {
+                    let _ = view.update(cx, |this, cx| this.remove_active_account(window, cx));
                 })
             })
             .child({
@@ -5125,7 +5153,7 @@ impl MailPage {
                             } else {
                                 gpui::FontWeight::NORMAL
                             })
-                            .child(sender),
+                            .child(selectable_text(sender)),
                     )
                     .when(has_attachments, |this| {
                         this.child(
@@ -5155,7 +5183,7 @@ impl MailPage {
                             .font_features(tabular_numbers())
                             .text_size(tokens.typography.xs.size)
                             .text_color(extended.colors.text_tertiary)
-                            .child(time),
+                            .child(selectable_text(time)),
                     ),
             )
             .child(
@@ -5165,7 +5193,7 @@ impl MailPage {
                     .truncate()
                     .text_size(tokens.typography.sm.size)
                     .text_color(tokens.colors.foreground)
-                    .child(subject),
+                    .child(selectable_text(subject)),
             )
             .child(
                 div()
@@ -5174,7 +5202,7 @@ impl MailPage {
                     .truncate()
                     .text_size(tokens.typography.xs.size)
                     .text_color(extended.colors.text_tertiary)
-                    .child(SharedString::from(message.snippet.clone())),
+                    .child(selectable_text(SharedString::from(message.snippet.clone()))),
             )
             .into_any_element()
     }
@@ -5256,7 +5284,7 @@ impl MailPage {
                             .truncate()
                             .text_size(tokens.typography.sm.size)
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(recipients),
+                            .child(selectable_text(recipients)),
                     )
                     .when(attachment_count > 0, |this| {
                         this.child(
@@ -5279,7 +5307,7 @@ impl MailPage {
                             .font_features(tabular_numbers())
                             .text_size(tokens.typography.xs.size)
                             .text_color(extended.colors.text_tertiary)
-                            .child(time),
+                            .child(selectable_text(time)),
                     ),
             )
             .child(
@@ -5289,7 +5317,7 @@ impl MailPage {
                     .truncate()
                     .text_size(tokens.typography.sm.size)
                     .text_color(tokens.colors.foreground)
-                    .child(subject),
+                    .child(selectable_text(subject)),
             );
 
         let delete = icon_button(
@@ -5620,9 +5648,9 @@ impl MailPage {
                     .w_full()
                     .text_size(tokens.typography.lg.size)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(SharedString::from(
+                    .child(selectable_text(SharedString::from(
                         subject_or_placeholder(&detail.subject, tr(cx, "(无主题)")).to_string(),
-                    )),
+                    ))),
             )
             .child(
                 h_flex()
@@ -5631,16 +5659,18 @@ impl MailPage {
                     .gap(tokens.spacing.xs)
                     .text_size(tokens.typography.xs.size)
                     .text_color(extended.colors.text_tertiary)
-                    .child(SharedString::from(
+                    .child(selectable_text(SharedString::from(
                         sender_display(
                             detail.from_name.as_deref(),
                             detail.from_addr.as_deref(),
                             unknown,
                         )
                         .to_string(),
-                    ))
+                    )))
                     .child(div().flex_1())
-                    .child(SharedString::from(datetime_full(detail.date)))
+                    .child(selectable_text(SharedString::from(datetime_full(
+                        detail.date,
+                    ))))
                     // 时间按 UTC 显示（见 `duck_theme::datetime_full` 的说明），标出来免得用户
                     // 以为是本地时间。改成时区换算要先把依赖口径定下来。
                     .child(SharedString::from(tr(cx, "UTC"))),
@@ -5732,7 +5762,7 @@ impl MailPage {
                 .text_size(tokens.typography.sm.size)
                 .line_height(tokens.typography.sm.line_height)
                 .text_color(tokens.colors.foreground)
-                .child(text)
+                .child(selectable_text(text))
                 .into_any_element(),
             None if detail.body_state == "fetching" => {
                 field_hint(tr(cx, "正在下载正文…"), cx).into_any_element()
@@ -5822,7 +5852,9 @@ impl MailPage {
                                 .min_w_0()
                                 .truncate()
                                 .text_size(tokens.typography.xs.size)
-                                .child(SharedString::from(attachment.filename.clone())),
+                                .child(selectable_text(SharedString::from(
+                                    attachment.filename.clone(),
+                                ))),
                         )
                         // 失败态：行上留一个警示图标（原因已由提示条给出），再点「另存为」
                         // 即重试——不清掉这一行，用户不必去通知历史里翻原因。
@@ -5839,7 +5871,9 @@ impl MailPage {
                                 .font_features(tabular_numbers())
                                 .text_size(tokens.typography.xs.size)
                                 .text_color(extended.colors.text_tertiary)
-                                .child(SharedString::from(bytes(attachment.size.max(0) as u64))),
+                                .child(selectable_text(SharedString::from(bytes(
+                                    attachment.size.max(0) as u64,
+                                )))),
                         )
                         .when_some(revealed, |this, path| {
                             this.child(
@@ -5903,14 +5937,14 @@ impl MailPage {
                     .min_w_0()
                     .text_size(tokens.typography.xs.size)
                     .text_color(tokens.colors.muted_foreground)
-                    .child(tr(
+                    .child(selectable_text(tr(
                         cx,
                         if allow {
                             "远程图片已显示，发件人可能由此得知你已读过这封信。"
                         } else {
                             "已拦截远程图片，打开可能向发件人暴露你的阅读状态。"
                         },
-                    )),
+                    ))),
             )
             .child(
                 button(

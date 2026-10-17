@@ -1,11 +1,11 @@
-//! 模块偏好页：终端 / 数据库 / 邮箱 / Redis。
+//! 模块偏好页：终端 / 数据库 / 邮箱 / Redis / 项目管理。
 //!
 //! 设置窗口的「模块」分组。这一层只放**跨连接的偏好**与**新建连接时的默认值**：
 //! 连接级配置（TLS 档位、跳板机、Redis 写策略）继续留在各自的连接编辑器里，
 //! 免得同一件事有两个入口、两处真源。
 //!
 //! 持久化沿用项目既有约定 —— 「结构体 → `serde_json` → 单 kv 键」：
-//! [`KV_TERMINAL`] / [`KV_DB`] / [`KV_MAIL`] / [`KV_REDIS`]。每个字段都
+//! [`KV_TERMINAL`] / [`KV_DB`] / [`KV_MAIL`] / [`KV_REDIS`] / [`KV_PROJECTS`]。每个字段都
 //! `#[serde(default)]`（配 `Default` 实现），旧版本存下的 JSON 缺字段时读回默认值，
 //! 而不是整份配置解析失败。
 //!
@@ -36,6 +36,8 @@ const KV_DB: &str = "db.settings";
 const KV_MAIL: &str = "mail.settings";
 /// Redis 偏好的 kv 键。
 const KV_REDIS: &str = "redis.settings";
+/// 项目管理偏好的 kv 键。
+const KV_PROJECTS: &str = "projects.settings";
 
 /// 字号下拉里「跟随主题」项的值。
 const FONT_FOLLOW_THEME: &str = "theme";
@@ -937,6 +939,89 @@ pub(super) fn redis_body(cx: &mut App) -> Div {
     };
 
     let section = settings_section(Some(tr(cx, "键浏览").into()), [scan_row], cx);
+
+    v_flex().w_full().gap(tokens.spacing.lg).child(section)
+}
+
+// ── 项目管理 ────────────────────────────────────────────────────────────
+
+/// 项目管理偏好。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct ProjectsSettings {
+    /// 到期 / 逾期 / 久未更新时是否出声（应用内横幅 + 系统通知）。
+    ///
+    /// 与「通知」页的通道开关是**两层**：那里管通道开不开，这里管这条消息该不该出声
+    /// （与邮件页 `notify_new_mail` 同款）。
+    pub reminders: bool,
+    /// 「久未更新」的判定天数：高优先级任务超过这么多天没动过就提醒一次。
+    pub stale_days: i64,
+}
+
+impl Default for ProjectsSettings {
+    fn default() -> Self {
+        Self {
+            reminders: true,
+            // 默认值只有一处真源：判定逻辑就在 `remind` 里，天数不该在这里再写一遍。
+            stale_days: super::projects::remind::STALE_DAYS,
+        }
+    }
+}
+
+/// 读项目管理偏好。
+pub(super) fn projects_settings(cx: &App) -> ProjectsSettings {
+    load(cx, KV_PROJECTS)
+}
+
+/// 项目管理偏好页的正文。
+pub(super) fn projects_body(cx: &mut App) -> Div {
+    let tokens = active_theme(cx).tokens().clone();
+    let settings = projects_settings(cx);
+
+    let remind_row = {
+        let settings = settings.clone();
+        option_row(
+            tr(cx, "到期与逾期提醒"),
+            Some(
+                tr(
+                    cx,
+                    "到期前一天、当天与逾期时各推一条应用内提示与系统通知；同一件事一天只说一次。",
+                )
+                .into(),
+            ),
+            switch_control(
+                "duck-settings-projects-remind",
+                settings.reminders,
+                move |on: &bool, _, cx| {
+                    let mut next = settings.clone();
+                    next.reminders = *on;
+                    save(cx, KV_PROJECTS, &next);
+                },
+            ),
+            cx,
+        )
+        .into_any_element()
+    };
+
+    let stale_row = {
+        let settings = settings.clone();
+        number_setting_row(
+            cx,
+            "duck-settings-projects-stale-days",
+            "久未更新提醒",
+            Some("高优先级任务超过这么多天没更新过时提醒一次；受阻与搁置的不算。"),
+            tr(cx, "天"),
+            settings.stale_days,
+            1,
+            move |value, cx| {
+                let mut next = settings.clone();
+                next.stale_days = value;
+                save(cx, KV_PROJECTS, &next);
+            },
+        )
+    };
+
+    let section = settings_section(Some(tr(cx, "提醒").into()), [remind_row, stale_row], cx);
 
     v_flex().w_full().gap(tokens.spacing.lg).child(section)
 }

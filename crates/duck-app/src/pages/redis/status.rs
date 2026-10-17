@@ -26,6 +26,7 @@
 //! 「这 N 个键的构成」，而不是「全库的构成」。
 
 use super::*;
+use duck_components::selectable_text;
 
 // ----------------------------------------------------------------------
 // 文案（纯函数，可直接单测）
@@ -486,11 +487,11 @@ impl RedisPage {
                     .flex_none()
                     .text_size(tokens.typography.xs.size)
                     .text_color(tokens.colors.muted_foreground)
-                    .child(SharedString::from(trf(
+                    .child(selectable_text(SharedString::from(trf(
                         cx,
                         "{} / {} 键",
                         &[&self.keys.len().to_string(), &self.dbsize.to_string()],
-                    ))),
+                    )))),
             );
 
             // ── 值编辑器三件套（zedis status_bar.rs 的编辑器区段）─────────
@@ -544,7 +545,7 @@ impl RedisPage {
                                 .flex_none()
                                 .text_size(tokens.typography.xs.size)
                                 .text_color(tokens.colors.muted_foreground)
-                                .child(SharedString::from(latency)),
+                                .child(selectable_text(SharedString::from(latency))),
                         ),
                 );
             }
@@ -564,7 +565,7 @@ impl RedisPage {
                                 .flex_none()
                                 .text_size(tokens.typography.xs.size)
                                 .text_color(tokens.colors.muted_foreground)
-                                .child(SharedString::from(memory)),
+                                .child(selectable_text(SharedString::from(memory))),
                         ),
                 );
             }

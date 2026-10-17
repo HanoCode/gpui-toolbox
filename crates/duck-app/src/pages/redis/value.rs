@@ -1,6 +1,7 @@
 //! 值查看：详情构造、三档解码、编码切换控件与值编辑器。
 
 use super::*;
+use duck_components::selectable_text;
 
 /// 把一次读取的结果装配成值面板与 shell 右栏所需的全部信息。字符串按 `decode` 档位渲染。
 ///
@@ -547,11 +548,11 @@ impl RedisPage {
         self.json_rows = Arc::new(rows);
     }
 
-    /// 主区右栏：**值编辑器**（对齐 zedis 的值编辑区）。
+    /// 主区右栏：**值面板**（对齐 zedis 的值编辑区 + tiny-rdm 的内容页签）。
     ///
-    /// 自上而下四段：键头部（星标 / 类型胶囊 / mono 键名 / 大小·空闲·编码 / TTL /
-    /// 刷新 / 解码下拉，40px 与键树工具条同高同线）→ JSONPath 栏（含「文本 | 树」
-    /// 切换）→ 值本体（文本或可折叠树）→ 该类型的结构化写入口。
+    /// 自上而下：分页条（状态 / 键详情 / 命令行 / 慢日志 / 监控命令 / 发布订阅，
+    /// 2026-10-16 新增）→ 键头部 → JSONPath 栏 → 值本体 → 该类型的结构化写入口。
+    /// 「键详情」即原有的值编辑器；其余页与「服务端」视图共用同一份数据。
     ///
     /// 键的**属性与危险操作**不在这里，在 shell 级右栏
     /// （`sidebar::render_right_sidebar`）——两块面板各司其职，右栏是「关于这个键」，
@@ -591,6 +592,26 @@ impl RedisPage {
             .id("redis-value-editor")
             .gap(tokens.spacing.sm)
             .p(tokens.spacing.sm)
+            .child(value_tabs_bar(self, cx));
+
+        // 非「键详情」页：状态 / 命令行 / 慢日志 / 监控命令 / 发布订阅，
+        // 正文直接复用「服务端」视图的同名面板（两处共存、同一份数据）。
+        if self.value_tab != KeyValueTab::KeyDetail {
+            let body = match self.value_tab {
+                KeyValueTab::Status => self.render_panel_info(cx),
+                KeyValueTab::Cli => self.render_panel_cli(cx),
+                KeyValueTab::Slowlog => self.render_panel_slowlog(cx),
+                KeyValueTab::Monitor => self.render_panel_monitor(cx),
+                KeyValueTab::PubSub => self.render_panel_pubsub(cx),
+                // 不可能到这（上方已排除）；真到了也给一句空态，不 panic。
+                KeyValueTab::KeyDetail => panel_empty(tr(cx, "切换到「键详情」查看值。"), cx),
+            };
+            return column
+                .child(div().flex_1().min_h_0().min_w_0().child(body))
+                .into_any_element();
+        }
+
+        column = column
             .child(value_header(self, detail, can_write, &view, cx))
             .child(jsonpath_bar(self, detail, &view, cx))
             // 求值结果条：有错误显示错误，有命中显示命中（无则整块不画）。
@@ -833,7 +854,7 @@ fn text_body(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) -> AnyEle
                     .p(tokens.spacing.xs)
                     .text_size(tokens.typography.mono_md.size)
                     .line_height(tokens.typography.mono_md.line_height)
-                    .child(SharedString::from(hex.clone())),
+                    .child(selectable_text(SharedString::from(hex.clone()))),
             )
             .child(meta_text(
                 trf(cx, "二进制内容，共 {} 字节", &[&bytes.to_string()]),
@@ -858,11 +879,11 @@ fn text_body(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) -> AnyEle
                     .bg(tokens.colors.background)
                     .text_size(tokens.typography.sm.size)
                     .text_color(tokens.colors.foreground)
-                    .child(SharedString::from(trf(
+                    .child(selectable_text(SharedString::from(trf(
                         cx,
                         "不是合法 JSON：{}",
                         &[error.as_str()],
-                    ))),
+                    )))),
             )
             .child(meta_text(
                 trf(
@@ -1003,7 +1024,7 @@ fn json_row(
                         } else {
                             tokens.colors.foreground
                         })
-                        .child(detail),
+                        .child(selectable_text(detail)),
                 )
                 .into_any_element()
         }
@@ -1044,13 +1065,15 @@ fn stream_rows(entries: &[(String, Vec<(String, String)>)], cx: &App) -> AnyElem
                     div()
                         .text_size(tokens.typography.xs.size)
                         .text_color(tokens.colors.muted_foreground)
-                        .child(SharedString::from(id.clone())),
+                        .child(selectable_text(SharedString::from(id.clone()))),
                 )
                 .children(fields.iter().map(|(field, value)| {
                     div()
                         .text_size(tokens.typography.sm.size)
                         .text_color(tokens.colors.foreground)
-                        .child(SharedString::from(format!("{field}: {value}")))
+                        .child(selectable_text(SharedString::from(format!(
+                            "{field}: {value}"
+                        ))))
                 })),
         );
     }
@@ -1081,6 +1104,92 @@ fn key_type_pill(key_type: KeyType, cx: &App) -> AnyElement {
         .text_color(color)
         .child(SharedString::from(key_type.badge_code()))
         .into_any_element()
+}
+
+/// 值面板顶部的**分页条**（对齐 tiny-rdm 的键内容页签：状态 / 键详情 / 命令行 /
+/// 慢日志 / 监控命令 / 发布订阅）。
+///
+/// 组件用全站同款 `segmented_tabs_with_icons`；「服务端」视图与这些页**两处共存**
+/// （既定决策），同一份数据读两遍不会失真——写入方只有一个（`load_panel_for`）。
+fn value_tabs_bar(page: &RedisPage, cx: &mut Context<RedisPage>) -> Div {
+    // 先取动作（要 `&mut cx`），再取主题（只借 `&cx`）——顺序反了会撞借用。
+    let actions = page.render_value_tab_actions(cx);
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let view = page.view.clone();
+    let items = KeyValueTab::ALL
+        .iter()
+        .map(|tab| SegmentItem::new(tab.label(cx)).icon(tab.icon()));
+    let selected = KeyValueTab::ALL
+        .iter()
+        .position(|tab| *tab == page.value_tab)
+        .unwrap_or(0);
+    // 面板级动作按**值分页**取（监控的开始/停止、命令行的清空）——
+    // 与「服务端」视图同一套按钮，只是判断轴是 `value_tab` 不是 `panel`。
+    h_flex()
+        .flex_none()
+        .w_full()
+        .items_center()
+        .gap(tokens.spacing.sm)
+        .child(segmented_tabs_with_icons(
+            "redis-value-tabs",
+            items,
+            selected,
+            move |index, window, cx| {
+                let Some(tab) = KeyValueTab::ALL.get(index).copied() else {
+                    return;
+                };
+                let _ = view.update(cx, |this, cx| this.set_value_tab(tab, window, cx));
+            },
+            cx,
+        ))
+        .child(div().flex_1())
+        .children(actions)
+        // 与键头部同一条底线：分页条不是「另一层卡片」，右端留白对齐键头部。
+        .border_b(extended.stroke.thin)
+        .border_color(extended.colors.hairline)
+        .pb(tokens.spacing.xs)
+}
+
+/// 当前详情的**可复制文本**（值头部「复制键值」按钮用）。
+///
+/// 取的是**当前展示串**（解码档位之后的样子）：复制出来就能直接用，
+/// 与界面所见一致（tiny-rdm 同口径）。取不到的形态（过大未加载 / 键已不在 /
+/// 暂无查看器）返回空串，调用点据此提示而不是复制一个空串。
+pub(super) fn key_value_text(detail: &KeyDetail) -> String {
+    match &detail.view {
+        ValueView::Text { rendered, .. } => rendered.clone(),
+        ValueView::Hash(pairs) => pairs
+            .iter()
+            .map(|(field, item)| format!("{field}\t{item}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        ValueView::List(items) | ValueView::Set(items) => items.join("\n"),
+        ValueView::ZSet(items) => items
+            .iter()
+            .map(|(member, score)| format!("{member}\t{score}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        ValueView::Stream(entries) => entries
+            .iter()
+            .map(|(id, fields)| {
+                let pairs = fields
+                    .iter()
+                    .map(|(field, item)| format!("{field}: {item}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{id}: {pairs}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        // 二进制 / 失败 / 过大 / 缺失 / 不支持：没有「用户想要的值」可复制。
+        ValueView::Binary { .. }
+        | ValueView::JsonFailed { .. }
+        | ValueView::TooLarge { .. }
+        | ValueView::Missing
+        | ValueView::Unsupported(_) => String::new(),
+    }
 }
 
 /// 值面板的键头部（40px 单行，对齐 zedis 的 `EDITOR_KEY_BAR_HEIGHT`）。
@@ -1142,6 +1251,25 @@ fn value_header(
         .border_b(extended.stroke.thin)
         .border_color(extended.colors.hairline)
         .child(
+            // 复制键值（在星标之前，对齐 tiny-rdm 的头部图标序）：
+            // 复制的是当前展示串（解码档位之后），与界面所见一致。
+            icon_button(
+                "redis-value-copy",
+                tr(cx, "复制键值"),
+                Icon::new(DuckIcon::Copy).size(extended.icon.sm),
+                ButtonVariant::Ghost,
+                cx,
+            )
+            .on_click({
+                let view = view.clone();
+                let key = detail.key.clone();
+                move |_, window, cx| {
+                    let _ =
+                        view.update(cx, |this, cx| this.copy_key_value(key.clone(), window, cx));
+                }
+            }),
+        )
+        .child(
             // 收藏星：金星 = 已收藏，弱化色 = 未收藏（与键树行的星同色源）。
             icon_button(
                 "redis-value-favorite",
@@ -1176,14 +1304,14 @@ fn value_header(
                 .truncate()
                 .text_size(tokens.typography.sm.size)
                 .text_color(tokens.colors.foreground)
-                .child(SharedString::from(detail.key.clone())),
+                .child(selectable_text(SharedString::from(detail.key.clone()))),
         )
         .child(
             div()
                 .flex_none()
                 .text_size(tokens.typography.xs.size)
                 .text_color(tokens.colors.muted_foreground)
-                .child(size_text),
+                .child(selectable_text(size_text)),
         );
     if let Some(object_text) = object_text {
         header = header.child(
@@ -1191,32 +1319,80 @@ fn value_header(
                 .flex_none()
                 .text_size(tokens.typography.xs.size)
                 .text_color(tokens.colors.muted_foreground)
-                .child(SharedString::from(object_text)),
+                .child(selectable_text(SharedString::from(object_text))),
         );
     }
     header = header
         .child(
-            // TTL 芯片（展示；编辑入口在右栏「键管理」，头部不放第二个真源）。
-            h_flex()
-                .flex_none()
-                .items_center()
-                .gap(tokens.spacing.xxs)
-                .px(tokens.spacing.xxs)
-                .rounded(tokens.radius.sm)
-                .bg(tokens.colors.surface)
-                .border(extended.stroke.thin)
-                .border_color(extended.colors.hairline)
-                .child(
-                    Icon::new(DuckIcon::Clock)
-                        .size(extended.icon.sm)
-                        .text_color(tokens.colors.muted_foreground),
-                )
-                .child(
-                    div()
-                        .text_size(tokens.typography.xs.size)
-                        .text_color(tokens.colors.foreground)
-                        .child(ttl_text),
-                ),
+            // TTL 下拉（2026-10-16，对齐 tiny-rdm）：展示当前剩余时长，
+            // 点开三档——按时长设置 / 按到期时刻设置 / 移除 TTL。
+            // 取代了原先的纯展示芯片：编辑入口从此就在头部，右栏「键管理」保留。
+            toolbar_text_dropdown_button(
+                "redis-value-ttl-menu",
+                ttl_text,
+                Icon::new(DuckIcon::Clock)
+                    .size(extended.icon.sm)
+                    .text_color(tokens.colors.muted_foreground),
+                Anchor::BottomRight,
+                {
+                    // 菜单闭包每次打开都会重跑：三个条目各拿一份 `view` / `key`
+                    // 的副本（`view` 是 `WeakEntity`，不 `Copy`，不能共用一份）。
+                    let view = view.clone();
+                    let key = detail.key.clone();
+                    move |menu, _, cx| {
+                        menu.item(
+                            PopupMenuItem::new(tr(cx, "按时长设置"))
+                                .icon(Icon::new(DuckIcon::Clock))
+                                .on_click({
+                                    let view = view.clone();
+                                    let key = key.clone();
+                                    move |_, window, cx| {
+                                        let _ = view.update(cx, |this, cx| {
+                                            this.open_ttl_secs_dialog(
+                                                TtlPromptTarget::One { key: key.clone() },
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(tr(cx, "按到期时刻设置…"))
+                                .icon(Icon::new(DuckIcon::Calendar))
+                                .on_click({
+                                    let view = view.clone();
+                                    let key = key.clone();
+                                    move |_, window, cx| {
+                                        let _ = view.update(cx, |this, cx| {
+                                            this.open_ttl_at_dialog(key.clone(), window, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .separator()
+                        .item(
+                            PopupMenuItem::new(tr(cx, "移除 TTL"))
+                                .icon(Icon::new(DuckIcon::Eraser))
+                                .on_click({
+                                    let view = view.clone();
+                                    let key = key.clone();
+                                    move |_, window, cx| {
+                                        let _ = view.update(cx, |this, cx| {
+                                            this.confirm_or_run(
+                                                Capability::SetTtl,
+                                                PendingAction::ClearTtl { key: key.clone() },
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }),
+                        )
+                    }
+                },
+                cx,
+            ),
         )
         .child(
             icon_button(
@@ -1413,7 +1589,7 @@ fn jsonpath_results(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) ->
             .flex_none()
             .text_size(tokens.typography.xs.size)
             .text_color(theme.extended().colors.status_failed)
-            .child(SharedString::from(error.clone()))
+            .child(selectable_text(SharedString::from(error.clone())))
             .into_any_element();
     }
     let hits = page.jsonpath_hits.as_ref();
@@ -1467,7 +1643,7 @@ fn jsonpath_results(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) ->
                         .truncate()
                         .text_size(tokens.typography.xs.size)
                         .text_color(tokens.colors.foreground)
-                        .child(SharedString::from(hit.path.clone())),
+                        .child(selectable_text(SharedString::from(hit.path.clone()))),
                 )
                 .child(
                     div()
@@ -1476,7 +1652,7 @@ fn jsonpath_results(page: &RedisPage, view: &WeakEntity<RedisPage>, cx: &App) ->
                         .truncate()
                         .text_size(tokens.typography.xs.size)
                         .text_color(tokens.colors.muted_foreground)
-                        .child(SharedString::from(hit.preview.clone())),
+                        .child(selectable_text(SharedString::from(hit.preview.clone()))),
                 ),
         );
     }

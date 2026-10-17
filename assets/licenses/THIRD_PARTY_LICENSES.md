@@ -14,10 +14,10 @@
 | 许可 | 组件数 |
 | --- | --- |
 | MIT OR Apache-2.0 | 428 |
-| MIT | 223 |
+| MIT | 224 |
 | Apache-2.0 OR MIT | 77 |
 | MIT/Apache-2.0 | 48 |
-| Apache-2.0 | 43 |
+| Apache-2.0 | 42 |
 | Zlib OR Apache-2.0 OR MIT | 19 |
 | Unicode-3.0 | 18 |
 | BSD-3-Clause | 10 |
@@ -317,10 +317,10 @@
 | gpu-descriptor | 0.3.2 | MIT OR Apache-2.0 | crates.io | — |
 | gpu-descriptor-types | 0.2.0 | MIT OR Apache-2.0 | crates.io | — |
 | gpui | 0.2.2 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) |
-| gpui-base | 0.7.2 | Apache-2.0 | crates.io | [9](#text-9) |
-| gpui-component | 0.7.2 | Apache-2.0 | crates.io | [9](#text-9) |
+| gpui-base | 0.7.1 | Apache-2.0 | - | [9](#text-9) |
+| gpui-component | 0.7.1 | Apache-2.0 | crates.io | [9](#text-9) |
 | gpui-component-macros | 0.7.3 | Apache-2.0 | crates.io | [9](#text-9) |
-| gpui-kit-assets | 0.7.2 | Apache-2.0 | crates.io | [10](#text-10) |
+| gpui-kit-assets | 0.7.1 | Apache-2.0 | crates.io | [10](#text-10) |
 | gpui-pre | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) [6](#text-6) |
 | gpui-pre-macros | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) [6](#text-6) |
 | gpui-pre-platform | 0.3.8 | Apache-2.0 | https://github.com/longbridge/gpui-fast | [6](#text-6) [6](#text-6) |
@@ -683,6 +683,7 @@
 | rustversion | 1.0.23 | MIT OR Apache-2.0 | crates.io | [233](#text-233) [224](#text-224) |
 | rusty-fork | 0.3.1 | MIT/Apache-2.0 | crates.io | [223](#text-223) [364](#text-364) |
 | rustybuzz | 0.20.1 | MIT | crates.io | [157](#text-157) |
+| ruzstd | 0.8.2 | MIT | crates.io | — |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 | crates.io | [233](#text-233) [84](#text-84) |
 | same-file | 1.0.6 | Unlicense/MIT | crates.io | [452](#text-452) [455](#text-455) [454](#text-454) |
 | saturating | 0.1.0 | MIT | crates.io | [158](#text-158) |
@@ -725,7 +726,6 @@
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 | crates.io | [223](#text-223) [377](#text-377) |
 | simd-adler32 | 0.3.10 | MIT | crates.io | [202](#text-202) |
 | simd_helpers | 0.1.0 | MIT | crates.io | — |
-| similar | 2.7.0 | Apache-2.0 | crates.io | [223](#text-223) |
 | simplecss | 0.2.2 | Apache-2.0 OR MIT | crates.io | [223](#text-223) [43](#text-43) |
 | siphasher | 1.0.4 | MIT OR Apache-2.0 | crates.io | [222](#text-222) [226](#text-226) [369](#text-369) |
 | skrifa | 0.40.0 | MIT OR Apache-2.0 | crates.io | [243](#text-243) [321](#text-321) |
@@ -11574,7 +11574,7 @@ option.
 
 来源文件：`LICENSE`
 
-适用组件：addr2line、ahash、aligned、arbitrary 等 219 个
+适用组件：addr2line、ahash、aligned、arbitrary 等 218 个
 
 ```text
                               Apache License

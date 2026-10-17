@@ -97,6 +97,8 @@ impl DatabasePage {
         &mut self,
         conn_id: &str,
         namespace: &str,
+        // 表节点右键「比较数据」带单张；库级入口 / 工具条传空 = 全库。
+        tables: Vec<TableRef>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -131,6 +133,7 @@ impl DatabasePage {
             source_ns: namespace.to_owned(),
             target_conn,
             target_ns,
+            tables,
         };
         let kind = TabKind::Compare(spec.clone());
         if let Some(existing) =
@@ -192,14 +195,19 @@ impl DatabasePage {
         let Some(target_session) = self.sessions.get(&spec.target_conn) else {
             return;
         };
-        // 源表清单直接来自源会话的目录（打开菜单时已经内省过），不再重复查。
-        let mut source_tables: Vec<TableRef> = source_session
-            .catalog
-            .iter()
-            .filter(|entry| entry.kind == TableKind::Table)
-            .filter(|entry| entry.schema.as_deref() == Some(spec.source_ns.as_str()))
-            .map(|entry| entry.table_ref())
-            .collect();
+        // 源表清单：表级入口（spec 里带了表）直接用 —— 哪怕它已不在目录快照里
+        //（刚建的表还没重新内省也照样能比）；库级入口才从源会话的目录现过滤。
+        let mut source_tables: Vec<TableRef> = if spec.tables.is_empty() {
+            source_session
+                .catalog
+                .iter()
+                .filter(|entry| entry.kind == TableKind::Table)
+                .filter(|entry| entry.schema.as_deref() == Some(spec.source_ns.as_str()))
+                .map(|entry| entry.table_ref())
+                .collect()
+        } else {
+            spec.tables.clone()
+        };
         source_tables.truncate(COMPARE_TABLE_CAP);
         let source_conn = source_session.conn.clone();
         let target_conn = target_session.conn.clone();
@@ -374,7 +382,7 @@ impl DatabasePage {
             return;
         };
         let conn = session.conn.clone();
-        let quote = session.kind.identifier_quote().unwrap_or('"');
+        let quote = session.quote.unwrap_or('"');
         let Ok(qualified) = quote_qualified(&table, quote) else {
             return;
         };
@@ -796,7 +804,7 @@ impl DatabasePage {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(tokens.colors.foreground)
                     .truncate()
-                    .child(SharedString::from(row.table.display())),
+                    .child(selectable_text(SharedString::from(row.table.display()))),
             )
             .child(chip)
             .child(
@@ -908,7 +916,7 @@ impl DatabasePage {
 
 /// `SELECT COUNT(*)` 一问一答（比较与传输共用）。
 fn count_rows(conn: &mut Connection, table: &TableRef) -> Result<u64, DbError> {
-    let quote = conn.kind().identifier_quote().unwrap_or('"');
+    let quote = conn.identifier_quote().unwrap_or('"');
     let qualified = quote_qualified(table, quote)?;
     let outcome = conn.execute(&format!("SELECT COUNT(*) FROM {qualified}"), 1)?;
     let count = outcome
@@ -932,7 +940,7 @@ fn fetch_pk_values(
     cap: usize,
 ) -> Result<std::collections::BTreeSet<String>, DbError> {
     let mut guard = conn.lock().expect("连接锁不应中毒");
-    let quote = guard.kind().identifier_quote().unwrap_or('"');
+    let quote = guard.identifier_quote().unwrap_or('"');
     let qualified = quote_qualified(table, quote)?;
     let columns = pk
         .iter()

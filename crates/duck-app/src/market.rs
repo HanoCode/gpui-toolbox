@@ -8,6 +8,7 @@
 //! 收结果、改全局状态、刷窗口。
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use duck_components::notify;
@@ -321,20 +322,55 @@ pub fn uninstall_plugin(cx: &mut App, plugin_id: &str) {
     let name = plugins::manifest_of(cx, plugin_id)
         .map_or_else(|| plugin_id.to_string(), |manifest| manifest.name.clone());
 
-    if crate::settings::confirm_uninstall(cx)
-        && !duck_platform::confirm(
-            tr(cx, "卸载插件？"),
-            &trf(
-                cx,
-                "「{}」的插件目录会被删除，它贡献的工具也会一起消失。",
-                &[&name],
-            ),
-        )
-    {
+    if !crate::settings::confirm_uninstall(cx) {
+        start_uninstall(cx, &id, &name, &plugins_dir, &tool_ids);
         return;
     }
 
-    set_busy(cx, Some(id.clone()));
+    // 询问走**主题确认框**（异步），不用 `duck_platform::confirm`：后者是 rfd 的同步
+    // 系统模态，从这个动作里弹会把 AppKit 的事件派发重入回 gpui —— 见 `crate::confirm`
+    // 模块头。这里手里只有 `&mut App`（没有窗口），所以借
+    // [`crate::update::on_notify_window`] 拿当前窗口：用户是在哪个窗口点的，弹窗就落哪。
+    let title = tr(cx, "卸载插件？");
+    let message = trf(
+        cx,
+        "「{}」的插件目录会被删除，它贡献的工具也会一起消失。",
+        &[&name],
+    );
+    let ok_text = tr(cx, "卸载");
+    crate::update::on_notify_window(cx, move |window, cx| {
+        crate::confirm::open_confirm(
+            title,
+            message,
+            ok_text,
+            Rc::new(move |_window, cx| {
+                start_uninstall(cx, &id, &name, &plugins_dir, &tool_ids);
+            }),
+            window,
+            cx,
+        );
+    });
+}
+
+/// 真正动手的那一半：后台删目录，回来后收尾。
+///
+/// 与确认框分开是因为确认是**异步**的：用户思考期间插件可能已被别的动作占用，
+/// 所以这里再查一次 `is_busy`（关掉询问的用户走的就是「直接到这里」那条路）。
+fn start_uninstall(
+    cx: &mut App,
+    plugin_id: &str,
+    name: &str,
+    plugins_dir: &Path,
+    tool_ids: &[String],
+) {
+    if is_busy(cx, plugin_id) {
+        return;
+    }
+    set_busy(cx, Some(plugin_id.to_string()));
+    let id = plugin_id.to_string();
+    let name = name.to_string();
+    let plugins_dir = plugins_dir.to_path_buf();
+    let tool_ids = tool_ids.to_vec();
     let task = cx.spawn(async move |cx| {
         let target = id.clone();
         let outcome = cx

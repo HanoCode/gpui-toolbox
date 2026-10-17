@@ -31,7 +31,7 @@ use duck_components::notify::Tone;
 use duck_components::{
     ButtonVariant, DuckIcon, body_text, button, caption_heading,
     content::{description_list, description_row, tag},
-    icon_button, meta_text, toolbar_text_dropdown_button,
+    icon_button, meta_text, selectable_text, toolbar_text_dropdown_button,
 };
 use duck_project::{CalendarDate, Milestone, Priority, Project, Quadrant, Task, TaskStatus};
 use duck_theme::{active_theme, color_from_hex, tr, trf};
@@ -200,6 +200,80 @@ pub(crate) fn task_detail_panel(
     );
     panel = panel.child(section(DuckIcon::Flag, tr(cx, "里程碑"), None, rows, cx));
 
+    // ── 工作上下文（有才画；三样都空就整段不出现）───────────────────────
+    if !task.git_branch.is_empty() || !task.context.is_empty() {
+        let mut context_rows: Vec<AnyElement> = Vec::new();
+        if !task.git_branch.is_empty() {
+            context_rows.push(
+                div()
+                    .w_full()
+                    .p(tokens.spacing.xs)
+                    .rounded(theme.components().input_radius)
+                    .bg(extended.colors.hover_tint)
+                    .text_size(tokens.typography.sm.size)
+                    .line_height(tokens.typography.sm.line_height)
+                    .child(selectable_text(SharedString::from(trf(
+                        cx,
+                        "分支：{}",
+                        &[&task.git_branch],
+                    ))))
+                    .into_any_element(),
+            );
+        }
+        if !task.context.files.is_empty() {
+            // 有定位的给「路径:行:列」，只记路径的原样 —— 与写端口径一致。
+            for file in &task.context.files {
+                let text = if file.line == 0 && file.column == 0 {
+                    SharedString::from(file.path.clone())
+                } else {
+                    SharedString::from(format!("{}:{}:{}", file.path, file.line, file.column))
+                };
+                context_rows.push(
+                    div()
+                        .w_full()
+                        .p(tokens.spacing.xs)
+                        .rounded(theme.components().input_radius)
+                        .bg(extended.colors.hover_tint)
+                        .text_size(tokens.typography.sm.size)
+                        .line_height(tokens.typography.sm.line_height)
+                        .child(selectable_text(text))
+                        .into_any_element(),
+                );
+            }
+        }
+        if !task.context.sql.trim().is_empty() {
+            context_rows.push(
+                note_block(
+                    "project-task-context-sql",
+                    task.context.sql.clone(),
+                    Some(extended.colors.hover_tint),
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
+        for tab in &task.context.tabs {
+            context_rows.push(
+                div()
+                    .w_full()
+                    .p(tokens.spacing.xs)
+                    .rounded(theme.components().input_radius)
+                    .bg(extended.colors.hover_tint)
+                    .text_size(tokens.typography.sm.size)
+                    .line_height(tokens.typography.sm.line_height)
+                    .child(selectable_text(tab.clone()))
+                    .into_any_element(),
+            );
+        }
+        panel = panel.child(section(
+            DuckIcon::Paperclip,
+            tr(cx, "工作上下文"),
+            None,
+            context_rows,
+            cx,
+        ));
+    }
+
     // ── 描述与备注 ──────────────────────────────────────────────────────
     let mut notes: Vec<AnyElement> = Vec::new();
     if !task.description_md.is_empty() {
@@ -235,11 +309,11 @@ pub(crate) fn task_detail_panel(
                 .text_size(tokens.typography.sm.size)
                 .line_height(tokens.typography.sm.line_height)
                 .text_color(extended.colors.warning)
-                .child(SharedString::from(trf(
+                .child(selectable_text(SharedString::from(trf(
                     cx,
                     "阻塞原因：{}",
                     &[&task.block_reason],
-                )))
+                ))))
                 .into_any_element(),
         );
     }
@@ -365,6 +439,7 @@ fn head_row(task: &Task, view: &WeakEntity<ProjectsPage>, cx: &App) -> AnyElemen
                             Some(id),
                             None,
                             status,
+                            None,
                             window,
                             cx,
                         )
@@ -423,7 +498,7 @@ fn overview(task: &Task, project: Option<&Project>, cx: &App) -> AnyElement {
                 .line_height(tokens.typography.md.line_height)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(tokens.colors.foreground)
-                .child(SharedString::from(task.title.clone())),
+                .child(selectable_text(SharedString::from(task.title.clone()))),
         )
         .when(!task.tags.is_empty(), |panel| {
             panel.child(
@@ -803,7 +878,7 @@ fn note_block(id: &'static str, text: String, bg: Option<Hsla>, cx: &App) -> imp
         .text_size(tokens.typography.sm.size)
         .line_height(tokens.typography.sm.line_height)
         .text_color(tokens.colors.foreground)
-        .child(SharedString::from(text))
+        .child(selectable_text(SharedString::from(text)))
 }
 
 /// 日期文案：没排期写「未设置」。

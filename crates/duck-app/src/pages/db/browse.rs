@@ -27,6 +27,53 @@ fn rust_type_of(type_name: &str) -> &'static str {
     }
 }
 
+/// 表结构缓存与 `tree_open` 展开键共用的定位串（`连接 id:限定名`）。
+///
+/// `tree_open` 的键带 `tbl:` / `tblg:` 前缀区分层级，缓存的键就是这个裸定位串
+/// （见 [`DatabasePage::load_table_tree`]）。
+fn table_tree_key(conn_id: &str, table: &TableRef) -> String {
+    format!("{conn_id}:{}", table.display())
+}
+
+/// 表结构分组下的**一条子行**（列 / 索引 / 外键 / 触发器成员）：名称 + 尾部元信息。
+///
+/// 纯展示、不做成按钮：这些行没有可打开的编辑器，装成可点就是假入口（界面不许
+/// 有演示项）。行高与 `sidebar_navigation_button` 对齐（`density.nav_row`），视觉上
+/// 才像同一棵树里的兄弟。
+fn structure_leaf_row(
+    id: String,
+    label: String,
+    detail: Option<String>,
+    icon: DuckIcon,
+    cx: &App,
+) -> AnyElement {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    h_flex()
+        .id(SharedString::from(id))
+        .w_full()
+        .h(theme.density().nav_row)
+        .px(tokens.spacing.sm)
+        .gap(tokens.spacing.xs)
+        .items_center()
+        .child(
+            Icon::new(icon)
+                .size(extended.icon.sm)
+                .text_color(tokens.colors.muted_foreground),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(tokens.typography.sm.size)
+                .text_color(tokens.colors.foreground)
+                .child(label),
+        )
+        .children(detail.map(|detail| meta_text(detail, cx).min_w_0().truncate()))
+        .into_any_element()
+}
+
 impl DatabasePage {
     /// 选中一张表并翻到第一页。
     pub(super) fn open_table(
@@ -130,19 +177,30 @@ impl DatabasePage {
             move |this, result, window, cx| match result {
                 Ok((mut result, pk, ddl, meta)) => {
                     let rows = result.row_count();
-                    // 列注释（表头第三行 / 悬停详情卡）从**表内省**回填：查询结果的
-                    // 列元数据来自游标，不知道注释；同一张表的注释只有
-                    // `table_columns` 有。按列名对齐——`SELECT *` 展开与内省同序，
-                    // 别名 / 表达式对不上就留空（宁可空着，不猜）。
-                    if let Some(meta) = meta.as_ref() {
-                        let comments: HashMap<&str, &str> = meta
-                            .columns
+                    // 列注释（表头第三行 / 悬停详情卡）与**类型原文**都从**表内省**回填：
+                    // 查询结果的列元数据来自游标——不知道注释，类型也常常只剩裸名
+                    // （MySQL 游标给 `VARCHAR`，没有 `(50)`）；同一张表的完整类型
+                    // （`varchar(50)`，带长度修饰）只有 `table_columns` 有。按列名对齐
+                    // ——`SELECT *` 展开与内省同序，别名 / 表达式对不上就留原样
+                    //（宁可少给，不猜）。翻页时本次不重取内省（`wants_meta` 只在换表
+                    // 时真），回落到**页面上留存的**那份列清单——同一张表翻页后
+                    // 表头不该一会儿有长度一会儿没有。
+                    let introspected = meta
+                        .as_ref()
+                        .map(|meta| &meta.columns)
+                        .or(Some(&this.table_columns));
+                    if let Some(introspected) = introspected {
+                        let by_name: HashMap<&str, &duck_db::Column> = introspected
                             .iter()
-                            .map(|column| (column.name.as_str(), column.comment.as_str()))
+                            .map(|column| (column.name.as_str(), column))
                             .collect();
                         for column in &mut result.columns {
-                            if let Some(comment) = comments.get(column.name.as_str()) {
-                                column.comment = (*comment).to_owned();
+                            let Some(full) = by_name.get(column.name.as_str()) else {
+                                continue;
+                            };
+                            column.comment = full.comment.clone();
+                            if !full.type_name.is_empty() {
+                                column.type_name = full.type_name.clone();
                             }
                         }
                     }
@@ -679,6 +737,10 @@ impl DatabasePage {
             for cfg in items {
                 let id = cfg.id.clone();
                 let connected = self.sessions.contains_key(&id);
+                // 在途（点了连接、还没回话）：圆点给「进行中」色（与驱动下载同一条读数），
+                // 让「点了没动静」变成「这条正在连」。此时行点击仍走 `connect_entry`，
+                // 那里按 id 静默忽略重复。
+                let connecting = self.connecting.contains(&id);
                 // ── 右键菜单的「弹出时事实」在渲染期算好（闭包是 `Fn`，只借克隆）──
                 let menu_name = cfg.display_name();
                 let host_info = (!cfg.host.trim().is_empty()).then(|| match cfg.port {
@@ -688,8 +750,13 @@ impl DatabasePage {
                 let user_info = (!cfg.user.trim().is_empty()).then(|| cfg.user.trim().to_owned());
                 let database_info =
                     (!cfg.database.trim().is_empty()).then(|| cfg.database.trim().to_owned());
+                // 「这是哪个引擎」只问 [`EngineRef`] 一处 —— agent 档的展示名 / 图标
+                // 都在驱动清单里，按 `kind` 手写 `match` 会漏。
+                // `tr` 对 agent 档的中文源串出译文；内建七档那些 ASCII 品牌名不在表里，
+                // 原样返回（两种来源的约定不同，见 `EngineRef::label`）。
+                let engine = EngineRef::from_config(cfg);
                 let conn_summary = {
-                    let mut parts = vec![kind_label(cfg.kind).to_owned()];
+                    let mut parts = vec![tr(cx, engine.label()).to_owned()];
                     if let Some(host) = &host_info {
                         parts.push(host.clone());
                     }
@@ -717,10 +784,10 @@ impl DatabasePage {
                 // 进程列表（实例检查器）只对读得到服务器数据的引擎画。
                 let can_inspect = connected && cfg.kind.supports_instance_insight();
                 // 「新建数据库」只对 SQL 引擎画：SQLite 文件即库，Mongo / ES 没有
-                // 带引号的库名概念（`identifier_quote` 是统一判据）。
-                let can_create_db = connected
-                    && cfg.kind.identifier_quote().is_some()
-                    && cfg.kind != DatabaseKind::Sqlite;
+                // 带引号的库名概念。判据是**这条连接**的引号（`self.quote_of(id)`）而不是
+                // `cfg.kind`：agent 档是一整个家族，kind 那层答不出它接不接 SQL。
+                let can_create_db =
+                    connected && self.quote_of(&id).is_some() && cfg.kind != DatabaseKind::Sqlite;
                 // 连接子树的展开态（dbx 同款行首箭头）：搜索态一律展开——命中项
                 // 必须看得见；连接成功的瞬间顺手置为展开，子树跟着出现不突兀。
                 let conn_key = format!("conn:{id}");
@@ -768,7 +835,7 @@ impl DatabasePage {
                             }),
                         );
                     }
-                    leading.child(kind_logo(cfg.kind).element(px(CONN_LOGO_SIZE)))
+                    leading.child(engine_logo(engine, px(CONN_LOGO_SIZE), cx))
                 };
                 let trailing = h_flex()
                     .flex_none()
@@ -779,7 +846,7 @@ impl DatabasePage {
                             .flex_none()
                             .text_size(tokens.typography.xs.size)
                             .text_color(extended.colors.text_tertiary)
-                            .child(kind_label(cfg.kind)),
+                            .child(tr(cx, engine.label())),
                     )
                     // 连接状态圆点：行首图标的着色之外再给一个不依赖颜色记忆的信号
                     // （DBX / TablePlus 同款）：绿=已连，灰=未连。
@@ -790,6 +857,8 @@ impl DatabasePage {
                             .rounded_full()
                             .bg(if connected {
                                 extended.colors.status_completed
+                            } else if connecting {
+                                extended.colors.status_downloading
                             } else {
                                 tokens.colors.muted_foreground
                             }),
@@ -1799,8 +1868,11 @@ impl DatabasePage {
             .iter()
             .filter(|saved| object_matches(&saved.name, query))
             .collect();
+        // 缩进一格：这一段与分类节点（表 / 索引 / …）**同层**挂在库节点下，少这层
+        // 缩进就会比分类行凸出去一列（层级全丢）。
         let mut section = v_flex()
             .w_full()
+            .pl(tokens.spacing.md)
             .gap(tokens.spacing.xxs)
             .child(self.sidebar_toggle_row(
                 format!("db-section-saved-{conn_id}"),
@@ -2296,7 +2368,18 @@ impl DatabasePage {
         let view = self.view.clone();
 
         // ── 数据库：命名空间树（库 → 分类 → 对象）就是它的子级 ──
-        let names = collect_namespaces(&session.databases, &session.schemas);
+        let mut names = collect_namespaces(&session.databases, &session.schemas);
+        // 「选择显示数据库」的白名单：设了就只显示勾选的那些。只作用于**侧栏树**
+        // —— 命名空间下拉 / 数据传输 / 对比那些入口是「换个库干活」的工具，
+        // 不该被浏览偏好顺手藏掉。
+        let whitelist = self
+            .connections
+            .iter()
+            .find(|cfg| cfg.id == id)
+            .and_then(|cfg| cfg.visible_databases.as_ref());
+        if let Some(whitelist) = whitelist {
+            names.retain(|name| whitelist.contains(name));
+        }
         // 计数要在循环把它 move 走之前取：下面「数据库」那行的尾巴挂的是这个数。
         let namespace_count = names.len();
         let namespace_tree = {
@@ -2441,6 +2524,59 @@ impl DatabasePage {
                         let er_label = tr(cx, "ER 关系图");
                         let compare_label = tr(cx, "比较数据…");
                         let transfer_label = tr(cx, "数据传输…");
+                        // ── 库节点管理（dbx 对位）──
+                        // 建库 / 删库只给四家 SQL 引擎：SQLite 的库就是文件（没有这条
+                        // DDL），Mongo / ES / agent 轨没有这条概念（agent 档故意不做
+                        // DDL）；导出库结构另含 SQLite（五家的表 DDL 都有出口）。
+                        let ns_kind = session.kind;
+                        let ns_ddl_kind = matches!(
+                            ns_kind,
+                            DatabaseKind::Mysql
+                                | DatabaseKind::Postgres
+                                | DatabaseKind::SqlServer
+                                | DatabaseKind::ClickHouse
+                        );
+                        let ns_export_kind =
+                            ns_ddl_kind || ns_kind == DatabaseKind::Sqlite;
+                        let has_clipboard = self.table_clipboard.is_some();
+                        let ns_menu_any =
+                            ns_ddl_kind || ns_export_kind || has_clipboard;
+                        let create_ns_label = if is_database_layer {
+                            tr(cx, "新建数据库…")
+                        } else {
+                            tr(cx, "新建 Schema…")
+                        };
+                        let ns_name_label = if is_database_layer {
+                            tr(cx, "库名")
+                        } else {
+                            tr(cx, "Schema 名")
+                        };
+                        let drop_ns_label = if is_database_layer {
+                            tr(cx, "删除数据库…")
+                        } else {
+                            tr(cx, "删除 Schema…")
+                        };
+                        // 删的就是**这个节点自己的名字**：语句在渲染期拼好（名字走
+                        // 引擎自己的引号）；引号拿不到（未连上）就不给项。
+                        let drop_ns_sql = match (ns_ddl_kind, session.quote) {
+                            (true, Some(q)) => duck_db::drivers::quote_identifier(
+                                menu_target.as_str(),
+                                q,
+                            )
+                            .ok()
+                            .map(|ident| {
+                                if is_database_layer {
+                                    format!("DROP DATABASE {ident};")
+                                } else {
+                                    format!("DROP SCHEMA {ident};")
+                                }
+                            }),
+                            _ => None,
+                        };
+                        let ns_quote = session.quote.unwrap_or('"');
+                        let export_ns_label = tr(cx, "导出库结构");
+                        let paste_label = tr(cx, "粘贴表");
+                        let drop_ns_note = tr(cx, "已生成删除语句；确认无误后再执行。");
                         move |mut menu, _window, _cx| {
                             let view = view.clone();
                             {
@@ -2586,6 +2722,7 @@ impl DatabasePage {
                                             this.open_compare_tab(
                                                 &compare_conn,
                                                 &compare_target,
+                                                Vec::new(),
                                                 window,
                                                 cx,
                                             );
@@ -2633,6 +2770,143 @@ impl DatabasePage {
                                         });
                                     },
                                 ));
+                            }
+                            menu = menu.separator();
+                            if ns_menu_any {
+                                // 新建数据库 / Schema：弹窗取名 → CREATE 语句进编辑器
+                                // 过人眼（与重命名 / 克隆同一条仓库纪律）。
+                                if ns_ddl_kind {
+                                    let create_view = view.clone();
+                                    let create_conn = menu_conn.clone();
+                                    let create_title = create_ns_label;
+                                    let create_field = ns_name_label;
+                                    let create_layer = is_database_layer;
+                                    let create_quote = ns_quote;
+                                    menu = menu.item(
+                                        PopupMenuItem::new(create_ns_label).on_click(
+                                            move |_, window, cx| {
+                                                let Some(entity) = create_view.upgrade() else {
+                                                    return;
+                                                };
+                                                entity.update(cx, |this, cx| {
+                                                    this.activate_conn(
+                                                        &create_conn,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                    this.open_text_prompt_dialog(
+                                                        create_title,
+                                                        create_field,
+                                                        tr(cx, "生成语句"),
+                                                        Rc::new(
+                                                            move |name: &str,
+                                                                  this: &mut DatabasePage,
+                                                                  window: &mut Window,
+                                                                  cx: &mut Context<DatabasePage>| {
+                                                                let Ok(ident) = duck_db::drivers::quote_identifier(name, create_quote) else {
+                                                                    notify::warning(
+                                                                        tr(cx, "名称包含非法字符。"),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                    return false;
+                                                                };
+                                                                let sql = if create_layer {
+                                                                    format!("CREATE DATABASE {ident};")
+                                                                } else {
+                                                                    format!("CREATE SCHEMA {ident};")
+                                                                };
+                                                                this.stage_sql(
+                                                                    sql,
+                                                                    tr(cx, "已生成创建语句；确认无误后再执行。").into(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                                true
+                                                            },
+                                                        ),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            },
+                                        ),
+                                    );
+                                    // 删除这个库 / Schema：DROP 语句进编辑器过人眼，
+                                    // 不直接执行。
+                                    if let Some(drop_sql) = drop_ns_sql.clone() {
+                                        let drop_view = view.clone();
+                                        let drop_conn = menu_conn.clone();
+                                        menu = menu.item(
+                                            PopupMenuItem::new(drop_ns_label).on_click(
+                                                move |_, window, cx| {
+                                                    let Some(entity) = drop_view.upgrade()
+                                                    else {
+                                                        return;
+                                                    };
+                                                    entity.update(cx, |this, cx| {
+                                                        this.activate_conn(
+                                                            &drop_conn,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                        this.stage_sql(
+                                                            drop_sql.clone(),
+                                                            drop_ns_note.into(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                },
+                                            ),
+                                        );
+                                    }
+                                }
+                                // 导出库结构：全库基础表的 DDL 拼成一份 .sql 落盘。
+                                if ns_export_kind {
+                                    let export_view = view.clone();
+                                    let export_conn = menu_conn.clone();
+                                    let export_target = menu_target.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(export_ns_label).on_click(
+                                            move |_, _, cx| {
+                                                let Some(entity) = export_view.upgrade() else {
+                                                    return;
+                                                };
+                                                entity.update(cx, |this, cx| {
+                                                    this.export_namespace_ddl(
+                                                        &export_conn,
+                                                        &export_target,
+                                                        cx,
+                                                    );
+                                                });
+                                            },
+                                        ),
+                                    );
+                                }
+                                // 粘贴表：表剪贴板里有东西才给项（表节点「复制表」存的）。
+                                if has_clipboard {
+                                    let paste_view = view.clone();
+                                    let paste_conn = menu_conn.clone();
+                                    let paste_target = menu_target.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(paste_label).on_click(
+                                            move |_, window, cx| {
+                                                let Some(entity) = paste_view.upgrade() else {
+                                                    return;
+                                                };
+                                                entity.update(cx, |this, cx| {
+                                                    this.paste_table(
+                                                        &paste_conn,
+                                                        &paste_target,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            },
+                                        ),
+                                    );
+                                }
                             }
                             menu = menu.separator();
                             {
@@ -2761,7 +3035,10 @@ impl DatabasePage {
             .filter(|object| object_matches(&object.name, needle))
             .collect();
         let count = objects.len() + database_objects.len();
-        if count == 0 {
+        // 概念存在但清单为空的分类也画（DBX 同款「视图 0」）：数得出「没有」比节点
+        // 凭空消失更可预期。引擎根本没有这个概念的（PG 的事件、SQLite 的用户…）
+        // 才不画 —— 那是点开必为空的哑节点（判定见 `TreeCategory::concept_supported`）。
+        if count == 0 && !category.concept_supported(session.kind) {
             return None;
         }
         let key = format!("cat:{conn_id}:{namespace}:{}", category.key());
@@ -2848,42 +3125,40 @@ impl DatabasePage {
                     let is_table = category == TreeCategory::Table;
                     let is_view = category == TreeCategory::View;
                     // 骨架与导入只对带标识符引号的 SQL 引擎有意义。
-                    let has_sql_ident = session.kind.identifier_quote().is_some();
+                    let has_sql_ident = session.quote.is_some();
+                    // 表分类：**直接开「新建表」标签**（dbx 同款的可视化网格建表），
+                    // 不再生成骨架；视图与其余七类仍走 CREATE 骨架。命名空间按层
+                    // 挂进去（SQLite 没有这层概念）。
+                    let create_schema: Option<String> = (session.kind != DatabaseKind::Sqlite
+                        && !namespace.is_empty())
+                    .then(|| namespace.to_owned());
+                    let opens_new_table = is_table && has_sql_ident;
                     // CREATE 骨架：表名 / 列名都走引擎自己的引号（`quote_identifier`），
                     // 命名空间按层挂进去 —— 生成出来就能直接执行。
-                    let create_sql: Option<String> = (has_sql_ident && (is_table || is_view))
-                        .then(|| {
-                            let quote = session.kind.identifier_quote().unwrap_or('"');
-                            let schema = (session.kind != DatabaseKind::Sqlite
-                                && !namespace.is_empty())
-                            .then(|| namespace.to_owned());
-                            let name = if is_table { "new_table" } else { "new_view" };
-                            let Ok(qualified) = duck_db::drivers::quote_qualified(
-                                &TableRef {
-                                    schema,
-                                    name: name.to_owned(),
-                                },
-                                quote,
-                            ) else {
-                                return None;
-                            };
-                            if is_table {
-                                Some(format!(
-                                    "CREATE TABLE {qualified} (\n  {q}id{q} INTEGER PRIMARY KEY,\n  {q}name{q} TEXT\n);",
-                                    q = quote
-                                ))
-                            } else {
-                                Some(format!(
-                                    "CREATE VIEW {qualified} AS\nSELECT 1;"
-                                ))
-                            }
-                        })
-                        .flatten()
-                        // 表 / 视图之外的六类（索引 / 过程 / 函数 / 触发器 / 事件 /
-                        // 用户）：每类一条语法正确的 CREATE 骨架；引擎给不出的
-                        // （事件只有 MySQL、用户体系 SQLite / ClickHouse 没有）
-                        // 返回 None，菜单不给项。
-                        .or_else(|| create_category_skeleton(category, session.kind));
+                    let create_sql: Option<String> = if is_table {
+                        None
+                    } else {
+                        (has_sql_ident && is_view)
+                            .then(|| {
+                                let quote = session.quote.unwrap_or('"');
+                                let Ok(qualified) = duck_db::drivers::quote_qualified(
+                                    &TableRef {
+                                        schema: create_schema.clone(),
+                                        name: "new_view".to_owned(),
+                                    },
+                                    quote,
+                                ) else {
+                                    return None;
+                                };
+                                Some(format!("CREATE VIEW {qualified} AS\nSELECT 1;"))
+                            })
+                            .flatten()
+                            // 表 / 视图之外的七类（索引 / 过程 / 函数 / 触发器 / 事件 /
+                            // 序列 / 用户）：每类一条语法正确的 CREATE 骨架；引擎给不出的
+                            // （事件只有 MySQL、序列只有 PG / SQL Server、用户体系 SQLite /
+                            // ClickHouse 没有）返回 None，菜单不给项。
+                            .or_else(|| create_category_skeleton(category, session.kind))
+                    };
                     let toggle_label = if is_open {
                         tr(cx, "收起")
                     } else {
@@ -2897,21 +3172,43 @@ impl DatabasePage {
                         TreeCategory::Function => tr(cx, "新建函数"),
                         TreeCategory::Trigger => tr(cx, "新建触发器"),
                         TreeCategory::Event => tr(cx, "新建事件"),
+                        TreeCategory::Sequence => tr(cx, "新建序列"),
                         TreeCategory::User => tr(cx, "新建用户"),
                     };
-                    let create_note = if is_table {
-                        tr(cx, "已把建表骨架放进编辑器。")
-                    } else if is_view {
+                    let create_note = if is_view {
                         tr(cx, "已把建视图骨架放进编辑器。")
                     } else {
                         tr(cx, "已把创建骨架放进编辑器。")
                     };
                     let import_label = tr(cx, "导入数据…");
+                    // 「粘贴表」：表剪贴板里有东西才给项（表节点「复制表」存的）。
+                    let paste_label = tr(cx, "粘贴表");
+                    let has_clipboard = self.table_clipboard.is_some();
                     let filter_label = tr(cx, "过滤器…");
                     let refresh_label = tr(cx, "刷新");
                     move |mut menu, _window, _cx| {
                         let view = view.clone();
-                        if let Some(sql) = create_sql.clone() {
+                        // 表分类：开「新建表」标签（永不复用，每点一次新开一个草稿）。
+                        if opens_new_table {
+                            let create_view = view.clone();
+                            let create_conn = menu_conn.clone();
+                            let create_ns = create_schema.clone();
+                            menu = menu.item(PopupMenuItem::new(create_label).on_click(
+                                move |_, window, cx| {
+                                    let Some(entity) = create_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.open_new_table_tab(
+                                            &create_conn,
+                                            create_ns.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            ));
+                        } else if let Some(sql) = create_sql.clone() {
                             let create_view = view.clone();
                             let note = create_note;
                             menu = menu.item(PopupMenuItem::new(create_label).on_click(
@@ -2951,6 +3248,22 @@ impl DatabasePage {
                                                 );
                                             },
                                         );
+                                    });
+                                },
+                            ));
+                        }
+                        if is_table && has_clipboard {
+                            // 粘贴表：同连接弹窗取名生成 CTAS 过人眼，跨连接开数据传输。
+                            let paste_view = view.clone();
+                            let paste_conn = menu_conn.clone();
+                            let paste_ns = menu_ns.clone();
+                            menu = menu.item(PopupMenuItem::new(paste_label).on_click(
+                                move |_, window, cx| {
+                                    let Some(entity) = paste_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.paste_table(&paste_conn, &paste_ns, window, cx);
                                     });
                                 },
                             ));
@@ -3221,25 +3534,186 @@ impl DatabasePage {
         });
     }
 
-    /// 「导出数据」：选定 CSV 落盘路径后整表读出（单次大页，上限
-    /// `EXPORT_ROW_CAP`）写文件。走 `ResultSet::to_csv` 的中性出口。
-    pub(super) fn export_table_data(
+    /// 「粘贴表」（dbx 的表剪贴板对位：表节点「复制表」→ 库 / 表分类节点「粘贴表」）。
+    ///
+    /// 同一条连接且是 SQL 引擎 → 弹窗取名后生成 `CREATE TABLE … AS SELECT * FROM …`
+    /// （SQL Server 没有 CTAS，用 `SELECT * INTO`）进编辑器过一次人眼；跨连接（或
+    /// 目标不是 SQL 引擎）→ 开数据传输标签，真正把数据搬过去（目标连接在页面上可改）。
+    pub(super) fn paste_table(
+        &mut self,
+        target_conn: &str,
+        namespace: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((source_conn, source_table)) = self.table_clipboard.clone() else {
+            return;
+        };
+        // 语句级 CTAS 只在同一条连接上成立；其余一律走数据传输（跨引擎也靠它）。
+        let same_sql = source_conn == target_conn
+            && self
+                .sessions
+                .get(target_conn)
+                .and_then(|session| session.quote)
+                .is_some();
+        if !same_sql {
+            let source_ns = source_table.schema.clone().unwrap_or_default();
+            self.open_transfer_tab(&source_conn, &source_ns, vec![source_table], window, cx);
+            return;
+        }
+        let Some(session) = self.sessions.get(target_conn) else {
+            return;
+        };
+        let quote = session.quote.unwrap_or('"');
+        let kind = session.kind;
+        let namespace = namespace.to_owned();
+        let conn_id = target_conn.to_owned();
+        self.open_text_prompt_dialog(
+            tr(cx, "粘贴表"),
+            tr(cx, "新表名"),
+            tr(cx, "生成语句"),
+            Rc::new(
+                move |new_name: &str,
+                      this: &mut DatabasePage,
+                      window: &mut Window,
+                      cx: &mut Context<DatabasePage>| {
+                    // SQLite 没有命名空间；其余引擎把新表挂进目标库 / schema。
+                    let schema = (kind != DatabaseKind::Sqlite && !namespace.is_empty())
+                        .then(|| namespace.clone());
+                    let (Ok(new_qualified), Ok(old_qualified)) = (
+                        quote_qualified(
+                            &TableRef {
+                                schema,
+                                name: new_name.to_owned(),
+                            },
+                            quote,
+                        ),
+                        quote_qualified(&source_table, quote),
+                    ) else {
+                        notify::warning(tr(cx, "表名包含非法字符。"), window, cx);
+                        return false;
+                    };
+                    let sql = if kind == DatabaseKind::SqlServer {
+                        format!("SELECT * INTO {new_qualified} FROM {old_qualified};")
+                    } else {
+                        format!("CREATE TABLE {new_qualified} AS SELECT * FROM {old_qualified};")
+                    };
+                    this.activate_conn(&conn_id, window, cx);
+                    this.stage_sql(
+                        sql,
+                        tr(cx, "已生成粘贴语句；确认无误后再执行。").into(),
+                        window,
+                        cx,
+                    );
+                    true
+                },
+            ),
+            window,
+            cx,
+        );
+    }
+
+    /// 「导出库结构」：把目标库 / schema 下**全部基础表**的 DDL 依次读出，拼成
+    /// 一份 `.sql` 落盘（`-- 限定名` 分隔头）。单表读失败就跳过（部分引擎对个别
+    /// 表不给 DDL），一份都没有才算没有。
+    ///
+    /// 与「导出表结构」同一条纪律：路径先定、DDL 后取（文件面板是异步的，DDL
+    /// 不依赖界面状态，只有表清单在开面板前就冻住了）。
+    pub(super) fn export_namespace_ddl(
         &mut self,
         conn_id: &str,
-        table: TableRef,
+        namespace: &str,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.sessions.get(conn_id) else {
             return;
         };
-        let Some(quote) = session.kind.identifier_quote() else {
+        let conn = session.conn.clone();
+        let kind = session.kind;
+        // 与数据传输同一条口径：这个命名空间下的基础表。SQLite 没有命名空间
+        // （目录条目不带 schema），整个目录就是这份文件的内容。
+        let tables: Vec<TableRef> = session
+            .catalog
+            .iter()
+            .filter(|entry| entry.kind == TableKind::Table)
+            .filter(|entry| {
+                kind == DatabaseKind::Sqlite || entry.schema.as_deref() == Some(namespace)
+            })
+            .map(|entry| entry.table_ref())
+            .collect();
+        let default_name = format!("{}.sql", namespace.replace(['/', '\\'], "_"));
+        crate::file_dialogs::save_file(cx, &default_name, move |path, this, cx| {
+            this.spawn_db(
+                cx,
+                move || -> Result<String, DbError> {
+                    let mut guard = conn.lock().expect("连接锁不应中毒");
+                    let mut out = String::new();
+                    for table in &tables {
+                        if let Ok(ddl) = guard.table_ddl(table) {
+                            if !out.is_empty() {
+                                out.push_str("\n\n");
+                            }
+                            out.push_str(&format!("-- {}\n{ddl}", table.display()));
+                        }
+                    }
+                    Ok(out)
+                },
+                move |this, result, window, cx| match result {
+                    Ok(ddl) if ddl.trim().is_empty() => {
+                        notify::warning(tr(cx, "这个库没有可导出的表结构。"), window, cx);
+                    }
+                    Ok(ddl) => match std::fs::write(&path, ddl) {
+                        Ok(()) => {
+                            let detail =
+                                trf(cx, "库结构已导出到 {}。", &[&path.display().to_string()]);
+                            this.status = detail.clone().into();
+                            notify::success(detail, window, cx);
+                        }
+                        Err(error) => {
+                            let reason = error.to_string();
+                            this.status = trf(cx, "写入文件失败：{}", &[&reason]).into();
+                            notify::error(trf(cx, "写入文件失败：{}", &[&reason]), window, cx);
+                        }
+                    },
+                    Err(error) => {
+                        let reason = error.to_string();
+                        this.status = trf(cx, "读取 DDL 失败：{}", &[&reason]).into();
+                        notify::error(trf(cx, "读取 DDL 失败：{}", &[&reason]), window, cx);
+                    }
+                },
+            );
+        });
+    }
+
+    /// 「导出数据」：按选定格式把整表读出（单次大页，上限 `EXPORT_ROW_CAP`）
+    /// 渲染后写文件。CSV / JSON / INSERT SQL 三档共用这一条出口 —— 渲染走
+    /// [`ResultFormat::render`]（INSERT 档要表引用与引擎引号，就在这里给）。
+    pub(super) fn export_table_data_as(
+        &mut self,
+        conn_id: &str,
+        table: TableRef,
+        format: ResultFormat,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get(conn_id) else {
+            return;
+        };
+        let Some(quote) = session.quote else {
             return;
         };
         let Ok(qualified) = quote_qualified(&table, quote) else {
             return;
         };
         let conn = session.conn.clone();
-        let default_name = format!("{}.csv", table.name);
+        // INSERT 档的表引用按引擎引号拼好（与结果区导出同一条口径）。
+        let insert_args = (format == ResultFormat::InsertSql).then(|| (qualified.clone(), quote));
+        let extension = format
+            .file_name()
+            .rsplit('.')
+            .next()
+            .unwrap_or("csv")
+            .to_owned();
+        let default_name = format!("{}.{}", table.name, extension);
         let label = table.display();
         crate::file_dialogs::save_file(cx, &default_name, move |path, this, cx| {
             let sql = format!("SELECT * FROM {qualified}");
@@ -3251,11 +3725,16 @@ impl DatabasePage {
                     let outcome = guard.execute(&sql, EXPORT_ROW_CAP)?;
                     let result = outcome.result.unwrap_or_default();
                     let count = result.row_count();
-                    Ok((result.to_csv(), count, path))
+                    let payload = format
+                        .render(&result, insert_args.as_ref().map(|(t, q)| (t.as_str(), *q)))
+                        .ok_or_else(|| {
+                            DbError::Config("this format cannot render the table data".into())
+                        })?;
+                    Ok((payload, count, path))
                 },
                 move |this, result, window, cx| match result {
-                    Ok((csv, count, path)) => {
-                        match std::fs::write(&path, csv) {
+                    Ok((payload, count, path)) => {
+                        match std::fs::write(&path, payload) {
                             Ok(()) => {
                                 let detail = trf(
                                     cx,
@@ -3281,6 +3760,78 @@ impl DatabasePage {
                 },
             );
         });
+    }
+
+    /// 「复制表结构为」：列清单（列名 / 类型 / 是否主键）转 TSV 或 Markdown 进剪贴板
+    /// （dbx 的 copy structure as 对位；数据字典导出的**剪贴板版**，同一套拼法）。
+    pub(super) fn copy_table_structure(
+        &mut self,
+        conn_id: &str,
+        table: TableRef,
+        markdown: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get(conn_id) else {
+            return;
+        };
+        let conn = session.conn.clone();
+        let title = table.display();
+        // 三段分开取词：写死 `"列名\t类型\t主键"` 一整串会让 i18n 守卫提取出**字面
+        // 反斜杠**形式，与运行时（真 tab）键永远对不上。取词要在**进后台闭包之前**
+        // 完成——`tr` 要 `&App`，闭包（要求 Send）捕获不得。
+        let header = (tr(cx, "列名"), tr(cx, "类型"), tr(cx, "主键"));
+        self.spawn_db(
+            cx,
+            move || -> Result<String, DbError> {
+                let mut guard = conn.lock().expect("连接锁不应中毒");
+                let columns = guard.table_columns(&table)?;
+                let pk = guard.table_primary_key(&table).unwrap_or_default();
+                use std::fmt::Write as _;
+                let mut text = String::new();
+                if markdown {
+                    let _ = writeln!(text, "# {}", title);
+                    let _ = writeln!(text);
+                    let _ = writeln!(text, "| 列名 | 类型 | 主键 |");
+                    let _ = writeln!(text, "| --- | --- | --- |");
+                    for column in &columns {
+                        let is_pk = pk.iter().any(|name| name == &column.name);
+                        let _ = writeln!(
+                            text,
+                            "| {} | {} | {} |",
+                            column.name.replace('|', "\\|"),
+                            column.type_name.replace('|', "\\|"),
+                            if is_pk { "✓" } else { "" }
+                        );
+                    }
+                } else {
+                    let _ = writeln!(text, "{}\t{}\t{}", header.0, header.1, header.2);
+                    for column in &columns {
+                        let is_pk = pk.iter().any(|name| name == &column.name);
+                        let _ = writeln!(
+                            text,
+                            "{}\t{}\t{}",
+                            column.name.replace(['\t', '\n'], " "),
+                            column.type_name.replace(['\t', '\n'], " "),
+                            if is_pk { "✓" } else { "" }
+                        );
+                    }
+                }
+                Ok(text)
+            },
+            move |this, result, _window, cx| match result {
+                Ok(text) => {
+                    let note = if markdown {
+                        tr(cx, "已复制表结构（Markdown）。")
+                    } else {
+                        tr(cx, "已复制表结构（TSV）。")
+                    };
+                    this.put_on_clipboard(text, note, cx);
+                }
+                Err(error) => {
+                    this.status = trf(cx, "读取表结构失败：{}", &[&error.to_string()]).into();
+                }
+            },
+        );
     }
 
     /// 「导出数据字典」：列清单（列名 / 类型 / 是否主键）写成 Markdown 表格落盘。
@@ -3444,21 +3995,20 @@ impl DatabasePage {
         let copy_label = tr(cx, "复制对象名");
         let refresh_label = tr(cx, "刷新");
         let copied_note = tr(cx, "已复制对象名。");
-        // 结构管理（只给**表**）：语句生成到编辑器，不在这里执行。
+        // 「生成删除语句」（只给**表**）：语句生成到编辑器，不在这里执行。
         // 视图 / 函数 / 序列各有各的改法（`CREATE OR REPLACE` / `ALTER FUNCTION`
         // / `ALTER SEQUENCE`），不在口径里，给了反而是半个按钮。
-        let structure_sql: Option<(String, String)> = (kind == TableKind::Table)
+        // 「修改结构」不再要模板：直接开结构编辑器标签，引擎能力闸门由编辑器
+        // 自己把（拿不到 DDL 能力的引擎画口径空态，见 `structure_capabilities`）。
+        let drop_sql: Option<String> = (kind == TableKind::Table)
             .then(|| {
-                let quote = engine.identifier_quote()?;
+                // 引号取**会话的真值**（agent 档只有连上才知道是 `"` 还是 `` ` ``）。
+                let quote = self.active_quote()?;
                 let qualified = quote_qualified(&reference, quote).ok()?;
-                Some((
-                    alter_table_template(engine, &qualified)?,
-                    drop_table_template(engine, &qualified)?,
-                ))
+                drop_table_template(engine, &qualified)
             })
             .flatten();
         let alter_label = tr(cx, "修改结构");
-        let alter_note = tr(cx, "已生成改表骨架，改好后执行。");
         let drop_label = tr(cx, "生成删除语句");
         let drop_note = tr(cx, "已生成删表语句；确认无误后再执行。");
         // 非表对象（视图 / 过程 / 函数 / 序列）的删除说明文案与删表分开：界面上
@@ -3484,8 +4034,86 @@ impl DatabasePage {
         let export_data_label = tr(cx, "导出数据");
         let export_ddl_label = tr(cx, "导出表结构");
         let dict_label = tr(cx, "导出数据字典");
+        // 表剪贴板（dbx 对位）：「复制表」存进页内剪贴板，目标库 / 表分类「粘贴表」落地。
+        let copy_table_label = tr(cx, "复制表");
+        let copy_table_note = tr(cx, "已复制表；在目标库或表分类上右键「粘贴表」。");
+        // 「补齐 dbx 对位」的新增项文案。
+        let ai_label = tr(cx, "加入 AI");
+        let dependency_label = tr(cx, "查看依赖");
+        let dependency_note = tr(cx, "已生成引用查询：执行后列出引用此表的表与列。");
+        let compare_label = tr(cx, "比较数据…");
+        let import_into_label = tr(cx, "导入数据…");
+        let copy_structure_label = tr(cx, "复制表结构为");
+        let truncate_label = tr(cx, "截断表");
+        let truncate_note = tr(cx, "已生成 TRUNCATE 语句；不可回滚，确认无误后再执行。");
+        let clear_label = tr(cx, "清空数据");
+        let clear_note = tr(cx, "已生成清空语句；建议放进事务里执行。");
+        let vacuum_label = tr(cx, "整理空间（VACUUM）");
+        let vacuum_note = tr(cx, "已生成 VACUUM 语句；确认无误后再执行。");
 
-        sidebar_navigation_button(
+        // 表行**可展开**（DBX 同款：列 / 索引 / 外键 / 触发器四个子分组）；视图 /
+        // 过程 / 函数 / 序列仍是叶子 —— 它们没有「表结构」可铺。展开状态挂在
+        // `tree_open`（键 = `tbl:<连接>:<限定名>`），首次展开由 chevron 的回调
+        // 触发一次结构内省（`load_table_tree`），之后命中缓存。
+        let expandable = kind == TableKind::Table;
+        let node_key = format!("tbl:{conn_id}:{}", reference.display());
+        let open = expandable && self.tree_open.contains(&node_key);
+        let trailing: AnyElement = if expandable {
+            let toggle_view = view.clone();
+            let toggle_key = node_key.clone();
+            let toggle_conn = conn_owned.clone();
+            let toggle_ref = reference.clone();
+            h_flex()
+                .flex_none()
+                .child(
+                    icon_button(
+                        SharedString::from(format!(
+                            "db-table-toggle-{conn_id}-{}",
+                            reference.display()
+                        )),
+                        if open {
+                            tr(cx, "收起")
+                        } else {
+                            tr(cx, "展开")
+                        },
+                        Icon::new(if open {
+                            DuckIcon::ChevronDown
+                        } else {
+                            DuckIcon::ChevronRight
+                        })
+                        .size(extended.icon.sm)
+                        .text_color(tokens.colors.muted_foreground),
+                        ButtonVariant::Ghost,
+                        cx,
+                    )
+                    // 箭头只切换折叠 + 首次展开顺手取结构，**不开数据标签**：
+                    // 与库节点的箭头同一条纪律（点整行才是「浏览数据」）。
+                    .on_click(move |_, _, cx| {
+                        let Some(entity) = toggle_view.upgrade() else {
+                            return;
+                        };
+                        let key = toggle_key.clone();
+                        let conn = toggle_conn.clone();
+                        let table = toggle_ref.clone();
+                        entity.update(cx, |this, cx| {
+                            if !this.tree_open.remove(&key) {
+                                this.tree_open.insert(key);
+                                this.load_table_tree(&conn, &table, cx);
+                            }
+                            cx.notify();
+                        });
+                        // 箭头是行内**嵌套按钮**：click 在冒泡期派发且不自动截停，
+                        // 不截停的话外层行按钮也会收到这次点击——它无条件切到这张表
+                        // 的数据标签（「点箭头看一眼结构」变成「跳走」）。
+                        cx.stop_propagation();
+                    }),
+                )
+                .into_any_element()
+        } else {
+            div().flex_none().into_any_element()
+        };
+
+        let row = sidebar_navigation_button(
             SharedString::from(format!("db-object-{}", reference.display())),
             SharedString::from(entry.name.clone()),
             Icon::new(table_kind_icon(kind))
@@ -3498,8 +4126,8 @@ impl DatabasePage {
             // 行尾**不挂「表 / 视图 / 存储过程」标签**：叶子挂在同名分类节点下面
             // （`表 (14)` → 一串 `表`），标签只是把分类标题重复一遍；种类由行首图标
             // 表意（`table_kind_icon`，格子 / 图层 / 终端 / 函数 / 序列各不相同）。
-            // 名字因此占满整行，长表名不容易被标签挤断。
-            div().flex_none(),
+            // 名字因此占满整行，长表名不容易被标签挤断。表行的行尾是展开箭头。
+            trailing,
             selected,
             cx,
         )
@@ -3541,6 +4169,9 @@ impl DatabasePage {
             let browse_ref = reference.clone();
             let snippet = snippet.clone();
             let menu_engine = engine;
+            // 右键菜单里所有「拼限定名」的地方都用这一个引号：会话的真值（agent 档靠它）。
+            // 一次取好往下传，而不是在几个 `move` 闭包里各取一次（那里没有 `self`）。
+            let menu_quote = self.active_quote();
             let menu_namespace = reference.schema.clone().unwrap_or_default();
             let pin_key = format!(
                 "{conn_id}:{}:{}",
@@ -3553,7 +4184,7 @@ impl DatabasePage {
             // 视图的子菜单只有 SELECT 一项。
             let sql_skeletons: Option<(String, String, String)> = (kind == TableKind::Table)
                 .then(|| {
-                    let quote = engine.identifier_quote()?;
+                    let quote = menu_quote?;
                     let qualified = quote_qualified(&reference, quote).ok()?;
                     let q = quote;
                     Some((
@@ -3566,13 +4197,51 @@ impl DatabasePage {
             // 定义原文查询（视图 / 过程 / 函数有出口，序列与无 SQL 引擎没有）：
             // 先算好那条元数据 SQL，点「查看定义」时才去连接上执行。
             let definition_sql = definition_query(kind, engine, &menu_namespace, &entry.name);
-            // 非表对象的删除语句：限定名按引擎引号拼好再进模板（表走 structure_sql
-            // 那条路，这里只管视图 / 过程 / 函数 / 序列）。
+            // 「查看依赖」的引用查询：**谁引用这张表**（外键反向）。只有三家有
+            // 信息架构可查（SQLite 要遍历整库 pragma，不在右键路径上做）。
+            let dependency_sql: Option<String> = (kind == TableKind::Table)
+                .then(|| {
+                let escaped = entry.name.replace('\'', "''");
+                match engine {
+                    DatabaseKind::Mysql => Some(format!(
+                        "SELECT TABLE_NAME AS referencing_table, COLUMN_NAME AS referencing_column, \
+                         REFERENCED_COLUMN_NAME, CONSTRAINT_NAME\nFROM information_schema.KEY_COLUMN_USAGE\n\
+                         WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME = '{escaped}';"
+                    )),
+                    DatabaseKind::Postgres => Some(format!(
+                        "SELECT tc.table_schema, tc.table_name, kcu.column_name, \
+                         ccu.table_schema AS referenced_schema, ccu.table_name AS referenced_table\n\
+                         FROM information_schema.table_constraints tc\n\
+                         JOIN information_schema.key_column_usage kcu\n  \
+                         ON tc.constraint_name = kcu.constraint_name\n\
+                         JOIN information_schema.constraint_column_usage ccu\n  \
+                         ON tc.constraint_name = ccu.constraint_name\n\
+                         WHERE tc.constraint_type = 'FOREIGN KEY' AND ccu.table_name = '{escaped}';"
+                    )),
+                    DatabaseKind::SqlServer => Some(format!(
+                        "SELECT tp.name AS referencing_table, cp.name AS referencing_column, \
+                         tr.name AS referenced_table, cr.name AS referenced_column\n\
+                         FROM sys.foreign_keys fk\n\
+                         JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id\n\
+                         JOIN sys.tables tp ON fkc.parent_object_id = tp.object_id\n\
+                         JOIN sys.columns cp ON fkc.parent_object_id = cp.object_id \
+                         AND fkc.parent_column_id = cp.column_id\n\
+                         JOIN sys.tables tr ON fkc.referenced_object_id = tr.object_id\n\
+                         JOIN sys.columns cr ON fkc.referenced_object_id = cr.object_id \
+                         AND fkc.referenced_column_id = cr.column_id\n\
+                         WHERE tr.name = '{escaped}';"
+                    )),
+                    _ => None,
+                }
+            })
+            .flatten();
+            // 非表对象的删除语句：限定名按引擎引号拼好再进模板（表走上面的
+            // `drop_sql` 那条路，这里只管视图 / 过程 / 函数 / 序列）。
             let drop_object_sql: Option<String> = (kind != TableKind::Table)
                 .then(|| {
-                    let quote = engine.identifier_quote()?;
+                    let quote = menu_quote?;
                     let qualified = quote_qualified(&reference, quote).ok()?;
-                    drop_catalog_sql(kind, engine, &qualified)
+                    drop_catalog_sql(kind, &qualified)
                 })
                 .flatten();
             move |mut menu, window, cx| {
@@ -3635,6 +4304,22 @@ impl DatabasePage {
                             };
                             entity.update(cx, |this, cx| {
                                 this.view_table_ddl(&ddl_conn, ddl_ref.clone(), window, cx);
+                            });
+                        },
+                    ));
+                }
+                // 「查看依赖」：生成「谁引用我」的元数据查询进编辑器（MySQL / PG /
+                // SQL Server；SQLite 要遍历整库 pragma，不给这项）。只读查询，
+                // 用户自己执行 —— 与「查看定义」同一条节奏。
+                if let Some(query) = dependency_sql.clone() {
+                    let dep_view = view.clone();
+                    menu = menu.item(PopupMenuItem::new(dependency_label).on_click(
+                        move |_, window, cx| {
+                            let Some(entity) = dep_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| {
+                                this.stage_sql(query.clone(), dependency_note.into(), window, cx);
                             });
                         },
                     ));
@@ -3796,6 +4481,24 @@ impl DatabasePage {
                         });
                     }));
                 }
+                if kind == TableKind::Table {
+                    // 「复制表」：存进**页内表剪贴板**（系统剪贴板放的是对象名，两者
+                    // 不抢）；目标库 / 表分类上「粘贴表」把它落地。
+                    let copy_view = view.clone();
+                    let copy_conn = conn_owned.clone();
+                    let copy_ref = browse_ref.clone();
+                    menu = menu.item(PopupMenuItem::new(copy_table_label).on_click(
+                        move |_, _, cx| {
+                            let Some(entity) = copy_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| {
+                                this.table_clipboard = Some((copy_conn.clone(), copy_ref.clone()));
+                                this.toast(notify::Tone::Success, copy_table_note, cx);
+                            });
+                        },
+                    ));
+                }
                 {
                     let pin_view = view.clone();
                     let pin_key = pin_key.clone();
@@ -3815,20 +4518,55 @@ impl DatabasePage {
                             }),
                     );
                 }
+                // 「加入 AI」：打开右栏 AI 分段并预填带表名的提问（dbx 的 addToAi
+                // 对位；本仓 AI 的表上下文在发请求时按**选中表**组装 —— 先把选中
+                // 表切到这一张再开面板，用户接着输入问题就行）。
+                if kind.is_relation() {
+                    let ai_view = view.clone();
+                    let ai_ref = browse_ref.clone();
+                    let ai_name = object_name.clone();
+                    menu = menu.item(PopupMenuItem::new(ai_label).on_click(
+                        move |_, window, cx| {
+                            let Some(entity) = ai_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |this, cx| {
+                                this.selected_table = Some(ai_ref.clone());
+                                this.reveal_right_dock(RightDock::Ai, cx);
+                                let question = this.ai_question.clone();
+                                let prompt =
+                                    trf(cx, "请分析表 {} 的结构与数据：", &[&ai_name]);
+                                question.update(cx, |state, cx| {
+                                    state.set_value(prompt, window, cx);
+                                    state.focus(window, cx);
+                                });
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
                 menu = menu.separator();
                 // ── 结构 ──
-                if let Some((alter, drop)) = structure_sql.as_ref() {
-                    let alter = alter.clone();
-                    let drop = drop.clone();
+                if kind == TableKind::Table {
+                    // 「修改结构」直接打开（或复用）这张表的结构编辑器标签 ——
+                    // 不再生成 `ALTER` 骨架：可视化编辑器覆盖的口径更全，生成的
+                    // 语句也逐条可核（同右栏 DDL 卡的「修改表结构」一条路径）。
                     let alter_view = view.clone();
-                    let drop_view = view.clone();
+                    let alter_conn = conn_owned.clone();
+                    let alter_ref = browse_ref.clone();
                     menu = menu.item(
                         PopupMenuItem::new(alter_label).on_click(move |_, window, cx| {
                             let Some(entity) = alter_view.upgrade() else {
                                 return;
                             };
                             entity.update(cx, |this, cx| {
-                                this.stage_sql(alter.clone(), alter_note.into(), window, cx);
+                                this.open_structure_tab(
+                                    &alter_conn,
+                                    alter_ref.clone(),
+                                    false,
+                                    window,
+                                    cx,
+                                );
                             });
                         }),
                     );
@@ -3857,7 +4595,7 @@ impl DatabasePage {
                                               window: &mut Window,
                                               cx: &mut Context<DatabasePage>| {
                                             let Ok(quoted_new) =
-                                                duck_db::drivers::quote_identifier(new_name, engine.identifier_quote().unwrap_or('"'))
+                                                duck_db::drivers::quote_identifier(new_name, menu_quote.unwrap_or('"'))
                                             else {
                                                 notify::warning(
                                                     tr(cx, "表名包含非法字符。"),
@@ -3868,7 +4606,7 @@ impl DatabasePage {
                                             };
                                             let old_qualified = match quote_qualified(
                                                 &table,
-                                                engine.identifier_quote().unwrap_or('"'),
+                                                menu_quote.unwrap_or('"'),
                                             ) {
                                                 Ok(qualified) => qualified,
                                                 Err(_) => table.display(),
@@ -3920,7 +4658,7 @@ impl DatabasePage {
                                               this: &mut DatabasePage,
                                               window: &mut Window,
                                               cx: &mut Context<DatabasePage>| {
-                                            let quote = engine.identifier_quote().unwrap_or('"');
+                                            let quote = menu_quote.unwrap_or('"');
                                             let (Ok(new_qualified), Ok(old_qualified)) = (
                                                 quote_qualified(
                                                     &TableRef {
@@ -3990,7 +4728,7 @@ impl DatabasePage {
                                                     );
                                                     return false;
                                                 };
-                                                let quote = engine.identifier_quote().unwrap_or('"');
+                                                let quote = menu_quote.unwrap_or('"');
                                                 let Ok(qualified) = quote_qualified(&table, quote) else {
                                                     return false;
                                                 };
@@ -4018,16 +4756,115 @@ impl DatabasePage {
                             },
                         ));
                     }
-                    menu = menu.item(
-                        PopupMenuItem::new(drop_label).on_click(move |_, window, cx| {
-                            let Some(entity) = drop_view.upgrade() else {
-                                return;
-                            };
-                            entity.update(cx, |this, cx| {
-                                this.stage_sql(drop.clone(), drop_note.into(), window, cx);
-                            });
-                        }),
-                    );
+                    // 「生成删除语句」仍要方言模板（引号 / 引擎子句），给不出不给项。
+                    if let Some(drop) = drop_sql.as_ref() {
+                        let drop = drop.clone();
+                        let drop_view = view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(drop_label).on_click(move |_, window, cx| {
+                                let Some(entity) = drop_view.upgrade() else {
+                                    return;
+                                };
+                                entity.update(cx, |this, cx| {
+                                    this.stage_sql(drop.clone(), drop_note.into(), window, cx);
+                                });
+                            }),
+                        );
+                    }
+                    // ── 危险操作（生成语句版：一律进编辑器过一次人眼，不直接执行
+                    // —— 与重命名 / 克隆同一条仓库纪律；dbx 的 Truncate / Empty /
+                    // Vacuum 对位）。截断只有吃 `TRUNCATE` 的四家给（SQLite 没有，
+                    // 「清空数据」覆盖该场景）；VACUUM 只有 PG / SQLite 有这个概念
+                    // （MySQL 的 OPTIMIZE TABLE 会锁表，不冒充）。
+                    if let Some(quote) = menu_quote
+                        && let Ok(qualified) = quote_qualified(&browse_ref, quote)
+                    {
+                        if matches!(
+                            engine,
+                            DatabaseKind::Mysql
+                                | DatabaseKind::Postgres
+                                | DatabaseKind::SqlServer
+                                | DatabaseKind::ClickHouse
+                        ) {
+                            let sql = format!("TRUNCATE TABLE {qualified};");
+                            let truncate_view = view.clone();
+                            menu = menu.item(PopupMenuItem::new(truncate_label).on_click(
+                                move |_, window, cx| {
+                                    let Some(entity) = truncate_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.stage_sql(
+                                            sql.clone(),
+                                            truncate_note.into(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            ));
+                        }
+                        {
+                            let sql = format!("DELETE FROM {qualified};");
+                            let clear_view = view.clone();
+                            menu = menu.item(PopupMenuItem::new(clear_label).on_click(
+                                move |_, window, cx| {
+                                    let Some(entity) = clear_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.stage_sql(
+                                            sql.clone(),
+                                            clear_note.into(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            ));
+                        }
+                        match engine {
+                            DatabaseKind::Postgres => {
+                                let sql = format!("VACUUM (ANALYZE) {qualified};");
+                                let vacuum_view = view.clone();
+                                menu = menu.item(PopupMenuItem::new(vacuum_label).on_click(
+                                    move |_, window, cx| {
+                                        let Some(entity) = vacuum_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.stage_sql(
+                                                sql.clone(),
+                                                vacuum_note.into(),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                ));
+                            }
+                            DatabaseKind::Sqlite => {
+                                let sql = "VACUUM;".to_owned();
+                                let vacuum_view = view.clone();
+                                menu = menu.item(PopupMenuItem::new(vacuum_label).on_click(
+                                    move |_, window, cx| {
+                                        let Some(entity) = vacuum_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.stage_sql(
+                                                sql.clone(),
+                                                vacuum_note.into(),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 // 非表对象的结构段：序列给「设置当前值」，其余给「生成删除语句」
                 // （视图 / 过程 / 函数 / 序列各有各的 DROP，引擎给不出的不给项）。
@@ -4104,20 +4941,96 @@ impl DatabasePage {
                 }
                 // ── 导出 ──（表 / 视图都能导数据 —— `SELECT *` 对两者都合法；
                 // 表结构 / 数据字典只有表有，视图没有列元数据口径之外的列说明。）
-                if kind.is_relation() && engine.identifier_quote().is_some() {
-                    let data_view = view.clone();
-                    let data_ref = browse_ref.clone();
-                    let data_conn = conn_owned.clone();
-                    menu = menu.item(PopupMenuItem::new(export_data_label).on_click(
-                        move |_, _, cx| {
-                            let Some(entity) = data_view.upgrade() else {
+                // 表级「比较数据」：比较页的规格直接带上这一张（CompareSpec::tables）。
+                if kind == TableKind::Table {
+                    let compare_view = view.clone();
+                    let compare_ref = browse_ref.clone();
+                    let compare_conn = conn_owned.clone();
+                    let compare_ns = menu_namespace.clone();
+                    menu = menu.item(PopupMenuItem::new(compare_label).on_click(
+                        move |_, window, cx| {
+                            let Some(entity) = compare_view.upgrade() else {
                                 return;
                             };
                             entity.update(cx, |this, cx| {
-                                this.export_table_data(&data_conn, data_ref.clone(), cx);
+                                this.open_compare_tab(
+                                    &compare_conn,
+                                    &compare_ns,
+                                    vec![compare_ref.clone()],
+                                    window,
+                                    cx,
+                                );
                             });
                         },
                     ));
+                    // 表级「导入数据」：CSV 按列名对齐追加进这张表（分组级那项
+                    // 是「导入成新表」，两条路不重合）。
+                    let import_view = view.clone();
+                    let import_ref = browse_ref.clone();
+                    let import_conn = conn_owned.clone();
+                    menu = menu.item(PopupMenuItem::new(import_into_label).on_click(
+                        move |_, _, cx| {
+                            let Some(entity) = import_view.upgrade() else {
+                                return;
+                            };
+                            entity.update(cx, |_this, cx| {
+                                let import_conn = import_conn.clone();
+                                let import_ref = import_ref.clone();
+                                crate::file_dialogs::open_file(
+                                    cx,
+                                    tr(cx, "选择要导入的 CSV 文件"),
+                                    move |path, this, cx| {
+                                        this.import_csv_append(
+                                            &import_conn,
+                                            import_ref.clone(),
+                                            path,
+                                            cx,
+                                        );
+                                    },
+                                );
+                            });
+                        },
+                    ));
+                }
+                if kind.is_relation() && menu_quote.is_some() {
+                    // 导出数据 ▸：CSV / JSON / INSERT SQL 三档（同一份整表读取，
+                    // 渲染走 ResultFormat——dbx 的导出子菜单对位）。INSERT INTO 对
+                    // 视图通常无效，这一档只给表；标签在 build 前算好（builder 是
+                    // `Fn`，不能在里面动 `cx`）。
+                    let data_formats: Vec<(ResultFormat, &'static str)> =
+                        [(ResultFormat::Csv, tr(cx, "导出 CSV")),
+                         (ResultFormat::Json, tr(cx, "导出 JSON")),
+                         (ResultFormat::InsertSql, tr(cx, "导出 INSERT 语句"))]
+                            .into_iter()
+                            .filter(|(format, _)| {
+                                *format != ResultFormat::InsertSql
+                                    || kind == TableKind::Table
+                            })
+                            .collect();
+                    let data_menu = PopupMenu::build(window, cx, |sub, _, _| {
+                        data_formats.iter().fold(sub, |sub, (format, label)| {
+                            let item_view = view.clone();
+                            let item_ref = browse_ref.clone();
+                            let item_conn = conn_owned.clone();
+                            let format = *format;
+                            sub.item(
+                                PopupMenuItem::new(*label).on_click(move |_, _, cx| {
+                                    let Some(entity) = item_view.upgrade() else {
+                                        return;
+                                    };
+                                    entity.update(cx, |this, cx| {
+                                        this.export_table_data_as(
+                                            &item_conn,
+                                            item_ref.clone(),
+                                            format,
+                                            cx,
+                                        );
+                                    });
+                                }),
+                            )
+                        })
+                    });
+                    menu = menu.item(PopupMenuItem::submenu(export_data_label, data_menu));
                     if kind == TableKind::Table {
                         let ddl_export_view = view.clone();
                         let ddl_export_ref = browse_ref.clone();
@@ -4153,6 +5066,39 @@ impl DatabasePage {
                                 });
                             },
                         ));
+                        // 复制表结构为 ▸（TSV / Markdown）：数据字典的剪贴板版，
+                        // 粘进文档 / IM 里讨论用（dbx 的 copy structure as 对位）。
+                        let structure_formats = [
+                            (false, tr(cx, "TSV")),
+                            (true, tr(cx, "Markdown")),
+                        ];
+                        let structure_menu = PopupMenu::build(window, cx, |sub, _, _| {
+                            structure_formats.iter().fold(sub, |sub, (markdown, label)| {
+                                let item_view = view.clone();
+                                let item_ref = browse_ref.clone();
+                                let item_conn = conn_owned.clone();
+                                let markdown = *markdown;
+                                sub.item(PopupMenuItem::new(*label).on_click(
+                                    move |_, _, cx| {
+                                        let Some(entity) = item_view.upgrade() else {
+                                            return;
+                                        };
+                                        entity.update(cx, |this, cx| {
+                                            this.copy_table_structure(
+                                                &item_conn,
+                                                item_ref.clone(),
+                                                markdown,
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                ))
+                            })
+                        });
+                        menu = menu.item(PopupMenuItem::submenu(
+                            copy_structure_label,
+                            structure_menu,
+                        ));
                     }
                     menu = menu.separator();
                 }
@@ -4175,7 +5121,203 @@ impl DatabasePage {
                 menu
             }
         })
-        .into_any_element()
+        .into_any_element();
+        // 展开的表行下面铺结构分组（列 / 索引 / 外键 / 触发器）；收起与非表对象
+        // 就只有这一行。分组是行的**兄弟**而不是行内子级 —— 再包一层缩进会让
+        // 收起状态的表行比其他叶子深一列。
+        if open {
+            let mut node = v_flex().w_full().gap(tokens.spacing.xxs).child(row);
+            node = node.child(self.sidebar_table_structure(conn_id, &reference, cx));
+            node.into_any_element()
+        } else {
+            row
+        }
+    }
+
+    /// 展开表节点时**惰性**取一次结构（列 / 索引 / 外键 / 触发器一次取齐）。
+    ///
+    /// 已缓存或在取的表直接返回：展开收起再展开不打服务器。四份内省各自兜底
+    /// 落空清单 —— 结构取不全不该把整个节点卡死（与表页 [`TableMeta`] 同口径）。
+    pub(super) fn load_table_tree(
+        &mut self,
+        conn_id: &str,
+        table: &TableRef,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get(conn_id) else {
+            return;
+        };
+        let key = table_tree_key(conn_id, table);
+        if self.table_tree.contains_key(&key) || !self.table_tree_loading.insert(key.clone()) {
+            return;
+        }
+        let conn = session.conn.clone();
+        let table_for_work = table.clone();
+        self.spawn_db(
+            cx,
+            move || {
+                let mut guard = conn.lock().expect("连接锁不应中毒");
+                TableTreeMeta {
+                    columns: guard.table_columns(&table_for_work).unwrap_or_default(),
+                    indexes: guard.table_indexes(&table_for_work).unwrap_or_default(),
+                    foreign_keys: guard
+                        .table_foreign_keys(&table_for_work)
+                        .unwrap_or_default(),
+                    triggers: guard.table_triggers(&table_for_work).unwrap_or_default(),
+                }
+            },
+            move |this, meta, _window, cx| {
+                this.table_tree_loading.remove(&key);
+                this.table_tree.insert(key.clone(), meta);
+                cx.notify();
+            },
+        );
+    }
+
+    /// 表节点展开后的**结构分组**（列 / 索引 / 外键 / 触发器，DBX 同款四个分组）。
+    ///
+    /// 结构还没取回（首次展开、后台在取）时给一条「正在读取」说明行；取回后四个
+    /// 分组各自可折叠，子级是纯展示行（名称 + 类型 / 组成列 / 指向等元信息）。
+    /// 外键与触发器分组只给**有这两个概念**的引擎（与 `table_foreign_keys` /
+    /// `table_triggers` 的分派同口径：ClickHouse / MongoDB / Elasticsearch 恒空，
+    /// 挂出来就是两个永远为 0 的死节点）。
+    fn sidebar_table_structure(&self, conn_id: &str, table: &TableRef, cx: &App) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let key = table_tree_key(conn_id, table);
+        let Some(meta) = self.table_tree.get(&key) else {
+            // 还在取：给一条说明行，别让人以为点了没反应。
+            return div()
+                .w_full()
+                .px(tokens.spacing.sm)
+                .py(tokens.spacing.xs)
+                .child(meta_text(tr(cx, "正在读取表结构…"), cx))
+                .into_any_element();
+        };
+        let engine = self
+            .sessions
+            .get(conn_id)
+            .map_or(DatabaseKind::Sqlite, |session| session.kind);
+        // 外键与触发器在引擎分派上**同一个集合**（`table_foreign_keys` 与
+        // `table_triggers` 只认 SQLite / PG / MySQL / SQL Server），所以一个判据管两组：
+        // ClickHouse / MongoDB / Elasticsearch 挂出来就是两个永远为 0 的死节点。
+        let has_keys_and_triggers = matches!(
+            engine,
+            DatabaseKind::Sqlite
+                | DatabaseKind::Postgres
+                | DatabaseKind::Mysql
+                | DatabaseKind::SqlServer
+        );
+        // 分组的四元组：稳定键 / 图标 / 标题源串 / 该引擎有没有这个概念。
+        let groups = [
+            ("columns", DuckIcon::Rows3, "列", true),
+            ("indexes", DuckIcon::ListOrdered, "索引", true),
+            ("fkeys", DuckIcon::Network, "外键", has_keys_and_triggers),
+            ("triggers", DuckIcon::Zap, "触发器", has_keys_and_triggers),
+        ];
+        let mut node = v_flex()
+            .w_full()
+            .pl(tokens.spacing.md)
+            .gap(tokens.spacing.xxs);
+        for (group, icon, heading, shown) in groups {
+            if !shown {
+                continue;
+            }
+            let group_key = format!("tblg:{conn_id}:{}:{group}", table.display());
+            let group_open = self.tree_open.contains(&group_key);
+            let rows: Vec<AnyElement> = match group {
+                "columns" => meta
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        structure_leaf_row(
+                            format!("db-col-{conn_id}-{}-{}", table.display(), column.name),
+                            column.name.clone(),
+                            (!column.type_name.is_empty()).then(|| column.type_name.clone()),
+                            DuckIcon::Rows3,
+                            cx,
+                        )
+                    })
+                    .collect(),
+                "indexes" => meta
+                    .indexes
+                    .iter()
+                    .map(|index| {
+                        structure_leaf_row(
+                            format!("db-idx-{conn_id}-{}-{}", table.display(), index.name),
+                            index.name.clone(),
+                            (!index.columns.is_empty()).then(|| index.columns.join(", ")),
+                            DuckIcon::ListOrdered,
+                            cx,
+                        )
+                    })
+                    .collect(),
+                "fkeys" => meta
+                    .foreign_keys
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, fkey)| {
+                        // SQLite 的外键没有约束名：落空串时用「列 → 被引用列」当行名。
+                        let label = if fkey.name.is_empty() {
+                            format!(
+                                "{} → {}",
+                                fkey.columns.join(", "),
+                                fkey.ref_columns.join(", ")
+                            )
+                        } else {
+                            fkey.name.clone()
+                        };
+                        // 元素 id 用**序号**而不是约束名兜底：SQLite 的外键名恒空，
+                        // 同一张表的多条外键会撞成同一个 id（引擎要求 id 逐元素唯一，
+                        // 撞了就是后注册覆盖先注册、先那份静默失效）。
+                        structure_leaf_row(
+                            format!("db-fk-{conn_id}-{}-{ordinal}", table.display()),
+                            label,
+                            Some(fkey.ref_table.clone()),
+                            DuckIcon::Network,
+                            cx,
+                        )
+                    })
+                    .collect(),
+                "triggers" => meta
+                    .triggers
+                    .iter()
+                    .map(|trigger| {
+                        let detail = format!("{} {}", trigger.timing, trigger.event)
+                            .trim()
+                            .to_owned();
+                        structure_leaf_row(
+                            format!("db-trg-{conn_id}-{}-{}", table.display(), trigger.name),
+                            trigger.name.clone(),
+                            (!detail.is_empty()).then_some(detail),
+                            DuckIcon::Zap,
+                            cx,
+                        )
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            node = node.child(self.sidebar_toggle_row(
+                format!("db-structure-{conn_id}-{}-{group}", table.display()),
+                group_key,
+                icon,
+                tr(cx, heading),
+                Some(rows.len()),
+                false,
+                group_open,
+                cx,
+            ));
+            if group_open {
+                node = node.child(
+                    v_flex()
+                        .w_full()
+                        .pl(tokens.spacing.md)
+                        .gap(tokens.spacing.xxs)
+                        .children(rows),
+                );
+            }
+        }
+        node.into_any_element()
     }
 
     /// 左栏树里的**库级对象叶子**：触发器 / 事件 / 用户与权限。
@@ -4242,9 +5384,20 @@ impl DatabasePage {
             Icon::new(category.icon())
                 .size(extended.icon.md)
                 .text_color(tokens.colors.muted_foreground),
+            // ⚠️ 行尾说明文字（索引 = 挂在哪张表、用户 = host…）必须**可被挤 +
+            // 省略号**：它是行里唯一没有伸缩约束的元素，原始宽度一超过行宽就把
+            // 前面「图标 + 名称」整组挤塌 —— lead 组是 `min_w_0`，能缩到 0；
+            // 名称随之整条消失，`flex_shrink_0` 的图标从 0 宽的框里溢出来画在
+            // 说明文字上（实机表现：索引分类里「图标压在文字上」，其实压的是
+            // 表名，索引名已经被挤没了）。
             detail.as_ref().map_or_else(
-                || div().into_any_element(),
-                |detail| meta_text(detail.clone(), cx).into_any_element(),
+                || div().flex_none().into_any_element(),
+                |detail| {
+                    meta_text(detail.clone(), cx)
+                        .min_w_0()
+                        .truncate()
+                        .into_any_element()
+                },
             ),
             false,
             cx,
@@ -4660,7 +5813,7 @@ impl DatabasePage {
                                 .when(null_cell, |text| {
                                     text.text_color(extended.colors.text_tertiary)
                                 })
-                                .child(SharedString::from(value))
+                                .child(selectable_text(SharedString::from(value)))
                                 .into_any_element(),
                             meta_text(
                                 tr(cx, "这一格所在的结果集不可编辑（需要单表 + 主键），只能查看。"),
@@ -4742,7 +5895,9 @@ impl DatabasePage {
                                     .min_w_0()
                                     .truncate()
                                     .text_size(tokens.typography.sm.size)
-                                    .child(SharedString::from(column.name.clone())),
+                                    .child(selectable_text(SharedString::from(
+                                        column.name.clone(),
+                                    ))),
                             )
                             .children(is_pk.then(|| accent_tag(tr(cx, "主键"), cx))),
                     )
@@ -4752,7 +5907,9 @@ impl DatabasePage {
                             .truncate()
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
-                            .child(SharedString::from(column.type_name.clone())),
+                            .child(selectable_text(SharedString::from(
+                                column.type_name.clone(),
+                            ))),
                     )
                     .context_menu(move |menu, _, _| {
                         let view = view.clone();
@@ -4813,7 +5970,7 @@ impl DatabasePage {
                                     .min_w_0()
                                     .truncate()
                                     .text_size(tokens.typography.sm.size)
-                                    .child(SharedString::from(index.name.clone())),
+                                    .child(selectable_text(SharedString::from(index.name.clone()))),
                             )
                             .child(tags),
                     )
@@ -4920,7 +6077,7 @@ impl DatabasePage {
                             .truncate()
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
-                            .child(SharedString::from(definition.clone())),
+                            .child(selectable_text(SharedString::from(definition.clone()))),
                     )
                     .context_menu(move |menu, _, _| {
                         let view = view.clone();
@@ -4971,7 +6128,9 @@ impl DatabasePage {
                                     .min_w_0()
                                     .truncate()
                                     .text_size(tokens.typography.sm.size)
-                                    .child(SharedString::from(trigger.name.clone())),
+                                    .child(selectable_text(SharedString::from(
+                                        trigger.name.clone(),
+                                    ))),
                             )
                             .child(neutral_tag(timing, cx)),
                     )
@@ -4981,7 +6140,7 @@ impl DatabasePage {
                             .truncate()
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
-                            .child(SharedString::from(trigger.event.clone())),
+                            .child(selectable_text(SharedString::from(trigger.event.clone()))),
                     )
                     .context_menu(move |menu, _, _| {
                         let view = view.clone();

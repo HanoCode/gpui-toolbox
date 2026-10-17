@@ -1,16 +1,37 @@
 //! 服务端面板：数据拉取（慢日志 / 客户端 / 配置 / 内存 / 监视器 / CLI）与它们的渲染。
 
 use super::*;
+use duck_components::selectable_text;
+
+/// 终端面板的等宽族（对齐 `logs.rs` / `assistant.rs` 的同款常量）。
+/// `font_family` 只收一个族名，两个平台各自保证存在的那个；缺失时回落默认 UI 字体。
+#[cfg(target_os = "macos")]
+const MONO_FAMILY: &str = "Menlo";
+#[cfg(not(target_os = "macos"))]
+const MONO_FAMILY: &str = "Consolas";
 
 impl RedisPage {
-    /// 拉取当前面板的数据。
+    /// 拉取**当前服务端面板**的数据（`load_panel_for` 的便捷形态）。
+    pub(super) fn load_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.load_panel_for(self.panel, window, cx);
+    }
+
+    /// 拉取指定面板的数据。
+    ///
+    /// 「服务端」视图与值面板顶部分页**两处共存、共用同一份数据**：分页切到
+    /// 「状态 / 慢日志」时也走这里（`set_value_tab` 按目标页传面板名），
+    /// 不另建第二份拉取链。
     ///
     /// `Monitor` / `Cli` 不走批量拉取：前者是流、后者每次输入现发一条。
-    pub(super) fn load_panel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn load_panel_for(
+        &mut self,
+        panel: ServerPanel,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.active_session() else {
             return;
         };
-        let panel = self.panel;
         if matches!(panel, ServerPanel::Monitor | ServerPanel::Cli) {
             return;
         }
@@ -514,6 +535,307 @@ impl RedisPage {
     }
 
     // ------------------------------------------------------------------
+    // 发布 / 订阅（SUBSCRIBE，专用连接）。
+    //
+    // 与 `MONITOR` 同一条纪律：专用连接、拉模型、只置停止位。区别只在
+    // 「频道由用户现填、随时可换」——换频道 = 停旧会话、开新会话。
+    // ------------------------------------------------------------------
+
+    /// 输入框里的频道清单（空白分隔、去空去重；保序）。
+    fn pubsub_channels(&self, cx: &App) -> Vec<String> {
+        let text = self.pubsub_channel.read(cx).value().to_string();
+        let mut channels: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+        channels.dedup();
+        channels
+    }
+
+    /// 开启订阅。
+    ///
+    /// 建连与读循环都在**专用连接**上（同 `MONITOR`）：订阅一旦开启，
+    /// 该连接上再也不能发别的命令。
+    pub(super) fn start_pubsub(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pubsub_running {
+            return;
+        }
+        let Some(cfg) = self.active_config().cloned() else {
+            return;
+        };
+        let channels = self.pubsub_channels(cx);
+        if channels.is_empty() {
+            notify::warning(tr(cx, "请先填写要订阅的频道"), window, cx);
+            return;
+        }
+        self.pubsub_error = None;
+        self.pubsub_running = true;
+        self.pubsub_generation = self.pubsub_generation.wrapping_add(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.pubsub_stop = Some(stop.clone());
+        self.pubsub_task = Some(Self::spawn_pubsub_poll(
+            cx,
+            cfg,
+            channels,
+            stop,
+            self.pubsub_generation,
+        ));
+        self.status = tr(cx, "订阅已开启").into();
+        cx.notify();
+    }
+
+    /// 停止订阅（只置停止位，读循环自己收工）。
+    pub(super) fn stop_pubsub(&mut self, cx: &mut Context<Self>) {
+        if let Some(stop) = self.pubsub_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        if self.pubsub_running {
+            self.pubsub_running = false;
+            self.status = tr(cx, "订阅已停止").into();
+            cx.notify();
+        }
+    }
+
+    /// 清空订阅输出（不停会话）。
+    pub(super) fn clear_pubsub(&mut self, cx: &mut Context<Self>) {
+        self.pubsub_lines.clear();
+        self.pubsub_error = None;
+        cx.notify();
+    }
+
+    /// 订阅的轮询循环（结构与 [`Self::spawn_monitor_poll`] 完全同构）。
+    pub(super) fn spawn_pubsub_poll(
+        cx: &mut Context<Self>,
+        cfg: RedisConfig,
+        channels: Vec<String>,
+        stop: Arc<AtomicBool>,
+        generation: u64,
+    ) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let started = cx
+                .background_executor()
+                .spawn(async move {
+                    let password = load_password(&cfg.id).ok().flatten();
+                    PubSubSession::start(&cfg, password.as_deref(), &channels)
+                })
+                .await;
+            let mut session = match started {
+                Ok(session) => session,
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = this.update(cx, |page, cx| {
+                        if page.pubsub_generation == generation {
+                            page.pubsub_running = false;
+                        }
+                        page.pubsub_error = Some(message);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                cx.background_executor().timer(MONITOR_TICK).await;
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let (back, batch) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let batch = session.poll(PUBSUB_BATCH);
+                        (session, batch)
+                    })
+                    .await;
+                session = back;
+                match batch {
+                    Ok(messages) => {
+                        if messages.is_empty() {
+                            continue;
+                        }
+                        let alive = this
+                            .update(cx, |page, cx| {
+                                let now = now_secs();
+                                for message in messages {
+                                    page.pubsub_lines.push_back(PubSubLine {
+                                        channel: message.channel,
+                                        payload: message.payload,
+                                        at: now,
+                                    });
+                                }
+                                while page.pubsub_lines.len() > PUBSUB_LINES_MAX {
+                                    page.pubsub_lines.pop_front();
+                                }
+                                page.pubsub_scroll.scroll_to_bottom();
+                                cx.notify();
+                            })
+                            .is_ok();
+                        if !alive {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        let _ = this.update(cx, |page, cx| {
+                            if page.pubsub_generation == generation {
+                                page.pubsub_running = false;
+                            }
+                            page.pubsub_error = Some(message);
+                            cx.notify();
+                        });
+                        return;
+                    }
+                }
+            }
+
+            let _ = this.update(cx, |page, cx| {
+                if page.pubsub_generation == generation && page.pubsub_running {
+                    page.pubsub_running = false;
+                    cx.notify();
+                }
+            });
+        })
+    }
+
+    /// 「发布/订阅」面板：频道输入 + 订阅开关 + 消息流。
+    pub(super) fn render_panel_pubsub(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens();
+        let extended = theme.extended();
+        let view = self.view.clone();
+        let running = self.pubsub_running;
+
+        // 顶部一行：频道输入 + 订阅 / 停止 + 清空。
+        let mut controls = h_flex()
+            .flex_none()
+            .w_full()
+            .items_center()
+            .gap(tokens.spacing.sm)
+            .child(panel_input_box(&self.pubsub_channel, cx))
+            .child(
+                button(
+                    "redis-pubsub-toggle",
+                    if running {
+                        tr(cx, "停止")
+                    } else {
+                        tr(cx, "订阅")
+                    },
+                    if running {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Primary
+                    },
+                    cx,
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            if this.pubsub_running {
+                                this.stop_pubsub(cx);
+                            } else {
+                                this.start_pubsub(window, cx);
+                            }
+                        });
+                    }
+                }),
+            )
+            .child(
+                button(
+                    "redis-pubsub-clear",
+                    tr(cx, "清空"),
+                    ButtonVariant::Secondary,
+                    cx,
+                )
+                .disabled(self.pubsub_lines.is_empty())
+                .on_click({
+                    let view = view.clone();
+                    move |_, _window, cx| {
+                        let _ = view.update(cx, |this, cx| this.clear_pubsub(cx));
+                    }
+                }),
+            );
+
+        // 状态行：在跑 / 出错 / 空闲各说各的实话。
+        let status_line = if let Some(error) = &self.pubsub_error {
+            meta_text(trf(cx, "订阅中断：{}", &[error]), cx)
+        } else if running {
+            meta_text(tr(cx, "订阅中（专用连接；离开本页自动停止）。"), cx)
+        } else {
+            meta_text(tr(cx, "未订阅。填好频道后点「订阅」。"), cx)
+        };
+
+        // 消息流：滚动容器 + 每条「频道 · 载荷 · 时刻」。空态给指引。
+        let lines = self.pubsub_lines.clone();
+        let body = if lines.is_empty() {
+            panel_empty(tr(cx, "还没有消息。订阅后，推送会实时出现在这里。"), cx)
+        } else {
+            let mut flow = v_flex().w_full().gap(tokens.spacing.xxs);
+            for line in lines {
+                flow = flow.child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(tokens.spacing.sm)
+                        .px(tokens.spacing.xs)
+                        .py(tokens.spacing.xxs)
+                        .rounded(theme.components().input_radius)
+                        .border(extended.stroke.thin)
+                        .border_color(extended.colors.hairline)
+                        .child(
+                            div()
+                                .flex_none()
+                                .min_w(px(PANEL_LABEL_WIDTH / 2.))
+                                .text_size(tokens.typography.xs.size)
+                                .text_color(tokens.colors.muted_foreground)
+                                .child(selectable_text(SharedString::from(line.channel))),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(tokens.typography.sm.size)
+                                .line_height(tokens.typography.sm.line_height)
+                                .text_color(tokens.colors.foreground)
+                                .child(selectable_text(SharedString::from(line.payload))),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(tokens.typography.xs.size)
+                                .text_color(tokens.colors.muted_foreground)
+                                .child(selectable_text(SharedString::from(relative_age(
+                                    line.at,
+                                    now_secs(),
+                                    cx,
+                                )))),
+                        ),
+                );
+            }
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .id("redis-pubsub-log")
+                .overflow_y_scroll()
+                .p(tokens.spacing.sm)
+                .track_scroll(&self.pubsub_scroll)
+                .child(flow)
+                .into_any_element()
+        };
+
+        controls = controls.child(div().flex_1());
+        v_flex()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .child(controls)
+            .child(status_line)
+            .child(body)
+            .into_any_element()
+    }
+
+    // ------------------------------------------------------------------
     // 键空间。
     // ------------------------------------------------------------------
 }
@@ -594,84 +916,14 @@ impl RedisPage {
 
     /// 面板级动作（刷新 / 开始停止 / 清空）。
     pub(super) fn render_panel_actions(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let theme = active_theme(cx);
-        let icons = theme.extended().icon;
-        let view = self.view.clone();
-        let mut actions: Vec<AnyElement> = Vec::new();
-
         match self.panel {
-            ServerPanel::Monitor => {
-                let running = self.monitor_running;
-                actions.push(
-                    button(
-                        "redis-monitor-toggle",
-                        if running {
-                            tr(cx, "停止")
-                        } else {
-                            tr(cx, "开始")
-                        },
-                        if running {
-                            ButtonVariant::Secondary
-                        } else {
-                            ButtonVariant::Primary
-                        },
-                        cx,
-                    )
-                    .on_click({
-                        let view = view.clone();
-                        move |_, window, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                if this.monitor_running {
-                                    this.stop_monitor(cx);
-                                } else {
-                                    this.start_monitor(window, cx);
-                                }
-                            });
-                        }
-                    })
-                    .into_any_element(),
-                );
-                actions.push(
-                    button(
-                        "redis-monitor-clear",
-                        tr(cx, "清空"),
-                        ButtonVariant::Secondary,
-                        cx,
-                    )
-                    .disabled(self.monitor_lines.is_empty())
-                    .on_click({
-                        let view = view.clone();
-                        move |_, _window, cx| {
-                            let _ = view.update(cx, |this, cx| this.clear_monitor(cx));
-                        }
-                    })
-                    .into_any_element(),
-                );
-            }
-            ServerPanel::Cli => {
-                actions.push(
-                    button(
-                        "redis-cli-clear",
-                        tr(cx, "清空"),
-                        ButtonVariant::Secondary,
-                        cx,
-                    )
-                    .disabled(self.cli_lines.is_empty())
-                    .on_click({
-                        let view = view.clone();
-                        move |_, _window, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                this.cli_lines.clear();
-                                this.cli_scroll.scroll_to_bottom();
-                                cx.notify();
-                            });
-                        }
-                    })
-                    .into_any_element(),
-                );
-            }
+            ServerPanel::Monitor => self.monitor_actions(cx),
+            ServerPanel::Cli => self.cli_actions(cx),
             _ => {
-                actions.push(
+                let theme = active_theme(cx);
+                let icons = theme.extended().icon;
+                let view = self.view.clone();
+                vec![
                     toolbar_action_button(
                         "redis-panel-refresh",
                         tr(cx, "刷新"),
@@ -687,10 +939,97 @@ impl RedisPage {
                         }
                     })
                     .into_any_element(),
-                );
+                ]
             }
         }
-        actions
+    }
+
+    /// 值面板分页（KeyValueTab）对应的面板级动作。
+    ///
+    /// 值面板与「服务端」视图**共用正文渲染**（`render_panel_monitor` 等），但
+    /// `self.panel` 只跟服务端视图走，这里必须按**值分页**给动作——否则监控页
+    /// 的空态提示「点右上角开始」会落空（值面板右上角没按钮）。状态 / 慢日志
+    /// 进页即自动拉取、发布订阅的按钮在面板内部，都不需要这里给。
+    pub(super) fn render_value_tab_actions(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        match self.value_tab {
+            KeyValueTab::Monitor => self.monitor_actions(cx),
+            KeyValueTab::Cli => self.cli_actions(cx),
+            _ => Vec::new(),
+        }
+    }
+
+    /// 监控页的动作：开始 / 停止 + 清空。
+    fn monitor_actions(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let view = self.view.clone();
+        let running = self.monitor_running;
+        vec![
+            button(
+                "redis-monitor-toggle",
+                if running {
+                    tr(cx, "停止")
+                } else {
+                    tr(cx, "开始")
+                },
+                if running {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Primary
+                },
+                cx,
+            )
+            .on_click({
+                let view = view.clone();
+                move |_, window, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        if this.monitor_running {
+                            this.stop_monitor(cx);
+                        } else {
+                            this.start_monitor(window, cx);
+                        }
+                    });
+                }
+            })
+            .into_any_element(),
+            button(
+                "redis-monitor-clear",
+                tr(cx, "清空"),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .disabled(self.monitor_lines.is_empty())
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    let _ = view.update(cx, |this, cx| this.clear_monitor(cx));
+                }
+            })
+            .into_any_element(),
+        ]
+    }
+
+    /// 命令行页的动作：清空输出。
+    fn cli_actions(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let view = self.view.clone();
+        vec![
+            button(
+                "redis-cli-clear",
+                tr(cx, "清空"),
+                ButtonVariant::Secondary,
+                cx,
+            )
+            .disabled(self.cli_lines.is_empty())
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.cli_lines.clear();
+                        this.cli_scroll.scroll_to_bottom();
+                        cx.notify();
+                    });
+                }
+            })
+            .into_any_element(),
+        ]
     }
 
     /// 「概览」面板：`INFO` 分节浏览。
@@ -739,7 +1078,7 @@ impl RedisPage {
                                 .text_size(tokens.typography.sm.size)
                                 .line_height(tokens.typography.sm.line_height)
                                 .text_color(tokens.colors.foreground)
-                                .child(SharedString::from(value.clone())),
+                                .child(selectable_text(SharedString::from(value.clone()))),
                         ),
                 );
             }
@@ -791,12 +1130,12 @@ impl RedisPage {
                             .min_w(px(SLOWLOG_META_WIDTH))
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
-                            .child(SharedString::from(format!(
+                            .child(selectable_text(SharedString::from(format!(
                                 "#{}  {} ms  {}",
                                 entry.id(),
                                 entry.duration_ms(),
                                 relative_age(entry.timestamp(), now, cx),
-                            ))),
+                            )))),
                     )
                     .child(
                         div()
@@ -806,7 +1145,7 @@ impl RedisPage {
                             .text_size(tokens.typography.sm.size)
                             .line_height(tokens.typography.sm.line_height)
                             .text_color(tokens.colors.foreground)
-                            .child(SharedString::from(entry.command_line())),
+                            .child(selectable_text(SharedString::from(entry.command_line()))),
                     ),
             );
         }
@@ -865,7 +1204,7 @@ impl RedisPage {
                             .text_size(tokens.typography.sm.size)
                             .line_height(tokens.typography.sm.line_height)
                             .text_color(tokens.colors.foreground)
-                            .child(SharedString::from(addr.clone())),
+                            .child(selectable_text(SharedString::from(addr.clone()))),
                     )
                     .child(
                         div()
@@ -874,7 +1213,9 @@ impl RedisPage {
                             .truncate()
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
-                            .child(SharedString::from(client.user().to_owned())),
+                            .child(selectable_text(SharedString::from(
+                                client.user().to_owned(),
+                            ))),
                     )
                     .child(
                         div()
@@ -882,7 +1223,11 @@ impl RedisPage {
                             .min_w(px(CLIENT_SHORT_WIDTH))
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
-                            .child(trf(cx, "库 {}", &[&client.db().to_string()])),
+                            .child(selectable_text(trf(
+                                cx,
+                                "库 {}",
+                                &[&client.db().to_string()],
+                            ))),
                     )
                     .child(
                         div()
@@ -890,7 +1235,11 @@ impl RedisPage {
                             .min_w(px(CLIENT_SHORT_WIDTH))
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
-                            .child(trf(cx, "空闲 {} 秒", &[&client.idle().to_string()])),
+                            .child(selectable_text(trf(
+                                cx,
+                                "空闲 {} 秒",
+                                &[&client.idle().to_string()],
+                            ))),
                     )
                     .child(
                         div()
@@ -900,7 +1249,7 @@ impl RedisPage {
                             .text_size(tokens.typography.sm.size)
                             .line_height(tokens.typography.sm.line_height)
                             .text_color(tokens.colors.foreground)
-                            .child(SharedString::from(client.cmd().to_owned())),
+                            .child(selectable_text(SharedString::from(client.cmd().to_owned()))),
                     )
                     .child(
                         button(
@@ -1034,7 +1383,9 @@ impl RedisPage {
                             .text_size(tokens.typography.sm.size)
                             .line_height(tokens.typography.sm.line_height)
                             .text_color(tokens.colors.foreground)
-                            .child(SharedString::from(entry.value().to_owned())),
+                            .child(selectable_text(SharedString::from(
+                                entry.value().to_owned(),
+                            ))),
                     ),
             );
         }
@@ -1143,7 +1494,7 @@ impl RedisPage {
                                 .text_size(tokens.typography.sm.size)
                                 .line_height(tokens.typography.sm.line_height)
                                 .text_color(tokens.colors.foreground)
-                                .child(SharedString::from(value.clone())),
+                                .child(selectable_text(SharedString::from(value.clone()))),
                         ),
                 );
             }
@@ -1174,7 +1525,7 @@ impl RedisPage {
                 div()
                     .text_size(tokens.typography.sm.size)
                     .text_color(tokens.colors.destructive)
-                    .child(SharedString::from(error.clone())),
+                    .child(selectable_text(SharedString::from(error.clone()))),
             );
         }
         for line in &self.monitor_lines {
@@ -1184,7 +1535,7 @@ impl RedisPage {
                     .text_size(tokens.typography.mono_md.size)
                     .line_height(tokens.typography.mono_md.line_height)
                     .text_color(tokens.colors.foreground)
-                    .child(SharedString::from(line.clone())),
+                    .child(selectable_text(SharedString::from(line.clone()))),
             );
         }
 
@@ -1204,22 +1555,42 @@ impl RedisPage {
             .into_any_element()
     }
 
-    /// 「终端」面板：redis-cli 式的任意命令。
+    /// 「终端」面板：redis-cli 式的**一体化终端**。
+    ///
+    /// 单个终端框 = 滚动输出区 + 框内底部的 prompt 行（`host:port[db]>` 前缀 +
+    /// 无框输入，hairline 分隔）。回车即执行（`submit_cli`；Enter 订阅在
+    /// `mod.rs` 的输入事件监听里），不设独立「执行」按钮。历史 chips 保留在
+    /// 框下方，点一下回填输入框。
     pub(super) fn render_panel_cli(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let extended = theme.extended();
         let view = self.view.clone();
 
+        // redis-cli 风格 prompt：`host:port>`，逻辑库非 0 时补 `[db]`（redis-cli 同款）。
+        let prompt: SharedString = self.active_config().map_or_else(
+            || SharedString::from("redis>"),
+            |cfg| {
+                SharedString::from(if cfg.db > 0 {
+                    format!("{}:{}[{}]>", cfg.host, cfg.effective_port(), cfg.db)
+                } else {
+                    format!("{}:{}>", cfg.host, cfg.effective_port())
+                })
+            },
+        );
+
         let mut output = v_flex().w_full().gap(px(1.));
         if self.cli_lines.is_empty() {
-            output = output.child(meta_text(
-                tr(
-                    cx,
-                    "输入命令后回车执行；破坏性命令（FLUSHALL 等）会先弹确认框。",
-                ),
-                cx,
-            ));
+            output = output.child(
+                div()
+                    .text_size(tokens.typography.mono_md.size)
+                    .line_height(tokens.typography.mono_md.line_height)
+                    .text_color(tokens.colors.muted_foreground)
+                    .child(selectable_text(SharedString::from(tr(
+                        cx,
+                        "# 输入命令后回车执行；破坏性命令（FLUSHALL 等）会先弹确认框。",
+                    )))),
+            );
         }
         for line in &self.cli_lines {
             let color = if line.error {
@@ -1230,7 +1601,7 @@ impl RedisPage {
                 tokens.colors.foreground
             };
             let text = if line.command {
-                format!("> {}", line.text)
+                format!("{} {}", prompt, line.text)
             } else {
                 line.text.clone()
             };
@@ -1240,11 +1611,11 @@ impl RedisPage {
                     .text_size(tokens.typography.mono_md.size)
                     .line_height(tokens.typography.mono_md.line_height)
                     .text_color(color)
-                    .child(SharedString::from(text)),
+                    .child(selectable_text(SharedString::from(text))),
             );
         }
 
-        let output_box = div()
+        let output_scroll = div()
             .id("redis-cli-output")
             .flex_1()
             .min_h_0()
@@ -1252,11 +1623,47 @@ impl RedisPage {
             .overflow_y_scroll()
             .track_scroll(&self.cli_scroll)
             .p(tokens.spacing.sm)
+            .child(output);
+
+        // prompt 行：贴在终端框底部，hairline 与输出区分隔；输入框无边框透明，
+        // 视觉上就是「在终端里打字」。
+        let prompt_row = h_flex()
+            .flex_none()
+            .w_full()
+            .items_center()
+            .gap(tokens.spacing.xs)
+            .px(tokens.spacing.sm)
+            .py(tokens.spacing.xs)
+            .border_t(extended.stroke.thin)
+            .border_color(extended.colors.hairline)
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(tokens.typography.mono_md.size)
+                    .line_height(tokens.typography.mono_md.line_height)
+                    .text_color(tokens.colors.muted_foreground)
+                    .child(selectable_text(prompt)),
+            )
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.cli_input)
+                        .appearance(false)
+                        .bordered(false)
+                        .w_full(),
+                ),
+            );
+
+        let terminal = v_flex()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .font_family(MONO_FAMILY)
             .rounded(theme.components().input_radius)
             .border(extended.stroke.thin)
             .border_color(extended.colors.hairline)
             .bg(tokens.colors.background)
-            .child(output);
+            .child(output_scroll)
+            .child(prompt_row);
 
         // 历史：最近若干条做成可点 chips，点一下回填输入框（比手打快得多）。
         let mut history_row = h_flex()
@@ -1293,30 +1700,14 @@ impl RedisPage {
             );
         }
 
-        let input_row = h_flex()
-            .flex_none()
-            .w_full()
-            .items_center()
-            .gap(tokens.spacing.xs)
-            .child(panel_input_box(&self.cli_input, cx))
-            .child(
-                button("redis-cli-run", tr(cx, "执行"), ButtonVariant::Primary, cx).on_click({
-                    let view = view.clone();
-                    move |_, window, cx| {
-                        let _ = view.update(cx, |this, cx| this.submit_cli(window, cx));
-                    }
-                }),
-            );
-
         v_flex()
             .size_full()
             .min_w_0()
             .min_h_0()
             .gap(tokens.spacing.xs)
             .p(tokens.spacing.sm)
-            .child(output_box)
+            .child(terminal)
             .children((!self.cli_history.is_empty()).then_some(history_row))
-            .child(input_row)
             .into_any_element()
     }
 

@@ -50,6 +50,13 @@ base64.workspace = true
 # 执行 SQL 文件（sqlfile.rs）的编码探测与流式解码。同样是「提成直接依赖」：
 # 0.8.35 早就在本 crate 的依赖图里（`tiberius → encoding_rs`）。
 encoding_rs.workspace = true
+# 子进程（agent）轨：达梦 / 金仓 / Oracle / DB2 / Hive 这些库没有 Rust 原生驱动，
+# 我们跑对端的驱动进程、用 JSON-RPC 说话。两个 crate 都是零 gpui、全阻塞的兄弟层，
+# 分工见 `drivers/agent.rs` 顶部：
+#   duck-drivers    「装什么、装在哪」——注册表、下载、校验、JRE、离线包
+#   duck-db-agent   「怎么说话」——起进程、发请求、按 id 对账、超时
+duck-drivers.workspace = true
+duck-db-agent.workspace = true
 
 [lints]
 workspace = true

@@ -10,12 +10,13 @@
 //!    没有窗口（例如从托盘触发且窗口已关）时不弹任何东西，只把状态留在 [`Updater`] 里。
 
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use duck_components::notify;
 use duck_store as store;
-use duck_theme::trf;
+use duck_theme::{tr, trf};
 use duck_update::{Check, Flow, ManualReason, UpdateConfig, UpdateError, UpdateEvent, UpdateInfo};
 use futures_channel::mpsc::{UnboundedReceiver, unbounded};
 use futures_util::StreamExt as _;
@@ -388,13 +389,21 @@ pub fn rollback_now(cx: &mut App) {
             set_phase(cx, Phase::RolledBack);
             let text = trf(cx, "已回退到上一版本，重启后生效。", &[]);
             toast(cx, text, notify::Tone::Success);
-            // 与装好之后同样处理：原生确认框是模态阻塞调用，得用 `defer` 挪出当前栈。
-            cx.defer(|cx| {
-                let title = trf(cx, "回退已就绪", &[]);
-                let body = trf(cx, "重启后运行上一版本。现在重启？", &[]);
-                if duck_platform::confirm(&title, &body) {
-                    restart(cx);
-                }
+            // 询问走主题确认框（异步、不阻塞），不用 `duck_platform::confirm`：后者是
+            // rfd 的同步系统模态，会把事件派发重入回 gpui（见 `crate::confirm` 模块头）。
+            // 手里只有 `&mut App`，借 `on_notify_window` 找当前窗口。
+            let title = trf(cx, "回退已就绪", &[]);
+            let body = trf(cx, "重启后运行上一版本。现在重启？", &[]);
+            let ok_text = tr(cx, "重启并运行上一版本");
+            on_notify_window(cx, move |window, cx| {
+                crate::confirm::open_confirm(
+                    title,
+                    body,
+                    ok_text,
+                    Rc::new(|_window, cx| restart(cx)),
+                    window,
+                    cx,
+                );
             });
         }
         Err(error) => {
@@ -477,14 +486,19 @@ fn finish(outcome: Result<duck_update::InstallOutcome, UpdateError>, cx: &mut Ap
             set_phase(cx, Phase::Installed);
             let text = trf(cx, "更新已安装，重启后生效。", &[]);
             toast(cx, text, notify::Tone::Success);
-            // 原生确认框是模态阻塞调用，只该在动作处理器里跑；用 `defer` 挪出当前的
-            // 更新栈，避免在 gpui 借用期间开一个嵌套事件循环。
-            cx.defer(|cx| {
-                let title = trf(cx, "更新已就绪", &[]);
-                let body = trf(cx, "重启后运行新版本。现在重启？", &[]);
-                if duck_platform::confirm(&title, &body) {
-                    restart(cx);
-                }
+            // 同 `rollback_now`：主题确认框（异步），借 `on_notify_window` 找当前窗口。
+            let title = trf(cx, "更新已就绪", &[]);
+            let body = trf(cx, "重启后运行新版本。现在重启？", &[]);
+            let ok_text = tr(cx, "重启并应用更新");
+            on_notify_window(cx, move |window, cx| {
+                crate::confirm::open_confirm(
+                    title,
+                    body,
+                    ok_text,
+                    Rc::new(|_window, cx| restart(cx)),
+                    window,
+                    cx,
+                );
             });
         }
         Ok(duck_update::InstallOutcome::Manual { reason, archive }) => {
@@ -574,11 +588,16 @@ fn sticky(cx: &mut App, key: &'static str, message: impl Into<SharedString>, ton
     });
 }
 
-/// 在「当前最该收到提示的窗口」上投递；没有窗口就什么都不做。
+/// 在「当前最该收到提示的窗口」上投递；没有窗口就什么都不做，返回 `false`。
 ///
 /// 候选按「用户看得见的程度」排：**活跃窗口 → 窗口栈（前→后）→ 创建最早的窗口**。
 /// 用户多半是在当前那个窗口里点的动作，提示必须落在它上面——投给最早创建的主窗口会被
 /// 别的窗口整个盖住，看起来像「没反应」或「提示丢了」。插件市场也用这一条。
+///
+/// 返回值给**按需投递**的调用方用（如任务提醒：投不出去就不记账，留给下一轮，见
+/// `pages::projects::remind` 的模块文档）。窗口中途消失（`update` 失败）同样算没投出去。
+/// 多数调用点并不关心结果，所以**不加 `#[must_use]`** —— 只有真要依据它做决定的地方
+/// 才去读这个 `bool`。
 ///
 /// **引导窗口是唯一被剔掉的例外**（见 [`notify_target`]）：它是首启流程开的一个居中小
 /// 向导，没有顶栏、也没有通知历史那个铃铛入口，关掉就没了。而它在启动最末打开、默认拿走
@@ -586,11 +605,14 @@ fn sticky(cx: &mut App, key: &'static str, message: impl Into<SharedString>, ton
 /// 插件清单刷新、窗口建不起来……）都会落在那个小窗的右上角，而不是程序主窗的右上角。
 /// 剔掉它之后提示回到主窗或别的辅助窗口上；只有引导窗口还开着时提示不弹（仍进历史），
 /// 与「一个窗口都没有时什么都不弹」同一个态度。
-pub(crate) fn on_notify_window(cx: &mut App, post: impl FnOnce(&mut gpui::Window, &mut App)) {
+pub(crate) fn on_notify_window(
+    cx: &mut App,
+    post: impl FnOnce(&mut gpui::Window, &mut App),
+) -> bool {
     let Some(handle) = notify_target(cx) else {
-        return;
+        return false;
     };
-    let _ = handle.update(cx, |_, window, cx| post(window, cx));
+    handle.update(cx, |_, window, cx| post(window, cx)).is_ok()
 }
 
 /// 挑一个能承接提示的窗口；全都不可用时返回 `None`。

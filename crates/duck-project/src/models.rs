@@ -243,7 +243,7 @@ impl Quadrant {
     }
 }
 
-/// 工作日志类型（表在 v1 就建好，读写属 M2）。
+/// 工作日志类型（表在 v1 就建好，读写见 `store::logs`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LogKind {
     /// 日报。
@@ -447,6 +447,90 @@ pub struct Task {
     pub tags: Vec<Tag>,
     /// 子任务进度（派生字段，由查询填充）。
     pub subtasks: SubtaskProgress,
+    /// 关联的 Git 分支（空串 = 没记）。
+    ///
+    /// 只是**记一笔**：内核不去问 git 现在在哪个分支（那要跑子进程、还要看是哪个仓库），
+    /// 它给的是「这条任务是在哪个分支上干的」这个事实。
+    pub git_branch: String,
+    /// 工作上下文（「干到哪儿了」）。
+    pub context: TaskContext,
+}
+
+/// 工作上下文里引用的一个文件。
+///
+/// `line` / `column` 为 0 = 没记（「只知道文件名」是合法的）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRef {
+    /// 路径（原样，不规范化 —— 规范化要在写的那一刻做，读的时候猜不出用户当时在哪台机器）。
+    pub path: String,
+    /// 行号，从 1 起。
+    pub line: u32,
+    /// 列号，从 1 起。
+    pub column: u32,
+}
+
+impl FileRef {
+    /// 只要路径（不记行列）。
+    #[must_use]
+    pub fn at(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            line: 0,
+            column: 0,
+        }
+    }
+
+    /// 记到某一行某一列。
+    #[must_use]
+    pub fn position(path: impl Into<String>, line: u32, column: u32) -> Self {
+        Self {
+            path: path.into(),
+            line,
+            column,
+        }
+    }
+
+    /// `行:列:路径`（写库用的那一行文本）。
+    #[must_use]
+    pub fn to_line(&self) -> String {
+        format!("{}:{}:{}", self.line, self.column, self.path)
+    }
+
+    /// 从 `行:列:路径` 反解；形状不对返回 `None`（**不猜**：路径本身可以带冒号，
+    /// 所以只有前两段是数字时才认）。
+    #[must_use]
+    pub fn from_line(text: &str) -> Option<Self> {
+        let mut parts = text.splitn(3, ':');
+        let line = parts.next()?.trim().parse().ok()?;
+        let column = parts.next()?.trim().parse().ok()?;
+        let path = parts.next()?.to_owned();
+        if path.is_empty() {
+            return None;
+        }
+        Some(Self { path, line, column })
+    }
+}
+
+/// 任务的工作上下文。
+///
+/// 三样东西**分开**存（三列，不是一列 JSON）：理由写在 `db.rs` 的 v4 迁移注释里
+/// （内核零 serde；这三样各有更简单的自然编码；换行只可能出现在 `sql` 里）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskContext {
+    /// 关联的文件。
+    pub files: Vec<FileRef>,
+    /// 上一次用过的 SQL（原样，可以多行）。
+    pub sql: String,
+    /// 记下的链接（浏览器页签）。
+    pub tabs: Vec<String>,
+}
+
+impl TaskContext {
+    /// 三样都空 = 没记过（界面据此显示空态而不是三个空框）。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.sql.trim().is_empty() && self.tabs.is_empty()
+    }
 }
 
 impl Task {
@@ -477,6 +561,9 @@ pub struct Tag {
     pub name: String,
     /// 颜色（`#RRGGBB`）。
     pub color: String,
+    /// 是否收藏（v4 加的列；左栏标签段按「收藏在前」排序，口径在 `tag_usage` 的
+    /// `ORDER BY` 里 —— 界面不自己排）。
+    pub is_favorite: bool,
     /// 使用次数（**派生字段**：由 [`crate::store::ProjectStore::list_tags`] 现算，不缓存）。
     pub usage_count: u32,
 }
@@ -531,7 +618,7 @@ pub struct BoardColumn {
     pub wip_limit: Option<i64>,
 }
 
-/// 工作日志（表结构在 v1，读写属 M2）。
+/// 工作日志（表结构在 v1，读写见 `store::logs`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkLog {
     /// 主键。
@@ -546,6 +633,108 @@ pub struct WorkLog {
     pub ai_generated: bool,
     /// 关联的任务 id（**归档不打断引用**：已归档任务仍留在日志里）。
     pub linked_task_ids: Vec<i64>,
+    /// 自由标签（v3 加的列；如「线上事故」「复盘」）。
+    ///
+    /// 与任务的 [`Tag`] **不是一回事**：任务标签是库里有 id 的实体（能筛选、能计数），
+    /// 日志标签是贴在一篇文字上的手写分类词。所以这里是 `Vec<String>` 而不是 id 列表，
+    /// 也不需要「标签不存在就建一个」的合并逻辑。
+    pub tags: Vec<String>,
+}
+
+/// 周计划的状态。
+///
+/// `Confirmed` 表达的是「这一周我认了这个承诺」；确认之后再改仍然允许（现实里计划
+/// 就是要变的），但改动会体现在 [`WeeklyPlan::added_task_ids`] 上 —— 让「计划 vs 实际」
+/// 那一段能说出「其中 3 项是后来加的」，而不是把原计划悄悄改掉。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum WeeklyPlanStatus {
+    /// 草稿。
+    #[default]
+    Draft,
+    /// 已确认。
+    Confirmed,
+}
+
+impl WeeklyPlanStatus {
+    /// 全部取值。
+    pub const ALL: [Self; 2] = [Self::Draft, Self::Confirmed];
+
+    /// SQLite 里的稳定键。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Confirmed => "confirmed",
+        }
+    }
+
+    /// 解析稳定键；不认识的值（外部工具改坏）返回 `None`。
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "draft" => Some(Self::Draft),
+            "confirmed" => Some(Self::Confirmed),
+            _ => None,
+        }
+    }
+}
+
+/// 一周的周计划（表在 v3，读写见 `store::plans`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeeklyPlan {
+    /// 主键。
+    pub id: i64,
+    /// ISO 周键，`YYYY-Www`（见 [`CalendarDate::week_key`]）。**唯一**。
+    pub week_key: String,
+    /// 计划正文（Markdown）。
+    pub content_md: String,
+    /// 当前计划内的任务 id。
+    pub task_ids: Vec<i64>,
+    /// **首次定型**时的任务 id。
+    ///
+    /// 「首次定型」= 第一次以非空任务集保存的那一刻（见 `store::plans::upsert_plan`）；
+    /// 之后再加任务只动 `task_ids`，这一列保持不动。两者之差就是「后来加的」。
+    pub original_task_ids: Vec<i64>,
+    /// 状态。
+    pub status: WeeklyPlanStatus,
+    /// 创建时刻（Unix 秒）。
+    pub created_at: i64,
+    /// 最后修改时刻（Unix 秒）。
+    pub updated_at: i64,
+}
+
+impl WeeklyPlan {
+    /// **后加进来的**任务 id（在 `task_ids` 里、不在 `original_task_ids` 里），保持
+    /// `task_ids` 的顺序。
+    ///
+    /// 这是「计划 vs 实际」对比的口径本身，所以放在模型上、不在界面里各算一遍。
+    /// 注意是**差集**不是计数：周计划面板要按 id 去任务表取标题来列出来。
+    #[must_use]
+    pub fn added_task_ids(&self) -> Vec<i64> {
+        self.task_ids
+            .iter()
+            .filter(|id| !self.original_task_ids.contains(id))
+            .copied()
+            .collect()
+    }
+
+    /// 已定型的**原计划**任务 id（在 `original_task_ids` 里、且仍在 `task_ids` 里）。
+    ///
+    /// 从计划里移走的任务自然不在这里 —— 它已经不是这一周的计划了。
+    #[must_use]
+    pub fn planned_task_ids(&self) -> Vec<i64> {
+        self.task_ids
+            .iter()
+            .filter(|id| self.original_task_ids.contains(id))
+            .copied()
+            .collect()
+    }
+
+    /// 是否已经确认过。
+    #[must_use]
+    pub const fn is_confirmed(&self) -> bool {
+        matches!(self.status, WeeklyPlanStatus::Confirmed)
+    }
 }
 
 /// 新建分组。
@@ -774,6 +963,8 @@ pub struct NewTask {
     pub(crate) note: String,
     pub(crate) tag_ids: Vec<i64>,
     pub(crate) sort_order: Option<i64>,
+    pub(crate) git_branch: String,
+    pub(crate) context: TaskContext,
 }
 
 impl NewTask {
@@ -799,6 +990,8 @@ impl NewTask {
             note: String::new(),
             tag_ids: Vec::new(),
             sort_order: None,
+            git_branch: String::new(),
+            context: TaskContext::default(),
         }
     }
 
@@ -908,6 +1101,20 @@ impl NewTask {
         self.sort_order = Some(sort_order);
         self
     }
+
+    /// 关联的 Git 分支（空串 = 没记）。
+    #[must_use]
+    pub fn git_branch(mut self, git_branch: impl Into<String>) -> Self {
+        self.git_branch = git_branch.into();
+        self
+    }
+
+    /// 工作上下文（文件 / SQL / 链接）。
+    #[must_use]
+    pub fn context(mut self, context: TaskContext) -> Self {
+        self.context = context;
+        self
+    }
 }
 
 /// 任务局部更新。`None` = 不改这一项；要「清空」用对应的 `clear_*` 方法。
@@ -931,6 +1138,8 @@ pub struct TaskPatch {
     pub(crate) note: Option<String>,
     pub(crate) sort_order: Option<i64>,
     pub(crate) tag_ids: Option<Vec<i64>>,
+    pub(crate) git_branch: Option<String>,
+    pub(crate) context: Option<TaskContext>,
 }
 
 impl TaskPatch {
@@ -1065,6 +1274,21 @@ impl TaskPatch {
     #[must_use]
     pub const fn sort_order(mut self, sort_order: i64) -> Self {
         self.sort_order = Some(sort_order);
+        self
+    }
+
+    /// 改关联的 Git 分支（空串 = 清空）。
+    #[must_use]
+    pub fn git_branch(mut self, git_branch: impl Into<String>) -> Self {
+        self.git_branch = Some(git_branch.into());
+        self
+    }
+
+    /// 整体替换工作上下文（三样一起换：文件 / SQL / 链接没有「只改一样」的
+    /// 界面入口 —— 详情面板每次都是整表单提交）。
+    #[must_use]
+    pub fn context(mut self, context: TaskContext) -> Self {
+        self.context = Some(context);
         self
     }
 }
@@ -1212,7 +1436,25 @@ impl TaskCounts {
 
 #[cfg(test)]
 mod tests {
-    use super::{Priority, ProjectStatus, Quadrant, TaskStatus};
+    use super::{Priority, ProjectStatus, Quadrant, TaskStatus, WeeklyPlan, WeeklyPlanStatus};
+    use crate::time::CalendarDate;
+
+    fn day(year: i32, month: u32, day: u32) -> CalendarDate {
+        CalendarDate::new(year, month, day).expect("合法日期")
+    }
+
+    fn plan(original: &[i64], current: &[i64]) -> WeeklyPlan {
+        WeeklyPlan {
+            id: 1,
+            week_key: day(2026, 10, 14).week_key(),
+            content_md: String::new(),
+            task_ids: current.to_vec(),
+            original_task_ids: original.to_vec(),
+            status: WeeklyPlanStatus::Draft,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
 
     #[test]
     fn status_keys_round_trip() {
@@ -1300,5 +1542,40 @@ mod tests {
         assert!(Quadrant::Q2.is_important() && !Quadrant::Q2.is_urgent());
         assert!(!Quadrant::Q3.is_important() && Quadrant::Q3.is_urgent());
         assert!(!Quadrant::Q4.is_important() && !Quadrant::Q4.is_urgent());
+    }
+
+    #[test]
+    fn weekly_plan_status_keys_round_trip() {
+        for status in WeeklyPlanStatus::ALL {
+            assert_eq!(WeeklyPlanStatus::parse(status.as_str()), Some(status));
+        }
+        assert_eq!(WeeklyPlanStatus::parse("Draft"), None, "稳定键大小写敏感");
+        assert_eq!(WeeklyPlanStatus::parse(""), None);
+        assert_eq!(WeeklyPlanStatus::default(), WeeklyPlanStatus::Draft);
+    }
+
+    /// 计划 vs 实际的分档：后加的、原计划的、移走的三条都要分对。
+    #[test]
+    fn plan_splits_added_from_original_task_ids() {
+        // 原计划 [1,2]，后来加了 3、又移走了 2。
+        let changed = plan(&[1, 2], &[1, 3]);
+        assert_eq!(changed.added_task_ids(), vec![3]);
+        assert_eq!(changed.planned_task_ids(), vec![1]);
+        assert!(!changed.is_confirmed());
+
+        // 首次定型前（`original` 空）：当前计划**全是**后加的 —— 这正是
+        // 「第一次以非空任务集保存时定型」要挡掉的那一刻，见 `store::plans`。
+        let fresh = plan(&[], &[1, 2]);
+        assert_eq!(fresh.added_task_ids(), vec![1, 2]);
+        assert!(fresh.planned_task_ids().is_empty());
+
+        // 两侧都空的空计划：分档也是空的，不该 panic。
+        let empty = plan(&[], &[]);
+        assert!(empty.added_task_ids().is_empty());
+        assert!(empty.planned_task_ids().is_empty());
+
+        // 顺序跟随 `task_ids`（面板按这个顺序列出来）。
+        let many = plan(&[1], &[5, 1, 4]);
+        assert_eq!(many.added_task_ids(), vec![5, 4]);
     }
 }

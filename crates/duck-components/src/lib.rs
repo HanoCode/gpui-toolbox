@@ -21,18 +21,20 @@ mod sidebar;
 pub use dblogos::DatabaseLogo;
 pub use dialog::{
     ActionHandler, ConfirmHandler, FooterAction, ModalDrag, ModalOffset, dialog_footer,
-    dialog_footer_with_action, dialog_footer_with_hint, dialog_top_offset, modal_drag,
-    modal_drag_area, modal_offset, modal_title_row,
+    dialog_footer_ok_only, dialog_footer_with_action, dialog_footer_with_hint, dialog_top_offset,
+    modal_drag, modal_drag_area, modal_offset, modal_title_row,
 };
 pub use icons::{ComponentAssets, DuckIcon, LOGO_ASSET_PATH};
 pub use kit::{
-    ControlExt, DROPDOWN_MIN_WIDTH, IconControlExt, NavItem, ROW_MIN_PADDING, SegmentItem,
-    TITLE_MIN_WIDTH, body_text, caption_heading, caption_number, check_row, detail_title_text,
-    dropdown_select, field_error, field_hint, field_label, field_success, form, form_field,
-    form_gap, form_row, input_with_action, meta_text, nav_list, option_group, option_row,
-    option_row_stacked, segmented_tabs, segmented_tabs_with_icons, settings_section, status_button,
+    ControlExt, DROPDOWN_MIN_WIDTH, IconControlExt, MENU_MAX_HEIGHT, MENU_SEARCH_THRESHOLD,
+    MenuItemSpec, NavItem, ROW_MIN_PADDING, SearchableDropdown, SegmentItem, TITLE_MIN_WIDTH,
+    body_text, caption_heading, caption_number, check_row, detail_title_text, dropdown_select,
+    dropdown_select_searchable, field_error, field_hint, field_label, field_success, form,
+    form_field, form_gap, form_row, input_with_action, meta_text, nav_list, option_group,
+    option_row, option_row_stacked, segmented_tabs, segmented_tabs_with_icons, selectable_text,
+    selectable_text_at, selectable_text_with_id, settings_section, status_button,
     status_button_content, switch_control, title_text, toolbar_dropdown_button,
-    toolbar_text_dropdown_button,
+    toolbar_searchable_dropdown, toolbar_text_dropdown_button, toolbar_text_searchable_dropdown,
 };
 pub use maillogos::MailLogo;
 pub use motion::{SlidingHighlight, SlidingRowHighlight, StateLayer, color_transition};
@@ -474,13 +476,22 @@ fn navigation_row(
             theme.extended().colors,
         ))
         .child(
+            // `debug_selector` 只在 debug + test-support 下记录（发布构建是 no-op），
+            // 供无头布局测试取「图标 / 文案」的实测几何（回归：侧栏行图标与文案
+            // 重叠那一条）。
             div()
                 .min_w_0()
+                .debug_selector(|| "nav-row-lead".into())
                 .flex()
                 .items_center()
                 .gap(tokens.spacing.sm)
                 .child(icon)
-                .child(div().truncate().child(label)),
+                .child(
+                    div()
+                        .truncate()
+                        .debug_selector(|| "nav-row-label".into())
+                        .child(label),
+                ),
         )
         .child(trailing)
 }

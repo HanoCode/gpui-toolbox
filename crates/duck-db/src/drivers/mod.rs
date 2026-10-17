@@ -10,8 +10,19 @@
 //! `&str`。原因：PG 的多 schema、MySQL 的「schema 即库」都需要限定名，而把限定名
 //! 拼成 `"schema"."name"` 再回传字符串，会让**引号与转义规则**漏到调用方去。
 //! 这里由 [`quote_qualified`] 逐段加引号，各驱动只管调它。
+//!
+//! # `Agent` 那一档不是「一个引擎」
+//!
+//! [`Connection::Agent`] 背后是**一整个子进程驱动家族**（见 [`agent`]）：达梦 / 金仓 /
+//! Oracle / DB2 / Hive / Snowflake …… 都由它承接，具体是谁由档案的 `driver` 键决定。
+//! 所以它的引号、能力、版本文案**都不能按 [`DatabaseKind`] 猜** —— 一律连上之后问对端
+//! （[`agent::AgentConnection::identifier_quote`]）。这也解释了为什么
+//! [`DatabaseKind::Agent`] 的 `identifier_quote()` 返回 `None`：那是「问我不出答案」，
+//! 不是「这引擎没有引号」。
 
+pub mod agent;
 pub mod clickhouse;
+pub mod duckdb;
 pub mod elasticsearch;
 pub mod mongo;
 pub mod mssql;
@@ -475,27 +486,60 @@ pub enum Connection {
     ///
     /// 不装箱：两条 HTTP 引擎（本变体与 ClickHouse）都只有端点 + agent + 几个字符串。
     Elasticsearch(elasticsearch::ElasticsearchConnection),
+    /// 子进程（agent）轨：一个常驻驱动进程 + 一个 JSON-RPC 会话（见 [`agent`]）。
+    ///
+    /// **Box 起来是有意的**：它含 `Arc<AgentHandle>`（里面有子进程句柄、两个线程、
+    /// 待办表）、`HandshakeInfo`、`ConnectionInfo`（一张 `BTreeMap`）与若干 `String`，
+    /// 是这里最大的变体；不装箱会让整个枚举按它的尺寸对齐、到处搬运。
+    ///
+    /// ⚠️ 这一档**只做读**（含用户自己在 SQL 编辑器里写的语句）。原因不在实现难度，
+    /// 而在协议没有参数绑定 —— 详见 [`agent`] 的模块文档。
+    Agent(Box<agent::AgentConnection>),
+    /// DuckDB（官方 sidecar worker，说 dbx 的封套而不是本仓的 JSON-RPC）。
+    ///
+    /// 与 [`Self::Agent`] 分开是**必要**的，不是洁癖：worker 没有会话、`execute`
+    /// 是异步回报的、中了毒要父进程杀进程重起（见 [`duckdb`] 的模块文档）。
+    ///
+    /// 不装箱：它只有句柄 + 配方 + 几个字符串（与别的变体同量级）。
+    DuckDb(duckdb::DuckDbConnection),
 }
 
 impl Connection {
     /// 按档案建连；网络引擎带入口令（可空——有些库允许无密认证）。
+    ///
+    /// 口令先按认证方式规整一遍：无认证与连接串模式**不发**口令（连接串自带凭据）；
+    /// API Key 模式那格装的是 key 原文，照常透传。规整只写在这一处，
+    /// 各驱动不用再各自判断。
     pub fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self, DbError> {
         cfg.validate()?;
+        let secret = match cfg.auth_mode {
+            crate::config::AuthMode::None_ | crate::config::AuthMode::ConnectionString => None,
+            crate::config::AuthMode::Password | crate::config::AuthMode::ApiKey => password,
+        };
         match cfg.kind {
             DatabaseKind::Sqlite => sqlite::SqliteConnection::connect(cfg).map(Self::Sqlite),
             DatabaseKind::Postgres => {
-                postgres::PostgresConnection::connect(cfg, password).map(Self::Postgres)
+                postgres::PostgresConnection::connect(cfg, secret).map(Self::Postgres)
             }
-            DatabaseKind::Mysql => mysql::MysqlConnection::connect(cfg, password).map(Self::Mysql),
+            DatabaseKind::Mysql => mysql::MysqlConnection::connect(cfg, secret).map(Self::Mysql),
             DatabaseKind::ClickHouse => {
-                clickhouse::ClickHouseConnection::connect(cfg, password).map(Self::ClickHouse)
+                clickhouse::ClickHouseConnection::connect(cfg, secret).map(Self::ClickHouse)
             }
-            DatabaseKind::SqlServer => mssql::MssqlConnection::connect(cfg, password)
+            DatabaseKind::SqlServer => mssql::MssqlConnection::connect(cfg, secret)
                 .map(|conn| Self::SqlServer(Box::new(conn))),
-            DatabaseKind::Mongo => mongo::MongoConnection::connect(cfg, password).map(Self::Mongo),
+            DatabaseKind::Mongo => mongo::MongoConnection::connect(cfg, secret).map(Self::Mongo),
             DatabaseKind::Elasticsearch => {
-                elasticsearch::ElasticsearchConnection::connect(cfg, password)
+                elasticsearch::ElasticsearchConnection::connect(cfg, secret)
                     .map(Self::Elasticsearch)
+            }
+            // ⚠️ 这一档里藏着**两条协议**：驱动键 `duckdb` 说的是 NDJSON sidecar
+            // （无会话、`execute` 异步回报、中毒要父进程杀进程），其余驱动说本仓的
+            // JSON-RPC。判据只看驱动键，不看 `runtime_mode`。
+            DatabaseKind::Agent if cfg.driver.as_deref() == Some(duckdb::DRIVER_KEY) => {
+                duckdb::DuckDbConnection::connect(cfg, secret).map(Self::DuckDb)
+            }
+            DatabaseKind::Agent => {
+                agent::AgentConnection::connect(cfg, secret).map(|conn| Self::Agent(Box::new(conn)))
             }
         }
     }
@@ -511,6 +555,70 @@ impl Connection {
             Self::SqlServer(_) => DatabaseKind::SqlServer,
             Self::Mongo(_) => DatabaseKind::Mongo,
             Self::Elasticsearch(_) => DatabaseKind::Elasticsearch,
+            // ⚠️ 这是**唯一**一个「kind 不告诉你是什么引擎」的分支：具体是达梦还是
+            // Oracle 要看档案的 `driver` 键。要展示名请读 [`Self::driver_label`]。
+            Self::Agent(_) => DatabaseKind::Agent,
+            Self::DuckDb(_) => DatabaseKind::Agent,
+        }
+    }
+
+    /// 驱动目录里的展示名——**只有 agent 档有**（`None` = 展示名在 `DatabaseKind`
+    /// 那一层，由上层自己的标签表负责）。
+    ///
+    /// 为什么不让 `DatabaseKind` 也承担它：内建七档的标签是**界面词汇**（`duck-app`
+    /// 的 `kind_label` 按语言取词），而 agent 档的 55 个名字是**驱动清单的数据**
+    /// （`duck-drivers` 生成的那份）。两边混进同一个函数，就会有两处都在维护
+    /// 「引擎叫什么」，改一处漏一处。
+    #[must_use]
+    pub fn driver_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Agent(conn) => Some(conn.entry().label),
+            // DuckDB 在档案里是 agent 档，但引擎是另一条 —— 展示名照样取自目录条目，
+            // 否则连接详情会退回 `DatabaseKind::Agent` 的泛称（用户看不到 `duckdb`）。
+            Self::DuckDb(conn) => Some(conn.entry().label),
+            _ => None,
+        }
+    }
+
+    /// 标识符引号：**优先问这条连接自己**，问不出来才回落 [`DatabaseKind`] 的静态值。
+    ///
+    /// 为什么必须分两层：内建七档的引号是**引擎属性**，看 kind 就知道；而 agent 档背后
+    /// 是几十个引擎，只有**连上之后**问对端（`connection_info` 的 `identifier_quote`）
+    /// 才知道是 `"` 还是 `` ` `` —— 所以 [`DatabaseKind::Agent::identifier_quote`] 是 `None`。
+    ///
+    /// ⚠️ 界面里凡是「拿引号去拼 SQL」的地方都该走这条（或 `Session` 上等价的那条），
+    /// **不要**退回 `kind.identifier_quote()`：那对 agent 恒 `None`，会把整片 SQL 面
+    /// （表浏览的过滤 / 排序、SQL 生成器、图表）一起关掉。
+    ///
+    /// ⚠️ **`None` 是有信息的**：对端明说「没有引号概念」（`identifierQuote` 为空串 /
+    /// 多字符）时，这里就返回 `None` —— 它是「这条驱动不是 SQL 引擎」的**唯一**判据
+    /// （图库走 Cypher / nGQL，没有引号标识符这回事）。所以本方法**不做** `unwrap_or('"')`
+    /// 那种回落：需要随便挑一个引号去拼语句的调用点，自己写 `.unwrap_or('"')`，
+    /// 让「我知道它没引号但只能凑一个」这件事留在调用点、看得见。
+    #[must_use]
+    pub fn identifier_quote(&self) -> Option<char> {
+        match self {
+            Self::Agent(conn) => conn.identifier_quote(),
+            // DuckDB 恒 `"`：worker 没有「报告引号」这一步，也不存在「非 SQL 引擎」那种
+            // `None`。这里必须显式写 —— 兜底臂会回落到 `DatabaseKind::Agent`，那是 `None`。
+            Self::DuckDb(conn) => conn.identifier_quote(),
+            other => other.kind().identifier_quote(),
+        }
+    }
+
+    /// 这条连接**能不能分页读**（能力判定的单一来源，界面与内核都读它）。
+    ///
+    /// 内建七档按**引擎**决定（见 [`DatabaseKind::supports_paged_read`]）；
+    /// **agent 档得问对端** —— 它背后是几十个各写各的驱动进程，握手时各自在
+    /// `capabilities` 里报有没有 `paged_query`。若按 kind 一刀切，界面会给一个不支持
+    /// 游标的驱动画上「加载更多」，点下去必报错；反过来又会把支持的驱动漏掉。
+    #[must_use]
+    pub fn supports_paged_read(&self) -> bool {
+        match self {
+            Self::Agent(conn) => conn.supports_paged_read(),
+            // DuckDB 把语句包进外层 `LIMIT/OFFSET`，恒支持（兜底臂会给 `Agent` 的 false）。
+            Self::DuckDb(conn) => conn.supports_paged_read(),
+            other => other.kind().supports_paged_read(),
         }
     }
 
@@ -525,6 +633,10 @@ impl Connection {
             Self::SqlServer(conn) => conn.cancel_handle(),
             Self::Mongo(conn) => conn.cancel_handle(),
             Self::Elasticsearch(conn) => conn.cancel_handle(),
+            // agent 档的取消走对端进程的 `cancel_session`（见 `cancel::CancelKind::Agent`）：
+            // 它不需要另开连接——驱动进程本身就是个常驻 JSON-RPC 服务端。
+            Self::Agent(conn) => conn.cancel_handle(),
+            Self::DuckDb(conn) => conn.cancel_handle(),
         }
     }
 
@@ -538,6 +650,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.ping(),
             Self::Mongo(conn) => conn.ping(),
             Self::Elasticsearch(conn) => conn.ping(),
+            Self::Agent(conn) => conn.ping(),
+            Self::DuckDb(conn) => conn.ping(),
         }
     }
 
@@ -551,6 +665,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.server_version(),
             Self::Mongo(conn) => conn.server_version(),
             Self::Elasticsearch(conn) => conn.server_version(),
+            Self::Agent(conn) => conn.server_version(),
+            Self::DuckDb(conn) => conn.server_version(),
         }
     }
 
@@ -560,10 +676,13 @@ impl Connection {
     /// SQLite `PRAGMA query_only`、PostgreSQL `default_transaction_read_only`、
     /// MySQL `SESSION TRANSACTION READ ONLY`、ClickHouse 每个请求带 `readonly=1`
     /// （HTTP 无会话，所以它是个**每请求都带上**的状态）。
-    /// ⚠️ **SQL Server / MongoDB / Elasticsearch 是例外**：它们都没有会话级只读开关，
-    /// 只读档由驱动在写语句**进引擎之前**拦下（见各驱动模块文档）。那一层同样不会漏放
-    /// （未知操作一律当写，默认拒绝），但它不是服务器兜底——真要防住生产库仍然应该用
+    /// ⚠️ **SQL Server / MongoDB / Elasticsearch / agent 是例外**：它们都没有会话级只读
+    /// 开关，只读档由驱动在写语句**进引擎之前**拦下（见各驱动模块文档）。那一层同样不会
+    /// 漏放（未知操作一律当写，默认拒绝），但它不是服务器兜底——真要防住生产库仍然应该用
     /// 只读账号。
+    ///
+    /// agent 档还多一层：协议没有参数绑定，所以它**无论如何**都不做工具替用户拼的写语句
+    /// （见 [`agent`]），只读档只影响用户自己写在编辑器里的语句。
     pub fn set_read_only(&mut self, read_only: bool) -> Result<(), DbError> {
         match self {
             Self::Sqlite(conn) => conn.set_read_only(read_only),
@@ -573,14 +692,20 @@ impl Connection {
             Self::SqlServer(conn) => conn.set_read_only(read_only),
             Self::Mongo(conn) => conn.set_read_only(read_only),
             Self::Elasticsearch(conn) => conn.set_read_only(read_only),
+            Self::Agent(conn) => conn.set_read_only(read_only),
+            Self::DuckDb(conn) => conn.set_read_only(read_only),
         }
     }
 
     /// 记住界面选中的命名空间（schema 下拉换项时调）。
     ///
     /// 只负责 **schema 这一层**（PG / MSSQL 库内的 `pg_namespace` / `sys.schemas`），
-    /// 且**只有 MongoDB 真的做点什么**：Mongo 没有 schema 层，「当前库」是客户端
-    /// 概念，不告诉驱动，编辑器里的命令（`{"find": "users"}`）就会落在旧库上。
+    /// 且**只有 MongoDB 与 agent 档真的做点什么**：
+    ///
+    /// - **MongoDB**：Mongo 没有 schema 层，「当前库」是客户端概念，不告诉驱动，编辑器里的
+    ///   命令（`{"find": "users"}`）就会落在旧库上；
+    /// - **agent 档**：schema 要**随每条请求发给对端**（协议的 `schema` 参数），所以这里
+    ///   记下来之后，后续的元数据与查询才落在用户选的那个 schema 上。
     ///
     /// ⚠️ **「当前库」请走 [`Self::switch_database`]** —— 那个才真的改服务端会话。
     /// 早期版本只在这里记一笔，理由是「当前库是服务端状态、驱动无从改写」，那句话
@@ -588,8 +713,10 @@ impl Connection {
     /// 情况下，用户点了库却不发 `USE`，之后每条语句都会被服务端回
     /// `No database selected` —— 界面「切了」、查询没切。
     pub fn set_namespace(&mut self, schema: Option<&str>) {
-        if let Self::Mongo(conn) = self {
-            conn.set_namespace(schema);
+        match self {
+            Self::Mongo(conn) => conn.set_namespace(schema),
+            Self::Agent(conn) => conn.set_schema(schema),
+            _ => {}
         }
     }
 
@@ -630,6 +757,18 @@ impl Connection {
                 conn.use_database(name)?;
                 Ok(SwitchOutcome::Applied)
             }
+            // agent 档「切库」比 PG 轻松得多：对端的每条元数据 / 查询请求都自带
+            // `database` 参数（`switchCatalog`），所以换库就是换一个值，不必重连。
+            Self::Agent(conn) => {
+                conn.use_database(name)?;
+                Ok(SwitchOutcome::Applied)
+            }
+            // DuckDB 的「切库」= `USE <catalog>`：切的是已 attach 的 catalog，
+            // 同进程内立刻生效（不必重连）。失败（库不存在）原样上抛。
+            Self::DuckDb(conn) => {
+                conn.switch_database(name)?;
+                Ok(SwitchOutcome::Applied)
+            }
         }
     }
 
@@ -650,6 +789,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.list_databases(),
             Self::Mongo(conn) => conn.list_databases(),
             Self::Elasticsearch(conn) => conn.list_databases(),
+            Self::DuckDb(conn) => conn.list_databases(),
+            Self::Agent(conn) => conn.list_databases(),
         }
     }
 
@@ -663,6 +804,10 @@ impl Connection {
             Self::SqlServer(conn) => conn.execute(sql, max_rows),
             Self::Mongo(conn) => conn.execute(sql, max_rows),
             Self::Elasticsearch(conn) => conn.execute(sql, max_rows),
+            // 这是 agent 档**唯一**能落写语句的地方，而且只因为「语句是用户自己写的」——
+            // 协议没有参数绑定，我们替用户拼的写语句一律拒绝（见 [`agent`] 模块文档）。
+            Self::Agent(conn) => conn.execute(sql, max_rows),
+            Self::DuckDb(conn) => conn.execute(sql, max_rows),
         }
     }
 
@@ -727,9 +872,9 @@ impl Connection {
     ///   本方法不参与任何写语义；
     /// - **只接受单条语句**：多语句批次没有「第 N 行起」的语义，也避免重跑批次把写语句
     ///   再执行一遍，直接 [`DbError::Unsupported`]；
-    /// - **能力判定单一来源**：能不能续拉只看 [`DatabaseKind::supports_paged_read`]，
+    /// - **能力判定单一来源**：能不能续拉只看 [`Self::supports_paged_read`]，
     ///   SQL Server / MongoDB / Elasticsearch 明确 [`DbError::Unsupported`]（界面据同一
-    ///   判据不提供「加载更多」，两边不再各写一套）。
+    ///   判据不提供「加载更多」，两边不再各写一套）；agent 档再往里问一层对端的能力。
     ///
     /// SQL Server 被归为不支持的理由：其 `OFFSET/FETCH` 强制 `ORDER BY`，而派生表又不能
     /// 带 `ORDER BY`，外层只能 `ORDER BY (SELECT NULL)`——顺序不定会让翻页重复 / 漏行。
@@ -744,7 +889,7 @@ impl Connection {
         limit: usize,
     ) -> Result<ResultSet, DbError> {
         let kind = self.kind();
-        if !kind.supports_paged_read() {
+        if !self.supports_paged_read() {
             return Err(paged_unsupported(kind.wire_name()));
         }
         match self {
@@ -752,6 +897,11 @@ impl Connection {
             Self::Postgres(conn) => conn.execute_paged(sql, offset, limit),
             Self::Mysql(conn) => conn.execute_paged(sql, offset, limit),
             Self::ClickHouse(conn) => conn.execute_paged(sql, offset, limit),
+            // agent 档用的是**对端的服务端游标**，不套 `LIMIT/OFFSET` 外壳：外层包装会把
+            // 原语句的 `ORDER BY` 挤进派生表里（顺序不保证），游标是在原语句自己的执行上
+            // 继续读，顺序与语义都不动。代价是 `offset > 0` 只能靠逐页取再丢掉。
+            Self::Agent(conn) => conn.execute_paged(sql, offset, limit),
+            Self::DuckDb(conn) => conn.execute_paged(sql, offset, limit),
             // 这几条已被上面的 `supports_paged_read()` 排除；显式写全保证穷尽、
             // 且即便能力表与分发漂移也依然拒绝（fail-closed）。
             Self::SqlServer(_) | Self::Mongo(_) | Self::Elasticsearch(_) => {
@@ -780,6 +930,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.list_schemas(),
             Self::Mongo(conn) => conn.list_schemas(),
             Self::Elasticsearch(conn) => conn.list_schemas(),
+            Self::Agent(conn) => conn.list_schemas(),
+            Self::DuckDb(conn) => conn.list_schemas(),
         }
     }
 
@@ -793,6 +945,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.catalog(schema),
             Self::Mongo(conn) => conn.catalog(schema),
             Self::Elasticsearch(conn) => conn.catalog(schema),
+            Self::Agent(conn) => conn.catalog(schema),
+            Self::DuckDb(conn) => conn.catalog(schema),
         }
     }
 
@@ -800,13 +954,24 @@ impl Connection {
     ///
     /// 没有触发器概念的引擎（ClickHouse / Mongo / ES）返回空清单——「没有」
     /// 不是错误，左栏树直接不显示这个分类节点。
+    ///
+    /// ⚠️ **agent 档同样返回空清单，但那不是「没有」**：协议里 `list_triggers` 只有
+    /// **按表**的形态，要凑出整个 schema 的清单就得逐表问（几百张表 = 几百次往返，而这
+    /// 一步在建连 / 刷新 / 切库三处都会跑）。所以这一层不给 —— 左栏不画这个分类节点，
+    /// 而右栏「触发器」卡（[`Self::table_triggers`]）是**完整**的。
+    /// ⚠️ 别因为这里返回空就把 `TreeCategory::concept_supported` 对 agent 放成 `true`：
+    /// 那会画出一个恒为 0 的假节点。
     pub fn list_triggers(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
         match self {
             Self::Sqlite(conn) => conn.list_triggers(schema),
             Self::Postgres(conn) => conn.list_triggers(schema),
             Self::Mysql(conn) => conn.list_triggers(schema),
             Self::SqlServer(conn) => conn.list_triggers(schema),
-            Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => Ok(Vec::new()),
+            Self::ClickHouse(_)
+            | Self::Mongo(_)
+            | Self::Elasticsearch(_)
+            | Self::Agent(_)
+            | Self::DuckDb(_) => Ok(Vec::new()),
         }
     }
 
@@ -815,13 +980,20 @@ impl Connection {
     /// 与 [`Self::table_indexes`] 的分工：这条给「库 → 索引」这一层（左栏树的分类
     /// 节点），那条给「表 → 索引」（右栏的索引卡）。没有命名空间级索引概念的引擎
     /// （ClickHouse / Mongo / ES）返回空清单——「没有」不是错误，树里不画这个节点。
+    ///
+    /// ⚠️ **agent 档返回空清单的理由与 [`Self::list_triggers`] 完全相同**（协议只有
+    /// 按表的形态），右栏的 [`Self::table_indexes`] 是完整的。
     pub fn list_indexes(&mut self, schema: Option<&str>) -> Result<Vec<DatabaseObject>, DbError> {
         match self {
             Self::Sqlite(conn) => conn.list_indexes(schema),
             Self::Postgres(conn) => conn.list_indexes(schema),
             Self::Mysql(conn) => conn.list_indexes(schema),
             Self::SqlServer(conn) => conn.list_indexes(schema),
-            Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => Ok(Vec::new()),
+            Self::ClickHouse(_)
+            | Self::Mongo(_)
+            | Self::Elasticsearch(_)
+            | Self::Agent(_)
+            | Self::DuckDb(_) => Ok(Vec::new()),
         }
     }
 
@@ -837,7 +1009,9 @@ impl Connection {
             | Self::SqlServer(_)
             | Self::ClickHouse(_)
             | Self::Mongo(_)
-            | Self::Elasticsearch(_) => Ok(Vec::new()),
+            | Self::Elasticsearch(_)
+            | Self::Agent(_)
+            | Self::DuckDb(_) => Ok(Vec::new()),
         }
     }
 
@@ -846,14 +1020,20 @@ impl Connection {
     /// 立足服务器而不是某个库：MySQL 的 `mysql.user`、PG 的 `pg_roles`、
     /// SQL Server 的 `sys.server_principals` 都是服务器范围的。SQLite 没有用户
     /// 体系（文件级权限就是一切），恒空。
+    ///
+    /// agent 档恒空：协议里没有「列用户」的方法，而拼一条各家方言不同的
+    /// `SELECT … FROM <系统表>` 不是这一档该做的事（见 [`agent`]）。
     pub fn list_users(&mut self) -> Result<Vec<DatabaseObject>, DbError> {
         match self {
             Self::Mysql(conn) => conn.list_users(),
             Self::Postgres(conn) => conn.list_users(),
             Self::SqlServer(conn) => conn.list_users(),
-            Self::Sqlite(_) | Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => {
-                Ok(Vec::new())
-            }
+            Self::Sqlite(_)
+            | Self::ClickHouse(_)
+            | Self::Mongo(_)
+            | Self::Elasticsearch(_)
+            | Self::Agent(_)
+            | Self::DuckDb(_) => Ok(Vec::new()),
         }
     }
 
@@ -870,6 +1050,10 @@ impl Connection {
             Self::SqlServer(_) | Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => {
                 Err(instance_unsupported(self.kind()))
             }
+            // agent 档不画实例内省：那些视图（会话 / 进程 / 锁 / 复制）本体就是各家方言的
+            // 系统查询，而这一档不做「替用户拼方言 SQL」（见 [`agent`]）。
+            Self::Agent(_) => Err(instance_unsupported(self.kind())),
+            Self::DuckDb(_) => Err(instance_unsupported(self.kind())),
         }
     }
 
@@ -882,6 +1066,8 @@ impl Connection {
             Self::SqlServer(_) | Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => {
                 Err(instance_unsupported(self.kind()))
             }
+            Self::Agent(_) => Err(instance_unsupported(self.kind())),
+            Self::DuckDb(_) => Err(instance_unsupported(self.kind())),
         }
     }
 
@@ -895,6 +1081,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.table_columns(table),
             Self::Mongo(conn) => conn.table_columns(table),
             Self::Elasticsearch(conn) => conn.table_columns(table),
+            Self::Agent(conn) => conn.table_columns(table),
+            Self::DuckDb(conn) => conn.table_columns(table),
         }
     }
 
@@ -915,6 +1103,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.table_column_meta(table),
             Self::Mongo(conn) => conn.table_column_meta(table),
             Self::Elasticsearch(conn) => conn.table_column_meta(table),
+            Self::Agent(conn) => conn.table_column_meta(table),
+            Self::DuckDb(conn) => conn.table_column_meta(table),
         }
     }
 
@@ -942,6 +1132,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.table_page(table, limit, offset, order_by, filters),
             Self::Mongo(conn) => conn.table_page(table, limit, offset, order_by, filters),
             Self::Elasticsearch(conn) => conn.table_page(table, limit, offset, order_by, filters),
+            Self::Agent(conn) => conn.table_page(table, limit, offset, order_by, filters),
+            Self::DuckDb(conn) => conn.table_page(table, limit, offset, order_by, filters),
         }
     }
 
@@ -958,6 +1150,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.table_primary_key(table),
             Self::Mongo(conn) => conn.table_primary_key(table),
             Self::Elasticsearch(conn) => conn.table_primary_key(table),
+            Self::Agent(conn) => conn.table_primary_key(table),
+            Self::DuckDb(conn) => conn.table_primary_key(table),
         }
     }
 
@@ -983,6 +1177,14 @@ impl Connection {
             Self::SqlServer(conn) => conn.update_cell(table, pk, column, value),
             Self::Mongo(conn) => conn.update_cell(table, pk, column, value),
             Self::Elasticsearch(conn) => conn.update_cell(table, pk, column, value),
+            // agent 档**不做**「工具替用户拼的写语句」：协议没有参数绑定，值只能以字面量进
+            // SQL，而写错了是数据没了（见 [`agent`]）。要改数据请在 SQL 编辑器里自己写 ——
+            // 那条路走的是 [`Self::execute`]，语句出自用户，不在此列。
+            Self::Agent(conn) => Err(agent::unsupported(
+                agent::WRITE_UNSUPPORTED,
+                Some(conn.entry()),
+            )),
+            Self::DuckDb(conn) => Err(conn.unsupported(agent::WRITE_UNSUPPORTED)),
         }
     }
 
@@ -999,6 +1201,11 @@ impl Connection {
             Self::SqlServer(conn) => conn.delete_rows(table, pk),
             Self::Mongo(conn) => conn.delete_rows(table, pk),
             Self::Elasticsearch(conn) => conn.delete_rows(table, pk),
+            Self::Agent(conn) => Err(agent::unsupported(
+                agent::WRITE_UNSUPPORTED,
+                Some(conn.entry()),
+            )),
+            Self::DuckDb(conn) => Err(conn.unsupported(agent::WRITE_UNSUPPORTED)),
         }
     }
 
@@ -1020,6 +1227,11 @@ impl Connection {
             Self::SqlServer(conn) => conn.delete_row_set(table, keys),
             Self::Mongo(conn) => conn.delete_row_set(table, keys),
             Self::Elasticsearch(conn) => conn.delete_row_set(table, keys),
+            Self::Agent(conn) => Err(agent::unsupported(
+                agent::WRITE_UNSUPPORTED,
+                Some(conn.entry()),
+            )),
+            Self::DuckDb(conn) => Err(conn.unsupported(agent::WRITE_UNSUPPORTED)),
         }
     }
 
@@ -1042,6 +1254,11 @@ impl Connection {
             Self::SqlServer(conn) => conn.update_cells(table, edits),
             Self::Mongo(conn) => conn.update_cells(table, edits),
             Self::Elasticsearch(conn) => conn.update_cells(table, edits),
+            Self::Agent(conn) => Err(agent::unsupported(
+                agent::WRITE_UNSUPPORTED,
+                Some(conn.entry()),
+            )),
+            Self::DuckDb(conn) => Err(conn.unsupported(agent::WRITE_UNSUPPORTED)),
         }
     }
 
@@ -1083,6 +1300,11 @@ impl Connection {
             Self::SqlServer(conn) => conn.apply_batch(table, edits, inserts),
             Self::Mongo(conn) => conn.apply_batch(table, edits, inserts),
             Self::Elasticsearch(conn) => conn.apply_batch(table, edits, inserts),
+            Self::Agent(conn) => Err(agent::unsupported(
+                agent::BATCH_UNSUPPORTED,
+                Some(conn.entry()),
+            )),
+            Self::DuckDb(conn) => Err(conn.unsupported(agent::BATCH_UNSUPPORTED)),
         }
     }
 
@@ -1096,6 +1318,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.table_ddl(table),
             Self::Mongo(conn) => conn.table_ddl(table),
             Self::Elasticsearch(conn) => conn.table_ddl(table),
+            Self::Agent(conn) => conn.table_ddl(table),
+            Self::DuckDb(conn) => conn.table_ddl(table),
         }
     }
 
@@ -1109,6 +1333,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.table_indexes(table),
             Self::Mongo(conn) => conn.table_indexes(table),
             Self::Elasticsearch(conn) => conn.table_indexes(table),
+            Self::Agent(conn) => conn.table_indexes(table),
+            Self::DuckDb(conn) => conn.table_indexes(table),
         }
     }
 
@@ -1127,6 +1353,8 @@ impl Connection {
             Self::Mysql(conn) => conn.table_foreign_keys(table),
             Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => Ok(Vec::new()),
             Self::SqlServer(conn) => conn.table_foreign_keys(table),
+            Self::Agent(conn) => conn.table_foreign_keys(table),
+            Self::DuckDb(conn) => conn.table_foreign_keys(table),
         }
     }
 
@@ -1141,6 +1369,8 @@ impl Connection {
             Self::Mysql(conn) => conn.table_triggers(table),
             Self::ClickHouse(_) | Self::Mongo(_) | Self::Elasticsearch(_) => Ok(Vec::new()),
             Self::SqlServer(conn) => conn.table_triggers(table),
+            Self::Agent(conn) => conn.table_triggers(table),
+            Self::DuckDb(conn) => conn.table_triggers(table),
         }
     }
 
@@ -1154,6 +1384,8 @@ impl Connection {
             Self::SqlServer(conn) => conn.table_row_count(table),
             Self::Mongo(conn) => conn.table_row_count(table),
             Self::Elasticsearch(conn) => conn.table_row_count(table),
+            Self::Agent(conn) => conn.table_row_count(table),
+            Self::DuckDb(conn) => conn.table_row_count(table),
         }
     }
 
@@ -1183,11 +1415,24 @@ impl Connection {
             Self::SqlServer(conn) => conn.insert_rows(table, columns, rows),
             Self::Mongo(conn) => conn.insert_rows(table, columns, rows),
             Self::Elasticsearch(conn) => conn.insert_rows(table, columns, rows),
+            Self::Agent(conn) => Err(agent::unsupported(
+                agent::WRITE_UNSUPPORTED,
+                Some(conn.entry()),
+            )),
+            Self::DuckDb(conn) => Err(conn.unsupported(agent::WRITE_UNSUPPORTED)),
         }
     }
 
     /// 关闭连接（各驱动随自身 drop；这里给调用方一个显式时机）。
-    pub fn close(self) {}
+    ///
+    /// 只有 DuckDB 需要真做事：worker 是**另一个进程**，光 drop 句柄只是杀掉它，
+    /// 库里还没 checkpoint 的部分要靠 `shutdown` 那一问落干净（见 [`duckdb`]）。
+    /// 其余引擎的连接对象自己 `Drop` 就会关掉。
+    pub fn close(self) {
+        if let Self::DuckDb(conn) = self {
+            conn.close();
+        }
+    }
 }
 
 /// 分页包装用的子查询别名（加引号后不会与用户的结果列名冲突）。

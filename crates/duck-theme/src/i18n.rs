@@ -450,6 +450,7 @@ fn plural_en(source: &str) -> Option<(&'static str, &'static str)> {
 /// 为什么留在这里而不进 TOML：rust-i18n 的 3.x 与 4.2.4 **都没有复数 API**，
 /// 复数形态只能自己维护。
 static EN_PLURAL: &[(&str, &str, &str)] = &[
+    ("{} 个任务", "{} task", "{} tasks"),
     ("{} 分钟前", "{} minute ago", "{} minutes ago"),
     ("{} 天前", "{} day ago", "{} days ago"),
     ("{} 小时前", "{} hour ago", "{} hours ago"),
@@ -486,6 +487,11 @@ static EN_PLURAL: &[(&str, &str, &str)] = &[
         "{} task in this view",
         "{} tasks in this view",
     ),
+    (
+        "还有 {} 条任务需要注意",
+        "{} more task needs attention",
+        "{} more tasks need attention",
+    ),
 ];
 
 #[cfg(test)]
@@ -503,10 +509,18 @@ mod tests {
     ///   `classify` / `parse_relative_day` 里的中文（`"发件人"`、`"未读"`、`"上周"` …）
     ///   是拿去和**用户敲进的查询串**做比对的输入侧字面量，同样一个字节都不渲染；
     ///   渲染出来的说法在 `duck-app/src/pages/mail.rs` 的搜索帮助表里，那里照常登记。
+    /// - `duck-app/src/pages/projects/import_aliases.rs` 的**输入侧列名 / 取值别名表**。
+    ///   那里的中文（`"任务标题"`、`"进行中"`、`"紧急重要"` …）是拿去和**用户文件里的
+    ///   表头、单元格内容**做比对的，一个字节都不会渲染；能渲染出来的说法是
+    ///   `dialogs.rs::field_label` 与 `status_label` 那两张表，那里照常登记。
     ///
     /// 判据是「会不会被渲染」，不是「是不是中文」。加新条目要能说清**为什么不渲染**；
     /// 只是因为「翻译不了」而加进来，等于把守卫关了。
-    const NON_UI_SOURCES: &[&str] = &["duck-mail/src/models.rs", "duck-mail/src/db/repo/search.rs"];
+    const NON_UI_SOURCES: &[&str] = &[
+        "duck-mail/src/models.rs",
+        "duck-mail/src/db/repo/search.rs",
+        "duck-app/src/pages/projects/import_aliases.rs",
+    ];
 
     /// 迁移收口断言：`static EN` 表不得回来。
     ///

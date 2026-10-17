@@ -1,5 +1,7 @@
 //! 连接档案生命周期：端点推导、ssh 目标拼装、新建 / 编辑 / 克隆 / 删除、写锁与 `kv: ssh_profiles` 持久化。
 
+use std::rc::Rc;
+
 use super::*;
 
 impl TerminalPage {
@@ -455,6 +457,8 @@ impl TerminalPage {
             // 外层闭包是 `Fn`（每次重排都重跑）→ 每一轮都得重新克隆一份给内层。
             let action_for_ok = action.clone();
             let view_for_ok = view.clone();
+            let action_for_footer = action.clone();
+            let view_for_footer = view.clone();
             let drag_for_content = drag.clone();
             let title_for_content = title.clone();
 
@@ -464,12 +468,6 @@ impl TerminalPage {
                 .margin_top(dialog_top_offset(cx) + offset.y)
                 .opacity(offset.opacity)
                 .close_button(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(tr(cx, "删除"))
-                        .cancel_text(tr(cx, "取消"))
-                        .show_cancel(true),
-                )
                 .content(move |content, _, cx| {
                     let title = title_for_content.clone();
                     content.child(modal_drag_area(
@@ -488,6 +486,21 @@ impl TerminalPage {
                             )),
                     ))
                 })
+                // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+                // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+                .footer(dialog_footer(
+                    "terminal-conn-confirm",
+                    tr(cx, "删除"),
+                    ButtonVariant::Destructive,
+                    Rc::new(move |_, cx| {
+                        let _ = view_for_footer.update(cx, |this, cx| {
+                            this.run_pending(action_for_footer.clone(), cx);
+                        });
+                        true
+                    }),
+                    cx,
+                ))
+                // 键盘 ⏎ 走 base 的 `Confirm` action → 这里；鼠标点按钮走上面 footer。
                 .on_ok(move |_, _window, cx| {
                     // 视图已销毁（`update` 返回 `Err`）也照样关弹窗，
                     // 不让一个点不掉的确认框挂在屏幕上。

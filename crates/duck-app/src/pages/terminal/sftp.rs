@@ -1,5 +1,7 @@
 //! SFTP 面板：入口目标选择、目录列举与浏览、远端新建 / 重命名 / 删除（走 `PendingAction` 二次确认）。
 
+use std::rc::Rc;
+
 use super::*;
 
 impl TerminalPage {
@@ -409,6 +411,8 @@ impl TerminalPage {
             let offset = modal_offset(&drag, cx);
             let action_for_ok = action.clone();
             let view_for_ok = view.clone();
+            let action_for_footer = action.clone();
+            let view_for_footer = view.clone();
             let drag_for_content = drag.clone();
             let title_for_content = title.clone();
 
@@ -418,12 +422,6 @@ impl TerminalPage {
                 .margin_top(dialog_top_offset(cx) + offset.y)
                 .opacity(offset.opacity)
                 .close_button(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(tr(cx, "删除"))
-                        .cancel_text(tr(cx, "取消"))
-                        .show_cancel(true),
-                )
                 .content(move |content, _, cx| {
                     let title = title_for_content.clone();
                     content.child(modal_drag_area(
@@ -442,6 +440,21 @@ impl TerminalPage {
                             )),
                     ))
                 })
+                // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+                // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+                .footer(dialog_footer(
+                    "terminal-sftp-confirm",
+                    tr(cx, "删除"),
+                    ButtonVariant::Destructive,
+                    Rc::new(move |_, cx| {
+                        let _ = view_for_footer.update(cx, |this, cx| {
+                            this.run_pending(action_for_footer.clone(), cx);
+                        });
+                        true
+                    }),
+                    cx,
+                ))
+                // 键盘 ⏎ 走 base 的 `Confirm` action → 这里；鼠标点按钮走上面 footer。
                 .on_ok(move |_, _window, cx| {
                     let _ = view_for_ok.update(cx, |this, cx| {
                         this.run_pending(action_for_ok.clone(), cx);
@@ -492,9 +505,11 @@ impl TerminalPage {
                 // 成功与失败都重列举：成功要看到新条目，失败可能是「目录已被别人改过」。
                 page.reload_pane(Side::Remote, cx);
                 match result {
-                    Ok(()) => crate::update::on_notify_window(cx, move |window, cx| {
-                        notify::success(success.clone(), window, cx);
-                    }),
+                    Ok(()) => {
+                        crate::update::on_notify_window(cx, move |window, cx| {
+                            notify::success(success.clone(), window, cx);
+                        });
+                    }
                     Err(error) => {
                         // ssh 的原文指得出下一步（权限？目录非空？路径不对？）。
                         let reason = ssh_error_text(cx, &error);

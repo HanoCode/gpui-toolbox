@@ -2,6 +2,8 @@
 
 use super::*;
 
+use duck_components::selectable_text;
+
 impl SettingsWindowView {
     // ── AI ──────────────────────────────────────────────────────────────
     /// 「AI」页：模型厂商清单（就地展开编辑器）+ 生成参数。
@@ -210,7 +212,9 @@ impl SettingsWindowView {
                             .text_size(tokens.typography.sm.size)
                             .line_height(tokens.typography.sm.line_height)
                             .text_color(tokens.colors.foreground)
-                            .child(SharedString::from(ai::profile_display_name(profile))),
+                            .child(selectable_text(SharedString::from(
+                                ai::profile_display_name(profile),
+                            ))),
                     )
                     .child(content::neutral_tag(SharedString::from(model), cx))
                     .child(div().flex_1().min_w_0())
@@ -223,10 +227,10 @@ impl SettingsWindowView {
                     .text_size(tokens.typography.xs.size)
                     .line_height(tokens.typography.xs.line_height)
                     .text_color(extended.colors.text_tertiary)
-                    .child(SharedString::from(format!(
+                    .child(selectable_text(SharedString::from(format!(
                         "{} · {}",
                         profile.base_url, credential
-                    ))),
+                    )))),
             )
             .into_any_element()
     }
@@ -468,7 +472,7 @@ impl SettingsWindowView {
                             .text_size(tokens.typography.sm.size)
                             .line_height(tokens.typography.sm.line_height)
                             .text_color(tokens.colors.destructive)
-                            .child(error),
+                            .child(selectable_text(error)),
                     )
                     .into_any_element(),
             );
@@ -906,15 +910,20 @@ impl SettingsWindowView {
 
     /// 选一个工作目录写进设置。
     ///
-    /// `pick_folder()` 是**模态阻塞**调用（`duck-platform/src/dialog.rs` 模块头），
-    /// 只能在动作处理器里调——这里正是。
+    /// ⚠️ 不用 `duck_platform::pick_folder()`：它是 rfd 的同步模态
+    /// （`NSOpenPanel runModal`），从 `App::update` 里弹会把 AppKit 的事件派发重入回
+    /// gpui ⇒ 重入期间任何前台任务做 `AsyncApp::update_entity` 都会撞
+    /// 「RefCell already borrowed」并 abort。走 gpui 的异步面板，写设置在回调里做。
     pub(super) fn ai_pick_workspace(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = duck_platform::pick_folder() else {
-            return;
-        };
-        self.ai_settings.workspace_dir = Some(path.to_string_lossy().into_owned());
-        ai::save_settings(cx, &self.ai_settings);
-        cx.notify();
+        crate::file_dialogs::pick_folder(
+            cx,
+            tr(cx, "选择工作目录"),
+            move |path, this, cx| {
+                this.ai_settings.workspace_dir = Some(path.to_string_lossy().into_owned());
+                ai::save_settings(cx, &this.ai_settings);
+                cx.notify();
+            },
+        );
     }
 
     /// 「添加目录」：选目录 → 立刻索引它。
@@ -926,13 +935,17 @@ impl SettingsWindowView {
         if self.ai_kb_job.as_ref().is_some_and(|job| !job.finished) {
             return;
         }
-        let Some(path) = duck_platform::pick_folder() else {
-            return;
-        };
-        let job = self.spawn_kb_job(KbJobKind::Add(KbSource::new(path)), cx);
-        self.ai_kb_job = Some(job);
-        self.start_kb_poller(cx);
-        cx.notify();
+        // 目录选择器同 `ai_pick_workspace`：界面里禁用 rfd 的同步模态。
+        crate::file_dialogs::pick_folder(
+            cx,
+            tr(cx, "选择要索引的目录"),
+            move |path, this, cx| {
+                let job = this.spawn_kb_job(KbJobKind::Add(KbSource::new(path)), cx);
+                this.ai_kb_job = Some(job);
+                this.start_kb_poller(cx);
+                cx.notify();
+            },
+        );
     }
 
     /// 「重建索引」：清空块表后按已登记的来源整源重扫。

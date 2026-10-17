@@ -14,6 +14,7 @@
 //! | SQL Server | `KILL <spid>` | 同样要另开连接（还得自带一个小 runtime） |
 //! | MongoDB | `killOp` | `opid` 只能从 `$currentOp` 里捞，故按 `appName` 点名 |
 //! | Elasticsearch | `POST /_tasks/<id>/_cancel` | `id` 只能从 `_tasks` 里按 `X-Opaque-Id` 捞 |
+//! | agent（子进程） | JSON-RPC `cancel_session` | 取消是**另一条请求**，靠连接 id 点名；故意不等回应 |
 //!
 //! 超时用 [`CancelTimer`]：一个守护线程到点调 `cancel()`。它在 `disarm()`/`drop`
 //! 时立刻撤销——否则「查询已结束、计时器才到点」会把取消误伤到下一条语句。
@@ -79,6 +80,34 @@ enum CancelKind {
         /// 正在跑的请求的 `X-Opaque-Id`；空闲时是 `None`（那时取消是空操作）。
         inflight: Arc<Mutex<Option<String>>>,
     },
+    /// agent 轨（子进程）：给驱动进程发一条 JSON-RPC `cancel_session`。
+    ///
+    /// 这里跟别处不一样的地方是**不需要另开通道** —— 驱动进程本身就是个常驻的
+    /// JSON-RPC 服务端，[`AgentHandle`] 的方法都只取 `&self`、内部走写队列，
+    /// 所以主线程正阻塞在等某条语句的回应上时，取消照样能插进去。
+    ///
+    /// 之所以还值得做成带外句柄：取消除非连接锁在手，否则走的是同一条被阻塞的路径。
+    Agent {
+        /// 驱动进程句柄（与连接本体共享同一个 `Arc`）。
+        handle: Arc<duck_db_agent::AgentHandle>,
+        /// 目标会话 id —— `agentSessionId`，即建连时开的那个会话。
+        session_id: String,
+    },
+    /// DuckDB sidecar：给 worker 发一条 `cancel` —— **不用点名**。
+    ///
+    /// 与 [`CancelKind::Agent`] 的差别来自协议：agent 轨是多会话的（取消要带
+    /// `agentSessionId`），sidecar 只有一条连接、一个正在跑的查询，worker 自己知道
+    /// 该打断谁。它的 `execute` 也是异步回报的（先 spawn 再读下一行），所以跑着查询时
+    /// 这条 `cancel` 真能插进去。
+    DuckDb {
+        /// worker 进程句柄（与连接本体共享同一个 `Arc`）。
+        handle: Arc<duck_db_agent::AgentHandle>,
+    },
+    /// 什么都取消不了（连接没有可用句柄时给的占位，如 DuckDB worker 中毒待重起）。
+    ///
+    /// 留着它而不是让 `cancel_handle()` 返回 `Option`：取消的语义本来就是
+    /// 「尽力而为」，一个空转的句柄比一条 `Option` 少一层调用点分支。
+    Noop,
 }
 
 impl CancelHandle {
@@ -124,6 +153,24 @@ impl CancelHandle {
         inflight: Arc<Mutex<Option<String>>>,
     ) -> Self {
         Self(Arc::new(CancelKind::Elasticsearch { endpoint, inflight }))
+    }
+
+    /// agent 轨句柄（驱动进程 + `agentSessionId`）。
+    ///
+    /// 精确点说，`session_id` 是**连接级会话**，不是游标那个 `sessionId` ——
+    /// 两个键在协议里长得像但语义不同，混用的表现是「翻页永远失败」。
+    pub(crate) fn agent(handle: Arc<duck_db_agent::AgentHandle>, session_id: String) -> Self {
+        Self(Arc::new(CancelKind::Agent { handle, session_id }))
+    }
+
+    /// DuckDB sidecar 句柄（worker 进程；`cancel` 不用点名）。
+    pub(crate) fn duckdb(handle: Arc<duck_db_agent::AgentHandle>) -> Self {
+        Self(Arc::new(CancelKind::DuckDb { handle }))
+    }
+
+    /// 空转句柄（没有可用通道时用，见 [`CancelKind::Noop`]）。
+    pub(crate) fn none() -> Self {
+        Self(Arc::new(CancelKind::Noop))
     }
 
     /// 送一次取消。**幂等**：查询已结束时多数引擎只是空操作，不算失败。
@@ -203,6 +250,21 @@ impl CancelHandle {
                     .map_err(|err| DbError::Query(format!("cancel task failed: {err}")))?;
                 Ok(())
             }
+            CancelKind::Agent { handle, session_id } => {
+                // 「送不出去」才算失败；送到了不等于取消成功 —— 原请求仍要自己失败或超时
+                // 来收场（对端对取消只回一条确认，而那条我们故意不等）。
+                handle
+                    .cancel_session(session_id)
+                    .map_err(|err| DbError::Query(format!("cancel session failed: {err}")))
+            }
+            CancelKind::DuckDb { handle } => {
+                // 同一条纪律：只报「送不出去」。worker 的 `cancel` 打断的是**当前**
+                // 那条查询（空闲时是空操作）。
+                handle
+                    .fire_method(crate::drivers::duckdb::CANCEL, serde_json::json!({}))
+                    .map_err(|err| DbError::Query(format!("cancel failed: {err}")))
+            }
+            CancelKind::Noop => Ok(()),
         }
     }
 
@@ -217,6 +279,9 @@ impl CancelHandle {
             CancelKind::Mssql { .. } => "sqlserver",
             CancelKind::Mongo { .. } => "mongo",
             CancelKind::Elasticsearch { .. } => "elasticsearch",
+            CancelKind::Agent { .. } => "agent",
+            CancelKind::DuckDb { .. } => "duckdb",
+            CancelKind::Noop => "none",
         }
     }
 }

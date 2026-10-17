@@ -1724,6 +1724,64 @@ dbx 三张工具页对位，入口统一挂在**库节点右键**（ER 关系图
 函数不转出」的子模块，compare / transfer 取不到）；`SelectEvent` 单变体直接
 `let SelectEvent::Confirm(v) = event;` 解构（let-else 会被 clippy 判 irrefutable）。
 
+### 4.23 品牌表：连接弹窗按**牌子**裁剪（2026-10-17，用户指定参考 dbx）
+
+用户反馈：「很多数据库…不是全部一样，比如 OceanBase 就支持 MySQL 和 Oracle 两种模式可以选，
+请参考 dbx 完整分析每个数据库类型的连接方式」。查 dbx 的
+`plugins/connection-types/profiles/catalog.yaml`（**109 条品牌**）后确认：成因不是 OceanBase
+特殊，而是**本仓把「品牌」压成了「档位」**。`DatabaseKind` 只有 8 档（内建 7 + agent），
+而 dbx 的 109 条品牌映射到 83 个 `dbType` —— 一个线协议下面站着十几个牌子。
+
+**协议 ≠ 品牌**（品牌表实测，同一个 `dbType` 下的品牌各带自己的端口与账号）：
+
+| 协议 | 牌子（端口 / 惯用账号） |
+| --- | --- |
+| `mysql` | MySQL 3306/`root`、MariaDB 3306/`root`、TiDB 4000/`root`、OceanBase 2883/`root`、Doris 9030/`root`、StarRocks 9030、SelectDB 9030、PolarDB、TDSQL、GreatSQL、Dolt |
+| `postgres` | PostgreSQL 5432/`postgres`、Cloudberry 5432、CockroachDB 26257/`root`、OpenTenBase 11000/`opentenbase`、Redshift 5439/`awsuser` |
+| `mq` | Kafka 9092、RocketMQ 9876、RabbitMQ 5672 —— **同一个协议三个端口** |
+| `hive` | Hive 10000、Impala 21050（`auth=noSasl`）、Kyuubi 10009（`auth=NONE`） |
+
+**四样东西随牌子走，不随协议走**：① **端口**；② **惯用账号**（达梦 `SYSDBA`、DB2 `db2inst1`、
+IRIS `_SYSTEM`、Kingbase `system`）；③ **必需 URL 参数**（星环 Argo / Impala 的 `auth=noSasl`、
+Kyuubi 的 `auth=NONE` —— 少了它服务端直接拒）；④ **模式族**。
+
+**模式族（一族一格，点进去再选）** —— dbx 用 7 个 `switchXxxMode` 函数硬编码，本仓做成数据：
+
+| 族 | 模式 | 两条轨 |
+| --- | --- | --- |
+| OceanBase | MySQL 模式 / Oracle 模式 | 内建 `mysql` ↔ agent（`SYS`） |
+| GBase | 8a / 8s | agent，端口 5258 ↔ 9088 |
+| H2 | 2.x / 2.1 及更早 | agent 同一驱动、URL 形态不同 |
+| IRIS | IRIS / Caché | agent，`iris` ↔ `cache` |
+| Ignite | 2.x / 3.x | agent，线协议不兼容 |
+| Oracle | Thin / OCI（胖驱动） | agent，OCI 要另装 Instant Client |
+
+**实现**（`scripts/gen_brands.py` → `pages/db/brands_gen.rs`，**生成物不手改**）：
+`Brand { key, label, kind, driver, family, mode, port, user, url_params, logo }` 共 68 条，
+收录判据 = 本仓真接得上（内建协议 或 在 `agent_sources()` 里）；未收录的按成因归组打印
+（`native:*` / `external:*` / `agent:etcd` …），那张清单就是「还有哪些库没接」。
+`brands.rs` 给查询（`brand` / `family_of` / `infer`），`profiles.rs::EngineRef` 收成
+「牌子优先」的展示层（`label` / `logo` / `default_user` / `default_port` / `variants`）。
+档案新增 `ConnectionConfig::profile`（dbx 同字段叫 `driver_profile`）与 `url_params`，
+两者**原样过路**到 agent wire（`ConnectRequest` 里本来就有这两个键，此前一直是死的）。
+
+**界面三处改动**：① 选择器多出 16 张**品牌卡**（`PickerTarget::Brand`，`mysql` 协议下
+12 个牌子各有各的卡），手写卡认得出来的牌子（`mariadb` / `sqlserver` / `postgresql`…）
+也按品牌卡那条路走 —— 否则点 MariaDB 会开出一张写着「MySQL」的表单；
+② 表单 SERVER 区第一行是**模式分段器**（`family_of().len() > 1` 才画，切模式 = 换引擎：
+档位 / 驱动 / 端口 / 账号一起换，对齐 dbx 的 `applyProfile`）；
+③ agent 轨多一个 **URL 附参** 字段（品牌表里有值就预填）。
+
+⚠️ **三个静默失效点**（都踩过）：`trf` 的占位符**只有 `{}`**，写成 `{port}` 会原样打印且不报错；
+`gen_brands.py` 读驱动表必须按**条目块**切（生成物进仓前过 rustfmt ⇒ 按行的正则静默读成空表，
+品牌表从 68 掉到 22）；`picker_cards` 去重按**族**比对，靠 `CURATED_BRAND_ALIAS`
+把 `postgresql` ↔ `postgres` 对上，漏了墙上就多一张重复卡。
+
+**仍未做**（都不影响已接通的引擎，逐条实测后再开）：`gbase_server` / `informix_server`
+（GBase 8s / Informix 的 server 名）、`mysql_compat_mode`（GBASE / 达梦的方言切换）、
+`port_explicit`（SQL Server 实例名解析）—— 这三个 wire 字段在 `ConnectRequest` 里已就位、
+界面还没给出口。
+
 ## 5. 数据库支持矩阵（M1→M2 引擎与依赖）
 
 | 引擎 | 底层 crate | 期 | 状态与备注 |
@@ -1731,13 +1789,16 @@ dbx 三张工具页对位，入口统一挂在**库节点右键**（ER 关系图
 | SQLite | `rusqlite`（bundled，已在图内） | M1 | ✅ **已落地**；零新增 |
 | PostgreSQL | 阻塞 `postgres`（内部即 `tokio-postgres`） | M1 | ✅ **已落地**；TLS 按 MSRV 结论缓行 |
 | MySQL | 阻塞 `mysql` | M1 | ✅ **已落地** |
-| MariaDB | 复用 `mysql` 驱动 | M1/M2 | ⏳ 驱动已能连（同一 crate）；选择器卡片仍是**占位** |
+| MariaDB | 复用 `mysql` 驱动 | M1/M2 | ✅ **已落地**；品牌卡走 `Brand(mariadb)`（§4.23），表单标题与端口随牌子 |
+| Redshift | 复用 PG 线协议（只读、单语句、无 DDL） | M2 | ✅ **已落地**；品牌端口 5439/`awsuser`（§4.23），能力面按方言裁 |
 | Redis | `redis = "=1.2.2"`（独立 crate `duck-redis`） | M2 | ✅ **已落地**（见 `redis-design.md`） |
 | ClickHouse | `ureq` 直连 HTTP 接口（8123） | M2 | ✅ **已落地**（修订六）；**零新协议依赖** |
 | SQL Server | `tiberius 0.12` + `tokio-util/compat` | M2 | ✅ **已落地**（修订六）；闭包 +12 包 |
 | MongoDB | `mongodb = "=3.6.0"`（`rust-version` 恰为 1.85，**必须精确钉**） | M2 | ✅ **已落地**（修订七）；网格契约复用，列靠采样 |
 | Elasticsearch | `ureq` 直连 REST（9200） | M2 | ✅ **已落地**（修订八）；`ureq` + `base64` 均在图内，**零新增包** |
-| DuckDB | `duckdb crate`（bundled，编译重） | M3+ | ⏳ 视体积取舍 |
+| 44 条 agent 轨（达梦 / Kingbase / OceanBase Oracle 模式 …） | 驱动商店下载（`duck-drivers` + 托管 JRE） | M2 | ✅ **已落地**；判据 = `agent_sources()`（见 §4.23） |
+| DuckDB | 驱动**能下**（`duckdb` 0.1.32 六平台）但说的是另一套 worker 协议 | M3+ | ⏳ 要新 handle；选择器上标「未支持」 |
+| DynamoDB / InfluxDB | 无工件 / 要 AWS 签名 | M4 | ⏳ 选择器上标「未支持」 |
 
 每个新依赖过「依赖准入三关」：MSRV ≤ 1.85、许可证登记（licenses.py 重生成）、版本理由注释；能复用图内 `rustls/ring` 就不引 openssl。
 

@@ -218,7 +218,7 @@ impl DatabasePage {
                     // 读源：列清单 + 全部行（展示文本）。
                     let (columns, rows) = {
                         let mut guard = source_conn.lock().expect("连接锁不应中毒");
-                        let quote = guard.kind().identifier_quote().unwrap_or('"');
+                        let quote = guard.identifier_quote().unwrap_or('"');
                         let qualified =
                             quote_qualified(&source_ref, quote).map_err(TransferFailure::Error)?;
                         let columns = guard
@@ -519,7 +519,7 @@ impl DatabasePage {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(tokens.colors.foreground)
                     .truncate()
-                    .child(SharedString::from(row.table.name.clone())),
+                    .child(selectable_text(SharedString::from(row.table.name.clone()))),
             )
             .child(chip)
             .child(

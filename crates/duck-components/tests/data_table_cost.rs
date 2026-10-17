@@ -308,7 +308,7 @@ fn open_grid(
     };
     let labels = DataTableLabels::new(
         "all", "row {}", "sort {}", "submit", "detail", "{} menu", "name", "type", "comment",
-        "copy",
+        "copy", ": ",
     );
     let host_state = state.clone();
     let (host, ctx) = cx.add_window_view(move |_, _| Host {

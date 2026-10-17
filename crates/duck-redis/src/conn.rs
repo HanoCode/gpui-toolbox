@@ -53,6 +53,12 @@ pub struct RedisConnection {
 /// 又不会让单个 pipeline 的请求缓冲过肥。
 pub const META_CHUNK_KEYS: usize = 256;
 
+/// 批量写操作（`DEL` / `EXPIRE` / `EXPIREAT` / `PERSIST`）单个管道最多塞多少键。
+///
+/// 每键一条命令，512 键一次往返；「批量删除一个前缀」动辄上万键时按块分批，
+/// 不会把单个 pipeline 的请求缓冲撑到几十 MB。
+pub const BATCH_CHUNK: usize = 512;
+
 /// 一个键的元数据（键树每行都要：类型徽标 + TTL 芯片）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyMeta {
@@ -643,6 +649,90 @@ impl RedisConnection {
     pub fn persist(&mut self, key: &str) -> Result<bool, RedisError> {
         let applied: i64 = redis::cmd("PERSIST").arg(key).query(&mut self.conn)?;
         Ok(applied > 0)
+    }
+
+    /// 设置键的到期时刻（`EXPIREAT`，Unix 秒）；返回是否真的设上了
+    /// （键不存在 / 时刻已过去则 `false` —— 后者的服务端语义是「立即删除」，
+    /// 界面要在按下去之前拦住）。
+    pub fn expire_at(&mut self, key: &str, unix_secs: i64) -> Result<bool, RedisError> {
+        let applied: i64 = redis::cmd("EXPIREAT")
+            .arg(key)
+            .arg(unix_secs)
+            .query(&mut self.conn)?;
+        Ok(applied > 0)
+    }
+
+    /// 批量删除键（`DEL`，分块管道）。返回真正删掉的键数。
+    ///
+    /// 为什么是管道而不是循环单发：批量动作动辄上千键，逐键往返会把一次
+    /// 「删除文件夹」拖成分钟级。按 [`BATCH_CHUNK`] 分块下发，块内一次往返。
+    pub fn del_many(&mut self, keys: &[String]) -> Result<u64, RedisError> {
+        let mut deleted = 0u64;
+        for chunk in keys.chunks(BATCH_CHUNK) {
+            let mut pipe = redis::pipe();
+            for key in chunk {
+                pipe.cmd("DEL").arg(key.as_str());
+            }
+            let replies: Vec<Value> = pipe.query(&mut self.conn)?;
+            for reply in replies {
+                deleted += u64::try_from(as_int(&reply).unwrap_or(0)).unwrap_or(0);
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// 批量设置存活秒数（`EXPIRE`，分块管道）。返回设置成功的键数。
+    pub fn expire_many(&mut self, keys: &[String], seconds: i64) -> Result<u64, RedisError> {
+        let mut applied = 0u64;
+        for chunk in keys.chunks(BATCH_CHUNK) {
+            let mut pipe = redis::pipe();
+            for key in chunk {
+                pipe.cmd("EXPIRE").arg(key.as_str()).arg(seconds);
+            }
+            let replies: Vec<Value> = pipe.query(&mut self.conn)?;
+            for reply in replies {
+                if as_int(&reply).unwrap_or(0) > 0 {
+                    applied += 1;
+                }
+            }
+        }
+        Ok(applied)
+    }
+
+    /// 批量设置到期时刻（`EXPIREAT`，分块管道）。返回设置成功的键数。
+    pub fn expire_at_many(&mut self, keys: &[String], unix_secs: i64) -> Result<u64, RedisError> {
+        let mut applied = 0u64;
+        for chunk in keys.chunks(BATCH_CHUNK) {
+            let mut pipe = redis::pipe();
+            for key in chunk {
+                pipe.cmd("EXPIREAT").arg(key.as_str()).arg(unix_secs);
+            }
+            let replies: Vec<Value> = pipe.query(&mut self.conn)?;
+            for reply in replies {
+                if as_int(&reply).unwrap_or(0) > 0 {
+                    applied += 1;
+                }
+            }
+        }
+        Ok(applied)
+    }
+
+    /// 批量移除过期时间（`PERSIST`，分块管道）。返回移除成功的键数。
+    pub fn persist_many(&mut self, keys: &[String]) -> Result<u64, RedisError> {
+        let mut applied = 0u64;
+        for chunk in keys.chunks(BATCH_CHUNK) {
+            let mut pipe = redis::pipe();
+            for key in chunk {
+                pipe.cmd("PERSIST").arg(key.as_str());
+            }
+            let replies: Vec<Value> = pipe.query(&mut self.conn)?;
+            for reply in replies {
+                if as_int(&reply).unwrap_or(0) > 0 {
+                    applied += 1;
+                }
+            }
+        }
+        Ok(applied)
     }
 
     /// 重命名键（`RENAME`）。

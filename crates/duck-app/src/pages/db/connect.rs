@@ -9,9 +9,19 @@ use super::*;
 impl EditFormView {
     /// 新建态：按引擎把可预判的字段直接填好（对齐 dbx 的 `defaultForm()`），少让用户手打；
     /// SQLite 走本地文件，三样都不填。
+    ///
+    /// `driver` 只有 agent 档有值 —— 缺省端口 / 惯用账号 / 展示名都随它走，所以这里
+    /// 一律从 [`EngineRef`] 问（而不是各自 `match kind`）。
+    ///
+    /// `brand` 是**用户在墙上选中的那张品牌卡**（[`PickerTarget::Brand`]）。有值时它
+    /// 比 `kind` + `driver` 更准：`mysql` 协议下站着 12 个牌子，档位与驱动键两边完全
+    /// 一样，**只有牌子能把端口与账号区分开**（3306 / 4000 / 2883 / 9030…）。为 `None`
+    /// 时退回 [`EngineRef::new`] 的推断（旧入口：内建七档与驱动清单卡）。
     pub(super) fn new(
         page: WeakEntity<DatabasePage>,
         kind: DatabaseKind,
+        driver: Option<&'static str>,
+        brand: Option<&'static Brand>,
         profiles: Vec<TunnelProfile>,
         window: &mut Window,
         cx: &mut Context<DatabasePage>,
@@ -19,20 +29,53 @@ impl EditFormView {
         // 预填对齐 dbx 的 `defaultForm()`（`ConnectionDialog.vue`）：host=`127.0.0.1`、
         // 端口=引擎缺省数字、用户=引擎惯用账号；SQLite 走本地文件，三样都不填。
         // host 输入框在网络引擎下恒被预填，占位符不出现，留空即可。
+        //
+        // ⚠️ 这三个值都**随牌子走**，不随档位走：同样是 `mysql` 协议，MySQL 是
+        // 3306/root、TiDB 是 4000/root、OceanBase 是 2883/root、Doris 是 9030/root。
+        // 见 `EngineRef::{default_port, default_user}`（内部先查品牌表）。
+        let engine = match brand {
+            Some(brand) => EngineRef::with_profile(brand),
+            None => EngineRef::new(kind, driver),
+        };
+        // 档位以 `engine` 为准：牌子自己带档位（OceanBase 的 Oracle 模式是 agent 轨），
+        // 用入参 `kind` 会让「MySQL 模式」那条路的档位串到 Oracle 模式上。
+        let kind = engine.kind;
         let host = text_input(window, cx, "");
         let port = text_input(window, cx, tr(cx, "端口"));
         let user = text_input(window, cx, tr(cx, "用户名"));
-        if kind.needs_host() {
+        // 文件型引擎（SQLite / DuckDB）不预填主机——预填一个 `127.0.0.1` 只会让
+        // 用户以为「这里要填地址」，而它要的是文件路径（在「数据库文件」那一格）。
+        if kind.needs_host() && !engine.is_file_backed() {
             host.update(cx, |state, cx| state.set_value("127.0.0.1", window, cx));
-            user.update(cx, |state, cx| {
-                state.set_value(default_user(kind), window, cx)
-            });
-            if let Some(default_port) = kind.default_port() {
+            // 推不出牌子时惯用账号是空串（几十个引擎的惯例不同，填错比留空更害人 ——
+            // 详见 `EngineRef::default_user`），空串就把占位符露出来。
+            let default_user = engine.default_user();
+            if !default_user.is_empty() {
+                user.update(cx, |state, cx| state.set_value(default_user, window, cx));
+            }
+            if let Some(default_port) = engine.default_port() {
                 port.update(cx, |state, cx| {
                     state.set_value(default_port.to_string(), window, cx)
                 });
             }
         }
+        // URL 附加参数：**少数引擎的必填项**（星环 Argo / Impala 要 `auth=noSasl`、
+        // Kyuubi 要 `auth=NONE`），品牌表里有值就预填 —— 不预填的话用户只会看到
+        // 一个「连接被拒绝」，而不知道该补什么。
+        let url_params = text_input(window, cx, tr(cx, "如 auth=noSasl；留空即不附加"));
+        let default_params = engine.default_url_params();
+        if !default_params.is_empty() {
+            url_params.update(cx, |state, cx| state.set_value(default_params, window, cx));
+        }
+        // 服务名：GBase 8s / Informix 才有（对端有缺省回落，留空合法 —— 新建不预填）。
+        let server_name = text_input(
+            window,
+            cx,
+            match engine.server_name() {
+                Some(spec) => tr(cx, spec.placeholder()),
+                None => "",
+            },
+        );
         // 新建时的**预置值**（只读档 / 默认超时 / 环境标签）来自「设置 → 数据库」。
         // 出厂默认仍是「无标签 / 可写 / 跟随引擎」，所以没设置过的话行为与从前一致。
         let prefs = db_prefs(cx);
@@ -50,7 +93,19 @@ impl EditFormView {
             page,
             id: None,
             kind,
+            driver: engine.driver,
+            profile: engine.profile,
             tls: TlsMode::Disable,
+            // 认证方式缺省口令；引擎不认得口令以外的档（SQLite / agent 轨等），下拉
+            // 也就只画口令一档，状态永远不会指到不可用的档位上。
+            auth_mode: AuthMode::Password,
+            connection_string: text_input(window, cx, tr(cx, "postgresql://user@host:5432/db")),
+            url_params,
+            server_name,
+            ca_cert_path: text_input(window, cx, tr(cx, "留空用内置公网根集")),
+            client_cert_path: text_input(window, cx, tr(cx, "客户端证书（PEM）路径")),
+            client_key_path: text_input(window, cx, tr(cx, "客户端私钥（PEM）路径")),
+            visible_databases: None,
             env_tag,
             name: text_input(window, cx, tr(cx, "例如：本地开发库")),
             host,
@@ -62,11 +117,16 @@ impl EditFormView {
             timeout,
             schema: text_input(window, cx, tr(cx, "留空用引擎当前命名空间")),
             read_only: prefs.new_read_only,
+            // 新建态恒落在「连接信息」；编辑态同理（from_config 复用 new()）。
+            tab: 0,
             ssh_enabled: false,
             ssh_host: text_input(window, cx, tr(cx, "跳板机主机")),
             ssh_port: text_input(window, cx, tr(cx, "留空用 22")),
             ssh_user: text_input(window, cx, tr(cx, "跳板机用户")),
             ssh_remote_host: text_input(window, cx, tr(cx, "留空表示跳板机本机")),
+            ssh_auth_method: SshAuthMethod::Password,
+            ssh_key_path: text_input(window, cx, tr(cx, "私钥路径（如 ~/.ssh/id_ed25519）")),
+            ssh_key_passphrase: secret_input(window, cx, tr(cx, "无口令私钥留空即可")),
             ssh_password: secret_input(window, cx, tr(cx, "留空用密钥认证 / 保持既有")),
             // 两档都是**按需**功能：默认关闭，不预置占位值（与钩子同一条口径）。
             proxy_enabled: false,
@@ -98,9 +158,59 @@ impl EditFormView {
         window: &mut Window,
         cx: &mut Context<DatabasePage>,
     ) -> Self {
-        let mut form = Self::new(page, cfg.kind, profiles, window, cx);
+        // 驱动键只认**清单里查得到**的那些（`ConnectionConfig::driver_entry` 同一条口径）：
+        // 档案里写错了键时按 `None` 处理，展示层回落通用文案，而不是把错的键显示出来。
+        let driver = cfg.driver_entry().map(|entry| entry.key);
+        // 牌子同一条口径：档案里的键在品牌表里查不到就当没有，交给 `new()` 去推
+        // （旧档案没有 `profile` 字段，一对一推得出来的照样推得出来：达梦 / Oracle / DB2…）。
+        // ⚠️ 必须在 `new()` 这一层传进去而不是回来补：牌子决定**预填的端口与账号**
+        //（OceanBase 2883 / TiDB 4000 / Doris 9030 都是 `mysql` 协议），补晚了字段里
+        // 已经躺着 MySQL 的 3306 了。
+        let brand = cfg.profile.as_deref().and_then(brands::brand);
+        let mut form = Self::new(page, cfg.kind, driver, brand, profiles, window, cx);
         form.id = Some(cfg.id.clone());
         form.tls = cfg.tls;
+        // URL 附加参数**无条件写一遍**（`None` 就写空串）：品牌表可能刚给这条连接
+        // 预填过（Argo 的 `auth=noSasl`），而这条既有连接当年就是没填 —— 留着它等于
+        // 替用户改了连接参数。
+        form.url_params.update(cx, |state, cx| {
+            state.set_value(cfg.url_params.clone().unwrap_or_default(), window, cx)
+        });
+        // 服务名同一条口径：引擎认得才写（写进格子的只有自己那家的值）。
+        let engine = EngineRef::from_config(cfg);
+        form.server_name.update(cx, |state, cx| {
+            let value = match engine.server_name() {
+                Some(ServerName::Gbase) => cfg.gbase_server.clone().unwrap_or_default(),
+                Some(ServerName::Informix) => cfg.informix_server.clone().unwrap_or_default(),
+                None => String::new(),
+            };
+            state.set_value(value, window, cx)
+        });
+        // 引擎不认得的档位（比如旧档案手工改成 ES 的连接串模式）落回口令，
+        // 别让表单停在一个保存后驱动会忽略的档位上。
+        let auth_mode = if cfg.auth_mode.available_for(cfg.kind) {
+            cfg.auth_mode
+        } else {
+            AuthMode::Password
+        };
+        form.auth_mode = auth_mode;
+        form.visible_databases = cfg.visible_databases.clone();
+        if let Some(raw) = cfg.connection_string.clone() {
+            form.connection_string
+                .update(cx, |state, cx| state.set_value(raw, window, cx));
+        }
+        if let Some(raw) = cfg.ca_cert_path.clone() {
+            form.ca_cert_path
+                .update(cx, |state, cx| state.set_value(raw, window, cx));
+        }
+        if let Some(raw) = cfg.client_cert_path.clone() {
+            form.client_cert_path
+                .update(cx, |state, cx| state.set_value(raw, window, cx));
+        }
+        if let Some(raw) = cfg.client_key_path.clone() {
+            form.client_key_path
+                .update(cx, |state, cx| state.set_value(raw, window, cx));
+        }
         form.env_tag = cfg.env_tag;
         form.name.update(cx, |state, cx| {
             state.set_value(cfg.name.clone(), window, cx)
@@ -164,6 +274,11 @@ impl EditFormView {
             form.ssh_remote_host.update(cx, |state, cx| {
                 state.set_value(tunnel.remote_host.clone(), window, cx)
             });
+            form.ssh_auth_method = tunnel.auth_method;
+            if let Some(key) = tunnel.key_path.clone() {
+                form.ssh_key_path
+                    .update(cx, |state, cx| state.set_value(key, window, cx));
+            }
         }
         if let Some(proxy) = &transport_cfg.proxy {
             form.proxy_enabled = true;
@@ -206,6 +321,68 @@ impl EditFormView {
             .collect();
         form.hook_results.clear();
         form
+    }
+
+    /// 这条连接选的**子进程驱动**在本机装了没有。
+    ///
+    /// 内建七档恒为 `true`（不需要装）。判据查的是本机状态而不是清单 —— 清单只说
+    /// 「有这么一条驱动」，说不说「它现在能跑」是两件事。
+    pub(super) fn driver_ready(&self) -> bool {
+        match self.driver {
+            None => true,
+            Some(key) => driver_store().installed(key).is_some(),
+        }
+    }
+
+    /// **切模式**：OceanBase 的 MySQL / Oracle 模式、GBase 的 8a / 8s …
+    ///
+    /// 这不是「改一个字段」而是一次**换引擎**，所以四样一起换（`EngineRef::with_profile`）：
+    ///
+    /// - 档位（OceanBase 两种模式分别是内建 mysql 与 agent 轨）；
+    /// - 驱动键（agent 模式下才有值）；
+    /// - 牌子（档案里记住选了哪一种）；
+    /// - **端口与惯用账号**（同一个产品两种模式就是两套惯例：2883/`root` 与 2883/`SYS`）。
+    ///
+    /// 端口 / 账号**无条件覆盖**，与 dbx 的 `switchOceanbaseMode`（内部走 `applyProfile`）
+    /// 同一条口径：切换模式之后还留着上一种模式的值，多半是错的，而错的值会让连接
+    /// 以「认证失败」告终 —— 那时用户根本想不到是模式切换留下的残值。
+    /// 主机 / 库名 / 密码这些**与模式无关**的一律不动。
+    ///
+    /// 名称（连接名）也不动：它是用户起的，不是引擎给的。
+    pub(super) fn apply_variant(
+        &mut self,
+        brand: &'static Brand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let engine = EngineRef::with_profile(brand);
+        self.kind = engine.kind;
+        self.driver = engine.driver;
+        self.profile = engine.profile;
+        // 认证方式：换档之后原档位可能不适用（内建 mysql 有连接串模式，agent 轨没有）。
+        // 沿用 `from_config` 的同一条收敛（不认得就落回口令）。
+        if !self.auth_mode.available_for(self.kind) {
+            self.auth_mode = AuthMode::Password;
+        }
+        let port = engine.default_port();
+        self.port.update(cx, |state, cx| {
+            state.set_value(
+                port.map_or_else(String::new, |port| port.to_string()),
+                window,
+                cx,
+            )
+        });
+        self.user.update(cx, |state, cx| {
+            state.set_value(engine.default_user(), window, cx)
+        });
+        self.url_params.update(cx, |state, cx| {
+            state.set_value(engine.default_url_params(), window, cx)
+        });
+        // 服务名跟着引擎走：切到不认得它的引擎就把格子清掉（残值会让保存时
+        // 把上一家的服务名写进这一家的档案）。
+        self.server_name
+            .update(cx, |state, cx| state.set_value(String::new(), window, cx));
+        cx.notify();
     }
 
     /// 把表单读回结构体；端口解析失败返回可显示的提示。
@@ -254,6 +431,11 @@ impl EditFormView {
                 port: tunnel_port,
                 user: self.ssh_user.read(cx).value().trim().to_owned(),
                 remote_host: self.ssh_remote_host.read(cx).value().trim().to_owned(),
+                auth_method: self.ssh_auth_method,
+                key_path: {
+                    let text = self.ssh_key_path.read(cx).value().trim().to_owned();
+                    (self.ssh_auth_method.needs_key() && !text.is_empty()).then_some(text)
+                },
             })
         } else {
             None
@@ -295,17 +477,66 @@ impl EditFormView {
         if self.hook_rows.iter().any(|row| row.is_incomplete(cx)) {
             return Err(tr(cx, "有一条启用的钩子还没填完（命令或脚本不能为空）。").into());
         }
+        // 服务名：认得它的引擎才落档案（GBase 8s 与 Informix 各写各的字段，其余引擎
+        // 两边都 `None` —— 对端有缺省回落，留空合法，空串别存成空壳）。
+        let server_name_text = self.server_name.read(cx).value().trim().to_owned();
+        let engine = EngineRef {
+            kind: self.kind,
+            driver: self.driver,
+            profile: self.profile,
+        };
+        let (gbase_server, informix_server) =
+            match (engine.server_name(), server_name_text.is_empty()) {
+                (Some(ServerName::Gbase), false) => (Some(server_name_text), None),
+                (Some(ServerName::Informix), false) => (None, Some(server_name_text)),
+                _ => (None, None),
+            };
         Ok(ConnectionConfig {
             id: self.id.clone().unwrap_or_else(|| {
                 format!("conn-{}", id_suffix(self.name.read(cx).value().as_ref()))
             }),
             name: self.name.read(cx).value().trim().to_owned(),
             kind: self.kind,
+            // 驱动键只在 agent 档有意义；内建档位恒写 `None`（`EngineRef::new` 同一条口径）
+            // —— 留着它会串到别的引擎上（`ConnectionConfig::driver_entry` 查得到就认）。
+            driver: if self.kind == DatabaseKind::Agent {
+                self.driver.map(str::to_owned)
+            } else {
+                None
+            },
+            // 牌子与档位/驱动无关，恒写（MySQL 协议下的十几个牌子就靠它区分）。
+            profile: self.profile.map(str::to_owned),
+            // URL 附加参数：空串即 `None`（「不附加」是缺省语义，别在档案里留一个空壳）。
+            url_params: {
+                let text = self.url_params.read(cx).value().trim().to_owned();
+                (!text.is_empty()).then_some(text)
+            },
+            // 服务名各归各家：引擎认得才写（空串即 `None`，走对端的缺省回落）。
+            gbase_server,
+            informix_server,
             host: self.host.read(cx).value().trim().to_owned(),
             port,
             user: self.user.read(cx).value().trim().to_owned(),
             database: self.database.read(cx).value().trim().to_owned(),
             tls: self.tls,
+            auth_mode: self.auth_mode,
+            connection_string: {
+                let text = self.connection_string.read(cx).value().trim().to_owned();
+                (self.auth_mode == AuthMode::ConnectionString && !text.is_empty()).then_some(text)
+            },
+            ca_cert_path: {
+                let text = self.ca_cert_path.read(cx).value().trim().to_owned();
+                (!text.is_empty()).then_some(text)
+            },
+            client_cert_path: {
+                let text = self.client_cert_path.read(cx).value().trim().to_owned();
+                (!text.is_empty()).then_some(text)
+            },
+            client_key_path: {
+                let text = self.client_key_path.read(cx).value().trim().to_owned();
+                (!text.is_empty()).then_some(text)
+            },
+            visible_databases: self.visible_databases.clone(),
             env_tag: self.env_tag,
             group,
             ssh_tunnel,
@@ -332,11 +563,18 @@ impl EditFormView {
         cx: &App,
     ) -> Result<(ConnectionConfig, Credentials), SharedString> {
         let cfg = self.to_config(cx)?;
-        let password_text = self.password.read(cx).value().trim().to_owned();
-        let db = if password_text.is_empty() {
-            load_password(&cfg.id).unwrap_or(None)
-        } else {
-            Some(password_text)
+        // 口令格里装的东西随认证方式变：口令档是口令，API Key 档是 key 原文；
+        // 无认证与连接串模式整格作废（连接串自带凭据，无认证不该发口令）。
+        let secret_text = self.password.read(cx).value().trim().to_owned();
+        let db = match self.auth_mode {
+            AuthMode::Password | AuthMode::ApiKey => {
+                if secret_text.is_empty() {
+                    load_password(&cfg.id).unwrap_or(None)
+                } else {
+                    Some(secret_text)
+                }
+            }
+            AuthMode::None_ | AuthMode::ConnectionString => None,
         };
         // 三份额外口令同一条语义：表单非空优先，留空回落凭据文件。**档位缺失时得 `None`**
         // （跳过读文件）——`map` 会得到 `Some(None)`，那两个值在提示语里分不出来。
@@ -357,6 +595,23 @@ impl EditFormView {
         } else {
             None
         };
+        // 私钥口令：只有「私钥 + 口令」档才往凭据链路里送；回落顺序与 SSH 口令同一条。
+        let ssh_key = if cfg
+            .ssh_tunnel
+            .as_ref()
+            .is_some_and(|tunnel| tunnel.auth_method == SshAuthMethod::KeyAndPassword)
+        {
+            let text = self.ssh_key_passphrase.read(cx).value().trim().to_owned();
+            if !text.is_empty() {
+                Some(text)
+            } else if let Some(profile_id) = profile_id.as_deref() {
+                load_profile_ssh_key_passphrase(profile_id).unwrap_or(None)
+            } else {
+                load_ssh_key_passphrase(&cfg.id).unwrap_or(None)
+            }
+        } else {
+            None
+        };
         let proxy = if cfg.proxy.is_some() {
             let text = self.proxy_password.read(cx).value().trim().to_owned();
             if !text.is_empty() {
@@ -369,7 +624,15 @@ impl EditFormView {
         } else {
             None
         };
-        Ok((cfg, Credentials { db, ssh, proxy }))
+        Ok((
+            cfg,
+            Credentials {
+                db,
+                ssh,
+                ssh_key,
+                proxy,
+            },
+        ))
     }
 
     /// 保存：校验 → 口令进凭据文件 → 档案落 kv（经页面）。返回是否成功。
@@ -426,6 +689,16 @@ impl EditFormView {
                 );
                 return false;
             }
+            if let Some(passphrase) = creds.ssh_key.clone().filter(|text| !text.is_empty())
+                && let Err(error) = store_profile_ssh_key_passphrase(&profile_id, &passphrase)
+            {
+                notify::error(
+                    trf(cx, "SSH 私钥口令保存失败：{}", &[&error.to_string()]),
+                    window,
+                    cx,
+                );
+                return false;
+            }
             cfg.tunnel_profile = Some(profile_id);
             cfg.ssh_tunnel = None;
             cfg.proxy = None;
@@ -450,6 +723,17 @@ impl EditFormView {
         {
             notify::error(
                 trf(cx, "SSH 口令保存失败：{}", &[&error.to_string()]),
+                window,
+                cx,
+            );
+            return false;
+        }
+        if cfg.ssh_tunnel.is_some()
+            && let Some(passphrase) = creds.ssh_key.filter(|text| !text.is_empty())
+            && let Err(error) = store_ssh_key_passphrase(&cfg.id, &passphrase)
+        {
+            notify::error(
+                trf(cx, "SSH 私钥口令保存失败：{}", &[&error.to_string()]),
                 window,
                 cx,
             );
@@ -551,6 +835,21 @@ impl EditFormView {
                     .ssh
                     .as_ref()
                     .map_or_else(String::new, |t| text(&t.remote_host)),
+                window,
+                cx,
+            )
+        });
+        self.ssh_auth_method = profile
+            .ssh
+            .as_ref()
+            .map_or(SshAuthMethod::Password, |t| t.auth_method);
+        self.ssh_key_path.update(cx, |state, cx| {
+            state.set_value(
+                profile
+                    .ssh
+                    .as_ref()
+                    .and_then(|t| t.key_path.clone())
+                    .unwrap_or_default(),
                 window,
                 cx,
             )
@@ -688,6 +987,9 @@ impl EditFormView {
             if let Some(password) = creds.ssh.filter(|text| !text.is_empty()) {
                 let _ = store_profile_ssh_password(&id, &password);
             }
+            if let Some(passphrase) = creds.ssh_key.filter(|text| !text.is_empty()) {
+                let _ = store_profile_ssh_key_passphrase(&id, &passphrase);
+            }
         }
         self.tunnel_profile = Some(id);
         notify::success(tr(cx, "传输档案已保存。"), window, cx);
@@ -709,16 +1011,31 @@ impl EditFormView {
                 "删除后引用它的 {} 条连接会回到「自定义」，确定继续吗？",
                 &[&refs.to_string()],
             )
-            .to_string()
         } else {
             tr(cx, "确定删除这份传输档案吗？").to_owned()
         };
-        if !duck_platform::confirm(tr(cx, "删除传输档案"), &message) {
-            return;
-        }
+        // 询问走主题确认框（异步），不用 `duck_platform::confirm` 的同步系统模态 ——
+        // 见 `crate::confirm` 模块头。
+        crate::confirm::open_confirm_in(
+            tr(cx, "删除传输档案"),
+            message,
+            tr(cx, "删除"),
+            move |this, window, cx| this.delete_tunnel_profile_now(&profile_id, window, cx),
+            window,
+            cx,
+        );
+    }
+
+    /// 用户点了「删除」之后真正动手的那一半。
+    fn delete_tunnel_profile_now(
+        &mut self,
+        profile_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let _ = self
             .page
-            .update(cx, |page, cx| page.delete_tunnel_profile(&profile_id, cx));
+            .update(cx, |page, cx| page.delete_tunnel_profile(profile_id, cx));
         self.refresh_tunnel_profiles(cx);
         self.tunnel_profile = None;
         self.profile_name
@@ -743,6 +1060,250 @@ impl EditFormView {
         let _ = self
             .page
             .update(cx, |page, cx| page.spawn_probe(cfg, creds, cx));
+    }
+
+    /// 「选择显示数据库」：用表单当前配置临时连一次，拉库清单进勾选弹窗。
+    ///
+    /// 与「测试连接」同一套链路（[`list_database_names`]，含传输通道展开），连接随
+    /// 拉取完成即释放。结果不直接落盘 —— 写回表单的 `visible_databases`，随「保存连接」
+    /// 一起进档案。
+    pub(super) fn open_visible_databases(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.kind.needs_host() {
+            notify::warning(
+                tr(cx, "SQLite 是本地文件，没有「库」可以筛选。"),
+                window,
+                cx,
+            );
+            return;
+        }
+        let (cfg, creds) = match self.prepared(cx) {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                notify::warning(message, window, cx);
+                return;
+            }
+        };
+        if let Err(error) = cfg.validate() {
+            notify::warning(SharedString::from(error.to_string()), window, cx);
+            return;
+        }
+        let form = cx.entity().downgrade();
+        let _ = self.page.update(cx, |page, cx| {
+            page.spawn_db(
+                cx,
+                move || list_database_names(&cfg, &creds),
+                move |_, result, window, cx| match result {
+                    Ok(names) if names.is_empty() => {
+                        notify::warning(tr(cx, "这个实例上没有列出任何库。"), window, cx);
+                    }
+                    Ok(names) => {
+                        let _ = form.update(cx, |form, cx| {
+                            form.show_visible_database_picker(names, window, cx);
+                        });
+                    }
+                    Err(error) => {
+                        let reason = error.to_string();
+                        notify::error(
+                            failure_message(cx, error.label(cx), None, &reason),
+                            window,
+                            cx,
+                        );
+                    }
+                },
+            );
+        });
+    }
+
+    /// 打开「选择显示数据库」弹窗（勾选初值 = 表单里已存的白名单）。
+    fn show_visible_database_picker(
+        &mut self,
+        names: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = cx.entity().downgrade();
+        let search = text_input(window, cx, tr(cx, "搜索库"));
+        let initial: std::collections::HashSet<String> = self
+            .visible_databases
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let picker = cx.new(|cx| {
+            let subscription = cx.subscribe(
+                &search,
+                |_this: &mut VisibleDatabasesView,
+                 _source: Entity<InputState>,
+                 event: &InputEvent,
+                 cx: &mut Context<VisibleDatabasesView>| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                },
+            );
+            VisibleDatabasesView {
+                form,
+                selected: initial,
+                names,
+                search,
+                _subscription: subscription,
+            }
+        });
+        let drag = modal_drag(cx);
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let offset = modal_offset(&drag, cx);
+            let drag_for_content = drag.clone();
+            let picker_for_content = picker.clone();
+            let picker_for_footer = picker.clone();
+
+            let footer = DialogFooter::new()
+                .child(
+                    button(
+                        "db-visible-all",
+                        tr(cx, "全选"),
+                        ButtonVariant::Secondary,
+                        cx,
+                    )
+                    .on_click(move |_, _, cx| {
+                        picker_for_footer.update(cx, |picker, cx| {
+                            picker.selected = picker.names.iter().cloned().collect();
+                            cx.notify();
+                        });
+                    }),
+                )
+                .child(
+                    button(
+                        "db-visible-clear",
+                        tr(cx, "清空"),
+                        ButtonVariant::Secondary,
+                        cx,
+                    )
+                    .on_click({
+                        let picker_for_clear = picker.clone();
+                        move |_, _, cx| {
+                            picker_for_clear.update(cx, |picker, cx| {
+                                picker.selected.clear();
+                                cx.notify();
+                            });
+                        }
+                    }),
+                )
+                .child(div().flex_1())
+                .child(
+                    button(
+                        "db-visible-cancel",
+                        tr(cx, "取消"),
+                        ButtonVariant::Secondary,
+                        cx,
+                    )
+                    .on_click(|_, window, cx| window.close_dialog(cx)),
+                )
+                .child(
+                    button(
+                        "db-visible-confirm",
+                        tr(cx, "确定"),
+                        ButtonVariant::Primary,
+                        cx,
+                    )
+                    .on_click({
+                        let picker_for_confirm = picker.clone();
+                        move |_, window, cx| {
+                            let (selected_len, total) = picker_for_confirm.read(cx).counts();
+                            // 白名单语义（dbx 同一条）：勾满全部或一个没勾 = 不过滤。
+                            // 存死快照会让之后新建的库永远进不了侧栏。
+                            let selection = picker_for_confirm.read(cx).sorted_selection();
+                            let form = picker_for_confirm.read(cx).form.clone();
+                            let _ = form.update(cx, |form, cx| {
+                                form.visible_databases =
+                                    if selected_len == total || selected_len == 0 {
+                                        None
+                                    } else {
+                                        Some(selection)
+                                    };
+                                cx.notify();
+                            });
+                            window.close_dialog(cx);
+                        }
+                    }),
+                );
+
+            dialog
+                .w(px(VISIBLE_DBS_DIALOG_WIDTH))
+                .ml(offset.x)
+                .margin_top(dialog_top_offset(cx) + offset.y)
+                .opacity(offset.opacity)
+                .close_button(false)
+                .button_props(DialogButtonProps::default())
+                .content(move |content, _, cx| {
+                    content.child(modal_drag_area(
+                        &drag_for_content,
+                        v_flex()
+                            .w_full()
+                            .min_h_0()
+                            .child(modal_title_row(
+                                "db-visible-title",
+                                &drag_for_content,
+                                tr(cx, "选择显示数据库"),
+                                cx,
+                            ))
+                            .child(picker_for_content.clone()),
+                    ))
+                })
+                .footer(footer)
+        });
+    }
+
+    /// 「路径输入框 + 选择文件按钮」一行（TLS 证书与 SSH 私钥共用）。
+    ///
+    /// 文件面板走 [`crate::file_dialogs::open_file_in_app`]（gpui 异步面板，不重入
+    /// 事件循环 —— 界面禁用 rfd 同步模态是硬纪律）；回调把路径写回对应输入框。
+    fn path_row(
+        &self,
+        id: &str,
+        label: &'static str,
+        input: &Entity<InputState>,
+        prompt: &'static str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens().clone();
+        let input = input.clone();
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap(tokens.spacing.lg)
+            .child(field_label(tr(cx, label), cx))
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&input)
+                        .h(theme.density().control)
+                        .text_size(tokens.typography.sm.size)
+                        .w_full(),
+                ),
+            )
+            .child(
+                toolbar_action_button(
+                    SharedString::from(id.to_owned()),
+                    tr(cx, "选择文件"),
+                    Icon::new(DuckIcon::FolderOpen).size(theme.extended().icon.sm),
+                    false,
+                    false,
+                    cx,
+                )
+                .on_click(move |_, window, cx| {
+                    let input = input.clone();
+                    crate::file_dialogs::open_file_in_app(
+                        window,
+                        cx,
+                        tr(cx, prompt),
+                        move |path, window, cx| {
+                            input.update(cx, |state, cx| {
+                                state.set_value(path.display().to_string(), window, cx)
+                            });
+                        },
+                    );
+                }),
+            )
     }
 
     // ── 连接钩子 ──────────────────────────────────────────────────────
@@ -1107,29 +1668,207 @@ impl DriverPickerView {
             page,
             search,
             query: String::new(),
+            // 缺省落在关系型：这是用户找库的第一直觉（也是卡最多的一档）。
+            active_section: PickerSection::Sql,
+            selected: None,
             _subscription: subscription,
         }
     }
 
-    /// 选中一张卡片：M1 支持的引擎关掉 picker、进详情表单；其余只提示。
-    pub(super) fn choose(&self, kind: Option<DatabaseKind>, window: &mut Window, cx: &mut App) {
-        let Some(kind) = kind else {
-            notify::info(tr(cx, "该数据库类型的支持即将到来。"), window, cx);
+    /// 当前选中的卡片（按 id 找回；id 已不在墙上时是 `None` —— 比如搜索换分类后
+    /// 被去重规则挪走的那张）。
+    fn selected_card(&self) -> Option<PickerCard> {
+        let id = self.selected?;
+        picker_cards().into_iter().find(|card| card.id() == id)
+    }
+
+    /// 「已选择：xxx」的名字（脚注用；没选时 `None`）。
+    pub(super) fn selected_name(&self, cx: &App) -> Option<SharedString> {
+        self.selected_card().map(|card| card.name(cx))
+    }
+
+    /// 「下一步」：把当前选中交给 [`Self::choose`]（目标不可连就沿用它的提示）。
+    pub(super) fn proceed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(card) = self.selected_card() else {
             return;
+        };
+        self.choose(card.target(), window, cx);
+    }
+
+    /// 进详情表单：支持的目标关掉 picker、进表单；指路的目标切路由；其余只提示。
+    ///
+    /// 四条路的分岔在这里收口（`PickerTarget`），表单那边只知道「档位 + 驱动键 + 牌子」：
+    ///
+    /// - [`PickerTarget::Builtin`] → 内建七档之一，`driver` / `brand` 都为 `None`；
+    /// - [`PickerTarget::Agent`] → 档位 [`DatabaseKind::Agent`]、驱动键带上
+    ///   （缺省端口 / 展示名 / 品牌图都随它走）；
+    /// - [`PickerTarget::Brand`] → **牌子才是选中物**：档位与驱动键都从它推出来
+    ///   （OceanBase 的 MySQL 模式 → 内建 `mysql`，Oracle 模式 → agent 轨）；
+    /// - [`PickerTarget::Page`] → 收掉弹窗、切到那条路由（Redis 有自己的页）；
+    /// - [`PickerTarget::Unsupported`] → 只提示，不进表单。
+    ///
+    /// ⚠️ 走 agent 档**不检查驱动装没装**：表单里有「去装驱动」的提示，驱动管理弹窗
+    /// 也在同一个选择器的脚注上 —— 先让用户把账号密码填完再告诉他缺驱动，比反过来
+    /// 好（他会先去装驱动，回来还得重填一遍）。
+    pub(super) fn choose(&self, target: PickerTarget, window: &mut Window, cx: &mut App) {
+        let (kind, driver, brand) = match target {
+            PickerTarget::Builtin(kind) => (kind, None, None),
+            PickerTarget::Agent(key) => (DatabaseKind::Agent, Some(key), None),
+            // 牌子卡：三样一起往下传。档位与驱动键**从牌子推**而不是从卡片旁边的
+            // 上下文推 —— `mysql` 协议下十几个牌子共用同一个档位，只有牌子决定
+            // 端口、账号与「要不要装驱动」（见 `PickerTarget::Brand`）。
+            PickerTarget::Brand(brand) => (brand.kind(), brand.driver(), Some(brand)),
+            // **先收弹窗再切路由**：`navigate_to` 换的是 shell 里那一格的内容，
+            // 它不会替我们收弹窗 —— 而弹窗挂在**当前**窗口上，切完就成了上一页的遗留物。
+            PickerTarget::Page(route) => {
+                window.close_dialog(cx);
+                crate::app::navigate_to(cx, route);
+                return;
+            }
+            PickerTarget::Unsupported => {
+                notify::info(tr(cx, "该数据库类型的支持即将到来。"), window, cx);
+                return;
+            }
         };
         window.close_dialog(cx);
         let _ = self.page.update(cx, |page, cx| {
-            page.start_new_connection(kind, window, cx);
+            page.start_new_connection(kind, driver, brand, window, cx);
         });
+    }
+
+    /// 分类侧栏的一行（样式对齐驱动管理弹窗的 `rail_row`：选中底 + 计数）。
+    fn rail_row(
+        &self,
+        section: PickerSection,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens().clone();
+        let extended = theme.extended().clone();
+        let hover_bg = extended.colors.hover_tint;
+        let active = self.active_section == section;
+        h_flex()
+            .id(SharedString::from(format!("db-picker-rail-{:?}", section)))
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap(tokens.spacing.xs)
+            .px(tokens.spacing.sm)
+            .py(tokens.spacing.xs)
+            .rounded(tokens.radius.md)
+            .cursor_pointer()
+            .when(active, |el| el.bg(extended.colors.nav_selected))
+            .hover(move |style| style.bg(hover_bg))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(tokens.typography.sm.size)
+                    .child(section.label(cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(tokens.typography.xs.size)
+                    .text_color(tokens.colors.muted_foreground)
+                    .font_features(tabular_numbers())
+                    .child(SharedString::from(count.to_string())),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.active_section = section;
+                cx.notify();
+            }))
+    }
+
+    /// 一张驱动卡（选中态 = 强调色描边；`query` 过滤在调用点已做）。
+    fn card(&self, card: &PickerCard, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens().clone();
+        let hover_bg = tokens.colors.muted;
+        let id = card.id();
+        let name = card.name(cx);
+        let hint = card.hint(cx);
+        let logo = card.logo();
+        let target = card.target();
+        // 「即将到来」的那几张在**墙上就看得出**，不必点一下才弹提示。
+        // 弱化的只是名字的颜色：**品牌名与品牌图照常显示** —— 未支持说的是
+        // 「本仓还没接」，不是「这不是一个正经引擎」。
+        let supported = card.is_supported();
+        let selected = self.selected == Some(id);
+        let name_el = div()
+            .truncate()
+            .text_size(tokens.typography.sm.size)
+            .font_weight(FontWeight::MEDIUM)
+            .child(name);
+        let name_el = if supported {
+            name_el
+        } else {
+            name_el.text_color(tokens.colors.muted_foreground)
+        };
+        h_flex()
+            .id(SharedString::from(format!("db-driver-{id}")))
+            .min_w_0()
+            .items_center()
+            .gap(tokens.spacing.sm)
+            .px(tokens.spacing.sm)
+            .py(tokens.spacing.xs)
+            .rounded(tokens.radius.md)
+            .border_1()
+            .border_color(if selected {
+                tokens.colors.accent
+            } else {
+                tokens.colors.border
+            })
+            .bg(tokens.colors.background)
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover_bg))
+            .child(match logo {
+                Some(logo) => logo.element(px(PICKER_LOGO_SIZE)).into_any_element(),
+                None => Icon::new(DuckIcon::Database)
+                    .size(px(PICKER_LOGO_SIZE))
+                    .text_color(tokens.colors.muted_foreground)
+                    .into_any_element(),
+            })
+            .child(
+                div().flex_1().min_w_0().child(name_el).child(
+                    div()
+                        .truncate()
+                        .text_size(tokens.typography.xs.size)
+                        .text_color(tokens.colors.muted_foreground)
+                        .child(hint),
+                ),
+            )
+            // 角标只挂在未支持的那几张上：`Option` 直接交给 `children`
+            // （这里是个挂过 `.id()` 的 `Stateful`，没有 `.when()`）。
+            .children((!supported).then(|| neutral_tag(SharedString::from(tr(cx, "未支持")), cx)))
+            // dbx 同一条交互：**单击只选中**（下一步进表单），双击（或点已选中的卡）
+            // 直达 —— 熟手省一步。
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if !supported {
+                    notify::info(tr(cx, "该数据库类型的支持即将到来。"), window, cx);
+                    return;
+                }
+                let double_click =
+                    matches!(event, ClickEvent::Mouse(mouse) if mouse.up.click_count > 1);
+                if double_click || this.selected == Some(id) {
+                    this.choose(target, window, cx);
+                    return;
+                }
+                this.selected = Some(id);
+                cx.notify();
+            }))
     }
 }
 
 impl Render for DriverPickerView {
-    /// 头部（提示 + 搜索框）常驻；下方按分区排卡片网格，整体独立滚动。
+    /// 头部（提示 + 搜索框）常驻；主体两栏：左侧分类侧栏、右侧卡片网格，整体独立滚动。
+    /// 搜索态下右侧跨分类显示命中（按分类标题分组），与 dbx 一致。
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens().clone();
-        let hover_bg = tokens.colors.muted;
+        let searching = !self.query.is_empty();
 
         // 标题行（`modal_title_row`）已经写了「新建连接」+ ✕，这里**不再重复标题**：
         // 第二行只放一句提示与搜索框（原实现两行标题叠着，是个肉眼可见的重复）。
@@ -1169,17 +1908,39 @@ impl Render for DriverPickerView {
                     ),
             );
 
-        let visible: Vec<&PickerDriver> = PICKER_DRIVERS
+        // 手写的 14 张 + 驱动清单里能接成数据源的 44 条（见 `picker_cards`）。
+        let all = picker_cards();
+        let visible: Vec<&PickerCard> = all
             .iter()
-            .filter(|driver| driver_matches_query(driver, &self.query))
+            .filter(|card| card.matches(&self.query))
             .collect();
 
+        // 侧栏计数是**全量**的（不是搜索命中数）：它回答「这一类里有什么」，
+        // 跟当前搜什么无关。
+        let rail = {
+            let mut rail = v_flex().w_full().gap(tokens.spacing.xxs);
+            for section in PICKER_SECTIONS {
+                let count = all.iter().filter(|card| card.section() == *section).count();
+                if count == 0 {
+                    continue;
+                }
+                rail = rail.child(self.rail_row(*section, count, cx));
+            }
+            rail
+        };
+
+        // 搜索态跨分类（带分类小标题），否则只画当前分类 —— 两种状态共用一段网格拼装。
+        let sections_for_grid: Vec<PickerSection> = if searching {
+            PICKER_SECTIONS.to_vec()
+        } else {
+            vec![self.active_section]
+        };
         let mut body = v_flex().w_full().min_h_0().gap(tokens.spacing.xs);
-        for section in PICKER_SECTIONS {
-            let cards: Vec<&PickerDriver> = visible
+        for section in &sections_for_grid {
+            let cards: Vec<&PickerCard> = visible
                 .iter()
                 .copied()
-                .filter(|driver| driver.section == *section)
+                .filter(|card| card.section() == *section)
                 .collect();
             if cards.is_empty() {
                 continue;
@@ -1188,55 +1949,22 @@ impl Render for DriverPickerView {
                 .grid()
                 .grid_cols(PICKER_COLUMNS as u16)
                 .gap(tokens.spacing.xs);
-            for driver in cards {
-                let name = SharedString::from(driver.name);
-                let hint = SharedString::from(driver.hint);
-                let logo = driver.logo;
-                let kind = driver.kind;
-                grid = grid.child(
-                    h_flex()
-                        .id(SharedString::from(format!("db-driver-{}", driver.id)))
-                        .min_w_0()
-                        .items_center()
-                        .gap(tokens.spacing.sm)
-                        .px(tokens.spacing.sm)
-                        .py(tokens.spacing.xs)
-                        .rounded(tokens.radius.md)
-                        .border_1()
-                        .border_color(tokens.colors.border)
-                        .bg(tokens.colors.background)
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(hover_bg))
-                        .child(logo.element(px(PICKER_LOGO_SIZE)))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(tokens.typography.sm.size)
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(name),
-                                )
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(tokens.typography.xs.size)
-                                        .text_color(tokens.colors.muted_foreground)
-                                        .child(hint),
-                                ),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.choose(kind, window, cx);
-                        })),
-                );
+            for card in cards {
+                grid = grid.child(self.card(card, cx));
             }
             body = body
-                .child(caption_heading(section.label(cx), cx))
+                .when(searching, |body| {
+                    body.child(caption_heading(section.label(cx), cx))
+                })
                 .child(grid);
         }
-        if visible.is_empty() {
+        if visible.is_empty()
+            || (!searching && {
+                !visible
+                    .iter()
+                    .any(|card| card.section() == self.active_section)
+            })
+        {
             body = body.child(
                 div()
                     .w_full()
@@ -1261,16 +1989,35 @@ impl Render for DriverPickerView {
                     .child(header),
             )
             .child(
-                div()
-                    .id("db-picker-grid")
+                h_flex()
                     .w_full()
                     .flex_1()
                     .min_h_0()
-                    .max_h(px(PICKER_GRID_MAX_HEIGHT))
-                    .overflow_y_scroll()
+                    // 侧栏顶对齐（`h_flex` 默认 cross-axis 居中，会把矮的侧栏垂直居中，
+                    // 顶上留出一段空白）；网格自身从顶往下排。
+                    .items_start()
                     .px(tokens.spacing.lg)
                     .py(tokens.spacing.sm)
-                    .child(body),
+                    // 侧栏宽度：布局约束（九档中文标签一行放得下），保留裸值。
+                    .gap(tokens.spacing.lg)
+                    .child(
+                        div()
+                            .id("db-picker-rail")
+                            .w(px(PICKER_RAIL_WIDTH))
+                            .flex_none()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(rail),
+                    )
+                    .child(
+                        div()
+                            .id("db-picker-grid")
+                            .w_full()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(body),
+                    ),
             )
     }
 }
@@ -1286,7 +2033,23 @@ impl Render for EditFormView {
         let tokens = theme.tokens().clone();
         let icon_md = theme.extended().icon.md;
         let is_new = self.id.is_none();
-        let network = self.kind.needs_host();
+        // 展示名 / 品牌图 / 模式切换器 / 库名提示都从这个值问。
+        //
+        // ⚠️ 必须带上 `self.profile`，不能用 [`EngineRef::new`]：后者靠
+        // `brands::infer(kind, driver)` **反推**牌子，而 MySQL 协议下站着十几个牌子、
+        // 推不出来 ⇒ `profile = None` ⇒ 模式族切换器不画（OceanBase 点进来只剩
+        // 「新建 MySQL 连接」，标题也退回协议名）—— 表单状态里明明记着牌子。
+        // `self.profile` 的三个写入点（`with_profile` / `from_config` / `apply_variant`）
+        // 都已对品牌表验过键，这里直接信它。
+        let engine = EngineRef {
+            kind: self.kind,
+            driver: self.driver,
+            profile: self.profile,
+        };
+        // 网络引擎才画主机/端口/认证/传输；**文件型引擎**（SQLite、DuckDB）只有一格
+        // 「数据库文件」——`EngineRef::is_file_backed` 是这条判据的唯一来源。
+        let network = self.kind.needs_host() && !engine.is_file_backed();
+        let engine_label = SharedString::from(tr(cx, engine.label()));
 
         // ── 头部：返回 + 引擎 logo + 标题 / 副标题 + 连接名称 + 关闭 ──
         let header = h_flex()
@@ -1313,7 +2076,7 @@ impl Render for EditFormView {
                     }
                 })),
             )
-            .child(kind_logo(self.kind).element(px(EDIT_LOGO_SIZE)))
+            .child(engine_logo(engine, px(EDIT_LOGO_SIZE), cx))
             .child(
                 v_flex()
                     .min_w_0()
@@ -1326,7 +2089,7 @@ impl Render for EditFormView {
                             } else {
                                 "编辑 {} 连接"
                             },
-                            &[kind_label(self.kind)],
+                            &[engine_label.as_ref()],
                         ),
                         cx,
                     ))
@@ -1353,6 +2116,49 @@ impl Render for EditFormView {
                 )
                 .on_click(|_, window, cx| window.close_dialog(cx)),
             );
+
+        // ── 子进程驱动没装时的提示条 ──
+        //
+        // 只对 agent 档、且**本机真没装**时出现。这条连接现在保存得下、连不上，
+        // 得让用户知道差什么、并且就地有个地方去装 —— 否则他只能自己猜。
+        // 用 `destructive` 描边而不是弹警告：它是一条**常驻状态**，不是一次性事件。
+        let driver_notice = (!self.driver_ready()).then(|| {
+            let page = self.page.clone();
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap(tokens.spacing.sm)
+                .px(tokens.spacing.sm)
+                .py(tokens.spacing.xs)
+                .rounded(tokens.radius.md)
+                .border_1()
+                .border_color(tokens.colors.destructive)
+                .child(
+                    Icon::new(DuckIcon::TriangleAlert)
+                        .size(icon_md)
+                        .text_color(tokens.colors.destructive),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(meta_text(tr(cx, "这条驱动还没装到本机，现在连不上。"), cx)),
+                )
+                .child(
+                    button(
+                        "db-edit-install-driver",
+                        tr(cx, "去装驱动"),
+                        ButtonVariant::Primary,
+                        cx,
+                    )
+                    .on_click(move |_, window, cx| {
+                        // 与选择器脚注那条入口同一条口径：先关掉当前弹窗再开商店，
+                        // 同一窗口只留一层。
+                        window.close_dialog(cx);
+                        let _ = page.update(cx, |page, cx| page.open_driver_manager(window, cx));
+                    }),
+                )
+        });
 
         // ── 环境：带语义色圆点的 pill，选中即改档案标签 ──
         let env_pills = h_flex()
@@ -1391,6 +2197,61 @@ impl Render for EditFormView {
             "SERVER",
             cx,
         ));
+
+        // ── 模式族：同一个牌子的一次连接要先选模式 ──
+        //
+        // 判据只有一条：品牌表里同族的牌子多于一个（`EngineRef::variants`）。单模式品牌
+        // ——绝大多数 —— 根本不画这一行。
+        //
+        // 为什么排在 SERVER 的**第一行**而不是塞进「高级选项」：它决定下面那些字段的
+        // 语义。OceanBase 的 Oracle 模式连的是另一套协议（agent 轨），端口与惯用账号
+        // 也是另一套 —— 让人先填完主机端口再发现「模式选错了」，等于让他重填一遍。
+        let variants = engine.variants();
+        if variants.len() > 1 {
+            let entity = cx.entity().downgrade();
+            let mut pills = h_flex().flex_wrap().items_center().gap(tokens.spacing.xxs);
+            for variant in variants {
+                let brand = *variant;
+                // 每个按钮各持一份弱引用（闭包要 `'static`，循环里不能共用同一个）。
+                let entity = entity.clone();
+                let selected = self.profile == Some(brand.key);
+                // 模式名是中文源串（品牌表的 `mode`），空串时退到品牌名。
+                let label = SharedString::from(tr(
+                    cx,
+                    if brand.mode.is_empty() {
+                        brand.label
+                    } else {
+                        brand.mode
+                    },
+                ));
+                pills = pills.child(
+                    button(
+                        SharedString::from(format!("db-variant-{}", brand.key)),
+                        label,
+                        if selected {
+                            ButtonVariant::Primary
+                        } else {
+                            ButtonVariant::Secondary
+                        },
+                        cx,
+                    )
+                    .on_click(move |_, window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.apply_variant(brand, window, cx);
+                        });
+                    }),
+                );
+            }
+            server_fields = server_fields.child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(tokens.spacing.lg)
+                    .child(field_label(tr(cx, "模式"), cx))
+                    .child(pills),
+            );
+        }
+
         if network {
             server_fields = server_fields
                 .child(
@@ -1421,12 +2282,33 @@ impl Render for EditFormView {
                         ),
                 )
                 .child(field_row(cx, tr(cx, "数据库"), &self.database))
-                .child(field_hint(database_hint(self.kind, cx), cx))
-                .child(field_row(cx, tr(cx, "分组"), &self.group));
+                .child(field_hint(engine.database_hint(cx), cx));
+            // URL 附加参数：只有 agent 轨消费它（内建驱动的连接串由各自的驱动拼），
+            // 所以只在这一档画。少数引擎**少了它连不上**（星环 Argo / Impala 的
+            // `auth=noSasl`、Kyuubi 的 `auth=NONE`），品牌表里有值就在开表时预填好了。
+            if self.kind == DatabaseKind::Agent {
+                // 服务名：GBase 8s / Informix 才有（两个 agent 引擎各自要一个
+                // server 名，对端有缺省回落 —— 有格子教用户填，好过 908 报错）。
+                if let Some(spec) = engine.server_name() {
+                    server_fields = server_fields
+                        .child(field_row(cx, tr(cx, spec.label()), &self.server_name))
+                        .child(field_hint(tr(cx, spec.placeholder()), cx));
+                }
+                server_fields = server_fields
+                    .child(field_row(cx, tr(cx, "URL 附参"), &self.url_params))
+                    .child(field_hint(
+                        tr(
+                            cx,
+                            "URL 附加参数（连接串 `?` 之后那截）。少数引擎必填：星环 Argo 用 auth=noSasl，Kyuubi 用 auth=NONE。",
+                        ),
+                        cx,
+                    ));
+            }
+            server_fields = server_fields.child(field_row(cx, tr(cx, "分组"), &self.group));
         } else {
             server_fields = server_fields
                 .child(field_row(cx, tr(cx, "数据库文件"), &self.database))
-                .child(field_hint(database_hint(self.kind, cx), cx))
+                .child(field_hint(engine.database_hint(cx), cx))
                 .child(field_row(cx, tr(cx, "分组"), &self.group));
         }
 
@@ -1485,18 +2367,96 @@ impl Render for EditFormView {
                 cx,
             ));
 
-        // ── AUTHENTICATION：用户名（必填）+ 口令（掩码）。仅网络引擎。 ──
+        // ── AUTHENTICATION：认证方式下拉 + 按档位显隐的输入。仅网络引擎。 ──
+        //
+        // dbx 同一条取向：档位是少数通用值（密码 / 无认证 / 连接串 / API Key），
+        // 每个引擎只认得其中几档（`AuthMode::available_for`），下拉按它裁剪。
         let auth_section = network.then(|| {
-            v_flex()
+            let options: Vec<(SharedString, SharedString)> = AuthMode::ALL
+                .into_iter()
+                .filter(|mode| mode.available_for(self.kind))
+                .map(|mode| {
+                    (
+                        SharedString::from(mode.wire_name()),
+                        SharedString::from(auth_mode_label(mode, cx)),
+                    )
+                })
+                .collect();
+            let entity = cx.entity().downgrade();
+            let mode_select = dropdown_select(
+                "db-auth-mode",
+                options,
+                SharedString::from(self.auth_mode.wire_name()),
+                move |value: SharedString, _window, cx| {
+                    let _ = entity.update(cx, |this, cx| {
+                        this.auth_mode = AuthMode::from_wire(&value);
+                        cx.notify();
+                    });
+                },
+                cx,
+            );
+            let mut section = v_flex()
                 .w_full()
                 .gap(form_gap(cx))
                 .child(db_section_header(DuckIcon::User, "AUTHENTICATION", cx))
-                .child(field_row_required(cx, tr(cx, "用户名"), &self.user))
-                .child(field_row(cx, tr(cx, "密码"), &self.password))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(tokens.spacing.lg)
+                        .child(field_label(tr(cx, "认证方式"), cx))
+                        // 下拉宽度：布局约束（与传输档案下拉同宽），保留裸值。
+                        .child(div().w(px(220.)).child(mode_select)),
+                );
+            match self.auth_mode {
+                AuthMode::ConnectionString => {
+                    section = section
+                        .child(field_row(cx, tr(cx, "连接串"), &self.connection_string))
+                        .child(field_hint(
+                            tr(
+                                cx,
+                                "整条连接串直连；上面的主机 / 端口 / 账号在本档下全部忽略。",
+                            ),
+                            cx,
+                        ));
+                }
+                AuthMode::ApiKey => {
+                    section = section
+                        .child(field_row(cx, tr(cx, "API Key"), &self.password))
+                        .child(field_hint(
+                            tr(
+                                cx,
+                                "Key 原文进 Authorization: ApiKey 头；与口令同一套凭据链路。",
+                            ),
+                            cx,
+                        ));
+                }
+                AuthMode::None_ => {
+                    section = section
+                        .child(field_row_required(cx, tr(cx, "用户名"), &self.user))
+                        .child(field_hint(
+                            tr(
+                                cx,
+                                "无认证：不发口令（PostgreSQL trust / 未开安全的集群）。",
+                            ),
+                            cx,
+                        ));
+                }
+                AuthMode::Password => {
+                    section = section
+                        .child(field_row_required(cx, tr(cx, "用户名"), &self.user))
+                        .child(field_row(cx, tr(cx, "密码"), &self.password));
+                }
+            }
+            section
         });
 
-        // ── TRANSPORT：SSL 模式 + SSH 隧道。仅网络引擎。 ──
-        let transport_section = network.then(|| {
+        // ── TLS/SSL：SSL 档位 + 证书三件套。仅网络引擎。 ──
+        //
+        // 档位三档沿用内核 `TlsMode`；证书字段只在**真消费它们**的两个驱动
+        //（PostgreSQL / MySQL）下展开 —— 其余引擎填了也不会生效，不画的理由
+        // 与「不支持的能力不画入口」同一条。
+        let tls_section = network.then(|| {
             let tls_switch = h_flex()
                 .flex_wrap()
                 .items_center()
@@ -1523,6 +2483,56 @@ impl Render for EditFormView {
                         cx.notify();
                     }))
                 }));
+            let mut section = v_flex()
+                .w_full()
+                .gap(form_gap(cx))
+                .child(db_section_header(DuckIcon::ShieldCheck, "TLS/SSL", cx))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(tokens.spacing.lg)
+                        .child(field_label(tr(cx, "SSL 模式"), cx))
+                        .child(tls_switch),
+                );
+            if self.tls != TlsMode::Disable
+                && matches!(self.kind, DatabaseKind::Postgres | DatabaseKind::Mysql)
+            {
+                section = section
+                    .child(self.path_row(
+                        "db-ca-pick",
+                        "CA 证书",
+                        &self.ca_cert_path,
+                        "选择 CA 证书（PEM）",
+                        cx,
+                    ))
+                    .child(self.path_row(
+                        "db-client-cert-pick",
+                        "客户端证书",
+                        &self.client_cert_path,
+                        "选择客户端证书（PEM）",
+                        cx,
+                    ))
+                    .child(self.path_row(
+                        "db-client-key-pick",
+                        "客户端私钥",
+                        &self.client_key_path,
+                        "选择客户端私钥（PEM）",
+                        cx,
+                    ))
+                    .child(field_hint(
+                        tr(
+                            cx,
+                            "自签 CA 填这里可免「接受自签」；客户端证书 + 私钥用于双向 TLS（私钥需为未加密格式）。",
+                        ),
+                        cx,
+                    ));
+            }
+            section
+        });
+
+        // ── TRANSPORT：SSH 隧道 + 代理 + SSM。仅网络引擎。（SSL 档位在 TLS/SSL 分区。） ──
+        let transport_section = network.then(|| {
             let ssh_toggle = button(
                 "db-ssh-toggle",
                 if self.ssh_enabled {
@@ -1550,12 +2560,70 @@ impl Render for EditFormView {
                     .child(ssh_toggle),
             );
             if self.ssh_enabled {
+                // 认证方式下拉（口令 / 私钥 / 私钥 + 口令 / agent）。
+                let auth_options: Vec<(SharedString, SharedString)> = SshAuthMethod::ALL
+                    .iter()
+                    .map(|method| {
+                        (
+                            SharedString::from(method.wire_name()),
+                            SharedString::from(ssh_auth_label(*method, cx)),
+                        )
+                    })
+                    .collect();
+                let entity = cx.entity().downgrade();
+                let ssh_auth_select = dropdown_select(
+                    "db-ssh-auth",
+                    auth_options,
+                    SharedString::from(self.ssh_auth_method.wire_name()),
+                    move |value: SharedString, _window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.ssh_auth_method = SshAuthMethod::from_wire(&value);
+                            cx.notify();
+                        });
+                    },
+                    cx,
+                );
                 ssh_block = ssh_block
                     .child(field_row(cx, tr(cx, "跳板机"), &self.ssh_host))
                     .child(field_row(cx, tr(cx, "SSH 端口"), &self.ssh_port))
                     .child(field_row(cx, tr(cx, "SSH 用户"), &self.ssh_user))
                     .child(field_row(cx, tr(cx, "转发目标"), &self.ssh_remote_host))
-                    .child(field_row(cx, tr(cx, "SSH 口令"), &self.ssh_password));
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap(tokens.spacing.lg)
+                            .child(field_label(tr(cx, "SSH 认证"), cx))
+                            .child(div().w(px(220.)).child(ssh_auth_select)),
+                    );
+                ssh_block = match self.ssh_auth_method {
+                    SshAuthMethod::Password => {
+                        ssh_block.child(field_row(cx, tr(cx, "SSH 口令"), &self.ssh_password))
+                    }
+                    SshAuthMethod::Key => ssh_block.child(self.path_row(
+                        "db-ssh-key-pick",
+                        "私钥文件",
+                        &self.ssh_key_path,
+                        "选择 SSH 私钥",
+                        cx,
+                    )),
+                    SshAuthMethod::KeyAndPassword => ssh_block
+                        .child(self.path_row(
+                            "db-ssh-key-pick",
+                            "私钥文件",
+                            &self.ssh_key_path,
+                            "选择 SSH 私钥",
+                            cx,
+                        ))
+                        .child(field_row(cx, tr(cx, "私钥口令"), &self.ssh_key_passphrase)),
+                    SshAuthMethod::Agent => ssh_block.child(field_hint(
+                        tr(
+                            cx,
+                            "使用本机 ssh-agent（SSH_AUTH_SOCK 原样透传给 ssh 子进程）。",
+                        ),
+                        cx,
+                    )),
+                };
             }
 
             // 代理：协议两档按钮 + 主机 / 端口 / 认证。口令与 SSH 同一条纪律（进凭据文件）。
@@ -1768,21 +2836,83 @@ impl Render for EditFormView {
                 .gap(form_gap(cx))
                 .child(db_section_header(DuckIcon::Globe, "TRANSPORT", cx))
                 .child(profile_block)
-                .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .gap(tokens.spacing.lg)
-                        .child(field_label(tr(cx, "SSL 模式"), cx))
-                        .child(tls_switch),
-                )
                 .child(ssh_block)
                 .child(proxy_block)
                 .child(ssm_block)
                 .children(overlap_hint)
         });
 
-        // 头部常驻、正文独立滚动：长表单（SSH 展开）不会把脚注挤出弹窗。
+        // 头部与页签常驻、正文独立滚动：长表单（SSH 展开）不会把脚注挤出弹窗。
+        //
+        // 页签显隐对齐 dbx：TLS / 隧道两页签**仅网络引擎**有；下标超出可用范围
+        // （换引擎 / 旧档案）时夹回第一页，不在渲染里改状态。
+        let available_tabs: Vec<&str> = if network {
+            FORM_TABS.to_vec()
+        } else {
+            FORM_TABS
+                .iter()
+                .copied()
+                .filter(|tab| !matches!(*tab, "TLS/SSL" | "隧道/代理"))
+                .collect()
+        };
+        let active_tab = self.tab.min(available_tabs.len() - 1);
+        let tab_strip = {
+            let entity = cx.entity().downgrade();
+            segmented_tabs(
+                "db-edit-tabs",
+                available_tabs
+                    .iter()
+                    .map(|label| SharedString::from(tr(cx, label))),
+                active_tab,
+                move |index, _window, cx| {
+                    let _ = entity.update(cx, |this, cx| {
+                        this.tab = index;
+                        cx.notify();
+                    });
+                },
+                cx,
+            )
+        };
+        // 每个页签装什么（`network` 为假时 TLS / 隧道两段本来就是 `None`）。
+        let tab_body: AnyElement = match available_tabs[active_tab] {
+            "TLS/SSL" => v_flex()
+                .w_full()
+                .gap(tokens.spacing.lg)
+                .children(tls_section)
+                .into_any_element(),
+            "隧道/代理" => v_flex()
+                .w_full()
+                .gap(tokens.spacing.lg)
+                .children(transport_section)
+                .into_any_element(),
+            "高级" => v_flex()
+                .w_full()
+                .gap(tokens.spacing.lg)
+                .child(query_section)
+                .child(self.hooks_section(cx))
+                .into_any_element(),
+            // 「连接信息」：环境 + 驱动提示 + 主机 / 模式族 / 分组 + 认证方式。
+            _ => v_flex()
+                .w_full()
+                .gap(tokens.spacing.lg)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_start()
+                        .gap(tokens.spacing.lg)
+                        .child(field_label(tr(cx, "环境"), cx))
+                        .child(
+                            v_flex()
+                                .gap(tokens.spacing.xxs)
+                                .child(env_pills)
+                                .child(field_hint(tr(cx, "标明此连接指向的环境。"), cx)),
+                        ),
+                )
+                .children(driver_notice)
+                .child(server_fields)
+                .children(auth_section)
+                .into_any_element(),
+        };
         div()
             .w_full()
             .min_h_0()
@@ -1793,10 +2923,12 @@ impl Render for EditFormView {
                     .w_full()
                     .flex_none()
                     .px(tokens.spacing.lg)
-                    .py(tokens.spacing.sm)
+                    .pt(tokens.spacing.sm)
+                    .pb(tokens.spacing.xs)
                     .border_b_1()
                     .border_color(tokens.colors.border)
-                    .child(header),
+                    .child(header)
+                    .child(div().mt(tokens.spacing.sm).child(tab_strip)),
             )
             .child(
                 div()
@@ -1807,28 +2939,7 @@ impl Render for EditFormView {
                     .overflow_y_scroll()
                     .px(tokens.spacing.lg)
                     .py(tokens.spacing.md)
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap(tokens.spacing.lg)
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .items_start()
-                                    .gap(tokens.spacing.lg)
-                                    .child(field_label(tr(cx, "环境"), cx))
-                                    .child(
-                                        v_flex().gap(tokens.spacing.xxs).child(env_pills).child(
-                                            field_hint(tr(cx, "标明此连接指向的环境。"), cx),
-                                        ),
-                                    ),
-                            )
-                            .child(server_fields)
-                            .child(query_section)
-                            .children(auth_section)
-                            .children(transport_section)
-                            .child(self.hooks_section(cx)),
-                    ),
+                    .child(tab_body),
             )
     }
 }
@@ -1846,6 +2957,139 @@ pub(super) fn import_error_message(error: duck_db::import::ImportError, cx: &App
             cx,
             "档案里没有本应用支持的引擎（目前支持 SQLite / PostgreSQL / MySQL）。",
         ),
+    }
+}
+
+impl VisibleDatabasesView {
+    /// （已勾选数，总库数）—— 标题行与「确定」的清空判定共用。
+    fn counts(&self) -> (usize, usize) {
+        (self.selected.len(), self.names.len())
+    }
+
+    /// 按清单顺序排好的勾选结果（白名单存的是稳定序，不是勾选序）。
+    fn sorted_selection(&self) -> Vec<String> {
+        self.names
+            .iter()
+            .filter(|name| self.selected.contains(*name))
+            .cloned()
+            .collect()
+    }
+}
+
+impl Render for VisibleDatabasesView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = active_theme(cx);
+        let tokens = theme.tokens().clone();
+        let extended = theme.extended().clone();
+        let icon_sm = extended.icon.sm;
+        let query = self.search.read(cx).value().trim().to_lowercase();
+
+        let (selected_len, total) = self.counts();
+        let summary = if total == 0 {
+            tr(cx, "没有可勾选的库。").to_owned()
+        } else if selected_len == total {
+            trf(
+                cx,
+                "已勾选全部 {} 个库；保存后侧栏不再过滤。",
+                &[&total.to_string()],
+            )
+            .to_owned()
+        } else {
+            trf(
+                cx,
+                "已勾选 {} / {} 个库；保存后侧栏只显示它们。",
+                &[&selected_len.to_string(), &total.to_string()],
+            )
+            .to_owned()
+        };
+
+        let mut list = v_flex().w_full().gap(tokens.spacing.xxs);
+        let mut matched = 0usize;
+        for name in &self.names {
+            if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                continue;
+            }
+            matched += 1;
+            let selected = self.selected.contains(name);
+            let row_name = name.clone();
+            let row = h_flex()
+                .id(SharedString::from(format!("db-visible-row-{name}")))
+                .w_full()
+                .items_center()
+                .gap(tokens.spacing.sm)
+                .px(tokens.spacing.sm)
+                .py(tokens.spacing.xs)
+                .rounded(tokens.radius.sm)
+                .hover(move |style| style.bg(extended.colors.hover_tint))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.selected.remove(&row_name) {
+                        this.selected.insert(row_name.clone());
+                    }
+                    cx.notify();
+                }))
+                .child(if selected {
+                    Icon::new(DuckIcon::Check)
+                        .size(icon_sm)
+                        .text_color(tokens.colors.accent)
+                        .into_any_element()
+                } else {
+                    // 占位与勾选图标同宽，行文字左缘不因勾选状态横跳。
+                    div().w(icon_sm).into_any_element()
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(body_text(name.clone(), cx)),
+                );
+            list = list.child(row);
+        }
+        if matched == 0 {
+            list = list.child(meta_text(tr(cx, "没有匹配的库。"), cx));
+        }
+
+        v_flex()
+            .w_full()
+            .min_h_0()
+            .gap(tokens.spacing.sm)
+            .child(meta_text(summary, cx))
+            .child(
+                div().w_full().child(
+                    Input::new(&self.search)
+                        .h(theme.density().control)
+                        .text_size(tokens.typography.sm.size)
+                        .w_full(),
+                ),
+            )
+            .child(
+                div()
+                    .id("db-visible-list")
+                    .w_full()
+                    .min_h_0()
+                    .max_h(px(VISIBLE_DBS_LIST_MAX_HEIGHT))
+                    .overflow_y_scroll()
+                    .child(list),
+            )
+    }
+}
+
+/// 认证方式的中文名（下拉选项用；判据与持久化一律走 [`AuthMode::wire_name`]）。
+fn auth_mode_label(mode: AuthMode, cx: &App) -> &'static str {
+    match mode {
+        AuthMode::Password => tr(cx, "密码"),
+        AuthMode::None_ => tr(cx, "无认证"),
+        AuthMode::ConnectionString => tr(cx, "连接串"),
+        AuthMode::ApiKey => tr(cx, "API Key"),
+    }
+}
+
+/// SSH 认证方式的中文名（下拉选项用）。
+fn ssh_auth_label(method: SshAuthMethod, cx: &App) -> &'static str {
+    match method {
+        SshAuthMethod::Password => tr(cx, "口令"),
+        SshAuthMethod::Key => tr(cx, "私钥文件"),
+        SshAuthMethod::KeyAndPassword => tr(cx, "私钥 + 口令"),
+        SshAuthMethod::Agent => tr(cx, "ssh-agent"),
     }
 }
 

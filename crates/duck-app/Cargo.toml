@@ -22,6 +22,10 @@ duck-plugin.workspace = true
 duck-plugin-js.workspace = true
 duck-plugin-registry.workspace = true
 duck-db.workspace = true
+# 驱动管理（`pages/db/drivers.rs`：驱动商店 / 安装 / 更新 / 下载源）与连接选择器里
+# agent 档的引擎清单。`duck-db` 只**用**驱动目录（`ConnectionConfig::driver_entry`），
+# 而这里要**驱动**它（起下载、看进度、落盘），所以是直依赖。
+duck-drivers.workspace = true
 duck-redis.workspace = true
 # 项目管理页内核（`pages/projects/`）：自管 SQLite、零 gpui、全同步。
 # 依赖全部已在图内（rusqlite 由 duck-db / duck-store 引入），不新增下载。

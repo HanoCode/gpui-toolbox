@@ -22,6 +22,21 @@ enum ExportPayload {
     Bytes(Vec<u8>),
 }
 
+/// 两段文本是不是**同一份 JSON**（解析成功且语义相等）。
+///
+/// 用在 JSON 档暂存的 diff 上：嵌套结构（JSON 列 / 数组）在预览里按原文内嵌，
+/// 解析回对象再序列化回去会丢掉原有的格式化——字面不一致但语义相等的，不算改动
+///（纯查看就点「暂存更改」不该凭空多出一条格式化写）。
+fn json_text_equivalent(a: &str, b: &str) -> bool {
+    match (
+        serde_json::from_str::<serde_json::Value>(a),
+        serde_json::from_str::<serde_json::Value>(b),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 impl ExportPayload {
     /// 落盘。错误转成文案（`spawn_db` 的作业签名要求 `Result<_, String>`）。
     fn write(self, path: &std::path::Path) -> Result<(), String> {
@@ -221,6 +236,48 @@ impl DatabasePage {
                 crate::update::on_notify_window(cx, move |window, cx| {
                     let _ = view.update(cx, |this, cx| {
                         this.busy = false;
+                        done(this, value, window, cx);
+                        cx.notify();
+                    });
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// [`Self::spawn_db`] 的**建连专用**变体：不占全局 `busy`，在途记在
+    /// [`DbShell::connecting`]（按档案 id）。
+    ///
+    /// 为什么不能复用 [`Self::spawn_db`]：`busy` 是「数据操作」的全局读数，工具条、
+    /// 网格、执行按钮都拿它禁用自己 —— 建连要是也置它，等 A 连上的这几秒里用户
+    /// 点 B 会吃到「有数据库操作正在进行」，点已有连接跑查询也被拦，**异步建连
+    /// 就退化成一次一个**。并发上限仍走同一道 [`db_op_gate`]（超限排队、不拒绝），
+    /// 收工（无论成败）摘除在途标记后跑 `done`。
+    pub(super) fn spawn_connect<T, F, D>(
+        &mut self,
+        id: String,
+        cx: &mut Context<Self>,
+        work: F,
+        done: D,
+    ) where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+        D: FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
+    {
+        self.connecting.insert(id.clone());
+        cx.notify();
+        let task = cx.background_executor().spawn(async move {
+            // 名额凭证活到闭包返回（同 [`Self::spawn_db`]，不能写成 `let _ =`）。
+            let _permit = db_op_gate().acquire().await;
+            work()
+        });
+        let view = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let value = task.await;
+            cx.update(move |cx| {
+                crate::update::on_notify_window(cx, move |window, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.connecting.remove(&id);
                         done(this, value, window, cx);
                         cx.notify();
                     });
@@ -592,9 +649,12 @@ impl DatabasePage {
     ///
     /// 「载入已保存查询」与「从历史放回编辑器」共用这一步：填进去但不跑是
     /// 同一条口径，状态栏那句话各自不同。
+    ///
+    /// 落文本用 `replace_all`（保撤销栈）：载入是「我把手上这段换成另一段」，
+    /// 换错了要能 ⌘Z 回退到刚才写的 —— 清掉历史等于把用户上一段 SQL 直接没收。
     pub(super) fn fill_editor(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
         self.sql.update(cx, |state, cx| {
-            state.set_value(sql, window, cx);
+            state.replace_all(sql, window, cx);
         });
         self.mode = Mode::Query;
         cx.notify();
@@ -1158,7 +1218,11 @@ impl DatabasePage {
         let changed = formatted.text != original;
         if changed {
             self.sql.update(cx, |state, cx| {
-                state.set_value(formatted.text.clone(), window, cx);
+                // ⚠️ 必须 `replace_all`（**保留撤销栈**）而不是 `set_value` —— 后者会
+                // `undo_manager.clear()`，格式化完按 ⌘Z 一个字都退不回来（用户实测反馈）。
+                // 上游为「格式化」这类就地改写专门留了这条路（`set_value` 的文档明说
+                // 它「Editing history is cleared」）。
+                state.replace_all(formatted.text.clone(), window, cx);
             });
         }
         let skipped = formatted.kept_verbatim.len();
@@ -1253,9 +1317,12 @@ impl DatabasePage {
         }
     }
 
-    /// 切换选区覆盖行的 `-- ` 注释（设计稿 `commentBtn`）。
+    /// 切换选区的注释（设计稿 `commentBtn`）：`--` 行注释与 `/* */` 区域注释二合一。
     ///
-    /// 动作落在**整行**上（dbx 同款）：哪怕只选中了一行的一半，切的也是那一行。
+    /// **去掉优先**——首行已有 `--` 就整段剥掉，选区已是 `/* */` 就剥掉最外层；
+    /// 加注释时选区跨多行（一条完整 SQL 的典型选法）用 `/* */` 整段包住，落在
+    /// 单行内（含空选区 = 光标行）则加 `-- `。行路径的动作落在**整行**上
+    /// （dbx 同款）：哪怕只选中了一行的一半，切的也是那一行。
     pub(super) fn toggle_comment_editor_sql(
         &mut self,
         window: &mut Window,
@@ -1265,16 +1332,21 @@ impl DatabasePage {
             let state = self.sql.read(cx);
             (state.value().to_string(), state.selected_range())
         };
-        let toggled = duck_db::sqlintel::toggle_line_comments(&text, range);
+        let toggled = duck_db::sqlintel::toggle_comments(&text, range);
+        let action = toggled.action;
         let lines = toggled.lines;
-        let removed = toggled.removed;
         self.sql.update(cx, |state, cx| {
-            state.set_value(toggled.text, window, cx);
+            // 就地改写：`replace_all` 让这一步进撤销栈（`set_value` 会清掉历史）。
+            state.replace_all(toggled.text, window, cx);
         });
-        let message: SharedString = if removed {
-            trf(cx, "已取消 {} 行的注释。", &[&lines.to_string()]).into()
-        } else {
-            trf(cx, "已注释 {} 行。", &[&lines.to_string()]).into()
+        use duck_db::sqlintel::CommentAction;
+        let message: SharedString = match action {
+            CommentAction::LineRemoved => {
+                trf(cx, "已取消 {} 行的注释。", &[&lines.to_string()]).into()
+            }
+            CommentAction::LineAdded => trf(cx, "已注释 {} 行。", &[&lines.to_string()]).into(),
+            CommentAction::BlockRemoved => tr(cx, "已取消选区的 /* */ 注释。").into(),
+            CommentAction::BlockAdded => tr(cx, "已用 /* */ 注释选区。").into(),
         };
         self.toast(notify::Tone::Success, message, cx);
     }
@@ -1289,7 +1361,8 @@ impl DatabasePage {
         let changed = minified != original;
         if changed {
             self.sql.update(cx, |state, cx| {
-                state.set_value(minified, window, cx);
+                // 就地改写：`replace_all` 让这一步进撤销栈（`set_value` 会清掉历史）。
+                state.replace_all(minified, window, cx);
             });
         }
         let message = if changed {
@@ -1531,6 +1604,9 @@ impl DatabasePage {
                     this.run_next_queued_statement(window, cx);
                 }
                 Err((error, elapsed_ms)) => {
+                    // 建表回执旗标跟着作废：表没建成，标签不能转正（下次普通查询
+                    // 也不能误消费它）。
+                    this.create_applied = None;
                     // 语句槽：这一条失败了（取消同属「没跑成」，但不盖掉 Running 之前的
                     // 状态没有意义——统一落 Failed，详情在错误条与状态栏）。
                     if let Some(index) = stmt_index {
@@ -1745,6 +1821,14 @@ impl DatabasePage {
         sql: String,
         cx: &mut Context<Self>,
     ) {
+        // 「新建表」的落库回执：这批语句成功 ⇒ 标签原地转正成新表的结构编辑器
+        // （dbx 的 `createdTable` 分支同口径），结果本身不用装——建表语句没有
+        // 结果集，而这张标签接下来是结构页。失败走不到这里（旗标在
+        // `execute_sql` 的失败分支清掉）。
+        if let Some(created) = self.create_applied.take() {
+            self.finish_create_table(created, cx);
+            return;
+        }
         self.mode = Mode::Query;
         // 新结果回来，客户端分页回第 1 页（旧行数对不上新页码）。
         self.query_page = 0;
@@ -2251,19 +2335,121 @@ impl DatabasePage {
         cx.notify();
     }
 
-    /// 把 JSON 档字段表单的改动**暂存**起来（同一套 `pending_edits` 模型）。
+    /// 把 JSON 档编辑器里的改动**暂存**起来（同一套 `pending_edits` 模型）。
     ///
-    /// 收下之后把表单清掉：下一轮渲染会按**当前行**的指纹重建 —— 值回到库里现在
-    /// 的样子，而「有几处待提交」由工具条上的暂存计数说（与网格格子的口径一致：
+    /// 编辑器文本 = 当前行的 JSON 对象；暂存时解析它，逐列与进编辑器时的原值
+    /// （[`JsonEditor::specs`]）diff——只暂存**真的变了**的列。收下之后把编辑器
+    /// 清掉：下一轮渲染会按**当前行**的指纹重建（文本回到库里现在的样子），
+    /// 而「有几处待提交」由工具条上的暂存计数说（与网格格子的口径一致：
     /// 暂存的改动不直接改结果集）。
     pub(super) fn stage_json_edits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.json_editor.take() else {
             return;
         };
-        if !self.stage_editor_edits(Some(form.row), &form.cells, window, cx) {
+        if self.stage_json_text(&form, window, cx) {
+            cx.notify();
+        } else {
+            // 没收下（JSON 不合法 / 没有改动 / 不可编辑）：编辑器原样留在原地，
+            // 别让用户刚敲的字消失。
             self.json_editor = Some(form);
         }
-        cx.notify();
+    }
+
+    /// [`stage_json_edits`] 的共用内核：解析编辑器文本并逐列 diff 暂存。
+    ///
+    /// JSON 值 → 单元格文本的换算是 [`ResultSet::to_json_pretty`]（`json_value`）
+    /// 的**逆运算**：字符串解引号、数字 / 布尔取字面、`null` → `NULL`、嵌套结构
+    /// 序列化回紧凑 JSON 文本。两处口径一头一尾共用同一套类型规则，不会出现
+    /// 「预览里是什么样、暂存进去就变成另一样」。
+    fn stage_json_text(
+        &mut self,
+        form: &JsonEditor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // 兜一道「结果集可编辑」：无表 / 无主键 / 主键列不在结果里时，暂存毫无意义
+        // （点了提交也定位不到行）。正常路径上按钮已置灰，这里是防漏。
+        if self.edit_source().is_none() {
+            return false;
+        }
+        let text = form.input.read(cx).value().to_string();
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
+            notify::error(tr(cx, "JSON 不合法，请修正后再暂存。"), window, cx);
+            return false;
+        };
+        let serde_json::Value::Object(map) = parsed else {
+            notify::error(tr(cx, "JSON 顶层必须是对象（每列一个键）。"), window, cx);
+            return false;
+        };
+        let Some(pk_values) = self.pk_values_for_row(form.row) else {
+            notify::error(tr(cx, "该表没有主键，无法定位行。"), window, cx);
+            return false;
+        };
+        let mut staged = Vec::new();
+        for (name, json) in &map {
+            // 键不在这一行里（藏列不进编辑器文本；用户手加的键没有列可对）：
+            // 没有原值可比，也不知往哪写，跳过。
+            let Some((_, original, was_null)) =
+                form.specs.iter().find(|(column, _, _)| column == name)
+            else {
+                continue;
+            };
+            // JSON 值 → 单元格文本（`None` = 写 NULL）。
+            let value = match json {
+                serde_json::Value::Null => None,
+                serde_json::Value::String(text) => Some(text.clone()),
+                serde_json::Value::Number(number) => Some(number.to_string()),
+                serde_json::Value::Bool(flag) => Some(flag.to_string()),
+                // 嵌套结构序列化回紧凑文本——预览时它也是从一份文本内嵌进来的，
+                // 改回去之后写库的还是一份合法 JSON 文本。
+                serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                    Some(serde_json::to_string(json).unwrap_or_default())
+                }
+            };
+            // 「原值」的等价形式：`NULL` 就是「没有值」，不能拿展示文本 `"NULL"` 去比
+            //（否则「NULL → null」会被判成改动）。嵌套结构与原文本只在**字面不一致**
+            // 时才比语义（`json_value` 内嵌原文不动格式化，纯查看就点暂存不该有改动）。
+            let original: Option<&str> = (!was_null).then_some(original.as_str());
+            let unchanged = match (value.as_deref(), original) {
+                // 两边都没值。
+                (None, None) => true,
+                // 都有值：文本一致，或两边都是 JSON 且语义相等（格式化差异不算改）。
+                (Some(text), Some(original)) => {
+                    text == original || json_text_equivalent(text, original)
+                }
+                // 有值 → NULL / NULL → 有值（JSON 里 `""` 是显式空串，与 `null`
+                // 是两件事，不沿用旧表单「空输入 = 没碰过」的口径）：是改动。
+                (Some(_), None) | (None, Some(_)) => false,
+            };
+            if unchanged {
+                continue;
+            }
+            staged.push(CellEdit {
+                pk: pk_values.clone(),
+                column: name.clone(),
+                value,
+            });
+        }
+        if staged.is_empty() {
+            notify::info(tr(cx, "没有改动。"), window, cx);
+            return false;
+        }
+        let count = staged.len();
+        // 这一步（无论改了几列、是否覆盖了同列的旧改动）在撤销栈里**只算一步**。
+        self.record_pending();
+        // 同一列改两次：后一次覆盖前一次（旧的那条按 (pk, 列) 摘掉）。
+        for edit in staged {
+            self.pending_edits
+                .retain(|old| !(old.pk == edit.pk && old.column == edit.column));
+            self.pending_edits.push(edit);
+        }
+        self.status = trf(
+            cx,
+            "已暂存 {} 处改动（共 {} 条待提交）",
+            &[&count.to_string(), &self.pending_total().to_string()],
+        )
+        .into();
+        true
     }
 
     /// 暂存的**共用内核**：一份编辑表单（行号 + 每列输入框）的改动进暂存区。
@@ -3040,12 +3226,10 @@ impl DatabasePage {
 
     /// 渲染 INSERT 草稿需要的额外入参：表引用文本 + 引擎的引号字符。
     ///
-    /// MongoDB / Elasticsearch 没有 SQL 标识符概念（`identifier_quote()` 为 `None`），
+    /// MongoDB / Elasticsearch 没有 SQL 标识符概念（会话里的引号是 `None`），
     /// 这里就返回 `None` —— 调用方据此把那一档禁掉或回绝。
     pub(super) fn insert_context(&self) -> Option<(String, char)> {
-        let quote = self
-            .active_config()
-            .and_then(|cfg| cfg.kind.identifier_quote())?;
+        let quote = self.active_quote()?;
         Some((self.export_table_name(quote), quote))
     }
 

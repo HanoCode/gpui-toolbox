@@ -1467,7 +1467,8 @@ impl Default for SqlFormatOptions {
 /// 重新排版后的 SQL。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormattedSql {
-    /// 排版后的文本：多语句之间隔一个空行，各句以 `;` 收尾。
+    /// 排版后的文本：多语句之间隔一个空行；原文以 `;` 收尾时结果也以 `;` 收尾
+    /// （分号只跟着原文走，格式化不新增也不吞掉）。
     pub text: String,
     /// 解析不了、被**原样保留**的语句（界面要据此提示「有 N 段没动」）。
     pub kept_verbatim: Vec<String>,
@@ -1518,8 +1519,16 @@ pub fn format_sql_with(sql: &str, options: &SqlFormatOptions) -> FormattedSql {
             }
         }
     }
+    // 段落之间那个 `;` 由 `join` 补：拆分会把每条语句的**尾分号**剥掉（见
+    // [`split_statements`]），所以最后一条的分号没人补 —— 用户写了 `;` 就不能被
+    // 格式化吃掉（单条语句时更明显：一格式化全文没分号了）。原文本来没写分号的
+    // 照样不加，格式化不替用户发明标点。
+    let mut text = formatted.join(";\n\n");
+    if !text.is_empty() && sql.trim_end().ends_with(';') {
+        text.push(';');
+    }
     FormattedSql {
-        text: formatted.join(";\n\n"),
+        text,
         kept_verbatim,
     }
 }
@@ -1726,6 +1735,131 @@ fn strip_line_comment(line: &str) -> String {
     }
 }
 
+/// 「区域注释切换」做完之后的样子（[`toggle_block_comment`] 的回执素材）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockCommentToggle {
+    /// 切换后的完整文本。
+    pub text: String,
+    /// `true` = 这次是**剥掉**最外层 `/* */`；`false` = 这次是**包上**。
+    pub removed: bool,
+}
+
+/// 切换选区的 `/* */` 区域注释：选区（裁掉两端空白后）已经是完整的块注释就剥掉
+/// 最外层一对，否则包上。
+///
+/// 边界先收掉两端空白——换行、缩进不该被卷进注释记号里（选区拖到行首行尾是
+/// 常态）。与 [`toggle_line_comments`] 一样按字节越界与多字节字符边界收口。
+#[must_use]
+pub fn toggle_block_comment(sql: &str, range: Range<usize>) -> BlockCommentToggle {
+    let clamp = |at: usize| at.min(sql.len());
+    let snap = |mut at: usize| {
+        while at > 0 && !sql.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let start = snap(clamp(range.start));
+    let end = snap(clamp(range.end)).max(start);
+    let view = &sql[start..end];
+    let body_start = start + (view.len() - view.trim_start().len());
+    let body_end = start + view.trim_end().len();
+    let body = &sql[body_start..body_end];
+    let unwrapped = body.starts_with("/*") && body.ends_with("*/") && body.len() >= 4;
+    if unwrapped {
+        let mut inner = &body[2..body.len() - 2];
+        inner = inner.strip_prefix(' ').unwrap_or(inner);
+        inner = inner.strip_suffix(' ').unwrap_or(inner);
+        BlockCommentToggle {
+            text: format!("{}{inner}{}", &sql[..body_start], &sql[body_end..]),
+            removed: true,
+        }
+    } else {
+        BlockCommentToggle {
+            text: format!("{}/*{body}*/{}", &sql[..body_start], &sql[body_end..]),
+            removed: false,
+        }
+    }
+}
+
+/// 「注释」按钮这一下干了什么（界面据此给 toast 文案）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentAction {
+    /// 给覆盖的行加上了 `-- `。
+    LineAdded,
+    /// 剥掉了覆盖行的 `-- `。
+    LineRemoved,
+    /// 用 `/* */` 包住了选区。
+    BlockAdded,
+    /// 剥掉了选区最外层的 `/* */`。
+    BlockRemoved,
+}
+
+/// 统一入口 [`toggle_comments`] 的回执。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentToggle {
+    /// 切换后的完整文本。
+    pub text: String,
+    /// 这一下实际做的动作。
+    pub action: CommentAction,
+    /// 行注释路径被切换的行数；块注释没有行数概念，恒为 0。
+    pub lines: usize,
+}
+
+/// 编辑器「注释」按钮的统一入口：按选区现状决定这一下做什么。
+///
+/// **去掉优先**——再按一次总是往「还原」走：
+/// 1. 首行已有 `-- ` → 剥掉覆盖行的行注释（[`toggle_line_comments`] 的语义）；
+/// 2. 选区已是完整 `/* */` → 剥掉最外层（[`toggle_block_comment`] 的语义）；
+/// 3. 选区跨多行（一条完整 SQL 的典型选法）→ 用 `/* */` 整段包住，比逐行打
+///    `--` 更贴近「把这条语句整个停用」的意图；
+/// 4. 选区落在单行内（含空选区 = 光标行）→ 给那一行加 `-- `。
+#[must_use]
+pub fn toggle_comments(sql: &str, range: Range<usize>) -> CommentToggle {
+    let clamp = |at: usize| at.min(sql.len());
+    let snap = |mut at: usize| {
+        while at > 0 && !sql.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let start = snap(clamp(range.start));
+    let end = snap(clamp(range.end)).max(start);
+    let first_line = sql[..start].matches('\n').count();
+    let last_line = sql[..end].matches('\n').count();
+    let first_line_commented = sql
+        .lines()
+        .nth(first_line)
+        .is_some_and(|line| line.trim_start().starts_with("--"));
+    if first_line_commented {
+        let toggled = toggle_line_comments(sql, range);
+        return CommentToggle {
+            text: toggled.text,
+            action: CommentAction::LineRemoved,
+            lines: toggled.lines,
+        };
+    }
+    let body = &sql[start..end];
+    let wrapped = body.trim().starts_with("/*") && body.trim().ends_with("*/");
+    if wrapped || last_line > first_line {
+        let toggled = toggle_block_comment(sql, range);
+        return CommentToggle {
+            text: toggled.text,
+            action: if toggled.removed {
+                CommentAction::BlockRemoved
+            } else {
+                CommentAction::BlockAdded
+            },
+            lines: 0,
+        };
+    }
+    let toggled = toggle_line_comments(sql, range);
+    CommentToggle {
+        text: toggled.text,
+        action: CommentAction::LineAdded,
+        lines: toggled.lines,
+    }
+}
+
 /// 一条语句「出不了执行计划」的原因。文案由界面层决定，内核只给分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExplainSkip {
@@ -1754,8 +1888,8 @@ pub fn explain_sql(sql: &str) -> Result<String, ExplainSkip> {
 /// - MySQL：`EXPLAIN FORMAT=JSON`（`query_block` / `table` 嵌套）
 /// - ClickHouse：`EXPLAIN`（缩进文本；`json = 1` 只有较新版本认，不拿它赌）
 ///
-/// 其余三条引擎（SQL Server / MongoDB / Elasticsearch）没有这些形态，退回通用写法——
-/// 由数据库自己报错，胜过在这里编一个不存在的语法。
+/// 其余四条引擎（SQL Server / MongoDB / Elasticsearch / agent 档）没有这些形态，退回
+/// 通用写法——由数据库自己报错，胜过在这里编一个不存在的语法。
 ///
 /// ⚠️ 语法正确性由**语句本身**保证（校验与 [`explain_sql`] 完全同一条路：单条 + 属于
 /// 读 / 写族），这里只改前缀。
@@ -1765,10 +1899,15 @@ pub fn explain_sql_for(kind: DatabaseKind, sql: &str) -> Result<String, ExplainS
         DatabaseKind::Sqlite => format!("EXPLAIN QUERY PLAN {parsed}"),
         DatabaseKind::Postgres => format!("EXPLAIN (FORMAT JSON) {parsed}"),
         DatabaseKind::Mysql => format!("EXPLAIN FORMAT=JSON {parsed}"),
+        // agent 档退回通用 `EXPLAIN`：结构化形态各家方言差异太大（Oracle 的
+        // `DBMS_XPLAN`、Hive 的 `EXPLAIN FORMATTED`、DB2 的 `EXPLAIN PLAN FOR`），
+        // 按 kind 挑不出来——而 `EXPLAIN <stmt>` 是它们**多数**都认的那一种。
+        // 解析器（`crate::plan::parse_plan`）认不出这种一坨文本的输出，退回文本展示。
         DatabaseKind::ClickHouse
         | DatabaseKind::SqlServer
         | DatabaseKind::Mongo
-        | DatabaseKind::Elasticsearch => format!("EXPLAIN {parsed}"),
+        | DatabaseKind::Elasticsearch
+        | DatabaseKind::Agent => format!("EXPLAIN {parsed}"),
     })
 }
 
@@ -2627,9 +2766,19 @@ mod tests {
         );
         assert!(tidy.kept_verbatim.is_empty(), "这一句应该能解析");
 
-        // 多语句用空行分隔，各自以 `;` 收尾。
+        // 多语句用空行分隔。分号**跟着原文走**：原文最后一条没写 `;` 就不加，
+        // 写了就必须留住（拆分会把每条语句的尾分号剥掉，段间那个靠 `join` 补，
+        // 末条那个只能显式补回）。
         let two = format_sql("select 1;select 2");
         assert_eq!(two.text, "SELECT\n  1;\n\nSELECT\n  2");
+        let two_semi = format_sql("select 1;select 2;");
+        assert_eq!(two_semi.text, "SELECT\n  1;\n\nSELECT\n  2;");
+
+        // 单条带分号（最常用的一档）：格式化不能把分号吃掉。
+        let one = format_sql("select 1;");
+        assert_eq!(one.text, "SELECT\n  1;");
+        // 补回的分号不破坏幂等：再格式化一次还是同一份文本。
+        assert_eq!(format_sql(&one.text).text, one.text);
 
         // 半截语句 / 方言语法：原样保留，并**列出来**让界面能提示。
         let broken = format_sql("select from where; this is not sql");
@@ -2837,5 +2986,56 @@ mod tests {
         );
         // 结尾换行不被 `lines()` 吃掉。
         assert!(wide.text.ends_with('\n'));
+    }
+
+    #[test]
+    fn toggle_block_comment_wraps_and_unwraps() {
+        let sql = "SELECT 1;\nSELECT 2;\n";
+        // 选区盖住第 2 行（字节 10..19 是 "SELECT 2;"）→ 包上 `/* */`。
+        let range = Range { start: 10, end: 19 };
+        let wrapped = toggle_block_comment(sql, range.clone());
+        assert_eq!(wrapped.text, "SELECT 1;\n/*SELECT 2;*/\n");
+        assert!(!wrapped.removed);
+        // 再按一次（选区盖住整段注释，包上后 `/*` 在字节 10、`*/` 收在 23）→ 剥掉，原文还原。
+        let unwrapped = toggle_block_comment(&wrapped.text, Range { start: 10, end: 23 });
+        assert_eq!(unwrapped.text, sql);
+        assert!(unwrapped.removed);
+        // 内侧带空格的注释同样剥得掉（剥记号时各宽容量一个空格；注释占 10..25）。
+        assert_eq!(
+            toggle_block_comment("SELECT 1;\n/* SELECT 2; */\n", Range { start: 10, end: 25 }).text,
+            sql
+        );
+        // 选区带尾随换行：换行不卷进注释记号里。
+        let with_newline = toggle_block_comment(sql, Range { start: 10, end: 20 });
+        assert_eq!(with_newline.text, "SELECT 1;\n/*SELECT 2;*/\n");
+    }
+
+    #[test]
+    fn toggle_comments_picks_action_by_selection_state() {
+        let sql = "SELECT 1;\nSELECT 2;\nSELECT 3;\n";
+        // 多行选区（盖住第 2~3 行）→ 用 `/* */` 整段包住。
+        let wide = toggle_comments(sql, Range { start: 10, end: 30 });
+        assert_eq!(wide.action, CommentAction::BlockAdded);
+        assert_eq!(wide.text, "SELECT 1;\n/*SELECT 2;\nSELECT 3;*/\n");
+        // 选区已是完整块注释 → 剥掉（`/*` 在字节 10，`*/` 收在字节 33）。
+        let unwrapped = toggle_comments(&wide.text, Range { start: 10, end: 33 });
+        assert_eq!(unwrapped.action, CommentAction::BlockRemoved);
+        assert_eq!(unwrapped.text, sql);
+        // 首行已有 `-- ` → 行注释剥掉（去掉优先级最高）。
+        let lined = toggle_comments("-- SELECT 1;\nSELECT 2;\n", Range { start: 0, end: 12 });
+        assert_eq!(lined.action, CommentAction::LineRemoved);
+        assert_eq!(lined.text, "SELECT 1;\nSELECT 2;\n");
+        // 单行选区 → 加 `-- `（行注释路径）。
+        let single = toggle_comments(sql, Range { start: 10, end: 19 });
+        assert_eq!(single.action, CommentAction::LineAdded);
+        assert_eq!(single.text, "SELECT 1;\n-- SELECT 2;\nSELECT 3;\n");
+        // 空选区（光标停在第 2 行）→ 同样给那一行加 `-- `。
+        let cursor = toggle_comments(sql, Range { start: 12, end: 12 });
+        assert_eq!(cursor.action, CommentAction::LineAdded);
+        assert_eq!(cursor.text, "SELECT 1;\n-- SELECT 2;\nSELECT 3;\n");
+        // 光标停在已注释的行上 → 剥掉（空选区也走「去掉优先」）。
+        let back = toggle_comments(&single.text, Range { start: 12, end: 12 });
+        assert_eq!(back.action, CommentAction::LineRemoved);
+        assert_eq!(back.text, sql);
     }
 }

@@ -167,6 +167,79 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE tasks ADD COLUMN block_reason TEXT NOT NULL DEFAULT '';
     ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT '';
     ",
+    // v3：周计划独立成表 + 工作日志的标签列。
+    //
+    // # 为什么周计划不能塞进 `work_logs`
+    //
+    // v1 里周计划是 `work_logs` 的一个 `kind`（`UNIQUE (date, kind)`）。但它与日报 /
+    // 周报**不是同一类东西**：
+    //
+    // 1. **主键不同**。日志的键是「哪一天」，周计划的键是「哪一周」（`2026-W42`）——
+    //    同一周里换一天写，日志是另一篇，周计划还是同一份。硬塞进日期键，界面就得
+    //    自己保证「一周只写一行」，而约束在库里根本没有。
+    // 2. **多两列语义**。`task_ids`（当前计划内的任务）与 `original_task_ids`
+    //    （**首次定型**时的任务）之差就是「计划 vs 实际」里的「新增项」——
+    //    日志表没有这两列，也不能靠日期算出来。
+    // 3. **状态机**。`draft` / `confirmed` 是周计划独有的：确认过的计划是那一周的
+    //    承诺，之后的改动应当看得见（新增项），而不是悄悄覆盖。
+    //
+    // 所以 v3 把它提出来独立建表；`work_logs.kind = 'plan'` 从此**不再使用**
+    // （旧库里已存在的行仍读得出来，界面按 `work_logs` 那一档继续显示，不迁移 ——
+    // 迁移要猜「这条 plan 属于哪一周」，猜错会把用户的承诺挪到别的周）。
+    //
+    // # `week_key` 的形态
+    //
+    // `YYYY-Www`（如 `2026-W42`，ISO-8601 周编号：**周四是哪一年，这周就属于哪一年**）。
+    // 文本序 == 时间序，所以 `ORDER BY week_key` 直接可用 —— 与日期列同一个理由
+    // （见 v1 的第 2 条约定）。生成与反解在 `crate::time`（`CalendarDate::week_key` /
+    // `from_week_key`），单测钉着，界面不自己拼。
+    //
+    // `UNIQUE` 不是「顺手加的」：upsert 靠它做冲突目标，没有它「一周一行」就只是
+    // 界面上的君子协定。
+    r"
+    CREATE TABLE IF NOT EXISTS weekly_plans (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_key          TEXT    NOT NULL UNIQUE,
+        content_md        TEXT    NOT NULL DEFAULT '',
+        task_ids          TEXT    NOT NULL DEFAULT '[]',
+        original_task_ids TEXT    NOT NULL DEFAULT '[]',
+        status            TEXT    NOT NULL DEFAULT 'draft',
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_weekly_plans_week_key ON weekly_plans(week_key);
+    CREATE INDEX IF NOT EXISTS idx_weekly_plans_updated
+        ON weekly_plans(updated_at DESC);
+
+    ALTER TABLE work_logs ADD COLUMN tags TEXT NOT NULL DEFAULT '';
+    ",
+    // v4：任务的**工作上下文**（关联的 Git 分支 + 「干到哪儿了」）与标签收藏。
+    //
+    // # 为什么不是一列 JSON
+    //
+    // 内核**零 serde**。把上下文塞进一列就得手写一整套 JSON 转义（引号 / 反斜杠 /
+    // 控制字符），而这三样各自都有更简单的自然编码：
+    //
+    // 1. `context_files`：一行一个 `行:列:路径`。路径取**前两个冒号之后**的全部内容，
+    //    所以 Windows 的 `C:\…` 不会被切开，路径里带冒号也安全。
+    // 2. `context_sql`：**单独一列、原样存**。它是三样里唯一可能带换行的，单独成列
+    //    就根本不存在「需要转义的字符」；若与别的一起按行编，一段多行 SQL 会散成好几行。
+    // 3. `context_tabs`：一行一个链接。
+    //
+    // 编解码在 `store::{encode_files, decode_files, encode_lines, decode_lines}`，与
+    // `join_tags` / `split_tags` 放在同一处、同一套「宁可丢也不猜」的口径（含换行的项
+    // 直接不要 —— 宁可少一条，也不要在库里留下一个回读不出来的字节）。
+    //
+    // `tags.is_favorite` 是「左栏标签段按收藏排序」的落点：排序口径放内核（`ORDER BY
+    // is_favorite DESC, name`），界面不自己排 —— 否则「悬浮窗 / 主窗各排一遍」迟早
+    // 会排出两个顺序。
+    r"
+    ALTER TABLE tasks ADD COLUMN git_branch TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN context_files TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN context_sql TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN context_tabs TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tags ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// 打开数据库、应用 PRAGMA 并把 schema 迁到最新版本。
@@ -236,7 +309,7 @@ mod tests {
     use crate::error::Result;
 
     /// v1 之后建的表清单。新增迁移改了这里，就会逼着作者同时更新断言。
-    const TABLES: [&str; 8] = [
+    const TABLES: [&str; 9] = [
         "project_groups",
         "projects",
         "tasks",
@@ -245,6 +318,7 @@ mod tests {
         "milestones",
         "board_columns",
         "work_logs",
+        "weekly_plans",
     ];
 
     #[test]
@@ -311,6 +385,61 @@ mod tests {
             [now],
         );
         assert!(bad_progress.is_err(), "progress 越界应当被 CHECK 拦下");
+        Ok(())
+    }
+
+    /// 「一周一行」必须是库级约束（upsert 的冲突目标），不能只是界面上的君子协定。
+    #[test]
+    fn weekly_plans_week_key_is_unique() -> Result<()> {
+        let connection = open_in_memory()?;
+        let insert = "INSERT INTO weekly_plans(week_key, created_at, updated_at) VALUES(?1, 1, 1)";
+        assert!(connection.execute(insert, ["2026-W42"]).is_ok());
+        let again = connection.execute(insert, ["2026-W42"]);
+        assert!(again.is_err(), "同一个 week_key 不该能插第二行");
+        assert!(connection.execute(insert, ["2026-W43"]).is_ok());
+        Ok(())
+    }
+
+    /// v3 的 schema 细节：两列的默认值必须是 upsert 认得的形态（`'[]'` / `'draft'`）。
+    ///
+    /// 直接断言默认值而不是「能不能插进去」：默认值漂了（比如改成 NULL）会让
+    /// 读取端解析失败，但插入照样成功 —— 那种洞只有读默认值才看得出来。
+    #[test]
+    fn weekly_plans_defaults_are_wire_ready() -> Result<()> {
+        let connection = open_in_memory()?;
+        connection.execute(
+            "INSERT INTO weekly_plans(week_key, created_at, updated_at) VALUES('2026-W42', 1, 1)",
+            [],
+        )?;
+        let (tasks, original, status, content): (String, String, String, String) = connection
+            .query_row(
+                "SELECT task_ids, original_task_ids, status, content_md FROM weekly_plans",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+        assert_eq!(tasks, "[]");
+        assert_eq!(original, "[]");
+        assert_eq!(status, "draft");
+        assert_eq!(content, "");
+        Ok(())
+    }
+
+    /// v3 给 `work_logs` 加的 `tags` 列：默认空且不许为 NULL（读端不必处理 `None`）。
+    #[test]
+    fn work_logs_tags_column_is_not_null() -> Result<()> {
+        let connection = open_in_memory()?;
+        connection.execute(
+            "INSERT INTO work_logs(date, kind) VALUES('2026-10-14', 'daily')",
+            [],
+        )?;
+        let tags: String =
+            connection.query_row("SELECT tags FROM work_logs", [], |row| row.get(0))?;
+        assert!(tags.is_empty(), "默认应当是空串（= 没有标签）");
+        let null_attempt = connection.execute(
+            "INSERT INTO work_logs(date, kind, tags) VALUES('2026-10-15', 'daily', NULL)",
+            [],
+        );
+        assert!(null_attempt.is_err(), "tags 有 NOT NULL，写 NULL 应当被拒");
         Ok(())
     }
 }

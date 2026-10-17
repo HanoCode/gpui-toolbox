@@ -27,7 +27,7 @@ impl DatabasePage {
     /// 右栏「构建器」分段。
     ///
     /// `pub(crate)`：调用点在 `render_sidebar.rs`（`db` 的子模块），与本文件不同模块。
-    pub(crate) fn render_builder_dock(&self, cx: &App) -> AnyElement {
+    pub(crate) fn render_builder_dock(&self, window: &mut Window, cx: &mut App) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
         let extended = theme.extended();
@@ -575,6 +575,8 @@ impl DatabasePage {
         // 在动作之上、必须完整可见（可滚动，不截断）。
         let spec = self.builder_spec(cx);
         let preview = sql::render(&spec, dialect);
+        let preview_editing = self.builder.preview_editing;
+        let preview_manual = self.builder.preview_manual;
         let mut notices: Vec<AnyElement> = Vec::new();
         if let Some(rendered) = preview.as_ref() {
             if rendered.incomplete > 0 {
@@ -607,37 +609,87 @@ impl DatabasePage {
                     div()
                         .text_size(tokens.typography.xs.size)
                         .text_color(tokens.colors.destructive)
-                        .child(tr(cx, "没有条件 —— 这条语句会对整张表生效。"))
+                        .child(selectable_text(tr(
+                            cx,
+                            "没有条件 —— 这条语句会对整张表生效。",
+                        )))
                         .into_any_element(),
                 );
             }
         }
 
         let preview_body = match preview.as_ref() {
-            Some(rendered) => card(cx)
+            // 预览正文就是 SQL 编辑器（高亮 + 可选中复制；编辑态下可改）。
+            // 固定高度：Editor 要确定高度才能自己滚（原来是 `max_h` + 外层滚动）。
+            Some(_) => card(cx)
                 .id(builder_id("preview"))
                 .w_full()
-                .max_h(px(DETAIL_CARD_MAX_HEIGHT))
-                .overflow_y_scroll()
-                .px(tokens.spacing.lg)
-                .py(tokens.spacing.sm)
+                .h(px(DETAIL_CARD_MAX_HEIGHT))
+                .overflow_hidden()
+                .px(tokens.spacing.xs)
+                .py(tokens.spacing.xs)
                 .child(
-                    div()
+                    Editor::new(&self.builder.preview_editor)
+                        .bordered(false)
+                        .p_0()
+                        .h_full()
+                        .w_full()
                         .text_size(tokens.typography.mono_md.size)
-                        .text_color(tokens.colors.foreground)
-                        .child(SharedString::from(rendered.sql.clone())),
+                        .readonly(!preview_editing),
                 )
                 .into_any_element(),
             None => meta_text(tr(cx, "选好目标表就会在这里出现 SQL。"), cx).into_any_element(),
         };
 
+        // 「预览」标题行的动作：编辑 SQL ↔ 完成，手改后多一个「重新生成」。
+        let mut preview_actions: Vec<AnyElement> = Vec::new();
+        {
+            let view = view.clone();
+            preview_actions.push(
+                button(
+                    builder_id("preview-edit"),
+                    if preview_editing {
+                        tr(cx, "完成")
+                    } else {
+                        tr(cx, "编辑 SQL")
+                    },
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .on_click(move |_, window, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.set_builder_preview_editing(!preview_editing, window, cx);
+                    });
+                })
+                .into_any_element(),
+            );
+        }
+        if preview_manual {
+            preview_actions.push(neutral_tag(tr(cx, "已编辑"), cx).into_any_element());
+        }
+        if preview_manual && !preview_editing {
+            let view = view.clone();
+            preview_actions.push(
+                button(
+                    builder_id("preview-regen"),
+                    tr(cx, "重新生成"),
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .on_click(move |_, window, cx| {
+                    let _ = view.update(cx, |this, cx| this.regenerate_builder_preview(window, cx));
+                })
+                .into_any_element(),
+            );
+        }
+
         let can_run = preview.is_some() && !self.busy;
-        panel
+        let panel = panel
             .child(
                 v_flex()
                     .w_full()
                     .gap(tokens.spacing.xs)
-                    .child(builder_section(tr(cx, "预览"), Vec::new(), cx))
+                    .child(builder_section(tr(cx, "预览"), preview_actions, cx))
                     .child(preview_body)
                     .children(notices),
             )
@@ -675,8 +727,39 @@ impl DatabasePage {
                             }
                         }),
                     ),
-            )
-            .into_any_element()
+            );
+
+        // 预览是构建器的**投影**（非编辑态、未手改）：生成文本变了才写回编辑器。
+        // 值相同不写 —— 每帧 set_value 会把滚动位置与选区重置掉。
+        //
+        // 放在函数**末尾**：`active_theme(cx)` 的借用要先结束，`window.defer` 才能
+        // 拿到 `&mut App`（同步只关心编辑器本身，用不到主题）。
+        if !preview_editing && !preview_manual {
+            let want = preview
+                .as_ref()
+                .map(|rendered| rendered.sql.clone())
+                .unwrap_or_default();
+            if self.builder.preview_editor.read(cx).value().trim_end() != want.trim_end() {
+                let editor = self.builder.preview_editor.clone();
+                let view = view.clone();
+                window.defer(cx, move |window, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        // defer 期间用户可能已进入编辑态 / 手改：那时不再覆盖。
+                        if this.builder.preview_editing || this.builder.preview_manual {
+                            return;
+                        }
+                        let want = this
+                            .builder_preview(cx)
+                            .map(|rendered| rendered.sql)
+                            .unwrap_or_default();
+                        if editor.read(cx).value().trim_end() != want.trim_end() {
+                            editor.update(cx, |state, cx| state.set_value(want, window, cx));
+                        }
+                    });
+                });
+            }
+        }
+        panel.into_any_element()
     }
 }
 

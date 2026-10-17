@@ -1,6 +1,8 @@
 //! 键浏览主区与结果行渲染：视图切换、状态栏、各类值的行构造。
 
 use super::*;
+use duck_components::selectable_text;
+use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 
 /// 类型 → 图标（列表里按类型过滤时用）。
 pub(super) fn type_icon(key_type: KeyType) -> DuckIcon {
@@ -13,6 +15,160 @@ pub(super) fn type_icon(key_type: KeyType) -> DuckIcon {
         KeyType::Stream => DuckIcon::Film,
         KeyType::Module | KeyType::Missing => DuckIcon::File,
     }
+}
+
+// ── 键树 / 平铺行的右键菜单（2026-10-16，对齐 tiny-rdm / zedis）───────────
+//
+// 菜单是**右键那一刻才建**的（`context_menu` 存的是闭包），所以项文案在这里
+// 现取、键名行路径在行闭包里就拷好了。叶子行与文件夹行各一套：
+// 叶子回答「对这个键做什么」，文件夹回答「对这一批键做什么」。
+
+/// 叶子键行的右键菜单：复制键名 / 复制键值 / TTL 三档 / 删除 / 重新载入。
+fn redis_key_menu(
+    view: &WeakEntity<RedisPage>,
+    key: String,
+    menu: PopupMenu,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    menu.item(PopupMenuItem::new(tr(cx, "复制键名")).on_click({
+        let key = key.clone();
+        move |_, _, cx| RedisPage::copy_key_name(key.clone(), cx)
+    }))
+    .item(PopupMenuItem::new(tr(cx, "复制键值")).on_click({
+        let view = view.clone();
+        let key = key.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| this.copy_key_value(key.clone(), window, cx));
+        }
+    }))
+    .separator()
+    .item(PopupMenuItem::new(tr(cx, "设置 TTL…")).on_click({
+        let view = view.clone();
+        let key = key.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.open_ttl_secs_dialog(TtlPromptTarget::One { key: key.clone() }, window, cx)
+            });
+        }
+    }))
+    .item(PopupMenuItem::new(tr(cx, "按到期时刻设置…")).on_click({
+        let view = view.clone();
+        let key = key.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.open_ttl_at_dialog(key.clone(), window, cx)
+            });
+        }
+    }))
+    .item(PopupMenuItem::new(tr(cx, "移除 TTL")).on_click({
+        let view = view.clone();
+        let key = key.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.confirm_or_run(
+                    Capability::SetTtl,
+                    PendingAction::ClearTtl { key: key.clone() },
+                    window,
+                    cx,
+                );
+            });
+        }
+    }))
+    .separator()
+    .item(PopupMenuItem::new(tr(cx, "删除键")).on_click({
+        let view = view.clone();
+        let key = key.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.confirm_or_run(
+                    Capability::DeleteKey,
+                    PendingAction::DeleteKey { key: key.clone() },
+                    window,
+                    cx,
+                );
+            });
+        }
+    }))
+    // 「重新载入」垫底（两个菜单都有：按当前过滤条件从零重扫键空间）。
+    .separator()
+    .item(PopupMenuItem::new(tr(cx, "重新载入")).on_click({
+        let view = view.clone();
+        move |_, _, cx| {
+            let _ = view.update(cx, |this, cx| this.rescan_keys(cx));
+        }
+    }))
+}
+
+/// 文件夹行的右键菜单：刷新 / 导出 / 复制前缀 / 批量三件套 / 重新载入。
+fn redis_folder_menu(
+    view: &WeakEntity<RedisPage>,
+    path: String,
+    separator: &str,
+    menu: PopupMenu,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    // 前缀 = 节点路径 + 分隔符（`user` → `user:`）。批量动作收的是**服务端**
+    // 前缀下的全部键，不是树里已展开的这几行。
+    let prefix = format!("{path}{separator}");
+    menu.item(
+        PopupMenuItem::new(tr(cx, "刷新（载入该文件夹）")).on_click({
+            let view = view.clone();
+            let prefix = prefix.clone();
+            move |_, window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.refresh_folder(prefix.clone(), window, cx)
+                });
+            }
+        }),
+    )
+    .item(PopupMenuItem::new(tr(cx, "导出文件夹…")).on_click({
+        let view = view.clone();
+        let prefix = prefix.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.export_folder(prefix.clone(), window, cx)
+            });
+        }
+    }))
+    .item(PopupMenuItem::new(tr(cx, "复制文件夹前缀")).on_click({
+        let prefix = prefix.clone();
+        move |_, _, cx| RedisPage::copy_key_name(prefix.clone(), cx)
+    }))
+    .separator()
+    .item(PopupMenuItem::new(tr(cx, "批量设置 TTL…")).on_click({
+        let view = view.clone();
+        let prefix = prefix.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.batch_set_ttl(prefix.clone(), window, cx)
+            });
+        }
+    }))
+    .item(PopupMenuItem::new(tr(cx, "批量移除 TTL")).on_click({
+        let view = view.clone();
+        let prefix = prefix.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.batch_persist_keys(prefix.clone(), window, cx)
+            });
+        }
+    }))
+    .item(PopupMenuItem::new(tr(cx, "批量删除键…")).on_click({
+        let view = view.clone();
+        let prefix = prefix.clone();
+        move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.batch_delete_keys(prefix.clone(), window, cx)
+            });
+        }
+    }))
+    .separator()
+    .item(PopupMenuItem::new(tr(cx, "重新载入")).on_click({
+        let view = view.clone();
+        move |_, _, cx| {
+            let _ = view.update(cx, |this, cx| this.rescan_keys(cx));
+        }
+    }))
 }
 
 // ── 顶栏档位的文案与图标 ────────────────────────────────────────────────
@@ -124,7 +280,7 @@ pub(super) fn pair_rows(
                 .truncate()
                 .text_size(tokens.typography.sm.size)
                 .text_color(tokens.colors.foreground)
-                .child(SharedString::from(value.to_owned()))
+                .child(selectable_text(SharedString::from(value.to_owned())))
         };
         let target = left_value.clone();
         table = table.child(
@@ -227,7 +383,7 @@ pub(super) fn single_rows(
                         .truncate()
                         .text_size(tokens.typography.sm.size)
                         .text_color(tokens.colors.foreground)
-                        .child(SharedString::from(item.clone())),
+                        .child(selectable_text(SharedString::from(item.clone()))),
                 )
                 .children(extra(index, item.as_str(), cx))
                 .child(row_icon_button(
@@ -726,6 +882,12 @@ impl RedisPage {
             // 键行不画文件夹图标、也不画「1」这种无信息量的计数。
             let rows = std::sync::Arc::new(self.tree_rows.clone());
             let tree_view = view.clone();
+            // 右键菜单的文件夹前缀 = 节点路径 + 分隔符；分隔符是连接档案的键参数，
+            // 在行闭包（`'static`）外先拷成所有权串。
+            let row_separator = self
+                .active_config()
+                .map_or(":", |cfg| cfg.effective_separator())
+                .to_owned();
             let dark = matches!(theme.mode(), duck_theme::ThemeMode::Dark);
             let folder_icon_color = row_fg.opacity(0.7);
             let folder_open_icon_color = row_fg.opacity(0.9);
@@ -791,6 +953,10 @@ impl RedisPage {
                         let has_children = row.has_children;
                         let row_expanded = row.expanded;
                         let row_path = row.path.clone();
+                        // 右键菜单要叶子 / 路径；这两份在下面的 on_click 闭包里
+                        // 会被 move，菜单闭包必须用**先拷出来**的副本。
+                        let menu_leaf = leaf.clone();
+                        let menu_path = row_path.clone();
                         let label = row.label.clone();
                         // 缩进按层数乘基础步长 —— zedis 是每层 16px；
                         // 这里用 spacing token 的步长，跟随界面缩放。
@@ -995,6 +1161,24 @@ impl RedisPage {
                                         });
                                     }
                                 })
+                                // 右键菜单（叶子 = 键操作；文件夹 = 批量操作）。
+                                .context_menu({
+                                    let menu_view = tree_view.clone();
+                                    let menu_separator = row_separator.clone();
+                                    move |menu, _, cx| {
+                                        if let Some(key) = &menu_leaf {
+                                            redis_key_menu(&menu_view, key.clone(), menu, cx)
+                                        } else {
+                                            redis_folder_menu(
+                                                &menu_view,
+                                                menu_path.clone(),
+                                                &menu_separator,
+                                                menu,
+                                                cx,
+                                            )
+                                        }
+                                    }
+                                })
                                 .children(guides)
                                 .child(marker)
                                 .child(lead)
@@ -1039,6 +1223,8 @@ impl RedisPage {
                         let tag = flat_tags.tag_of(&key);
                         let favorite = flat_tags.is_favorite(&key);
                         let has_note = !flat_tags.note_of(&key).is_empty();
+                        // 右键菜单要键名；键名本体在下面被 move 进文本子元素，先拷一份。
+                        let menu_key = key.clone();
                         let bar_color = tag
                             .map(|color| tag_color(color, flat_dark))
                             .unwrap_or_else(|| row_fg.opacity(0.));
@@ -1083,6 +1269,14 @@ impl RedisPage {
                                         let _ = view.update(cx, |this, cx| {
                                             this.select_key(source, window, cx);
                                         });
+                                    }
+                                })
+                                // 平铺行恒是叶子：右键只有键操作一套（分隔符固定
+                                // 占位，菜单构建器用不到）。
+                                .context_menu({
+                                    let menu_view = list_view.clone();
+                                    move |menu, _, cx| {
+                                        redis_key_menu(&menu_view, menu_key.clone(), menu, cx)
                                     }
                                 })
                                 .child(

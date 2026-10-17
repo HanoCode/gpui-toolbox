@@ -74,11 +74,11 @@ pub(crate) fn task_menu(
                 .on_click({
                     let view = view.clone();
                     move |_, window, cx| {
-                        // `preset_project` / `preset_status` 只对**新建**有意义，
-                        // 编辑既有任务时内核自己会把原值读回来，所以这里传 `None`
+                        // `preset_project` / `preset_status` / `preset_due` 只对**新建**
+                        // 有意义，编辑既有任务时内核自己会把原值读回来，所以这里传 `None`
                         // 加当前状态即可。
                         let _ = view.update(cx, |page, cx| {
-                            page.open_task_editor(Some(id), None, status, window, cx);
+                            page.open_task_editor(Some(id), None, status, None, window, cx);
                         });
                     }
                 }),

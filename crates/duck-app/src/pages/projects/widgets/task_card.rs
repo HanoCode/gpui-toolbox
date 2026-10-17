@@ -42,6 +42,7 @@ use gpui_component::{
 use duck_components::DuckIcon;
 use duck_components::content::tag;
 use duck_components::notify::Tone;
+use duck_components::selectable_text;
 use duck_project::{CalendarDate, Project, Task, TaskStatus};
 use duck_theme::{active_theme, color_from_hex, tr};
 
@@ -118,6 +119,7 @@ pub(crate) fn task_card(
                             Some(id),
                             None,
                             status,
+                            None,
                             window,
                             cx,
                         );
@@ -239,7 +241,7 @@ pub(crate) fn task_card(
             // 已完成的标题划掉（原型 `.card.st-done .ctitle`）：状态列之外再给一道
             // 记号，扫一眼就知道这条不用管了。
             .when(done, |title| title.line_through())
-            .child(SharedString::from(task.title.clone())),
+            .child(selectable_text(SharedString::from(task.title.clone()))),
     );
 
     // ── `.pbar`：仅未完成 ────────────────────────────────────────────────
@@ -361,7 +363,7 @@ fn meta_icon_text(icon: DuckIcon, text: SharedString, color: Hsla, cx: &App) -> 
                 .text_size(tokens.typography.xs.size)
                 .line_height(tokens.typography.xs.line_height)
                 .text_color(color)
-                .child(text),
+                .child(selectable_text(text)),
         )
         .into_any_element()
 }

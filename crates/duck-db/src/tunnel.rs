@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
+use crate::config::SshAuthMethod;
 use crate::error::DbError;
 
 /// 一条 SSH 隧道（跳板机 + 转发目标）。
@@ -39,7 +40,12 @@ pub struct SshTunnelSpec {
     pub remote_host: String,
     /// 转发目标端口（数据库端口）。
     pub remote_port: u16,
-    /// SSH 口令（走凭据文件；`None` = 依赖密钥 / agent）。
+    /// 认证方式（缺省口令）。
+    pub auth_method: SshAuthMethod,
+    /// 私钥文件路径（`auth_method` 为私钥两档时用；`~` 由 ssh 自己展开）。
+    pub key_path: Option<String>,
+    /// askpass 要注入的口令：口令档是 **SSH 登录口令**，私钥+口令档是**私钥口令**
+    /// （走凭据文件；`None` = 依赖密钥 / agent）。
     pub password: Option<String>,
 }
 
@@ -55,9 +61,12 @@ impl SshTunnel {
             .ok_or_else(|| DbError::Connect("no free local port for ssh tunnel".into()))?;
 
         // askpass 脚本：口令经环境变量进子进程，脚本本身只读变量、不落盘。
+        // 口令档与「私钥 + 口令」档都要（后者 askpass 答的是私钥口令）。
         let askpass_path = match spec.password.as_ref() {
-            Some(_) => Some(Self::write_askpass_script(local_port)?),
-            None => None,
+            Some(_) if spec.auth_method.needs_askpass() => {
+                Some(Self::write_askpass_script(local_port)?)
+            }
+            _ => None,
         };
 
         let jump = match spec.jump_port {
@@ -86,6 +95,14 @@ impl SshTunnel {
             ))
             .arg(jump)
             .stdin(Stdio::null());
+        // 私钥两档显式传 `-i`：**不**写 IdentitiesOnly——用户 `~/.ssh/config` 里的
+        // 多钥匙尝试顺序不该被我们打断；`-i` 只是「优先试这把」。
+        if spec.auth_method.needs_key()
+            && let Some(key) = spec.key_path.as_deref().map(str::trim)
+            && !key.is_empty()
+        {
+            command.arg("-i").arg(key);
+        }
         if let Some(path) = &askpass_path {
             command.env("SSH_ASKPASS", path);
             command.env("SSH_ASKPASS_REQUIRE", "force");
@@ -94,6 +111,9 @@ impl SshTunnel {
                 command.env("DUCK_SSH_PASS", password);
             }
         }
+        // agent 档什么都不用做：`SSH_AUTH_SOCK` 按进程环境原样透传给 ssh（子进程继承
+        // 的默认行为）。口令档也不清它 —— ssh 自己的尝试顺序是「先钥匙后口令」，用户
+        // agent 里恰好有能用的钥匙时提前成功无害（与旧行为一致，别收窄）。
 
         let child = command
             .spawn()
@@ -209,6 +229,8 @@ mod tests {
             user: "u".into(),
             remote_host: "127.0.0.1".into(),
             remote_port: 5432,
+            auth_method: SshAuthMethod::Password,
+            key_path: None,
             password: None,
         })
         .unwrap_err();

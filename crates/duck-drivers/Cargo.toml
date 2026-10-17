@@ -1,0 +1,29 @@
+[package]
+name = "duck-drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "数据库驱动商店内核：驱动目录、远端注册表、下载 / 校验 / 安装 / 卸载、托管 JRE（零 gpui）。"
+
+# 依赖纪律（AGENTS.md §1）：本 crate 是内核层，**不得引入 gpui**。
+# 与 duck-db / duck-mail 同一条口径：阻塞 API，调用方（duck-app 页面）丢进 gpui 的
+# background_executor；**不向调用方暴露任何运行时类型**。
+[dependencies]
+# 落地目录只取路径（`app_data_dir`），凭据不经这里。
+duck-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+# 注册表与工件都走 HTTPS：ureq 已在依赖图内（duck-update / 插件出网 / duck-db 的
+# ClickHouse 驱动），**零新增下载**。代理走环境变量（企业网常见），见 `download.rs`。
+ureq.workspace = true
+# 传输途中与安装前各算一次 SHA-256（流式，不整包进内存）。
+sha2.workspace = true
+# 工件是 `tar.zst`：tar 已在图内（插件市场），解包走 `unpack_in`（原生拒绝绝对路径
+# 与 `..` 逃逸），我们只额外做一次条目名白名单校验。
+tar.workspace = true
+# zstd 解码（**只解码，不编码**）。版本钉法与理由见根 Cargo.toml 的审计注释。
+ruzstd.workspace = true
+
+[lints]
+workspace = true

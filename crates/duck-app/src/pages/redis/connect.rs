@@ -303,6 +303,7 @@ impl RedisPage {
                         this.panel_data = PanelData::default();
                         this.probe = StatusProbe::default();
                         this.stop_monitor(cx);
+                        this.stop_pubsub(cx);
                         this.status = trf(cx, "已连接 {}（{}）", &[&target, &version]).into();
                         notify::success(tr(cx, "连接成功"), window, cx);
                         // 连上就取一次键总数并扫第一页。
@@ -340,6 +341,7 @@ impl RedisPage {
             // 面板数据与监控流同理作废：它们反映的是**另一台服务端**的现状。
             self.panel_data = PanelData::default();
             self.stop_monitor(cx);
+            self.stop_pubsub(cx);
         }
         if let Some(cfg) = self.active_config() {
             self.status = trf(cx, "当前连接：{}", &[&cfg.display_name()]).into();
@@ -353,6 +355,8 @@ impl RedisPage {
             return;
         };
         self.sessions.remove(&id);
+        self.stop_monitor(cx);
+        self.stop_pubsub(cx);
         self.keys.clear();
         self.detail = None;
         self.selected = None;

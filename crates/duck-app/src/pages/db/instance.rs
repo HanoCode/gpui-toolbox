@@ -257,7 +257,12 @@ impl DatabasePage {
         let view = self.view.clone();
         let subtitle: SharedString = match self.active_config() {
             Some(cfg) => {
-                SharedString::from(format!("{} · {}", kind_label(cfg.kind), cfg.display_name()))
+                // 引擎名走 `EngineRef`：agent 档的真名在驱动清单里，按 kind 手写 `match` 会漏。
+                SharedString::from(format!(
+                    "{} · {}",
+                    tr(cx, EngineRef::from_config(cfg).label()),
+                    cfg.display_name()
+                ))
             }
             None => SharedString::from(tr(cx, "未连接")),
         };
@@ -394,7 +399,10 @@ impl DatabasePage {
         // ── 连接信息 ──
         if let Some(cfg) = self.active_config() {
             let mut rows: Vec<(SharedString, SharedString)> = vec![
-                ("engine".into(), kind_label(cfg.kind).into()),
+                (
+                    "engine".into(),
+                    tr(cx, EngineRef::from_config(cfg).label()).into(),
+                ),
                 ("host".into(), cfg.host.clone().into()),
                 (
                     "port".into(),
@@ -777,7 +785,7 @@ impl DatabasePage {
                         tokens.colors.muted_foreground
                     })
                     .truncate()
-                    .child(SharedString::from(key.to_owned())),
+                    .child(selectable_text(SharedString::from(key.to_owned()))),
             );
         if points.is_empty() {
             return card
@@ -869,7 +877,11 @@ impl DatabasePage {
                     .line_height(tokens.typography.xs.line_height)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(tokens.colors.muted_foreground)
-                    .child(div().truncate().child(SharedString::from(column.clone()))),
+                    .child(
+                        div()
+                            .truncate()
+                            .child(selectable_text(SharedString::from(column.clone()))),
+                    ),
             );
         }
         grid = grid.child(head);
@@ -890,7 +902,11 @@ impl DatabasePage {
                         .text_size(tokens.typography.sm.size)
                         .line_height(tokens.typography.sm.line_height)
                         .text_color(tokens.colors.foreground)
-                        .child(div().truncate().child(SharedString::from(cell.clone()))),
+                        .child(
+                            div()
+                                .truncate()
+                                .child(selectable_text(SharedString::from(cell.clone()))),
+                        ),
                 );
             }
             grid = grid.child(line);

@@ -46,22 +46,38 @@ pub(super) fn object_snippet(kind: TableKind, engine: DatabaseKind, name: &str) 
             DatabaseKind::Mysql => format!("SELECT {name}();"),
             _ => format!("SELECT * FROM {name}();"),
         },
-        // 序列只有 PostgreSQL 有（`nextval` 是它的取号函数）。
-        TableKind::Sequence => format!("SELECT nextval('{name}');"),
+        // 序列：取号函数各引擎不同名 —— PG 是 `nextval('序列名')`，
+        // SQL Server 是标准 SQL 的 `NEXT VALUE FOR 序列名`（没有 nextval）。
+        TableKind::Sequence => match engine {
+            DatabaseKind::SqlServer => format!("SELECT NEXT VALUE FOR {name};"),
+            _ => format!("SELECT nextval('{name}');"),
+        },
     }
 }
 
-/// 引擎有没有 SQL 的 DDL 这一层（建表 / 改表 / 删表）。
+/// 引擎有没有 SQL 的 DDL 这一层（建表 / 改表 / 删表），**按本仓写得出模板的引擎**回答。
 ///
-/// 判据只有一条：引擎有没有 SQL 标识符概念（[`DatabaseKind::identifier_quote`]）。
-/// MongoDB 走 JSON 命令、Elasticsearch 走 REST 映射，都没有「带引号的表名」，
-/// 结构管理对它们**不给入口**（菜单项禁用），而不是给了再报错：
-/// 「不支持」与「执行失败」在界面上必须分得开。
+/// 判据是 [`DatabaseKind::identifier_quote`] 有没有值 —— MongoDB 走 JSON 命令、
+/// Elasticsearch 走 REST 映射，都没有「带引号的表名」，结构管理对它们**不给入口**
+/// （菜单项隐藏），而不是给了再报错：「不支持」与「执行失败」在界面上必须分得开。
+///
+/// ⚠️ **agent 档返回 `false`，但那不是「它没有 DDL」** —— Oracle / 达梦 / DB2 当然有。
+/// 返回 `false` 是因为**我们生成不出对的语句**：这一档的模板函数（[`column_type_placeholders`]）
+/// 要逐引擎知道类型名（Oracle `NUMBER(19)`、Hive `STRING`、DB2 `BIGINT`、ClickHouse `Int64`…），
+/// 而当前驱动清单里**没有方言字段**。与其给 40 多个引擎一条多数跑不通的 `CREATE TABLE`，
+/// 不如不给模板 —— 用户照样能在编辑器里自己写（那里有补全）。
+///
+/// 要把它打开，正确做法是**往 `duck-drivers` 的生成清单里加方言字段**（跟着 dbx 走），
+/// 而不是在这里按 kind 猜。判据是 kind 而不是会话引号，也是同一个理由：这里回答的是
+/// 「我们**写得出**模板吗」，不是「这条连接接不接 SQL」（后者看 `Session::quote`）。
 pub(super) fn supports_ddl(engine: DatabaseKind) -> bool {
     engine.identifier_quote().is_some()
 }
 
-/// 该引擎的列类型占位（`(主键列, 普通列)`）；`None` = 没有 SQL 类型系统。
+/// 该引擎的列类型占位（`(主键列, 普通列)`）；`None` = 拿不到可用类型名。
+///
+/// ⚠️ agent 档返回 `None`（理由见 [`supports_ddl`]）。它与引号那张表**在 agent 档上
+/// 故意分叉** —— 单测钉住的「两集合一致」只覆盖内建七档。
 pub(super) fn column_type_placeholders(
     engine: DatabaseKind,
 ) -> Option<(&'static str, &'static str)> {
@@ -72,22 +88,16 @@ pub(super) fn column_type_placeholders(
         DatabaseKind::ClickHouse => ("Int64", "String"),
         DatabaseKind::SqlServer => ("BIGINT", "NVARCHAR(255)"),
         DatabaseKind::Mongo | DatabaseKind::Elasticsearch => return None,
+        DatabaseKind::Agent => return None,
     })
 }
 
 /// 建表语句骨架（`qualified` 已按引擎规则拼好限定名）。
 ///
-/// 结构管理走「生成 DDL → 填进编辑器 → 用户确认后执行」这一条统一路径，**不做**
-/// 可视化建表向导：列类型 / 约束在真实项目里千变万化，表单化编辑器只会把「能表达
-/// 的形状」做成上限（比要建的表更简单都做不到）；而在编辑器里改一行比在表单里
-/// 找那个字段快得多。界面负责给一个**语法正确**的起点。
-pub(super) fn create_table_template(engine: DatabaseKind, qualified: &str) -> Option<String> {
-    let (id_type, name_type) = column_type_placeholders(engine)?;
-    Some(format!(
-        "CREATE TABLE {qualified} (\n    id {id_type} NOT NULL,\n    name {name_type},\n    PRIMARY KEY (id)\n);"
-    ))
-}
-
+/// ⚠️ 已随「新建表」改道结构编辑器（dbx 同款的可视化建表标签）而删除——
+/// 骨架只服务过那两个入口；类型占位表 [`column_type_placeholders`] 仍在
+/// `supports_ddl` 判据与单测里服役。
+///
 /// 改表语句骨架：给一条能直接跑的 `ADD COLUMN` 起点。
 ///
 /// 不生成「完整的」`ALTER TABLE`：改结构有类型 / 默认值 / 约束 / 重整表几十种分支，
@@ -205,14 +215,12 @@ pub(super) fn db_object_definition_query(
 /// 目录对象（视图 / 过程 / 函数 / 序列）的删除语句骨架。**破坏性**：只生成语句，
 /// 跑不跑由用户在编辑器里决定。表走 [`drop_table_template`]（那里有引擎差异），
 /// 这里对表返回 `None`。
-pub(super) fn drop_catalog_sql(
-    kind: TableKind,
-    engine: DatabaseKind,
-    qualified: &str,
-) -> Option<String> {
-    if !supports_ddl(engine) {
-        return None;
-    }
+///
+/// 「不给无 SQL 引擎」这道闸**不在这里**：调用点要先拿引号去拼限定名
+/// （`quote_qualified`），拿不到引号就到不了这一句。少一次 `supports_ddl` 判断，
+/// 也顺带让 agent 档（`supports_ddl` 为 `false`）保住了这条**通用**的 `DROP`——
+/// `DROP VIEW "v";` 对 Oracle / 达梦 / DB2 / Hive 都是对的，没必要跟着模板一起关掉。
+pub(super) fn drop_catalog_sql(kind: TableKind, qualified: &str) -> Option<String> {
     let keyword = match kind {
         TableKind::View => "VIEW",
         TableKind::Procedure => "PROCEDURE",
@@ -251,9 +259,10 @@ pub(super) fn drop_db_object_sql(
     }
 }
 
-/// 分类级「新建 …」骨架：表 / 视图在 [`create_table_template`] 一路（带列类型占位），
-/// 这里补其余六类程序 / 权限对象的**语法正确**起点。引擎给不出（SQLite / ClickHouse
-/// 没有用户体系、ClickHouse 没有触发器、事件是 MySQL 独有）返回 `None`，菜单不给项。
+/// 分类级「新建 …」骨架：视图在 browse.rs 里内联拼（表已改道结构编辑器的
+/// 建表标签），这里补其余七类程序 / 取号 / 权限对象的**语法正确**起点。引擎给不出
+///（SQLite / ClickHouse 没有用户体系、ClickHouse 没有触发器、事件是 MySQL 独有、
+/// 序列只有 PG / SQL Server 有）返回 `None`，菜单不给项。
 pub(super) fn create_category_skeleton(
     category: TreeCategory,
     engine: DatabaseKind,
@@ -292,6 +301,10 @@ pub(super) fn create_category_skeleton(
         // 事件是 MySQL 独有的调度对象。
         TreeCategory::Event if engine == DatabaseKind::Mysql => {
             "CREATE EVENT new_event\nON SCHEDULE EVERY 1 DAY\nDO\n    -- 事件体".to_owned()
+        }
+        // 序列：PG 与 SQL Server 的取号器（`START WITH` / `INCREMENT BY` 两边同语法）。
+        TreeCategory::Sequence => {
+            "CREATE SEQUENCE new_sequence\nSTART WITH 1\nINCREMENT BY 1;".to_owned()
         }
         // 用户体系：MySQL 账号 = 'user'@'host'；PG 一条 CREATE USER；
         // SQL Server 登录名与库用户要分开建。

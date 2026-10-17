@@ -1,12 +1,12 @@
 use std::ops::Range;
 
 use gpui::{
-    App, BorderStyle, Bounds, Corners, Edges, Element, ElementId, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels, Point,
-    SharedString, StyledText, TextStyleRefinement, Window, transparent_black,
+    App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels,
+    Point, SharedString, StyledText, TextStyleRefinement, Window, transparent_black,
 };
 
-use crate::{TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
+use crate::{TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 
 /// Plain text that participates in the window-scoped [`TextSelection`].
 ///
@@ -202,12 +202,23 @@ impl Element for SelectableText {
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         handle: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        // DUCK PATCH（2026-10-16，光标）：上游从不申请光标样式，可选文字悬停时
+        // 仍是箭头 —— 用户报「可复制时鼠标没有改变状态」。从本 run 自己的 hitbox
+        // 申请 I 型光标，于是只有真有文字可选的地方才变。
+        window.set_cursor_style(CursorStyle::IBeam, hitbox);
         let layout = self.styled_text.layout().clone();
-        let selected_text_before = TextSelection::selected_text(window, cx);
+        // DUCK PATCH（2026-10-16，性能）：上游这里前后各调一次
+        // `TextSelection::selected_text(window, cx)` 做比对。那是**全窗口**聚合：
+        // 遍历每个参与者、把各自的选中子串 clone 进 Vec、排序、join —— 而本函数
+        // **每个 run 每帧**都跑一遍 ⇒ 代价 O(runs × 选中长度)，全站上千个 run 时
+        // 拖选一格就掉帧（用户报「复制十分卡顿」）。
+        // 两次读之间只有**本 run 自己**的投影会变（update_runs 只动自己），
+        // 所以换成只读自己那份即可，语义等价、代价 O(本文长度)。
+        let copy_before = handle.projected_copy_text(cx);
         let projection = handle.update_runs(
             &[
                 TextSelectionRun::new(self.text.clone(), layout.clone(), bounds)
@@ -215,7 +226,7 @@ impl Element for SelectableText {
             ],
             cx,
         );
-        if selected_text_before != TextSelection::selected_text(window, cx) {
+        if copy_before != handle.projected_copy_text(cx) {
             window.refresh();
         }
         let color = self

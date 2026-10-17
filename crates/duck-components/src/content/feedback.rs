@@ -17,7 +17,7 @@ use gpui_component::{
     spinner::Spinner,
 };
 
-use crate::{DuckIcon, notify::Tone};
+use crate::{DuckIcon, notify::Tone, selectable_text_at};
 
 /// 空状态：图标 + 标题 + 可选说明 + 可选操作。
 ///
@@ -27,6 +27,12 @@ use crate::{DuckIcon, notify::Tone};
 ///
 /// 默认带虚线描边并吃满剩余高度（列表 / 整页空态）。嵌在卡片或面板里时用
 /// `.border_0().flex_none()` 收掉 —— [`Empty`] 实现了 `Styled`，调用点可直接改。
+///
+/// 标题与说明**可拖选复制**（空态文案常常是要抄走的路径 / 报错 / 指引）。
+/// ⚠️ `#[track_caller]` 不能删：本函数被几百处调用，文字若在函数体内取
+/// [`selectable_text_at`] 的调用点，id 会全部落在这一行上 —— 只剩文本内容能区分，
+/// 于是同一句空态文案在不同页面会撞进同一个 handle（后者覆盖前者，前者静默失效）。
+#[track_caller]
 pub fn empty_state(
     icon: DuckIcon,
     title: impl Into<SharedString>,
@@ -39,6 +45,7 @@ pub fn empty_state(
     let extended = theme.extended();
     let body = tokens.typography.sm;
     let meta = tokens.typography.xs;
+    let caller = std::panic::Location::caller();
 
     let header = EmptyHeader::new()
         .media(
@@ -55,14 +62,14 @@ pub fn empty_state(
                 .text_size(body.size)
                 .line_height(body.line_height)
                 .font_weight(FontWeight::MEDIUM)
-                .child(title.into()),
+                .child(selectable_text_at(caller, title.into())),
         )
         .when_some(description, |this, description| {
             this.description(
                 EmptyDescription::new()
                     .text_size(meta.size)
                     .line_height(meta.line_height)
-                    .child(description),
+                    .child(selectable_text_at(caller, description)),
             )
         });
 
@@ -129,10 +136,14 @@ pub fn skeleton_rows(rows: usize, cx: &App) -> Div {
 }
 
 /// 加载指示：旋转图标 + 可选文案，水平居中。
+///
+/// 文案**可拖选复制**（加载失败时常在这里留下服务端原话）。
+#[track_caller]
 pub fn loading(text: Option<SharedString>, cx: &App) -> Div {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let extended = theme.extended();
+    let caller = std::panic::Location::caller();
     div()
         .flex()
         .items_center()
@@ -145,7 +156,7 @@ pub fn loading(text: Option<SharedString>, cx: &App) -> Div {
                 .with_size(extended.icon.lg)
                 .color(tokens.colors.muted_foreground),
         )
-        .children(text)
+        .children(text.map(|text| selectable_text_at(caller, text)))
 }
 
 /// 加载块：把 [`loading`] 放在一块吃满剩余空间、内容居中的区域里。

@@ -257,6 +257,13 @@ pub(super) struct BuilderState {
     pub limit: Entity<InputState>,
     pub offset: Entity<InputState>,
     pub assignments: Vec<AssignRowUi>,
+    /// 预览的 SQL 编辑器（**高亮 + 可编辑**）：内容 = 由构建器实时生成的语句，
+    /// 或用户手改后的文本。与结构编辑器的预览同一套语义。
+    pub preview_editor: Entity<EditorState>,
+    /// 预览正文是否处于编辑态（`readonly(false)`）。
+    pub preview_editing: bool,
+    /// 预览被手改过：执行 / 「在编辑器中打开」都用编辑器里那段，不再用生成结果。
+    pub preview_manual: bool,
 }
 
 impl BuilderState {
@@ -276,6 +283,15 @@ impl BuilderState {
             limit: text_input(window, cx, tr(cx, "留空＝不限")),
             offset: text_input(window, cx, "0"),
             assignments: Vec::new(),
+            // 预览编辑器：SQL 高亮 + 可用；内容由预览渲染时同步（构建器一格没填
+            // 时它就是空的，不额外播种）。
+            preview_editor: cx.new(|editor_cx| {
+                EditorState::new(&mut *window, editor_cx)
+                    .language(SQL_LANGUAGE)
+                    .soft_wrap(true)
+            }),
+            preview_editing: false,
+            preview_manual: false,
         }
     }
 }
@@ -380,7 +396,11 @@ impl DatabasePage {
     /// ——「返回值类型比方法本身更私密」。子模块 `panel` 是本模块的后代，
     /// 私有项对它天然可见，所以这里不需要放宽可见性。
     fn builder_dialect(&self) -> Option<sql::BuilderDialect> {
-        sql::dialect_for(self.builder_engine())
+        let engine = self.builder_engine();
+        // 优先用**会话里的真值**（agent 档的引号只有连上才知道）；还没连上时退回引擎的
+        // 静态引号 —— 那时 `builder_engine()` 本来就是 SQLite 兜底，只为能渲染预览。
+        let quote = self.active_quote().or_else(|| engine.identifier_quote());
+        sql::dialect_for(engine, quote)
     }
 
     /// 目标表候选：当前连接里可查询的关系（表 / 视图），值 = [`table_slug`]。
@@ -478,6 +498,21 @@ impl DatabasePage {
     fn builder_preview(&self, cx: &App) -> Option<sql::RenderedSql> {
         let dialect = self.builder_dialect()?;
         sql::render(&self.builder_spec(cx), dialect)
+    }
+
+    /// 预览**实际要用**的 SQL：手改优先（编辑器里那段），否则用生成结果。
+    ///
+    /// 「执行」与「在编辑器中打开」都走这里 —— 预览显示什么就执行什么，两者不分叉。
+    fn builder_apply_sql(&self, cx: &App) -> Option<String> {
+        let draft = &self.builder;
+        let manual = draft.preview_editing || draft.preview_manual;
+        if manual {
+            let text = draft.preview_editor.read(cx).value().trim().to_owned();
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+        self.builder_preview(cx).map(|rendered| rendered.sql)
     }
 
     // ── 行的增删 ─────────────────────────────────────────────────────────
@@ -600,7 +635,60 @@ impl DatabasePage {
         self.builder.offset.update(cx, |state, cx| {
             state.set_value(String::new(), window, cx);
         });
+        // 重置同时丢掉预览手改：控件全空了，预览还留着一段旧 SQL 会让人以为它算数。
+        self.builder.preview_editing = false;
+        self.builder.preview_manual = false;
+        self.builder
+            .preview_editor
+            .update(cx, |state, cx| state.set_value(String::new(), window, cx));
         self.status = tr(cx, "构建器已重置。").into();
+        cx.notify();
+    }
+
+    /// 预览编辑态开关（「编辑 SQL」↔「完成」）：退出时与生成结果比对定稿。
+    pub(super) fn set_builder_preview_editing(
+        &mut self,
+        editing: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.builder.preview_editing = editing;
+        if editing {
+            self.builder
+                .preview_editor
+                .update(cx, |state, cx| state.focus(window, cx));
+        } else {
+            let generated = self
+                .builder_preview(cx)
+                .map(|rendered| rendered.sql)
+                .unwrap_or_default();
+            let text = self
+                .builder
+                .preview_editor
+                .read(cx)
+                .value()
+                .trim_end()
+                .to_owned();
+            self.builder.preview_manual = text != generated.trim_end();
+        }
+        cx.notify();
+    }
+
+    /// 「重新生成」：丢掉预览手改，回到「构建器投影」态。
+    pub(super) fn regenerate_builder_preview(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.builder.preview_manual = false;
+        self.builder.preview_editing = false;
+        let generated = self
+            .builder_preview(cx)
+            .map(|rendered| rendered.sql)
+            .unwrap_or_default();
+        self.builder
+            .preview_editor
+            .update(cx, |state, cx| state.set_value(generated, window, cx));
         cx.notify();
     }
 
@@ -614,7 +702,7 @@ impl DatabasePage {
     /// 危险语句（全表 `DELETE` / `UPDATE`）走**与编辑器同一条闸门**（`guard_dangerous`）：
     /// 同一句问话、同一个判据（`risk_of_statements`）——「这条是构建器拼的」不是少问一次的理由。
     pub(super) fn builder_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(sql::RenderedSql { sql, .. }) = self.builder_preview(cx) else {
+        let Some(sql) = self.builder_apply_sql(cx) else {
             notify::info(tr(cx, "先选一张目标表。"), window, cx);
             return;
         };
@@ -629,7 +717,7 @@ impl DatabasePage {
 
     /// 在编辑器中打开：把预览的 SQL 填进编辑器（**不执行**，交给用户确认）。
     pub(super) fn builder_stage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(sql::RenderedSql { sql, .. }) = self.builder_preview(cx) else {
+        let Some(sql) = self.builder_apply_sql(cx) else {
             notify::info(tr(cx, "先选一张目标表。"), window, cx);
             return;
         };

@@ -114,8 +114,13 @@ pub struct DataTableLabels {
     pub detail_name: SharedString,
     pub detail_type: SharedString,
     pub detail_comment: SharedString,
-    /// 详情卡上的复制按钮（复制的是列名）。
+    /// 详情卡上的复制按钮（复制的是**整份详情**：列名 / 类型 / 注释三行）。
     pub detail_copy: SharedString,
+    /// 复制出来的三行里，「标签」与「值」之间的分隔符。
+    ///
+    /// 不是标点常量而是**文案**：中文是全角冒号（`列名：id`）、英文是冒号加空格
+    /// （`Column: id`），所以由宿主注入、随界面语言走。
+    pub detail_separator: SharedString,
 }
 
 impl DataTableLabels {
@@ -132,6 +137,7 @@ impl DataTableLabels {
         detail_type: impl Into<SharedString>,
         detail_comment: impl Into<SharedString>,
         detail_copy: impl Into<SharedString>,
+        detail_separator: impl Into<SharedString>,
     ) -> Self {
         Self {
             select_all: select_all.into(),
@@ -145,6 +151,7 @@ impl DataTableLabels {
             detail_type: detail_type.into(),
             detail_comment: detail_comment.into(),
             detail_copy: detail_copy.into(),
+            detail_separator: detail_separator.into(),
         }
     }
 

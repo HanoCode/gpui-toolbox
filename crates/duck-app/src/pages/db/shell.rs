@@ -162,6 +162,7 @@ impl DatabasePage {
             result_search,
             sql,
             sql_split: cx.new(|_| ResizableState::default()),
+            structure_split: cx.new(|_| ResizableState::default()),
             view: cx.entity().downgrade(),
             _subscriptions: subscriptions,
             connections: load_connections(cx),
@@ -238,11 +239,19 @@ impl DatabasePage {
             table_foreign_keys: Vec::new(),
             table_triggers: Vec::new(),
             table_meta_for: None,
+            table_clipboard: None,
+            create_applied: None,
             structure: None,
+            structure_grid_x_scroll: ScrollHandle::new(),
+            structure_grid_y_scroll: ScrollHandle::new(),
+            result_columns_x_scroll: ScrollHandle::new(),
+            result_columns_y_scroll: ScrollHandle::new(),
             er: None,
             compare: None,
             transfer: None,
             copy_fields: None,
+            structure_comment: None,
+            structure_copy_names: false,
             row_editor: None,
             json_editor: None,
             chart_view: None,
@@ -277,6 +286,7 @@ impl DatabasePage {
             toast: None,
             toast_seq: 0,
             busy: false,
+            connecting: std::collections::HashSet::new(),
             running: None,
             stop_requested: false,
             run_timeout_secs: QUERY_TIMEOUT.as_secs(),
@@ -288,6 +298,8 @@ impl DatabasePage {
             query_timeout_input: text_input(window, cx, tr(cx, "留空跟随连接默认")),
             tree_open: std::collections::HashSet::new(),
             pinned_tables: std::collections::BTreeSet::new(),
+            table_tree: std::collections::HashMap::new(),
+            table_tree_loading: std::collections::HashSet::new(),
         }
     }
 
@@ -344,8 +356,10 @@ impl DatabasePage {
     /// 主工作区顶部的**全局操作组**（dbx `AppToolbar` 对位）。
     ///
     /// 限定在主工作区内（标签条上方），不横跨窗口标题栏 —— 第三轮明确要求。
-    /// 数据传输 / 驱动管理（dbx 同款入口）**没有后端**，按设计稿「灰显 = 无后端」
-    /// 的口径摆成禁用态：看得见入口、点不动，不冒充功能（P3-6 判据）。
+    /// 顺序照 dbx：新建连接 / 新建查询 / 数据传输 / 驱动管理 / 执行 SQL 文件 /
+    /// 比较架构 / 比较数据 / 数据库备份 / MCP 设置 / 刷新；右端是 AI 助手与连接读数。
+    /// 还没有后端的三件（比较架构 / 数据库备份 / MCP 设置）按设计稿「灰显 = 无后端」
+    /// 的口径摆禁用态：看得见入口、点不动，不冒充功能（P3-6 判据）。
     pub(super) fn render_global_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -358,10 +372,12 @@ impl DatabasePage {
         let new_query_label = tr(cx, "新建查询");
         let transfer_label = tr(cx, "数据传输");
         let drivers_label = tr(cx, "驱动管理");
+        let sql_file_label = tr(cx, "执行 SQL 文件");
+        let schema_compare_label = tr(cx, "比较架构");
+        let compare_label = tr(cx, "比较数据");
+        let backup_label = tr(cx, "数据库备份");
+        let mcp_label = tr(cx, "MCP 设置");
         let refresh_label = tr(cx, "刷新");
-        let more_label = tr(cx, "更多");
-        let import_label = tr(cx, "导入连接");
-        let export_label = tr(cx, "导出连接");
         let ai_label = tr(cx, "AI 助手");
 
         // 连接状态读数（dbx 的连接身份一眼可见；设计稿 globalbar 右端那块读数位）。
@@ -420,13 +436,9 @@ impl DatabasePage {
                     }
                 }),
             )
-            // 设计稿 globalbar 左组的前两枚（dbx `AppToolbar` 同款顺序：数据传输 →
-            // 驱动管理）。没有对应后端，摆禁用态而非空壳。
-            //
-            // 「插件中心」原也在这条线上，现已撤掉：插件是 **shell 级**的东西（标题栏
-            // 与命令面板都进得去，`plugin_center` 是独立窗口），摆在**数据库页**的
-            // 连接动作之间只会让人以为「插件跟数据库有关」。需求原话：查询界面顶部的
-            // 插件中心去掉。
+            // dbx `AppToolbar` 同款顺序：数据传输 → 驱动管理。
+            // 数据传输的「源」就是当前会话：没有会话就无处取源，摆禁用（与
+            // 「新建查询」同口径）；驱动管理不依赖任何连接，永远可点。
             .child(
                 icon_text_button(
                     "db-global-transfer",
@@ -435,13 +447,98 @@ impl DatabasePage {
                     ButtonVariant::Ghost,
                     cx,
                 )
-                .disabled(true),
+                .disabled(!has_session)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.open_transfer_from_active(window, cx);
+                        });
+                    }
+                }),
             )
             .child(
                 icon_text_button(
                     "db-global-drivers",
                     drivers_label,
                     Icon::new(DuckIcon::HardDrive).size(extended.icon.sm),
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.open_driver_manager(window, cx);
+                        });
+                    }
+                }),
+            )
+            // dbx `AppToolbar` 同款的五件工具（顺序照 dbx 的菜单）：执行 SQL 文件 →
+            // 比较架构 → 比较数据 → 数据库备份 → MCP 设置。有后端的三件直接接上；
+            // 还没有后端的（比较架构 / 数据库备份 / MCP 设置）按「灰显 = 无后端」
+            // 的口径摆禁用态：看得见入口、点不动，不冒充功能（P3-6 判据）。
+            .child(
+                icon_text_button(
+                    "db-global-sql-file",
+                    sql_file_label,
+                    Icon::new(DuckIcon::FileText).size(extended.icon.sm),
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .disabled(!has_session || self.busy)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.run_sql_file(window, cx);
+                        });
+                    }
+                }),
+            )
+            .child(
+                icon_text_button(
+                    "db-global-schema-compare",
+                    schema_compare_label,
+                    Icon::new(DuckIcon::Network).size(extended.icon.sm),
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .disabled(true),
+            )
+            .child(
+                icon_text_button(
+                    "db-global-compare",
+                    compare_label,
+                    Icon::new(DuckIcon::Table).size(extended.icon.sm),
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .disabled(!has_session)
+                .on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.open_compare_from_active(window, cx);
+                        });
+                    }
+                }),
+            )
+            .child(
+                icon_text_button(
+                    "db-global-backup",
+                    backup_label,
+                    Icon::new(DuckIcon::Archive).size(extended.icon.sm),
+                    ButtonVariant::Ghost,
+                    cx,
+                )
+                .disabled(true),
+            )
+            .child(
+                icon_text_button(
+                    "db-global-mcp",
+                    mcp_label,
+                    Icon::new(DuckIcon::Settings).size(extended.icon.sm),
                     ButtonVariant::Ghost,
                     cx,
                 )
@@ -463,40 +560,6 @@ impl DatabasePage {
                     }
                 }),
             )
-            .child({
-                let more_view = view.clone();
-                toolbar_text_dropdown_button(
-                    "db-global-more",
-                    more_label,
-                    Icon::new(DuckIcon::Ellipsis).size(extended.icon.sm),
-                    Anchor::BottomLeft,
-                    move |menu, _, _| {
-                        let import_view = more_view.clone();
-                        let export_view = more_view.clone();
-                        menu.item(PopupMenuItem::new(import_label).on_click(
-                            move |_, window, cx| {
-                                let Some(entity) = import_view.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    this.import_connections(window, cx);
-                                });
-                            },
-                        ))
-                        .item(
-                            PopupMenuItem::new(export_label).on_click(move |_, window, cx| {
-                                let Some(entity) = export_view.upgrade() else {
-                                    return;
-                                };
-                                entity.update(cx, |this, cx| {
-                                    this.export_connections(window, cx);
-                                });
-                            }),
-                        )
-                    },
-                    cx,
-                )
-            })
             // 中间弹性带。
             .child(div().flex_1().min_w_0())
             // 右组（设计稿 globalbar right）：AI 助手 + 连接状态读数。
@@ -536,6 +599,52 @@ impl DatabasePage {
             })
             .child(meta_text(conn_status, cx))
             .into_any_element()
+    }
+
+    /// 顶栏「数据传输」：源 = **当前会话** + 它的命名空间，表清单当场从源目录拍下来。
+    ///
+    /// 与连接菜单那条入口（`browse.rs` 的菜单分支）构造同一套规格，只是「源」的来路
+    /// 不同：菜单从树节点拿连接 + 库，这里从活跃会话拿 —— 命名空间没定（刚连上、
+    /// 还没在下拉里选过）就退到第一个库，再没有就给空串让页面上的目标下拉去兜底。
+    pub(super) fn open_transfer_from_active(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = self.active.clone().unwrap_or_default();
+        let namespace = session
+            .schema
+            .clone()
+            .or_else(|| session.databases.first().cloned())
+            .unwrap_or_default();
+        // 表清单 = 源命名空间下的全部基础表（与连接菜单那条口径一致：只搬基础表）。
+        let tables: Vec<TableRef> = session
+            .catalog
+            .iter()
+            .filter(|entry| entry.kind == TableKind::Table)
+            .filter(|entry| entry.schema.as_deref() == Some(namespace.as_str()))
+            .map(|entry| entry.table_ref())
+            .collect();
+        self.open_transfer_tab(&conn, &namespace, tables, window, cx);
+    }
+
+    /// 顶栏「比较数据」：源 = **当前会话** + 它的命名空间（目标在页面上选）。
+    ///
+    /// 入口逻辑与 [`Self::open_transfer_from_active`] 相同，只是比较不需要表清单。
+    pub(super) fn open_compare_from_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = self.active.clone().unwrap_or_default();
+        let namespace = session
+            .schema
+            .clone()
+            .or_else(|| session.databases.first().cloned())
+            .unwrap_or_default();
+        self.open_compare_tab(&conn, &namespace, Vec::new(), window, cx);
     }
 
     /// 连接切换下拉（编辑器工具条右端，dbx 同款）。
@@ -794,7 +903,7 @@ impl DatabasePage {
     /// 与容器伸缩都由组件按比例自管（`adjust_to_container_size`）。把手本体
     /// （hairline + hover 胶囊 + 光标）由 gpui-component 画，本页只给编辑器面板
     /// `SQL_EDITOR_HEIGHT_RANGE` 的拖拽档位。
-    pub(super) fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // 实例信息页走另一条正文（不是「编辑器 + 结果区」）：它没有 SQL 可编辑，
         // 也不产出结果集，硬塞进结果区会让人以为「查询返回了这些」。
         if let Mode::Instance(tab) = self.mode {
@@ -807,7 +916,7 @@ impl DatabasePage {
         }
         // 表结构编辑器同理：正文是**字段网格**，不是「编辑器 + 结果区」。
         if matches!(self.mode, Mode::Structure(_)) {
-            return self.render_structure_page(cx);
+            return self.render_structure_page(window, cx);
         }
         // ER 关系图 / 比较数据 / 数据传输三张页面同理：各自一整块正文，
         // 不产「当前结果集」，塞进结果区只会让人以为查询返回了这些。
@@ -1210,9 +1319,10 @@ impl Render for DatabasePage {
         // 右栏的开合归 shell 管，而工具条上「历史」按钮的高亮要跟着它走 —— 首次渲染
         // 时订阅一次（页面是 `AnyView`，shell 重绘不会连带重绘它）。
         self.ensure_right_dock_subscribed(cx);
-        // JSON 档的字段表单在这里对齐「现在显示的是哪一行」：构造输入框实体要
-        // `&mut Window`，渲染是唯一同时拿得到窗口与 `&mut self` 的时机（翻页 / 重跑 /
-        // 换表之后都靠它重建）。只在 JSON 档做事，其余档位是一次比较就返回。
+        // JSON 档的行 JSON 编辑器在这里对齐「现在显示的是哪一行」：构造
+        // `EditorState` 实体要 `&mut Window`，渲染是唯一同时拿得到窗口与
+        // `&mut self` 的时机（翻页 / 重跑 / 换表之后都靠它重建）。只在 JSON 档
+        // 做事，其余档位是一次比较就返回。
         self.sync_json_editor(window, cx);
         // 单元格详情的值编辑器同一时机对齐「现在指向的是哪一格」：换格 / 原值变了
         // 才重建输入框，用户正在敲的字不被下一帧抹掉（见 `sync_cell_detail_editor`）。
@@ -1255,7 +1365,7 @@ impl Render for DatabasePage {
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .child(self.render_body(cx)),
+                    .child(self.render_body(window, cx)),
             )
             .into_any_element();
 

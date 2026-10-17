@@ -227,6 +227,24 @@ pub fn save_task_float_bounds(window: &Window, cx: &App) {
     save_bounds(WINDOW_TASK_FLOAT, window, cx);
 }
 
+/// 日历浮窗几何在 `windows` 表里的键（与 [`WINDOW_TASK_FLOAT`] 同一条口径：
+/// 不进「上次开着哪些窗口」的恢复列表，但一旦打开就回到上次待的地方）。
+const WINDOW_CALENDAR_FLOAT: &str = "calendar_float";
+
+/// 日历浮窗上次待的位置；没有存档时为 `None`（调用方取默认位置）。
+///
+/// 与 [`restore_task_float`] 同一套：只取原点、过 [`clamp_bounds`]。
+#[must_use]
+pub fn restore_calendar_float(cx: &App) -> Option<gpui::Point<Pixels>> {
+    let (bounds, _state) = load_saved(cx, WINDOW_CALENDAR_FLOAT)?;
+    Some(clamp_bounds(bounds, cx).origin)
+}
+
+/// 记录日历浮窗位置（去抖，与 [`save_task_float_bounds`] 同一条路）。
+pub fn save_calendar_float_bounds(window: &Window, cx: &App) {
+    save_bounds(WINDOW_CALENDAR_FLOAT, window, cx);
+}
+
 // ── 显示器夹取 ──────────────────────────────────────────────────────────────
 
 /// 窗口至少要有这么大比例的面积落在某块屏幕内，才算「用户看得见」。

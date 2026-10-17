@@ -237,8 +237,10 @@ impl DatabasePage {
                     self.execute_ai_sql(text, tokens, window, cx);
                 } else {
                     // 写 / 多条 / 混合：只填编辑器，人工审阅后自己跑——**不自动执行写**。
+                    // 落文本用 `replace_all`（保撤销栈）：AI 顶掉的是用户手上那段 SQL，
+                    // 不满意得能 ⌘Z 退回去（`set_value` 会把历史清掉，退无可退）。
                     self.sql.update(cx, |state, cx| {
-                        state.set_value(text.clone(), window, cx);
+                        state.replace_all(text.clone(), window, cx);
                     });
                     let note = trf(
                         cx,
@@ -501,8 +503,8 @@ impl DatabasePage {
                 .justify_center()
                 .child(self.render_ai_welcome(cx));
         } else {
-            for message in &self.ai_messages {
-                conversation = conversation.child(ai_message_bubble(message, cx));
+            for (index, message) in self.ai_messages.iter().enumerate() {
+                conversation = conversation.child(ai_message_bubble(index, message, cx));
             }
         }
 
@@ -632,7 +634,12 @@ impl DatabasePage {
 ///
 /// 宽度上限取**相对值**（85%）而不是固定像素：右栏宽度是用户自己拖出来的
 /// （260–400），固定上限在大宽度下显空、小宽度下又顶到边。
-fn ai_message_bubble(message: &AiMessage, cx: &App) -> AnyElement {
+///
+/// `index` 是本条在 `ai_messages` 里的位置：正文与备注都要能**拖选复制**，
+/// 而可选中文本必须带窗口内唯一 id —— 本函数在循环里被调用一次以上，
+/// 用 [`selectable_text`] 的 `CodeLocation` id 会重复（同 id 静默共用一个
+/// `TextSelectionHandle`，表现为选区串行），所以改走 `selectable_text_with_id`。
+fn ai_message_bubble(index: usize, message: &AiMessage, cx: &App) -> AnyElement {
     let theme = active_theme(cx);
     let tokens = theme.tokens();
     let extended = theme.extended();
@@ -647,11 +654,10 @@ fn ai_message_bubble(message: &AiMessage, cx: &App) -> AnyElement {
         .text_size(body.size)
         .line_height(body.line_height)
         .text_color(tokens.colors.foreground)
-        .child(
-            div()
-                .w_full()
-                .child(SharedString::from(message.text.clone())),
-        );
+        .child(div().w_full().child(selectable_text_with_id(
+            ("db-ai-msg", index),
+            message.text.clone(),
+        )));
     if let Some(note) = message.note.clone() {
         bubble = bubble.child(
             div()
@@ -659,7 +665,7 @@ fn ai_message_bubble(message: &AiMessage, cx: &App) -> AnyElement {
                 .text_size(meta.size)
                 .line_height(meta.line_height)
                 .text_color(tokens.colors.muted_foreground)
-                .child(note),
+                .child(selectable_text_with_id(("db-ai-note", index), note)),
         );
     }
     match message.role {

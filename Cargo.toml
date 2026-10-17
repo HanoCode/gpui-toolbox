@@ -19,9 +19,13 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = 
     "wayland",
     "runtime_shaders",
 ] }
-gpui-base = "0.7.1"
-gpui-component = { version = "0.7.1", features = ["tree-sitter-sql"] }
-gpui-component-assets = { package = "gpui-kit-assets", version = "0.7.1" }
+# ⚠️ `=` 不是可选的：这层是**快照对齐**。用 `^`（默认）时，`cargo update` 会把
+# gpui-component 悄悄抬到 0.7.2，而它要求 `gpui-base ^0.7.2`，于是 `[patch.crates-io]`
+# 里 0.7.1 的 vendor 分叉**整个失效**（Cargo 只报 `[[patch.unused]]` 一行警告）——
+# 邮件正文内联 CSS 补丁与文本选中的引擎修复会一起静默丢掉。5d4011d 就是这么丢的。
+gpui-base = "=0.7.1"
+gpui-component = { version = "=0.7.1", features = ["tree-sitter-sql"] }
+gpui-component-assets = { package = "gpui-kit-assets", version = "=0.7.1" }
 
 duck-theme = { path = "crates/duck-theme" }
 duck-components = { path = "crates/duck-components" }
@@ -35,6 +39,14 @@ duck-plugin = { path = "crates/duck-plugin" }
 duck-plugin-js = { path = "crates/duck-plugin-js" }
 duck-plugin-registry = { path = "crates/duck-plugin-registry" }
 duck-db = { path = "crates/duck-db" }
+# 驱动商店内核（crates/duck-drivers，docs 见 crate 文档）：驱动目录 + 远端注册表 +
+# 下载 / 校验 / 安装 / 卸载 + 托管 JRE。零 gpui、零 tokio 外泄。
+# `duck-db` 与 `duck-app` 都依赖它（前者要启动描述，后者是商店界面）。
+duck-drivers = { path = "crates/duck-drivers" }
+# 驱动**子进程**运行时（crates/duck-db-agent）：JSON-RPC 2.0 over stdio（换行分帧）、
+# 按 `id` 对账、超时与「进程没了」都要能立刻说清。零 gpui、零 tokio、全阻塞。
+# `duck-db` 拿 duck-drivers 的 `LaunchSpec` 拼出要跑的命令，交给它去说话。
+duck-db-agent = { path = "crates/duck-db-agent" }
 duck-redis = { path = "crates/duck-redis" }
 duck-ai = { path = "crates/duck-ai" }
 duck-term = { path = "crates/duck-term" }
@@ -73,6 +85,17 @@ minisign-verify = "0.3"
 # 钉到 6.0.0 虽可用，但为同一个归档格式退两个大版本不划算。
 tar = "0.4.46"
 flate2 = "1.1"
+
+# zstd **解码**（crates/duck-drivers 解 dbx 的 `tar.zst` 驱动工件）。
+# - **必须 `=` 钉 `0.8.2`**：0.8.3 / 0.9.x 声明 `rust-version = "1.87"`，
+#   顶破本仓 1.85 硬门；0.8.2 未声明 MSRV。写 `"0.8"` 会解析到 0.9.1。
+# - **只开 `std`**：默认还带 `hash`（XXH64 帧校验，拖进 `twox-hash`）。
+#   我们只解压**自己刚按 SHA-256 校验过**的工件，帧校验是重复把关不划算；
+#   关掉它即**零新增传递依赖**（`twox-hash` 不会进树）。
+# - **选纯 Rust 而不是 `zstd`（libzstd C 绑定）**：与全仓「终端用户零系统依赖」
+#   取向一致，不给构建加 C 工具链步骤；而且我们只需要解码，不需要编码。
+# - 许可证 MIT。⚠️ 升级前先核 `rust-version ≤ 1.85`。
+ruzstd = { version = "=0.8.2", default-features = false, features = ["std"] }
 
 # 托盘与事件通道。`gpui` 本来就传递依赖 futures 0.3（`AsyncApp` 自己用 `oneshot`），
 # 这里只是把它提成直接依赖；`tray-icon` 关掉默认特性，默认的 gtk / libxdo 只对 Linux 有意义。

@@ -7,7 +7,7 @@
 use mysql::prelude::Queryable as _;
 
 use crate::cancel::CancelHandle;
-use crate::config::{ConnectionConfig, TlsMode};
+use crate::config::{AuthMode, ConnectionConfig, TlsMode};
 use crate::drivers::{
     CatalogTable, DatabaseObject, InstanceFact, InstanceOverview, InstanceTable, InstanceView,
     OrderBy, PlaceholderStyle, RowCount, TableColumnMeta, TableFilter, TableForeignKey, TableIndex,
@@ -57,8 +57,22 @@ pub struct MysqlConnection {
     opts: mysql::Opts,
 }
 
-/// 由连接档案拼 `OptsBuilder`（含 TLS 档位）。
+/// 由连接档案拼 `OptsBuilder`（含 TLS 档位与证书三件套）。
+///
+/// 证书只在 rustls 后端下消费：CA 证书替换默认根集（自签 CA 免「接受自签」档），
+/// 客户端证书 + 私钥走 `ClientIdentity`（双向 TLS；私钥需为未加密格式）。
 fn build_opts(cfg: &ConnectionConfig, password: Option<&str>) -> Result<mysql::Opts, DbError> {
+    // 连接串模式整条直连：host / 端口 / 账号 / TLS 全在串里。
+    if cfg.auth_mode == AuthMode::ConnectionString {
+        let raw = cfg
+            .connection_string
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .ok_or_else(|| DbError::Config("connection string is empty".into()))?;
+        return mysql::Opts::from_url(raw)
+            .map_err(|err| DbError::Config(format!("bad mysql url: {err}")));
+    }
     let port = cfg
         .port
         .unwrap_or_else(|| cfg.kind.default_port().expect("MySQL has a default port"));
@@ -78,15 +92,49 @@ fn build_opts(cfg: &ConnectionConfig, password: Option<&str>) -> Result<mysql::O
     }
     match cfg.tls {
         TlsMode::Disable => {}
-        // 默认信任链（webpki-roots）；自签库请选下一档。
-        TlsMode::Trust => builder = builder.ssl_opts(Some(mysql::SslOpts::default())),
+        // 默认信任链（webpki-roots）；给了 CA 证书就改用它做根；自签库请选下一档。
+        TlsMode::Trust => {
+            let mut ssl = mysql::SslOpts::default();
+            if let Some(ca) = cfg
+                .ca_cert_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+            {
+                ssl = ssl.with_root_cert_path(Some(std::path::PathBuf::from(ca)));
+            }
+            ssl = with_client_identity(ssl, cfg);
+            builder = builder.ssl_opts(Some(ssl));
+        }
         TlsMode::DangerAcceptInvalid => {
-            builder = builder.ssl_opts(Some(
-                mysql::SslOpts::default().with_danger_accept_invalid_certs(true),
-            ));
+            let mut ssl = mysql::SslOpts::default().with_danger_accept_invalid_certs(true);
+            // 危险档依旧尊重客户端证书（身份是我们出的，与「信不信服务端」两回事）。
+            ssl = with_client_identity(ssl, cfg);
+            builder = builder.ssl_opts(Some(ssl));
         }
     }
     Ok(builder.into())
+}
+
+/// 给 MySQL 的 TLS 配置挂上客户端证书 + 私钥（两样都给了才挂）。
+fn with_client_identity(ssl: mysql::SslOpts, cfg: &ConnectionConfig) -> mysql::SslOpts {
+    let cert = cfg
+        .client_cert_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    let key = cfg
+        .client_key_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    match (cert, key) {
+        (Some(cert), Some(key)) => ssl.with_client_identity(Some(mysql::ClientIdentity::new(
+            std::path::PathBuf::from(cert),
+            std::path::PathBuf::from(key),
+        ))),
+        _ => ssl,
+    }
 }
 
 /// `mysql::ColumnType` → 展示类型名（取常用族；未知走 OTHER）。

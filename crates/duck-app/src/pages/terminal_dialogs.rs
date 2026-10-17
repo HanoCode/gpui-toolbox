@@ -829,11 +829,19 @@ impl Render for ConnectionForm {
                     cx,
                 )
                 .on_click(move |_, window, cx| {
-                    let Some(path) = duck_platform::open_file() else {
-                        return;
-                    };
-                    let text = path.to_string_lossy().into_owned();
-                    key_file.update(cx, |state, cx| state.set_value(text, window, cx));
+                    // ⚠️ 不用 `duck_platform::open_file`：rfd 的同步模态
+                    // （`NSOpenPanel runModal`）从 `App::update` 里弹会把事件派发重入回
+                    // gpui ⇒ 「RefCell already borrowed」abort。走 gpui 的异步面板。
+                    let target = key_file.clone();
+                    crate::file_dialogs::open_file_in_app(
+                        window,
+                        cx,
+                        tr(cx, "选择私钥文件"),
+                        move |path, window, cx| {
+                            let text = path.to_string_lossy().into_owned();
+                            target.update(cx, |state, cx| state.set_value(text, window, cx));
+                        },
+                    );
                 });
                 form_field(
                     tr(cx, "私钥文件"),
@@ -1199,11 +1207,17 @@ pub(crate) fn open_directory_dialog<F>(
                         cx,
                     )
                     .on_click(move |_, window, cx| {
-                        let Some(dir) = duck_platform::pick_folder() else {
-                            return;
-                        };
-                        let text = dir.to_string_lossy().into_owned();
-                        target.update(cx, |state, cx| state.set_value(text, window, cx));
+                        // 同上面的私钥选择：系统目录选择器是 rfd 的同步模态，界面里禁用。
+                        let target = target.clone();
+                        crate::file_dialogs::pick_folder_in_app(
+                            window,
+                            cx,
+                            tr(cx, "选择目录"),
+                            move |dir, window, cx| {
+                                let text = dir.to_string_lossy().into_owned();
+                                target.update(cx, |state, cx| state.set_value(text, window, cx));
+                            },
+                        );
                     });
                     control = control.suffix(pick);
                 }

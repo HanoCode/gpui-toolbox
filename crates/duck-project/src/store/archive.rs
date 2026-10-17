@@ -254,9 +254,9 @@ impl ProjectStore {
             while let Some(row) = rows.next()? {
                 rows_out.push((
                     task_from_row(row)?,
-                    // 下标紧跟在 `TASK_COLUMNS`（23 列）之后：项目名 / 连带子任务数。
-                    row.get(23)?,
-                    row.get::<_, i64>(24)?.max(0) as u32,
+                    // 下标紧跟在 `TASK_COLUMNS`（27 列，v4 加了 4 列）之后：项目名 / 连带子任务数。
+                    row.get(27)?,
+                    row.get::<_, i64>(28)?.max(0) as u32,
                 ));
             }
         }

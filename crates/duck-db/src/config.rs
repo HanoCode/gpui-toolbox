@@ -34,10 +34,28 @@ pub enum DatabaseKind {
     /// Elasticsearch（搜索 / 日志库，走 REST 接口，见 `drivers/elasticsearch.rs`）。
     #[serde(rename = "elasticsearch")]
     Elasticsearch,
+    /// **子进程（agent）轨**：达梦 / 金仓 / Oracle / DB2 / Hive …… 这些库没有（也不会有）
+    /// Rust 原生驱动，我们跑对端给的驱动进程、用 JSON-RPC 说话（见 `drivers/agent.rs`）。
+    ///
+    /// ⚠️ **「到底哪一条驱动」不在这个枚举里** —— 它是 [`ConnectionConfig::driver`] 里的
+    /// 一个目录键（`dameng` / `oracle` / …），取值来自 `duck-drivers` 的目录表。
+    ///
+    /// 为什么不是一个引擎一个变体：那 55 条驱动的清单是**生成的**（每当上游注册表更新就
+    /// 重生成），把它们抄成枚举变体等于第二份真源 —— 上游加一条，我们的枚举就漏一条，
+    /// 而漏掉的表现是「界面里根本没有这个数据库」。放进数据里就没有这个问题。
+    ///
+    /// 代价是这一档的能力开关（端口 / 引号 / 分页）**问不了枚举本身**，得连驱动键一起问
+    /// —— 所以那几个方法对 `Agent` 一律给保守答案，详见各自的文档。
+    #[serde(rename = "agent")]
+    Agent,
 }
 
 impl DatabaseKind {
-    /// 全部档位。
+    /// **内建**档位（宿主里编着驱动的那几条）。
+    ///
+    /// ⚠️ 不等于「界面能选的全部引擎」：agent 轨那几十条**是数据不是枚举**
+    /// （见 [`Self::Agent`] 的文档），它们的清单在 `duck-drivers` 的目录表里。
+    /// 界面里「新建连接」的引擎下拉要把两边合起来看。
     pub const ALL: [Self; 7] = [
         Self::Sqlite,
         Self::Postgres,
@@ -59,6 +77,7 @@ impl DatabaseKind {
             Self::SqlServer => "sqlserver",
             Self::Mongo => "mongo",
             Self::Elasticsearch => "elasticsearch",
+            Self::Agent => "agent",
         }
     }
 
@@ -75,18 +94,39 @@ impl DatabaseKind {
             "sqlserver" => Self::SqlServer,
             "mongo" => Self::Mongo,
             "elasticsearch" | "es" => Self::Elasticsearch,
+            "agent" => Self::Agent,
             _ => Self::Sqlite,
         }
+    }
+
+    /// 是否是内建驱动（宿主里编着实现），即**不需要下载驱动**。
+    ///
+    /// ⚠️ 与 [`Self::needs_driver_install`] 不是一回事的反面也不能互推：`Agent` 一律
+    /// 要装，而 `Sqlite` 这类内建的一个字节都不用下。
+    #[must_use]
+    pub const fn is_builtin(self) -> bool {
+        !matches!(self, Self::Agent)
+    }
+
+    /// 建连前是否必须先装好一条外部驱动。
+    #[must_use]
+    pub const fn needs_driver_install(self) -> bool {
+        matches!(self, Self::Agent)
     }
 
     /// 引擎的 TCP 缺省端口；SQLite 无网络端口，返回 `None`。
     ///
     /// ClickHouse 取 **HTTP 接口**的 8123（不是原生协议的 9000）——本条驱动走 HTTP。
     /// Elasticsearch 取 REST 的 9200（不是节点间通信的 9300）。
+    ///
+    /// ⚠️ `Agent` 返回 `None`，这**不代表它没有端口**（达梦就是 5236）：端口随驱动走，
+    /// 而枚举里没有驱动键。要拿真值请用 [`ConnectionConfig::default_port`]，
+    /// 它会去驱动目录里查这条驱动的 `defaultPort`。
+    /// 这里的 `None` 是「问我不出答案」，界面不该把它当「不用填端口」。
     #[must_use]
     pub const fn default_port(self) -> Option<u16> {
         match self {
-            Self::Sqlite => None,
+            Self::Sqlite | Self::Agent => None,
             Self::Postgres => Some(5432),
             Self::Mysql => Some(3306),
             Self::ClickHouse => Some(8123),
@@ -97,6 +137,9 @@ impl DatabaseKind {
     }
 
     /// 是否需要 TCP 主机名（SQLite 走本地文件，不填）。
+    ///
+    /// `Agent` 走网络：对端是**独立进程**，进程与库之间才是网络（大多数情况同机直连），
+    /// 但从我们的视角它终究要一个主机名。
     #[must_use]
     pub const fn needs_host(self) -> bool {
         !matches!(self, Self::Sqlite)
@@ -127,12 +170,18 @@ impl DatabaseKind {
     /// SQL Server 用 `"`，MySQL 与 ClickHouse 用反引号（MySQL 默认 `ANSI_QUOTES` 关闭，
     /// 双引号会被当字符串字面量）。界面侧要拼「能直接执行的 SQL 草稿」时用它
     /// ——结果集的 INSERT 导出、对象树「生成 SELECT」骨架。
+    ///
+    /// ⚠️ `Agent` 返回 `None`：引号是**每条驱动不同**的事，而枚举里没有驱动键。
+    /// 猜一个的代价很大 —— MySQL 系的双引号会被服务端当字符串字面量，拼出来的
+    /// `SELECT * FROM "users"` 不报错，只是**查了另一张表**（或直接查不到）。
+    /// 真值在连上之后由对端经 `connection_info` 的 `identifierQuote` 给出，
+    /// 见 `drivers/agent.rs`；没连上之前宁可让「生成 SELECT」这条路不可用。
     #[must_use]
     pub const fn identifier_quote(self) -> Option<char> {
         match self {
             Self::Sqlite | Self::Postgres | Self::SqlServer => Some('"'),
             Self::Mysql | Self::ClickHouse => Some('`'),
-            Self::Mongo | Self::Elasticsearch => None,
+            Self::Mongo | Self::Elasticsearch | Self::Agent => None,
         }
     }
 
@@ -145,11 +194,20 @@ impl DatabaseKind {
     /// - SQL Server：派生表不能带 `ORDER BY`，而外层又必须 `ORDER BY` 才能
     ///   `OFFSET/FETCH`——顺序不定会让翻页重复 / 漏行，故**不支持**（显式拒绝，不返回错页）；
     /// - MongoDB / Elasticsearch：没有 SQL 分页语法，同样不支持。
+    /// - `Agent`：**支持，而且是真游标**——不走 `LIMIT/OFFSET` 的外层包装，而是对端的
+    ///   `execute_query_page` / `fetch_query_page`（服务端游标，翻页不会重复/漏行，
+    ///   也不会因为外层再包一层而丢掉 `ORDER BY`）。
+    ///   ⚠️ 前提是对端握手时声明了 `paged_query`；没声明的会在
+    ///   [`crate::drivers::Connection::execute_paged`] 上如实报「不支持」。
+    ///
+    /// ⚠️ **agent 档只有两层加起来才是完整答案**：这一层回答的是「这一**轨**有没有这条
+    /// 通路」（有，所以界面别把它藏掉），而「**这个驱动**有没有」要问连接：
+    /// [`crate::drivers::Connection::supports_paged_read`]。手上有连接就查后者。
     #[must_use]
     pub const fn supports_paged_read(self) -> bool {
         matches!(
             self,
-            Self::Sqlite | Self::Postgres | Self::Mysql | Self::ClickHouse
+            Self::Sqlite | Self::Postgres | Self::Mysql | Self::ClickHouse | Self::Agent
         )
     }
 
@@ -165,6 +223,9 @@ impl DatabaseKind {
     /// - SQL Server / ClickHouse / MongoDB / Elasticsearch：本轮未实作，界面**不画**
     ///   入口。宁可少一个节点，也不要给一个点开就报「不支持」的按钮（「不支持」与
     ///   「执行失败」必须分得开——后者用户能改，前者不能）。
+    /// - `Agent`：**不画**。协议里只有「取执行计划」（`get_explain_info`），
+    ///   没有实例级指标那一类方法，硬凑就得靠方言查询，而 agent 轨恰恰是
+    ///   「方言最杂」的那一档（达梦 / Hive / Teradata 各写一套）。
     #[must_use]
     pub const fn supports_instance_insight(self) -> bool {
         matches!(self, Self::Sqlite | Self::Postgres | Self::Mysql)
@@ -266,6 +327,140 @@ impl TlsMode {
     }
 }
 
+/// 连接的**认证方式**（界面下拉；缺省 = 用户名 + 口令，兼容旧档案）。
+///
+/// 与 dbx 同一条取向：认证方式不是一个每引擎一个枚举的大集合，而是少数几个通用档位，
+/// 每个引擎只认得其中几档（[`Self::available_for`]），界面按它显隐。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AuthMode {
+    /// 用户名 + 口令（绝大多数引擎的默认形态）。
+    #[default]
+    #[serde(rename = "password")]
+    Password,
+    /// 无认证（PG 的 trust、未开安全的 MongoDB / Elasticsearch）。
+    #[serde(rename = "none")]
+    None_,
+    /// 整条连接串（`postgresql://…` / `mysql://…` / `mongodb://…`）。
+    #[serde(rename = "connection-string")]
+    ConnectionString,
+    /// API Key（Elasticsearch 的 `Authorization: ApiKey …`）。
+    #[serde(rename = "api-key")]
+    ApiKey,
+}
+
+impl AuthMode {
+    /// 全部档位（顺序即表单下拉顺序）。
+    pub const ALL: [Self; 4] = [
+        Self::Password,
+        Self::None_,
+        Self::ConnectionString,
+        Self::ApiKey,
+    ];
+
+    /// wire 值（落盘用，稳定）。
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::None_ => "none",
+            Self::ConnectionString => "connection-string",
+            Self::ApiKey => "api-key",
+        }
+    }
+
+    /// 解析 wire 值；未知值回落口令认证。
+    #[must_use]
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "none" => Self::None_,
+            "connection-string" => Self::ConnectionString,
+            "api-key" => Self::ApiKey,
+            _ => Self::Password,
+        }
+    }
+
+    /// 该引擎是否认得这一档（界面下拉据它显隐；驱动侧的真正消费见 `drivers/*.rs`）。
+    ///
+    /// - 无认证：PG（trust）与未开安全的 MongoDB / Elasticsearch；MySQL 的账号模型
+    ///   决定了「无认证」没有意义（账号必填），不给这一档。
+    /// - 连接串：只有 URI 语义成熟的 PG / MySQL / MongoDB 三家。
+    /// - API Key：只有 Elasticsearch（它的 REST 认证头原生吃这一档）。
+    #[must_use]
+    pub const fn available_for(self, kind: DatabaseKind) -> bool {
+        match self {
+            Self::Password => true,
+            Self::None_ => matches!(
+                kind,
+                DatabaseKind::Postgres | DatabaseKind::Mongo | DatabaseKind::Elasticsearch
+            ),
+            Self::ConnectionString => matches!(
+                kind,
+                DatabaseKind::Postgres | DatabaseKind::Mysql | DatabaseKind::Mongo
+            ),
+            Self::ApiKey => matches!(kind, DatabaseKind::Elasticsearch),
+        }
+    }
+}
+
+/// SSH 隧道的**认证方式**（跳板机这一跳用哪个凭据）。
+///
+/// 缺省 = 口令（旧行为）；私钥口令不在这里 —— 与 SSH 口令同一条纪律，走凭据文件。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SshAuthMethod {
+    /// 口令（`SSH_ASKPASS` 注入）。
+    #[default]
+    #[serde(rename = "password")]
+    Password,
+    /// 私钥文件（无口令）。
+    #[serde(rename = "key")]
+    Key,
+    /// 私钥文件 + 私钥口令（加密私钥）。
+    #[serde(rename = "key+password")]
+    KeyAndPassword,
+    /// 本机 ssh-agent（`SSH_AUTH_SOCK` 原样透传）。
+    #[serde(rename = "agent")]
+    Agent,
+}
+
+impl SshAuthMethod {
+    /// 全部档位（顺序即表单下拉顺序）。
+    pub const ALL: [Self; 4] = [Self::Password, Self::Key, Self::KeyAndPassword, Self::Agent];
+
+    /// wire 值。
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Key => "key",
+            Self::KeyAndPassword => "key+password",
+            Self::Agent => "agent",
+        }
+    }
+
+    /// 解析 wire 值；未知值回落口令。
+    #[must_use]
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "key" => Self::Key,
+            "key+password" => Self::KeyAndPassword,
+            "agent" => Self::Agent,
+            _ => Self::Password,
+        }
+    }
+
+    /// 这一档要不要拉起 askpass（口令 / 加密私钥的口令都经它注入）。
+    #[must_use]
+    pub const fn needs_askpass(self) -> bool {
+        matches!(self, Self::Password | Self::KeyAndPassword)
+    }
+
+    /// 这一档要不要给 ssh 传 `-i <key>`。
+    #[must_use]
+    pub const fn needs_key(self) -> bool {
+        matches!(self, Self::Key | Self::KeyAndPassword)
+    }
+}
+
 /// 一条数据库连接档案。
 ///
 /// 即 serde wire 结构：新增字段一律 `Option` + `#[serde(default)]`，
@@ -281,6 +476,45 @@ pub struct ConnectionConfig {
     /// 引擎。
     #[serde(default)]
     pub kind: DatabaseKind,
+    /// **要装哪条外部驱动**：`duck-drivers` 的目录键（`dameng` / `oracle` / `db2` / …）。
+    ///
+    /// 只有 [`DatabaseKind::Agent`] 会看它；内建引擎的档案里它是 `None`。
+    /// `kind == Agent` 而它是 `None` / 空串，是一份**坏档案**（建连直接报 Config 错），
+    /// 不是「随便挑一条」——猜错驱动会连到**另一家的库**上去，那比连不上危险得多。
+    #[serde(default)]
+    pub driver: Option<String>,
+    /// **牌子**：`duck-app` 品牌表里的键（`mariadb` / `tidb` / `oceanbase` / `gbase8s` / …）。
+    ///
+    /// 一个线协议下面站着**十几个牌子**（`mysql` 协议就有 MySQL / MariaDB / TiDB /
+    /// OceanBase / Doris / StarRocks … 12 个），档位表达不了这个粒度：
+    /// 它们的缺省端口与惯用账号都不一样（3306 / 4000 / 2883 / 9030 …）。
+    /// 这个字段就是那份「用户当年选的是哪个牌子」的记忆，dbx 同一个字段叫
+    /// `driver_profile`。
+    ///
+    /// ⚠️ **内核只当字符串过路**（品牌表在界面侧，内核不认识它）：它不参与建连，
+    /// 只在 agent 轨上原样转给对端当 `driver_profile`（对端按它挑方言细节）。
+    /// 认不出的键不影响建连 —— 界面回落成档位自己的名字与图标。
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// **URL 附加参数**（JDBC URL 里 `?` 之后那截），品牌自己的缺省值由品牌表给。
+    ///
+    /// 这是「不填就连不上」的那一类：星环 Argo / Impala 要 `auth=noSasl`、
+    /// Kyuubi 要 `auth=NONE`。只有 agent 轨消费它（内建驱动的连接串是各自拼的）。
+    #[serde(default)]
+    pub url_params: Option<String>,
+    /// **GBase 8s 的服务名**（GBASESQLI 里的 `gbase_server`，dbx 同名）。
+    ///
+    /// 只有品牌键 `gbase8s` 用到它。对端 JDBC agent 有缺省回落（按 host 推一个），
+    /// 所以留空合法 —— 但真实环境的服务名是管理员定的，回落猜错就 `908` 报错，
+    /// 这是 GBase 8s 连不上的头号成因，值得给输入框。
+    #[serde(default)]
+    pub gbase_server: Option<String>,
+    /// **Informix 的 server 名**（JDBC URL 里的 `INFORMIXSERVER=…`，dbx 同名）。
+    ///
+    /// 只有 Informix 档用到。与 [`Self::gbase_server`] 同理：对端有缺省回落，
+    /// 留空合法，填了才准。
+    #[serde(default)]
+    pub informix_server: Option<String>,
     /// TCP 主机名（SQLite 忽略）。
     #[serde(default)]
     pub host: String,
@@ -299,6 +533,30 @@ pub struct ConnectionConfig {
     /// TLS 策略。
     #[serde(default)]
     pub tls: TlsMode,
+    /// 认证方式（缺省口令；旧档案没有这个字段，读进来就是口令认证）。
+    #[serde(default)]
+    pub auth_mode: AuthMode,
+    /// **连接串模式**的连接串原文（`auth_mode == ConnectionString` 时生效）。
+    ///
+    /// 驱动侧拿它整条直连（host / port / user / password 等字段全部忽略）；
+    /// 留空 + 连接串模式是一份坏档案（建连报 Config 错，见 [`Self::validate`]）。
+    #[serde(default)]
+    pub connection_string: Option<String>,
+    /// 自签 CA 证书路径（PEM；`None` = 只用编译进二进制的公网根集）。
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
+    /// 客户端证书路径（PEM；双向 TLS，目前 PostgreSQL / MySQL 驱动消费）。
+    #[serde(default)]
+    pub client_cert_path: Option<String>,
+    /// 客户端私钥路径（PEM；口令不在这里 —— 走凭据文件 `dbconn:{id}:ssh_key`）。
+    #[serde(default)]
+    pub client_key_path: Option<String>,
+    /// **侧栏可见库白名单**（`None` = 不过滤，全部显示）。
+    ///
+    /// 「选择显示数据库」把勾选结果存在这里；勾选恰好是全部时**清空**回 `None`
+    /// ——白名单存死快照会让之后新建的库永远看不见。
+    #[serde(default)]
+    pub visible_databases: Option<Vec<String>>,
     /// 环境标签。
     #[serde(default)]
     pub env_tag: EnvTag,
@@ -370,6 +628,12 @@ pub struct SshTunnelConfig {
     /// 转发目标主机（相对跳板机解析；空 = 跳板机本机）。
     #[serde(default)]
     pub remote_host: String,
+    /// 认证方式（缺省口令；旧档案读进来就是口令认证）。
+    #[serde(default)]
+    pub auth_method: SshAuthMethod,
+    /// 私钥文件路径（`auth_method` 为私钥两档时必填）。
+    #[serde(default)]
+    pub key_path: Option<String>,
 }
 
 impl ConnectionConfig {
@@ -396,7 +660,8 @@ impl ConnectionConfig {
             | DatabaseKind::ClickHouse
             | DatabaseKind::SqlServer
             | DatabaseKind::Mongo
-            | DatabaseKind::Elasticsearch => {
+            | DatabaseKind::Elasticsearch
+            | DatabaseKind::Agent => {
                 // 库名可留空（见 `validate`）→ 别拼出「host / 」这种半截名字。
                 let database = self.database.trim();
                 if database.is_empty() {
@@ -405,6 +670,35 @@ impl ConnectionConfig {
                     format!("{} / {database}", self.host.trim())
                 }
             }
+        }
+    }
+
+    /// 这条连接用的驱动目录条目（**只有 agent 轨有**，其余引擎返回 `None`）。
+    ///
+    /// 界面拿它取展示名（`entry.label` 是中文源串，过 `tr`）与缺省端口：
+    /// 内核不吐成品文案，所以这里给的是**数据**，不是拼好的字符串。
+    #[must_use]
+    pub fn driver_entry(&self) -> Option<&'static duck_drivers::DriverEntry> {
+        if self.kind != DatabaseKind::Agent {
+            return None;
+        }
+        let key = self.driver.as_deref()?.trim();
+        duck_drivers::catalog::entry(key)
+    }
+
+    /// 引擎缺省端口。
+    ///
+    /// 与 [`DatabaseKind::default_port`] 的区别只有一处、但很重要：agent 轨的端口
+    /// **随驱动走**（达梦 5236、Oracle 1521、DB2 50000…），枚举答不出来，
+    /// 得去驱动目录里查 [`DriverEntry::default_port`](duck_drivers::DriverEntry::default_port)。
+    ///
+    /// 查不到驱动（档案里没填 / 键写错了）时返回 `None`：界面按「请填端口」处理，
+    /// 而不是悄悄回落成 0 或某个别的引擎的端口。
+    #[must_use]
+    pub fn default_port(&self) -> Option<u16> {
+        match self.kind {
+            DatabaseKind::Agent => self.driver_entry().and_then(|entry| entry.default_port),
+            kind => kind.default_port(),
         }
     }
 
@@ -418,15 +712,65 @@ impl ConnectionConfig {
     ///
     /// **库名只有 SQLite 必填**（那里装的是文件路径）。网络引擎留空一律放行——
     /// 口径见 [`DatabaseKind::needs_database`]，各驱动的落点实现见其模块文档。
+    /// 文件型档案：库里没有主机端口，`database` 那一格装的是**文件路径**。
+    ///
+    /// SQLite 是原生的文件引擎；DuckDB 只是**协议上**看起来像网络引擎（工件下载、
+    /// 独立进程），连上之后打开的是一个本地文件。判据与界面同源：
+    /// `kind == Sqlite` 或驱动键是 `duckdb`。
+    #[must_use]
+    fn is_file_backed(&self) -> bool {
+        self.kind == DatabaseKind::Sqlite
+            || self.driver.as_deref() == Some(crate::drivers::duckdb::DRIVER_KEY)
+    }
+
     pub fn validate(&self) -> Result<(), crate::error::DbError> {
         if self.id.trim().is_empty() {
             return Err(crate::error::DbError::Config("id is empty".into()));
         }
-        if self.kind.needs_host() && self.host.trim().is_empty() {
+        // ⚠️ 这两条都要问**文件型档案**：DuckDB 在档位上属 agent（工件从商店装），
+        // 但对端接的是 `{path}` 而不是 host/port —— 拿 `kind` 一刀切会把它的
+        // 「文件路径」当「库名」、又逼它填一个根本不存在的主机名。
+        let file_backed = self.is_file_backed();
+        if self.kind.needs_host() && !file_backed && self.host.trim().is_empty() {
             return Err(crate::error::DbError::Config("host is empty".into()));
         }
-        if self.kind.needs_database() && self.database.trim().is_empty() {
+        if (self.kind.needs_database() || file_backed) && self.database.trim().is_empty() {
             return Err(crate::error::DbError::Config("file path is empty".into()));
+        }
+        // 连接串模式必须真的给了串：host / 端口 / 账号在那串里，空串等于没配。
+        if self.auth_mode == AuthMode::ConnectionString {
+            let raw = self.connection_string.as_deref().unwrap_or("").trim();
+            if raw.is_empty() {
+                return Err(crate::error::DbError::Config(
+                    "connection string is empty".into(),
+                ));
+            }
+        }
+        // 私钥两档必须给了钥匙：ssh 没有钥匙又没有口令，只能靠 agent / 默认密钥兜底，
+        // 而那两种都不该被这一档「看起来配了、其实空着」的档案悄悄代表。
+        if let Some(tunnel) = &self.ssh_tunnel
+            && tunnel.auth_method.needs_key()
+            && tunnel.key_path.as_deref().unwrap_or("").trim().is_empty()
+        {
+            return Err(crate::error::DbError::Config(
+                "ssh key path is empty".into(),
+            ));
+        }
+        if self.kind == DatabaseKind::Agent {
+            // 驱动键是 agent 轨的**必需项**：建连时靠它决定跑哪个进程、连哪家的库。
+            let key = self.driver.as_deref().unwrap_or("").trim();
+            if key.is_empty() {
+                return Err(crate::error::DbError::Config(
+                    "agent driver key is empty".into(),
+                ));
+            }
+            // 键不在目录里就地拒掉，而不是留到下载时才发现：
+            // 到了下载那一步，用户已经等过一次网络往返了。
+            if duck_drivers::catalog::entry(key).is_none() {
+                return Err(crate::error::DbError::Config(format!(
+                    "unknown agent driver key: {key}"
+                )));
+            }
         }
         Ok(())
     }
@@ -472,6 +816,51 @@ pub fn load_ssh_password(id: &str) -> Result<Option<String>, SecretError> {
 /// 删 SSH 口令（幂等）。
 pub fn delete_ssh_password(id: &str) -> Result<(), SecretError> {
     duck_platform::secret::delete(&ssh_secret_key(id))
+}
+
+/// SSH 私钥口令键名（加密私钥的 passphrase；与 SSH 登录口令分开存）。
+#[must_use]
+pub fn ssh_key_secret_key(id: &str) -> String {
+    format!("dbconn:{id}:ssh_key")
+}
+
+/// 存 SSH 私钥口令（新建或覆盖）。
+pub fn store_ssh_key_passphrase(id: &str, passphrase: &str) -> Result<(), SecretError> {
+    duck_platform::secret::set(&ssh_key_secret_key(id), passphrase)
+}
+
+/// 读 SSH 私钥口令；未存过是 `Ok(None)`。
+pub fn load_ssh_key_passphrase(id: &str) -> Result<Option<String>, SecretError> {
+    duck_platform::secret::get(&ssh_key_secret_key(id))
+}
+
+/// 删 SSH 私钥口令（幂等）。
+pub fn delete_ssh_key_passphrase(id: &str) -> Result<(), SecretError> {
+    duck_platform::secret::delete(&ssh_key_secret_key(id))
+}
+
+/// 传输档案的 SSH 私钥口令键名（与档案 SSH 口令同一条纪律：档案是独立凭据主体）。
+#[must_use]
+pub fn profile_ssh_key_secret_key(profile_id: &str) -> String {
+    format!("dbprofile:{profile_id}:ssh_key")
+}
+
+/// 存传输档案的 SSH 私钥口令。
+pub fn store_profile_ssh_key_passphrase(
+    profile_id: &str,
+    passphrase: &str,
+) -> Result<(), SecretError> {
+    duck_platform::secret::set(&profile_ssh_key_secret_key(profile_id), passphrase)
+}
+
+/// 读传输档案的 SSH 私钥口令；未存过是 `Ok(None)`。
+pub fn load_profile_ssh_key_passphrase(profile_id: &str) -> Result<Option<String>, SecretError> {
+    duck_platform::secret::get(&profile_ssh_key_secret_key(profile_id))
+}
+
+/// 删传输档案的 SSH 私钥口令（幂等）。
+pub fn delete_profile_ssh_key_passphrase(profile_id: &str) -> Result<(), SecretError> {
+    duck_platform::secret::delete(&profile_ssh_key_secret_key(profile_id))
 }
 
 /// 代理口令键名（与数据库 / SSH 口令都分开存）。
@@ -637,6 +1026,12 @@ mod tests {
             user: "duck".into(),
             database: "toolbox".into(),
             tls: TlsMode::Trust,
+            auth_mode: AuthMode::ConnectionString,
+            connection_string: Some("postgresql://duck@127.0.0.1/toolbox".into()),
+            ca_cert_path: Some("/etc/ca.pem".into()),
+            client_cert_path: Some("/etc/client.pem".into()),
+            client_key_path: Some("/etc/client.key".into()),
+            visible_databases: Some(vec!["toolbox".into(), "analytics".into()]),
             env_tag: EnvTag::Prod,
             group: Some("默认".into()),
             ssh_tunnel: Some(SshTunnelConfig {
@@ -644,6 +1039,8 @@ mod tests {
                 port: Some(2222),
                 user: "duck".into(),
                 remote_host: "db.internal".into(),
+                auth_method: crate::config::SshAuthMethod::KeyAndPassword,
+                key_path: Some("~/.ssh/id_ed25519".into()),
             }),
             default_timeout_secs: Some(120),
             read_only: true,
@@ -676,6 +1073,11 @@ mod tests {
                 profile: Some("default".into()),
             }),
             tunnel_profile: Some("tunnel-1".into()),
+            driver: Some("oracle".into()),
+            profile: Some("oracle".into()),
+            url_params: Some("auth=noSasl".into()),
+            gbase_server: Some("gbase01".into()),
+            informix_server: None,
         };
         let json = serde_json::to_string(&cfg).expect("序列化");
         let back: ConnectionConfig = serde_json::from_str(&json).expect("反序列化");
@@ -699,6 +1101,24 @@ mod tests {
         assert_eq!(old.tunnel_profile, None);
         assert_eq!(old.transport(), TransportKind::Direct);
         assert!(!old.has_incomplete_transport(), "缺字段不算「填不全」");
+        // 新一批字段（认证方式 / 连接串 / TLS 证书 / 库白名单）同样对旧存档隐身，
+        // 且缺省必须是「口令认证 / 不过滤」——不能让旧连接悄悄换行为。
+        assert_eq!(old.auth_mode, AuthMode::Password);
+        assert_eq!(old.connection_string, None);
+        assert_eq!(old.ca_cert_path, None);
+        assert_eq!(old.client_cert_path, None);
+        assert_eq!(old.client_key_path, None);
+        assert_eq!(old.visible_databases, None);
+        // 牌子与 URL 附参同样隐身：旧档案没有 `profile`，界面靠档位 + 驱动键自己推
+        //（推得出来就有、推不出来就按档位显示），绝不能凭空给一个牌子。
+        assert_eq!(old.profile, None);
+        assert_eq!(old.url_params, None);
+        let old_tunnel = old.ssh_tunnel.clone().unwrap_or_default();
+        assert_eq!(
+            old_tunnel.auth_method,
+            crate::config::SshAuthMethod::Password
+        );
+        assert_eq!(old_tunnel.key_path, None);
         // `0` 与 `None` 同义（都表示「未设置」）。
         assert_eq!(
             ConnectionConfig {
@@ -873,7 +1293,52 @@ mod tests {
         }
     }
 
-    /// 标识符引号：SQL 族分两档（反引号 / 双引号），两条非 SQL 引擎没有这个概念。
+    /// 认证方式的引擎可用性 + 连接串 / 私钥的校验口径。
+    #[test]
+    fn auth_modes_and_new_validation() {
+        // 每档 wire 名自解析。
+        for mode in AuthMode::ALL {
+            assert_eq!(AuthMode::from_wire(mode.wire_name()), mode);
+        }
+        // 可用性口径：连接串三家、API Key 只 ES、无认证三家。
+        assert!(AuthMode::Password.available_for(DatabaseKind::ClickHouse));
+        assert!(!AuthMode::ConnectionString.available_for(DatabaseKind::ClickHouse));
+        assert!(AuthMode::ConnectionString.available_for(DatabaseKind::Postgres));
+        assert!(AuthMode::ConnectionString.available_for(DatabaseKind::Mongo));
+        assert!(!AuthMode::ApiKey.available_for(DatabaseKind::Mysql));
+        assert!(AuthMode::ApiKey.available_for(DatabaseKind::Elasticsearch));
+        assert!(AuthMode::None_.available_for(DatabaseKind::Postgres));
+        assert!(!AuthMode::None_.available_for(DatabaseKind::SqlServer));
+
+        // 连接串模式缺串 → Config 错。
+        let mut cfg = ConnectionConfig {
+            id: "conn-cs".into(),
+            kind: DatabaseKind::Postgres,
+            host: "db.local".into(),
+            auth_mode: AuthMode::ConnectionString,
+            ..ConnectionConfig::default()
+        };
+        assert!(cfg.validate().is_err(), "空连接串应报错");
+        cfg.connection_string = Some("postgresql://u@db.local/db".into());
+        cfg.validate().expect("有串就放行");
+
+        // SSH 私钥两档缺钥匙路径 → Config 错；口令档不查钥匙。
+        cfg.auth_mode = AuthMode::Password;
+        cfg.ssh_tunnel = Some(SshTunnelConfig {
+            host: "bastion".into(),
+            user: "duck".into(),
+            auth_method: SshAuthMethod::Key,
+            ..SshTunnelConfig::default()
+        });
+        assert!(cfg.validate().is_err(), "私钥档缺路径应报错");
+        cfg.ssh_tunnel.as_mut().unwrap().key_path = Some("~/.ssh/id_ed25519".into());
+        cfg.validate().expect("给了路径就放行");
+        cfg.ssh_tunnel.as_mut().unwrap().auth_method = SshAuthMethod::Password;
+        cfg.validate().expect("口令档不查钥匙");
+    }
+
+    /// 标识符引号：SQL 族分两档（反引号 / 双引号），两条非 SQL 引擎没有这个概念，
+    /// agent 档**静态答不出**（要连上问对端，见 `Connection::identifier_quote`）。
     #[test]
     fn identifier_quote_is_per_engine() {
         assert_eq!(DatabaseKind::Mysql.identifier_quote(), Some('`'));
@@ -884,10 +1349,21 @@ mod tests {
         // 非 SQL 引擎：界面上「导出 INSERT / 生成 SELECT」这类 SQL 草稿项要对它们禁用。
         assert_eq!(DatabaseKind::Mongo.identifier_quote(), None);
         assert_eq!(DatabaseKind::Elasticsearch.identifier_quote(), None);
+        // ⚠️ agent 档也是 `None`，但那**不是**「非 SQL」的意思：它背后几十个引擎的引号
+        // 各不相同（`"` / `` ` ``），只有连上问对端才知道。要引号请走
+        // `Connection::identifier_quote()`（它对 agent 档会问真值）。
+        // 这条断言钉的是「静态那一层不猜」——猜错了不报错、只查错对象。
+        assert_eq!(DatabaseKind::Agent.identifier_quote(), None);
+        assert!(DatabaseKind::Agent.needs_driver_install());
     }
 
-    /// 分页续拉能力：只有四条 SQL 引擎支持；SQL Server（顺序不定）/ MongoDB /
+    /// 分页续拉能力：四条 SQL 引擎 + agent 档；SQL Server（顺序不定）/ MongoDB /
     /// Elasticsearch 一律不支持——界面与 `execute_paged` 都查这一个判据。
+    ///
+    /// ⚠️ agent 档判「支持」是**乐观**的：这一层只知道「这一轨有真游标这条路」，具不具备
+    /// 得连上问对端（[`crate::drivers::Connection::supports_paged_read`]）。乐观是对的——
+    /// 保守会让支持游标的驱动白白丢掉「加载更多」；反过来多出一个按钮，点下去是一条
+    /// 说清原因的错误。
     #[test]
     fn paged_read_is_only_for_four_sql_engines() {
         let supported: Vec<DatabaseKind> = DatabaseKind::ALL
@@ -906,5 +1382,9 @@ mod tests {
         assert!(!DatabaseKind::SqlServer.supports_paged_read());
         assert!(!DatabaseKind::Mongo.supports_paged_read());
         assert!(!DatabaseKind::Elasticsearch.supports_paged_read());
+        // agent 不在 `ALL`（那是**内建**七档）里，所以上面那份清单不含它——单独钉一句，
+        // 免得将来给人「agent 不支持分页」的错觉。
+        assert!(DatabaseKind::Agent.supports_paged_read());
+        assert!(!DatabaseKind::ALL.contains(&DatabaseKind::Agent));
     }
 }

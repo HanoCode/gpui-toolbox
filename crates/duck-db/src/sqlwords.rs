@@ -737,6 +737,11 @@ const ELASTICSEARCH_KEYWORDS: &[&str] = &[
 // ── 对外 API ────────────────────────────────────────────────────────────────
 
 /// 该引擎的查询语言。
+///
+/// ⚠️ **agent 档按 `Sql` 处理**：它背后几十个驱动里绝大多数是 SQL 引擎
+/// （Oracle / 达梦 / 金仓 / DB2 / Hive / Teradata / Snowflake …），少数不是
+/// （etcd / Kafka 这类 KV、消息队列）但它们的语句也不是 JSON 命令文档，归到
+/// Mongo / Elasticsearch 那两支只会更错。真正的分化在补全词表那一层（见 [`words`]）。
 #[must_use]
 pub const fn language(kind: DatabaseKind) -> QueryLanguage {
     match kind {
@@ -744,7 +749,8 @@ pub const fn language(kind: DatabaseKind) -> QueryLanguage {
         | DatabaseKind::Postgres
         | DatabaseKind::Mysql
         | DatabaseKind::ClickHouse
-        | DatabaseKind::SqlServer => QueryLanguage::Sql,
+        | DatabaseKind::SqlServer
+        | DatabaseKind::Agent => QueryLanguage::Sql,
         DatabaseKind::Mongo => QueryLanguage::Mongo,
         DatabaseKind::Elasticsearch => QueryLanguage::Elasticsearch,
     }
@@ -815,6 +821,17 @@ pub const fn words(kind: DatabaseKind) -> (SqlWords, SqlWords) {
             },
             SqlWords {
                 keywords: ELASTICSEARCH_KEYWORDS,
+                functions: &[],
+            },
+        ),
+        // agent 档只给**通用核心**、增量留空：背后是几十个方言各异的引擎，而这里只拿得到
+        // `DatabaseKind::Agent` 一个值。给通用核心是安全的（`SELECT` / `WHERE` / `JOIN` 这些
+        // 各家都认），挑一份方言增量则会让 Oracle 用户看到一堆 MySQL 函数名。
+        // 要做得更准，得先让 `Session` 把驱动键带下来，再按驱动取词表。
+        DatabaseKind::Agent => (
+            common_words(),
+            SqlWords {
+                keywords: &[],
                 functions: &[],
             },
         ),

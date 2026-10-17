@@ -229,6 +229,74 @@ impl CalendarDate {
     pub fn is_before(self, other: Self) -> bool {
         self < other
     }
+
+    /// ISO-8601 周编号的 `(周年, 周序)`。
+    ///
+    /// 规则只有一条：**这一周的周四落在哪一年，这一周就属于哪一年**。它带来了两个
+    /// 反直觉但正确的后果，也正是必须写成算法、不能「按 1 月 1 日算第几周」的原因：
+    ///
+    /// - `2026-01-01`（周四）属于 **2026-W01**；
+    /// - `2025-12-29`（周一）属于 **2026-W01**（不是 2025-W53）；
+    /// - `2027-01-01`（周五）属于 **2026-W53**。
+    ///
+    /// 全仓的「第几周」口径只有这一处实现（[`Self::week_key`] 包装它，周计划表用它做键）。
+    #[must_use]
+    pub fn iso_week(self) -> (i32, u32) {
+        // 本周的周四。它的年份就是周编号的年份。
+        let thursday = self.add_days(3 - self.weekday().index_from_monday());
+        let year = thursday.year();
+        // 该年第一个周四：1 月 1 日往后推到最近的周四（1 月 1 日自己是周四时就是它）。
+        let jan_first = Self {
+            year,
+            month: 1,
+            day: 1,
+        };
+        let first_thursday = jan_first.add_days((3 - jan_first.weekday().index_from_monday()) % 7);
+        // 两个周四之间正好差整数周，所以「隔了几周」是整除。
+        let week =
+            ((thursday.days_since_epoch() - first_thursday.days_since_epoch()) / 7 + 1) as u32;
+        (year, week)
+    }
+
+    /// ISO 周键：`YYYY-Www`（如 `2026-W42`）。周计划表的 `week_key` 就是这个形态。
+    ///
+    /// 文本序 == 时间序（周年定长 4 位、周序定长 2 位），所以 `ORDER BY week_key` 与
+    /// 日期列的 `ORDER BY due_date` 是同一个理由 —— 不用再存一列可排序的序号。
+    #[must_use]
+    pub fn week_key(self) -> String {
+        let (year, week) = self.iso_week();
+        format!("{year:04}-W{week:02}")
+    }
+
+    /// [`Self::week_key`] 的反函数：周键 → **该周的周一**。
+    ///
+    /// 返回周一而不是「该周任意一天」：周的所有运算（±7 天、取区间）都从周一起算，
+    /// 返回周中某天只会让调用方各自再 `start_of_week()` 一次。
+    ///
+    /// 严格解析：位数固定、`W` 必须是大写、周序 01–53。**并且校验回环** ——
+    /// `2026-W53` 本身语法合法（2026 年只有 52 周），反解会落到 2027-W01 的周一，
+    /// 回环对不上即判非法，所以不存在「语法对但年周不存在」的中间态。
+    #[must_use]
+    pub fn from_week_key(key: &str) -> Option<Self> {
+        let bytes = key.as_bytes();
+        if bytes.len() != 8 || bytes[4] != b'-' || bytes[5] != b'W' {
+            return None;
+        }
+        let year: i32 = key.get(0..4)?.parse().ok()?;
+        let week: u32 = key.get(6..8)?.parse().ok()?;
+        if week == 0 || week > 53 {
+            return None;
+        }
+        let jan_first = Self::new(year, 1, 1)?;
+        let first_thursday = jan_first.add_days((3 - jan_first.weekday().index_from_monday()) % 7);
+        // 第一周的周一是第一个周四往回三天。
+        let monday = first_thursday.add_days(-3 + (i64::from(week) - 1) * 7);
+        if monday.week_key() == key {
+            Some(monday)
+        } else {
+            None
+        }
+    }
 }
 
 impl std::fmt::Display for CalendarDate {
@@ -416,5 +484,72 @@ mod tests {
         let now = now_seconds();
         assert!(now > 1_577_836_800, "now_seconds() 太早：{now}");
         assert!(now < 4_102_444_800, "now_seconds() 太晚：{now}");
+    }
+
+    /// ISO 周编号的三个「反直觉但正确」的边界 —— 全指向同一条规则（周四年）。
+    #[test]
+    fn iso_week_follows_the_thursday_rule() {
+        // 2026-01-01 是周四 → 它就是 2026 年第 1 周的周四。
+        assert_eq!(date(2026, 1, 1).iso_week(), (2026, 1));
+        // 2025-12-29（周一）落在同一周里 → 属于 **2026**-W01。
+        assert_eq!(date(2025, 12, 29).iso_week(), (2026, 1));
+        assert_eq!(date(2025, 12, 28).iso_week(), (2025, 52));
+        // 2027-01-01 是周五，它所在周的周四还是 2026-12-31 → 2026-W53。
+        assert_eq!(date(2027, 1, 1).iso_week(), (2026, 53));
+        // 2026-10-14 是周三，与它同周的周四是 10-15。
+        assert_eq!(date(2026, 10, 14).iso_week(), (2026, 42));
+        assert_eq!(date(2026, 10, 12).iso_week(), (2026, 42), "周一与周四同周");
+    }
+
+    /// 周键与日期必须严格互逆，且非法键一律拒绝。
+    #[test]
+    fn week_key_round_trips_and_rejects_junk() {
+        let wed = date(2026, 10, 14);
+        assert_eq!(wed.week_key(), "2026-W42");
+        // 反解给出该周**周一**（不是原日期）。
+        let monday = CalendarDate::from_week_key("2026-W42").expect("合法周键");
+        assert_eq!(monday, date(2026, 10, 12));
+        assert_eq!(monday.weekday(), Weekday::Monday);
+        assert_eq!(monday.week_key(), "2026-W42");
+
+        // 跨年那一周的键：周一是 2025-12-29，键却是 2026-W01。
+        assert_eq!(date(2025, 12, 29).week_key(), "2026-W01");
+        assert_eq!(
+            CalendarDate::from_week_key("2026-W01"),
+            Some(date(2025, 12, 29))
+        );
+
+        // 整年逐周回环：每个日期的键都能反解回同一周。
+        let mut day = date(2024, 1, 1);
+        while day < date(2027, 1, 1) {
+            let key = day.week_key();
+            let monday = CalendarDate::from_week_key(&key).expect("自家生成的键必须能反解");
+            assert_eq!(monday.week_key(), key);
+            assert_eq!(monday, day.start_of_week());
+            day = day.add_days(1);
+        }
+
+        // 非法形态。
+        for junk in [
+            "",
+            "2026W42",
+            "2026-w42",
+            "2026-W4",
+            "2026-W004",
+            "2026-W00",
+            "2026-W54",
+            "26-W42",
+            "2026-W42 ",
+        ] {
+            assert!(
+                CalendarDate::from_week_key(junk).is_none(),
+                "{junk:?} 不该被当成合法周键"
+            );
+        }
+        // 语法对但年周不存在：2025 年只有 52 周（1 月 1 日是周三、又不是闰年）。
+        assert!(CalendarDate::from_week_key("2025-W53").is_none());
+        assert!(CalendarDate::from_week_key("2025-W52").is_some());
+        // 反例的另一半：2026 年**有** 53 周（1 月 1 日是周四），别把它一起拦掉。
+        assert!(CalendarDate::from_week_key("2026-W53").is_some());
     }
 }

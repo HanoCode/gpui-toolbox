@@ -24,7 +24,7 @@
 
 use std::sync::OnceLock;
 
-use duck_components::{content, meta_text};
+use duck_components::{content, meta_text, selectable_text};
 use duck_shell::AuxiliaryWindowView;
 use duck_theme::{active_theme, tr, trf};
 use gpui::{
@@ -241,7 +241,7 @@ impl Render for LicensesView {
                             .text_size(tokens.typography.xs.size)
                             .line_height(tokens.typography.xs.line_height)
                             .text_color(tokens.colors.foreground)
-                            .child(document()),
+                            .child(selectable_text(document())),
                     ),
             )
             .child(

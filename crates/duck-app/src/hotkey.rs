@@ -33,11 +33,13 @@ pub enum HotkeySlot {
     Launcher,
     /// 唤起「随手看」悬浮窗（`⌥⌘T`）。
     TaskFloat,
+    /// 唤起日历浮窗（`⌥⌘C`）。
+    CalendarFloat,
 }
 
 impl HotkeySlot {
     /// 全部槽位（装配时逐个登记，`dispatch` 与提示也按它遍历）。
-    pub const ALL: [Self; 2] = [Self::Launcher, Self::TaskFloat];
+    pub const ALL: [Self; 3] = [Self::Launcher, Self::TaskFloat, Self::CalendarFloat];
 
     /// 平台层的槽名。
     ///
@@ -46,6 +48,7 @@ impl HotkeySlot {
         match self {
             Self::Launcher => "launcher",
             Self::TaskFloat => "task_float",
+            Self::CalendarFloat => "calendar_float",
         }
     }
 
@@ -61,6 +64,11 @@ impl HotkeySlot {
                 "float_hotkey",
                 "float_hotkey_failure_announced",
             ),
+            Self::CalendarFloat => (
+                "calendar_hotkey_enabled",
+                "calendar_hotkey",
+                "calendar_hotkey_failure_announced",
+            ),
         }
     }
 
@@ -69,6 +77,7 @@ impl HotkeySlot {
         match self {
             Self::Launcher => duck_platform::LAUNCHER_HOTKEY_SPEC,
             Self::TaskFloat => duck_platform::FLOAT_HOTKEY_SPEC,
+            Self::CalendarFloat => duck_platform::CALENDAR_HOTKEY_SPEC,
         }
     }
 
@@ -80,6 +89,7 @@ impl HotkeySlot {
         match self {
             Self::Launcher => 0,
             Self::TaskFloat => 1,
+            Self::CalendarFloat => 2,
         }
     }
 
@@ -88,6 +98,7 @@ impl HotkeySlot {
         match self {
             Self::Launcher => tr(cx, "唤起命令面板").into(),
             Self::TaskFloat => tr(cx, "打开「随手看」").into(),
+            Self::CalendarFloat => tr(cx, "打开日历浮窗").into(),
         }
     }
 
@@ -158,6 +169,7 @@ fn dispatch(slot: HotkeySlot, cx: &mut App) {
     match slot {
         HotkeySlot::Launcher => crate::app::toggle_launcher(cx),
         HotkeySlot::TaskFloat => crate::app::toggle_task_float(cx),
+        HotkeySlot::CalendarFloat => crate::app::toggle_calendar_float(cx),
     }
 }
 
@@ -337,7 +349,7 @@ mod tests {
     fn the_slot_table_is_consistent() {
         assert_eq!(
             HotkeySlot::ALL.len(),
-            2,
+            3,
             "槽位数变了：请连带核对设置页的数组与 `index()`"
         );
         let mut names = HashSet::new();

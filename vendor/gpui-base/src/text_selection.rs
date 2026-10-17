@@ -844,6 +844,15 @@ impl TextSelectionHandle {
         self.0.update(cx, |state, _| state.update_runs(runs))
     }
 
+    /// DUCK PATCH（2026-10-16）：本参与者自己的拷贝投影，供
+    /// `SelectableText::paint` 判断「这一帧我这份变了没」。
+    ///
+    /// 刻意**不是**全窗口聚合（`TextSelection::selected_text`）：后者会 clone
+    /// 每个参与者的选中子串，每 run 每帧调一次就是 O(runs × 选中长度)。
+    pub fn projected_copy_text(&self, cx: &App) -> Option<String> {
+        self.0.read(cx).projected_copy_text.clone()
+    }
+
     // Rich text renders its own selection; retain geometry only for word hit testing.
     pub(crate) fn set_hit_test_runs(&self, runs: &[TextSelectionRun], cx: &mut App) {
         self.0.update(cx, |state, _| state.runs = runs.to_vec());

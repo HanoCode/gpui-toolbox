@@ -70,7 +70,8 @@ use duck_components::{
     },
     dialog_footer, dialog_top_offset, dropdown_select, field_hint, field_label, form_gap,
     icon_button, icon_button_tip, icon_text_button, meta_text, modal_drag, modal_drag_area,
-    modal_offset, modal_title_row, notify, sidebar_navigation_button, tabular_numbers, title_text,
+    modal_offset, modal_title_row, notify, segmented_tabs, selectable_text,
+    selectable_text_with_id, sidebar_navigation_button, tabular_numbers, title_text,
     toolbar_action_button, toolbar_dropdown_button, toolbar_text_dropdown_button,
 };
 // 结果网格的行模式：公共数据表组件（行虚拟化 + 固定列头 + 列宽拖拽 + 就地编辑槽）。
@@ -82,12 +83,14 @@ use duck_components::data_table::{
 };
 use duck_db::ai::{AiAction, build_action_prompt};
 use duck_db::config::{
-    ConnectionConfig, DatabaseKind, EnvTag, SshTunnelConfig, TlsMode, TransportKind,
-    delete_password, delete_profile_proxy_password, delete_profile_ssh_password,
-    delete_proxy_password, delete_ssh_password, load_password, load_profile_proxy_password,
-    load_profile_ssh_password, load_proxy_password, load_ssh_password, store_password,
-    store_profile_proxy_password, store_profile_ssh_password, store_proxy_password,
-    store_ssh_password,
+    AuthMode, ConnectionConfig, DatabaseKind, EnvTag, SshAuthMethod, SshTunnelConfig, TlsMode,
+    TransportKind, delete_password, delete_profile_proxy_password,
+    delete_profile_ssh_key_passphrase, delete_profile_ssh_password, delete_proxy_password,
+    delete_ssh_key_passphrase, delete_ssh_password, load_password, load_profile_proxy_password,
+    load_profile_ssh_key_passphrase, load_profile_ssh_password, load_proxy_password,
+    load_ssh_key_passphrase, load_ssh_password, store_password, store_profile_proxy_password,
+    store_profile_ssh_key_passphrase, store_profile_ssh_password, store_proxy_password,
+    store_ssh_key_passphrase, store_ssh_password,
 };
 use duck_db::drivers::CellEdit;
 use duck_db::import::import_third_party;
@@ -109,11 +112,18 @@ use duck_db::{
     Value, covers_columns, edit_target, execute_sql_file, fingerprint, parse_csv, parse_plan,
     quote_identifier, quote_qualified, run_hook, run_phase, tsv_field,
 };
+use duck_drivers::registry::DriverRegistry;
+use duck_drivers::{
+    CancelFlag, DownloadSource, DriverEntry, DriverEvent, DriverStore, EventSink, InstalledDriver,
+    ProgressStep,
+};
+// 选择器里有一张卡是**指路**而不是连库（Redis 有自己的页）：切路由要 `RouteId`。
+use duck_shell::RouteId;
 use duck_theme::{UnderMinute, active_theme, tr, tr_relative_time, trf, trn};
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClickEvent, Context, CursorStyle, DismissEvent,
     Empty, Entity, FocusHandle, Focusable as _, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyBinding, MouseButton, ParentElement, Render, Role, ScrollHandle, SharedString,
+    KeyBinding, MouseButton, ParentElement, Pixels, Render, Role, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Task, Toggled, WeakEntity, Window,
     actions, div, prelude::FluentBuilder as _, px, relative, uniform_list,
 };
@@ -122,7 +132,10 @@ use gpui_component::{
     chart::{AreaChart, BarChart, LineChart, PieChart},
     dialog::{DialogButtonProps, DialogFooter},
     h_flex,
-    input::{CompletionProvider, Editor, EditorState, Input, InputEvent, InputState, Rope},
+    input::{
+        CompletionProvider, Editor, EditorState, Input, InputEvent, InputState, Rope, Textarea,
+        TextareaState,
+    },
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     resizable_panel,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
@@ -136,6 +149,8 @@ use serde::{Deserialize, Serialize};
 
 // 审计条目按 `AuditEntry` 的链式构造器拼（语句级事件要带指纹与耗时）。
 use crate::audit::AuditEntry;
+// Redis 那张卡点下去是**切路由**（`PickerTarget::Page`），本页不接它的表单。
+use crate::pages::REDIS_ROUTE;
 
 /// 可搜索下拉（gpui-component `Select`）的选项条目：`value` 是回传的稳定值，
 /// `label` 是展示文案（列名清单里两者相同；解耦字段留给未来的展示修饰）。
@@ -161,13 +176,18 @@ impl SelectItem for DbSelectOption {
 pub(super) type DbSelectState = SelectState<SearchableVec<DbSelectOption>>;
 
 mod ai;
+mod brands;
 mod browse;
+// 品牌表本体（由 `scripts/gen_brands.py` 生成）。只服务 `brands.rs`，
+// 所以不带 `pub`、也不在这里转出名字。
+mod brands_gen;
 mod builder;
 mod charts;
 mod charts_plot;
 mod compare;
 mod completion;
 mod connect;
+mod drivers;
 mod er;
 mod grid;
 mod helpers;
@@ -189,12 +209,14 @@ mod tunnel;
 // `pages::redis`）。只有 `impl` 块、没有自由函数的子模块（`ai` / `completion` / `query` /
 // `session` / `render_editor` / `render_sidebar` / `render_tabs` / `shell`）无需转出；
 // `grid` 的自由函数（执行计划树）只在它自己内部用，也不转出。
+use self::brands::*;
 use self::browse::*;
 use self::builder::*;
 use self::charts::*;
 use self::charts_plot::*;
 use self::compare::*;
 use self::connect::*;
+use self::drivers::*;
 use self::er::*;
 use self::helpers::*;
 use self::hooks::*;
@@ -228,6 +250,18 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_TIMEOUT_SECS: u64 = 3600;
 /// SQL 编辑器可拖拽的高度档位（下边框把手）。
 const SQL_EDITOR_HEIGHT_RANGE: std::ops::RangeInclusive<f32> = 72.0..=520.0;
+/// 表结构页「编辑面」的初始高度。
+///
+/// 只是一份**首帧起点**：之后高度由 [`ResizableState`] 记着用户拖出来的值（并按容器
+/// 伸缩等比调整），见 `render_structure_page` 的上下分栏 —— 与「SQL 编辑器 / 结果区」
+/// 同一条机制。取 340px 是把默认天平往 SQL 预览那边压一压：字段网格两三分屏就能
+/// 编辑，而预览要放得下整段 DDL / ALTER 才叫「预览」（原来它被压在 `max_h(200)`
+/// 里，只剩一条缝）。
+const STRUCTURE_EDITOR_INITIAL_HEIGHT: f32 = 340.;
+/// 结构页编辑面的可拖拽高度档位（下边框把手）。
+const STRUCTURE_EDITOR_HEIGHT_RANGE: std::ops::RangeInclusive<f32> = 160.0..=900.0;
+/// 结构页 SQL 预览的可拖拽高度档位（留得住一行语句，也容得下长 DDL）。
+const STRUCTURE_PREVIEW_HEIGHT_RANGE: std::ops::RangeInclusive<f32> = 120.0..=700.0;
 /// 网格行高：与 `typography.sm` 的 18px 行高同源，行内文字不再压缩。
 const GRID_ROW_HEIGHT: f32 = 24.;
 /// 网格**列头**行高：两行（列名 + 类型），对齐设计稿的 `colhead`。
@@ -325,10 +359,19 @@ const SQL_FILE_NAME_WIDTH: f32 = 140.;
 const PICKER_WIDTH: f32 = 720.;
 /// 驱动卡片网格列数（弹窗宽度固定，3 列对齐 dbflux 的密度）。
 const PICKER_COLUMNS: usize = 3;
-/// 驱动选择弹窗卡片网格的最大高度。
-const PICKER_GRID_MAX_HEIGHT: f32 = 460.;
+/// 驱动选择弹窗**分类侧栏**的宽度：九档中文标签一行放得下的最窄值。
+const PICKER_RAIL_WIDTH: f32 = 132.;
 /// 连接详情弹窗（picker 的子页）宽度。
 const EDIT_DIALOG_WIDTH: f32 = 720.;
+/// 「选择显示数据库」弹窗宽度：单列勾选清单，比详情弹窗窄一档。
+const VISIBLE_DBS_DIALOG_WIDTH: f32 = 480.;
+/// 「选择显示数据库」弹窗清单的最大高度；超出后清单自身滚动（标题与脚注常驻）。
+const VISIBLE_DBS_LIST_MAX_HEIGHT: f32 = 360.;
+/// 连接表单的四页签（dbx 同形：连接信息 / TLS/SSL / 隧道/代理 / 高级）。
+///
+/// ⚠️ 顺序即界面顺序；「TLS/SSL」「隧道/代理」两页签**仅网络引擎显示**（文件型
+/// 引擎没有这两层），显示数变化时调用方把下标夹回可用范围。
+const FORM_TABS: [&str; 4] = ["连接信息", "TLS/SSL", "隧道/代理", "高级"];
 /// 详情弹窗正文的最大高度；超出后正文自身滚动（头部与脚注常驻）。
 const EDIT_DIALOG_BODY_MAX_HEIGHT: f32 = 540.;
 /// 「新建分组」提示弹窗宽度：正文只有一行输入，比常规确认弹窗窄一档。
@@ -454,37 +497,77 @@ pub(crate) fn bind_keys(cx: &mut App) {
     ]);
 }
 
-// ── 驱动选择器（dbflux 同形：分区 + 品牌卡片网格）────────────────────────────
+// ── 驱动选择器（dbx 同形：分类侧栏 + 品牌卡片网格）────────────────────────────
 
-/// 驱动选择器的分区。
+/// 驱动选择器的分类（**九档，对齐 dbx 与驱动注册表**）。
+///
+/// ⚠️ 这九档与 `duck_drivers` 清单里的 `category` 是**同一套词表**（清单本来就是
+/// 从 dbx 生成的）：侧栏直接按它分档，agent 驱动的归属就不再需要一层映射；
+/// 手写卡（内建七档 + 指路 / 未支持）各自固定归一档，见 [`PICKER_DRIVERS`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PickerSection {
-    Relational,
+    /// 关系型数据库。
+    Sql,
+    /// 数仓分析。
+    Analytics,
+    /// 国产数据库。
+    Domestic,
+    /// 轻量数据库。
+    Lightweight,
+    /// 文档 / 缓存 / 检索。
     Document,
-    KeyValue,
-    TimeSeriesAndLogs,
-    Search,
+    /// 图谱 / 向量。
+    GraphAi,
+    /// 时序数据库。
+    TimeSeries,
+    /// 消息队列。
+    Mq,
+    /// 注册与配置。
+    RegistryConfig,
 }
 
-/// 分区展示顺序（dbflux 同序；无卡的分区不出现在界面）。
+/// 分类展示顺序（dbx 同序；无卡的分类不出现在侧栏）。
 const PICKER_SECTIONS: &[PickerSection] = &[
-    PickerSection::Relational,
+    PickerSection::Sql,
+    PickerSection::Analytics,
+    PickerSection::Domestic,
+    PickerSection::Lightweight,
     PickerSection::Document,
-    PickerSection::KeyValue,
-    PickerSection::TimeSeriesAndLogs,
-    PickerSection::Search,
+    PickerSection::GraphAi,
+    PickerSection::TimeSeries,
+    PickerSection::Mq,
+    PickerSection::RegistryConfig,
 ];
 
 impl PickerSection {
     fn label(self, cx: &App) -> SharedString {
         let label = match self {
-            Self::Relational => tr(cx, "关系型"),
-            Self::Document => tr(cx, "文档"),
-            Self::KeyValue => tr(cx, "键值"),
-            Self::TimeSeriesAndLogs => tr(cx, "时间序列和日志"),
-            Self::Search => tr(cx, "搜索"),
+            Self::Sql => tr(cx, "关系型数据库"),
+            Self::Analytics => tr(cx, "数仓分析"),
+            Self::Domestic => tr(cx, "国产数据库"),
+            Self::Lightweight => tr(cx, "轻量数据库"),
+            Self::Document => tr(cx, "文档/缓存/检索"),
+            Self::GraphAi => tr(cx, "图谱/向量"),
+            Self::TimeSeries => tr(cx, "时序数据库"),
+            Self::Mq => tr(cx, "消息队列"),
+            Self::RegistryConfig => tr(cx, "注册与配置"),
         };
         SharedString::from(label)
+    }
+
+    /// 驱动清单里的分类 → 选择器分类（同一套词表，只兜底未知值）。
+    fn of_category(category: &str) -> Self {
+        match category {
+            "analytics" => Self::Analytics,
+            "domestic" => Self::Domestic,
+            "lightweight" => Self::Lightweight,
+            "document" => Self::Document,
+            "graph_ai" => Self::GraphAi,
+            "timeseries" => Self::TimeSeries,
+            "mq" => Self::Mq,
+            "registry_config" => Self::RegistryConfig,
+            _ => Self::Sql,
+        }
     }
 }
 
@@ -496,8 +579,52 @@ struct PickerDriver {
     /// 卡片第二行的短提示（`:5432` / `file`，dbflux 同法）。
     hint: &'static str,
     section: PickerSection,
-    /// M1 支持的引擎携带真实的 [`DatabaseKind`]；其余为占位展示。
-    kind: Option<DatabaseKind>,
+    /// 选中它之后进哪条路。
+    target: PickerTarget,
+}
+
+/// 选中一张卡之后开什么。
+///
+/// 做成一枚举而不是「`kind: Option<DatabaseKind>` + 另一个 `driver` 字段」：
+/// 那两个字段是有**约束**的（驱动键只对 agent 档有意义，其余两档必须为空），
+/// 用枚举让编译器替我们守着，比在构造函数里写一句注释可靠。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerTarget {
+    /// 内建七档之一。
+    ///
+    /// 一张卡落在这一档**不代表**它的牌子就是那个变体的名字：MariaDB 是
+    /// [`DatabaseKind::Mysql`]、Redshift 是 [`DatabaseKind::Postgres`] —— 它们各自
+    /// 拥有同一个线协议，差别在服务端。品牌留在卡片上，档案里存的是引擎档位
+    /// （dbx 同法：`profiles/catalog.yaml` 给 MariaDB 的 `dbType` 就是 `mysql`）。
+    Builtin(DatabaseKind),
+    /// **子进程（agent）档**：档位恒为 [`DatabaseKind::Agent`]，谁是引擎看这个键
+    /// （[`duck_drivers::DriverEntry::key`]）。
+    Agent(&'static str),
+    /// **切到另一条路由**：本页没有它的连接形态，但它在本仓别处有完整的页。
+    ///
+    /// 只有 Redis 一条（`pages::redis`，⌘5）。它自有一套档案 / 会话 / 命令台，
+    /// 而且没有 schema 树（dbx 的 `redis.yaml` 里 `metadataBrowse: false`）——
+    /// 那是一棵永远空的树，不是「连上了但没对象」。所以这里**指路**而不是硬塞进
+    /// 本页的 SQL 表单：进去了也只会开出一个 `SELECT` 发不出去的空壳。
+    Page(RouteId),
+    /// **品牌表里的一条**（`brands`）：一个牌子（可能带多个模式）走内建协议或 agent 轨。
+    ///
+    /// 与 [`Self::Builtin`] / [`Self::Agent`] 的区别是**粒度**：那两个表达「走哪条路」，
+    /// 这一档表达「哪个牌子」。`mysql` 协议下站着 12 个牌子（MySQL / MariaDB / TiDB /
+    /// OceanBase / Doris / StarRocks …），各自端口与账号都不一样；模式族
+    /// （OceanBase 的 MySQL / Oracle 模式）也靠它带出切换器。
+    Brand(&'static Brand),
+    /// 本应用还不支持的目标：点了只提示「即将到来」，不进表单。
+    ///
+    /// ⚠️ 这个分支**必须留着**：选择器里那些卡片是照着 dbx 的品牌墙列出来的，
+    /// 我们没实现的目标要么老实标「即将到来」，要么就得从墙上删掉 ——
+    /// 让它点进去开一个跑不通的连表单才是错的。
+    ///
+    /// 现在还剩下两条，成因**各不相同**（都在 `PICKER_DRIVERS` 各自的注释里）：
+    /// DynamoDB 要 AWS 签名加一份新引擎；InfluxDB 连可下的工件都没有。
+    /// （DuckDB 曾经也在这条里 —— 它的 worker 说的是另一套 NDJSON 协议。那套协议
+    /// 现已接上，见 `duck-db` 的 `drivers::duckdb`。）
+    Unsupported,
 }
 
 const PICKER_DRIVERS: &[PickerDriver] = &[
@@ -506,72 +633,93 @@ const PICKER_DRIVERS: &[PickerDriver] = &[
         name: "PostgreSQL",
         logo: DatabaseLogo::Postgres,
         hint: ":5432",
-        section: PickerSection::Relational,
-        kind: Some(DatabaseKind::Postgres),
+        section: PickerSection::Sql,
+        target: PickerTarget::Builtin(DatabaseKind::Postgres),
     },
     PickerDriver {
         id: "mysql",
         name: "MySQL",
         logo: DatabaseLogo::Mysql,
         hint: ":3306",
-        section: PickerSection::Relational,
-        kind: Some(DatabaseKind::Mysql),
+        section: PickerSection::Sql,
+        target: PickerTarget::Builtin(DatabaseKind::Mysql),
     },
     PickerDriver {
         id: "mariadb",
         name: "MariaDB",
         logo: DatabaseLogo::Mariadb,
-        hint: ":3306",
-        section: PickerSection::Relational,
-        kind: None,
+        // 端口后面的词是**协议**，不是引擎名：它告诉用户点下去会开哪一档表单。
+        hint: ":3306 MySQL",
+        section: PickerSection::Sql,
+        // MariaDB 是 MySQL 的分支，**同一个线协议** —— 连表单里除了惯用账号没有第二处
+        // 与 MySQL 不同。dbx 就这么归（`profiles/catalog.yaml` 里 `id: mariadb` 的
+        // `dbType` 是 `mysql`，只换图标与标签），dbflux 更直接：「One crate implements
+        // both」（其 `docs/DRIVERS.md`）。所以这张卡**不是**「即将到来」，
+        // 它只是同一档引擎的另一个牌子。
+        target: PickerTarget::Builtin(DatabaseKind::Mysql),
     },
     PickerDriver {
         id: "sqlserver",
         name: "SQL Server",
         logo: DatabaseLogo::Sqlserver,
         hint: ":1433",
-        section: PickerSection::Relational,
-        kind: Some(DatabaseKind::SqlServer),
+        section: PickerSection::Sql,
+        target: PickerTarget::Builtin(DatabaseKind::SqlServer),
     },
     PickerDriver {
         id: "sqlite",
         name: "SQLite",
         logo: DatabaseLogo::Sqlite,
         hint: "file",
-        section: PickerSection::Relational,
-        kind: Some(DatabaseKind::Sqlite),
+        section: PickerSection::Lightweight,
+        target: PickerTarget::Builtin(DatabaseKind::Sqlite),
     },
     PickerDriver {
         id: "redshift",
         name: "Amazon Redshift",
         logo: DatabaseLogo::Redshift,
-        hint: ":5439",
-        section: PickerSection::Relational,
-        kind: None,
+        hint: ":5439 PostgreSQL",
+        section: PickerSection::Analytics,
+        // Redshift 走 **PostgreSQL 线协议**：dbx 的 `redshift.yaml` 写着
+        // `pgLikeStructure: true`（`dialect: Redshift`、端口 5439），dbflux 的说明
+        // 也是「Read-only over the PostgreSQL wire protocol」。所以内建那一档直接
+        // 就能连。差别只在**能力面**（Redshift 只读、单语句、没有 DDL / 索引），
+        // 那是引擎侧该按方言裁的事，不该在「选一张卡」这一步拦人。
+        target: PickerTarget::Builtin(DatabaseKind::Postgres),
     },
     PickerDriver {
         id: "clickhouse",
         name: "ClickHouse",
         logo: DatabaseLogo::Clickhouse,
         hint: ":8123",
-        section: PickerSection::Relational,
-        kind: Some(DatabaseKind::ClickHouse),
+        section: PickerSection::Analytics,
+        target: PickerTarget::Builtin(DatabaseKind::ClickHouse),
     },
     PickerDriver {
         id: "oracle",
         name: "Oracle",
         logo: DatabaseLogo::Oracle,
         hint: ":1521",
-        section: PickerSection::Relational,
-        kind: None,
+        section: PickerSection::Sql,
+        // Oracle 走**子进程（agent）轨**的官方驱动进程 —— 本仓没有 Oracle 的原生 Rust
+        // 驱动，协议也不是能自己实现的体量（[`duck_db_agent`] 就是为这类库准备的）。
+        target: PickerTarget::Agent("oracle"),
     },
     PickerDriver {
         id: "duckdb",
         name: "DuckDB",
         logo: DatabaseLogo::Duckdb,
         hint: "file",
-        section: PickerSection::Relational,
-        kind: None,
+        section: PickerSection::Lightweight,
+        // 工件从驱动商店装（dbx 注册表里六平台齐全），但**协议不是 agent 轨那套
+        // JSON-RPC**：worker 说 `duckdb_worker_protocol`（`{id, method, params}` →
+        // `{id, ok, result|error}`，没有 `jsonrpc` 字段、id 是字符串），动词也小一号
+        // （没有 `list_indexes` / `list_triggers`），连的是 `{path}` 而不是 host/port。
+        //
+        // 所以这一档在**引擎实现**上另立一条（`duck-db` 的 `drivers::duckdb`，不在
+        // `agent.rs` 里塞分支），在**档案形态**上仍是 agent 档（驱动键 `duckdb`）：
+        // 判据只看驱动键，不看 `runtime_mode`。表单按「文件型引擎」画（只有路径一格）。
+        target: PickerTarget::Agent("duckdb"),
     },
     PickerDriver {
         id: "mongodb",
@@ -579,7 +727,7 @@ const PICKER_DRIVERS: &[PickerDriver] = &[
         logo: DatabaseLogo::Mongodb,
         hint: ":27017",
         section: PickerSection::Document,
-        kind: Some(DatabaseKind::Mongo),
+        target: PickerTarget::Builtin(DatabaseKind::Mongo),
     },
     PickerDriver {
         id: "dynamodb",
@@ -587,33 +735,309 @@ const PICKER_DRIVERS: &[PickerDriver] = &[
         logo: DatabaseLogo::Dynamodb,
         hint: "AWS",
         section: PickerSection::Document,
-        kind: None,
+        // 还没做，而且**不是**补个映射就有的那种：它要一套 AWS 签名（region / profile /
+        // endpoint）与一份按命令走的引擎（dbflux 用的是 `aws-sdk-dynamodb`，
+        // `scan`/`query`/`put`/`update`/`delete`，连查询语言都是它自己的
+        // `Custom("DynamoDB")`）。注册表里也没有它的工件 —— 这条路只能自己写。
+        target: PickerTarget::Unsupported,
     },
     PickerDriver {
         id: "redis",
         name: "Redis",
         logo: DatabaseLogo::Redis,
         hint: ":6379",
-        section: PickerSection::KeyValue,
-        kind: None,
+        section: PickerSection::Document,
+        // Redis 在本仓**有自己的页**（`pages::redis`，⌘5）和独立内核 `duck-redis`，
+        // 所以这张卡点下去是**指路**、不是「即将到来」。不把它接进本页还有一个更硬的
+        // 理由：它没有 schema 树（dbx 的 `redis.yaml`：`metadataBrowse: false`），
+        // 本页的左栏对它会是一棵永远空的树。
+        target: PickerTarget::Page(REDIS_ROUTE),
     },
     PickerDriver {
         id: "influxdb",
         name: "InfluxDB",
         logo: DatabaseLogo::Influxdb,
         hint: ":8086",
-        section: PickerSection::TimeSeriesAndLogs,
-        kind: None,
+        section: PickerSection::TimeSeries,
+        // 三条里最「够不着」的一条：dbx 把它挂在 agent 轨上（`influxdb.yaml`：
+        // `runtimeMode: agent`、`agentKey: influxdb`），但**同一份 yaml 又写着
+        // `driverStoreVisible: false`** —— 它从商店里装不出来，`agents/drivers/` 下也
+        // 没有 influxdb 这个 crate，远端注册表的 55 条里同样没有它。
+        // 换句话说：没有工件可下，只能自己写一份（dbflux 是用一个 crate 同时做 v1/v2）。
+        target: PickerTarget::Unsupported,
     },
     PickerDriver {
         id: "elasticsearch",
         name: "Elasticsearch",
         logo: DatabaseLogo::Elasticsearch,
         hint: ":9200",
-        section: PickerSection::Search,
-        kind: Some(DatabaseKind::Elasticsearch),
+        section: PickerSection::Document,
+        target: PickerTarget::Builtin(DatabaseKind::Elasticsearch),
     },
 ];
+
+/// 选择器里的一张卡片 —— **两个来源**。
+///
+/// 为什么不把手写的那 14 张和驱动清单合并成一份静态表：两者的**来源性质不同**。
+/// 手写的那些是「本仓内建七档 + 几个我们明确还不支持的目标」（照着 dbx 的品牌墙排的，
+/// 顺序与措辞是界面决定）；清单那些是**数据**（`duck-drivers` 从 dbx 生成，随时会跟着上游变）。
+/// 混进一张静态表就得在生成器里维护界面顺序，改一次上游就冲突一次。
+enum PickerCard {
+    /// 手写的那几张（含 [`PickerTarget::Unsupported`] 的「即将到来」）。
+    Curated(&'static PickerDriver),
+    /// 驱动清单里的一条：**agent 档**，点进去还要先装驱动。
+    Agent(&'static DriverEntry),
+    /// 品牌表里的一条：**一个牌子一张卡**（模式族由表单里的切换器展开）。
+    ///
+    /// 它补的是另外两档都表达不了的粒度 —— 「同一个协议下的不同牌子」
+    /// （MySQL / MariaDB / TiDB / OceanBase…）与「同一个牌子的多种模式」。
+    Brand(&'static Brand),
+}
+
+impl PickerCard {
+    /// 元素 id（也是搜索与去重的键）。
+    ///
+    /// ⚠️ 品牌卡用**族 id**：一族（OceanBase 的 MySQL / Oracle 模式）只占墙上的一格，
+    /// 点进去再用切换器换模式。用品牌键会让同一个牌子的两种模式各占一格。
+    fn id(&self) -> &'static str {
+        match self {
+            Self::Curated(driver) => driver.id,
+            Self::Agent(entry) => entry.key,
+            Self::Brand(brand) => brand.family,
+        }
+    }
+
+    fn section(&self) -> PickerSection {
+        match self {
+            Self::Curated(driver) => driver.section,
+            Self::Agent(entry) => PickerSection::of_category(entry.category),
+            // 品牌卡按它的档位归：内建协议走 `DatabaseKind` 的分类，
+            // agent 轨走驱动清单的分类 —— 与另外两档同一套直觉。
+            Self::Brand(brand) => match brand.driver().and_then(duck_drivers::catalog::entry) {
+                Some(entry) => PickerSection::of_category(entry.category),
+                None => match brand.kind() {
+                    DatabaseKind::Mongo | DatabaseKind::Elasticsearch => PickerSection::Document,
+                    _ => PickerSection::Sql,
+                },
+            },
+        }
+    }
+
+    /// 卡片上的名字。手写的那些是 ASCII 品牌名（不进 i18n 表），另外两档是中文源串
+    /// （要过 `tr`）—— 两种来源的约定不同，所以在这里收口，`render` 只管拿结果。
+    fn name(&self, cx: &App) -> SharedString {
+        match self {
+            Self::Curated(driver) => SharedString::from(driver.name),
+            Self::Agent(entry) => SharedString::from(tr(cx, entry.label)),
+            Self::Brand(brand) => SharedString::from(tr(cx, brand.label)),
+        }
+    }
+
+    /// 第二行的短提示：端口 / `file` / `AWS`。
+    ///
+    /// agent 档按**缺省端口**给（`:7654`）；清单里没有端口的那几条（云端 REST 端点）
+    /// 给分类名 —— 空着一行会让卡片看着像没加载完。
+    fn hint(&self, cx: &App) -> SharedString {
+        match self {
+            Self::Curated(driver) => SharedString::from(driver.hint),
+            Self::Agent(entry) => match entry.default_port {
+                Some(port) => SharedString::from(format!(":{port}")),
+                None => SharedString::from(tr(cx, duck_drivers::category_label_of(entry.category))),
+            },
+            // 品牌卡：端口 + 模式数（`:2883 · 2 种模式`）—— 后半截是这一档独有的信息，
+            // 它告诉用户「这张卡点进去还要选一次」。
+            //
+            // ⚠️ 占位符只有 `{}` 这一种（`trf` → `fill` 逐个替换 `{}`，不认具名占位符）：
+            // 写成 `{port}` / `{n}` 会被**原样打印**出来，而且编译期不报错。
+            Self::Brand(brand) => {
+                let modes = brands::family_of(brand.key).len();
+                match brand.port {
+                    Some(port) if modes > 1 => SharedString::from(trf(
+                        cx,
+                        ":{} · {} 种模式",
+                        &[&port.to_string(), &modes.to_string()],
+                    )),
+                    Some(port) => SharedString::from(format!(":{port}")),
+                    None if modes > 1 => {
+                        SharedString::from(trf(cx, "{} 种模式", &[&modes.to_string()]))
+                    }
+                    None => SharedString::from(tr(cx, brand.kind().wire_name())),
+                }
+            }
+        }
+    }
+
+    /// 品牌图；`None` = 没有这张图（调用方回落主题单色图标）。
+    fn logo(&self) -> Option<DatabaseLogo> {
+        match self {
+            Self::Curated(driver) => Some(driver.logo),
+            Self::Agent(entry) => EngineRef::new(DatabaseKind::Agent, Some(entry.key)).logo(),
+            Self::Brand(brand) => brand.logo.or_else(|| {
+                brand
+                    .driver()
+                    .and_then(|key| EngineRef::new(DatabaseKind::Agent, Some(key)).logo())
+            }),
+        }
+    }
+
+    fn target(&self) -> PickerTarget {
+        match self {
+            // 手写卡的 id 多半**就是品牌键**（`mariadb` / `sqlserver` / `clickhouse` /
+            // `mysql` / `sqlite`），对得上就走品牌卡那条路 —— 否则点 MariaDB 会开出一张
+            // 标题写着「MySQL」的表单（那是它的线协议，不是它的名字），多模式品牌
+            // （Oracle 的 Thin / OCI）也带不出切换器。
+            //
+            // 对不上号的原样保留：`redshift` 的驱动是 native（本仓没有它的品牌）、
+            // `duckdb` / `dynamodb` / `influxdb` / `redis` 各有别的形态。
+            Self::Curated(driver) => {
+                curated_brand(driver.id).map_or(driver.target, PickerTarget::Brand)
+            }
+            Self::Agent(entry) => PickerTarget::Agent(entry.key),
+            Self::Brand(brand) => PickerTarget::Brand(brand),
+        }
+    }
+
+    /// 这张卡点下去**能不能真的连上**（墙上要不要弱化它 + 挂「未支持」角标）。
+    ///
+    /// 判据就是 [`PickerTarget::Unsupported`] 这一档，不另立一个布尔字段：卡片能不能连、
+    /// 点下去走哪条路、要不要标未支持，三件事说的是同一件事，分开写迟早分叉。
+    /// 走 [`PickerTarget::Page`] 的算支持 —— 它只是**在别处**支持（Redis 有自己的页）。
+    fn is_supported(&self) -> bool {
+        !matches!(self.target(), PickerTarget::Unsupported)
+    }
+
+    /// 命中过滤词（名称 / id / 提示，大小写不敏感）。`query` 由调用点**先小写化**。
+    fn matches(&self, query: &str) -> bool {
+        match self {
+            Self::Curated(driver) => driver_matches_query(driver, query),
+            Self::Agent(entry) => {
+                query.is_empty()
+                    || entry.label.to_lowercase().contains(query)
+                    || entry.key.to_lowercase().contains(query)
+                    || entry
+                        .default_port
+                        .is_some_and(|port| port.to_string().contains(query))
+            }
+            // 品牌卡还要命中原协议名（搜 `mysql` 该搜出 MariaDB 那张卡）。
+            Self::Brand(brand) => {
+                query.is_empty()
+                    || brand.label.to_lowercase().contains(query)
+                    || brand.key.to_lowercase().contains(query)
+                    || brand.family.to_lowercase().contains(query)
+                    || brand.driver.to_lowercase().contains(query)
+                    || brand
+                        .port
+                        .is_some_and(|port| port.to_string().contains(query))
+            }
+        }
+    }
+}
+
+/// 手写卡的 id ↔ 品牌表的键：**同一个产品的两种叫法**（`(手写 id, 品牌键)`）。
+///
+/// 手写卡的 id 是界面习惯（`postgresql`），品牌表的键是 dbx 品牌表里的那一栏
+/// （`postgres`）。两者在别处都对得上（`mysql` / `mariadb` / `sqlite` / `oracle` /
+/// `mongodb` / `clickhouse` 是同一个词），只有 PostgreSQL 这一对不一致 ——
+/// 不加这张表，墙上就会出现两张一模一样的卡片（一张手写、一张品牌），
+/// `picker_card_names_are_unique` 就是钉它。
+///
+/// ⚠️ 加手写卡时如果它的产品在品牌表里另有名字，**来这里补一行**：漏了的症状是
+/// 墙上多一张重复卡，而不是编译错误。
+const CURATED_BRAND_ALIAS: &[(&str, &str)] = &[("postgresql", "postgres")];
+
+/// 手写卡的 id → 品牌表里的那个牌子（对不上号时 `None`）。
+///
+/// 手写卡与品牌表是**两个来源**（前者是界面措辞，后者是数据），但两者常常说的是同一个
+/// 产品：`mariadb` / `mysql` / `sqlserver` / `sqlite` / `clickhouse` / `oracle` /
+/// `mongodb` 两边同名，`postgresql` 在品牌表里叫 `postgres`（见 [`CURATED_BRAND_ALIAS`]）。
+/// 认得出来的，手写卡就按品牌卡那条路走 —— 名字用品牌表的中文源串、多模式带出切换器。
+///
+/// 认不出来的就是**品牌表里没有的那些**：`redshift`（本仓没有它的驱动）、
+/// `duckdb` / `dynamodb` / `influxdb`（还不支持）、`redis`（本仓另有专页）。
+fn curated_brand(id: &str) -> Option<&'static Brand> {
+    brands::brand(id).or_else(|| {
+        CURATED_BRAND_ALIAS
+            .iter()
+            .find(|(card_id, _)| *card_id == id)
+            .and_then(|(_, brand_key)| brands::brand(brand_key))
+    })
+}
+
+/// 选择器要画的**全部**卡片：手写的几张 + 品牌表里该出卡的 + 驱动清单里能接成数据源的。
+///
+/// 三档各管一段，且**互不重叠**（去重规则见下）：
+///
+/// 1. **手写卡**（[`PICKER_DRIVERS`]）：内建七档的样板 + 本仓还不支持的那几个目标。
+///    措辞与顺序是界面决定，不是数据。
+/// 2. **品牌卡**（[`brands`]）：补「同一个协议下的不同牌子」——
+///    `mysql` 协议下站着 12 个牌子，档位表达不了，只能一个牌子一张卡。
+///    ⚠️ **一族一张**：OceanBase 的 MySQL / Oracle 模式共用一个卡片格，
+///    模式由表单里的切换器选（与 dbx 的 `switchOceanbaseMode` 同形）。
+/// 3. **agent 卡**（[`duck_drivers::agent_sources`]）：驱动清单里能接成数据源的那些，
+///    点进去还要先装驱动。
+///
+/// ⚠️ **两处必须同源**：第 3 档与驱动管理弹窗（`drivers.rs`）用的是同一个判据，
+/// 所以「选择器里点得进去」与「驱动商店里装得出来」一一对应。
+///
+/// ⚠️ 手写卡的 id 用的是**界面习惯的叫法**，品牌表用的是 **dbx 的品牌键** ——
+/// 两边对不上号时同一个产品会被画两张卡。见 [`curated_brand`]。
+fn picker_cards() -> Vec<PickerCard> {
+    let curated_ids: std::collections::HashSet<&str> =
+        PICKER_DRIVERS.iter().map(|driver| driver.id).collect();
+    let agent_keys: std::collections::HashSet<&str> = duck_drivers::agent_sources()
+        .map(|entry| entry.key)
+        .collect();
+    // 被手写卡覆盖的**族**：手写卡认得出来的牌子，整族都不再出品牌卡 ——
+    // 手写 Oracle 卡覆盖的是整个 Oracle 族（Thin / OCI 由它的切换器给），
+    // 手写 PostgreSQL 卡覆盖的是 `postgres` 那个牌子（`postgresql` 的别名）。
+    let curated_families: std::collections::HashSet<&str> = PICKER_DRIVERS
+        .iter()
+        .filter_map(|driver| curated_brand(driver.id))
+        .map(|brand| brand.family)
+        .collect();
+
+    let mut cards: Vec<PickerCard> = PICKER_DRIVERS.iter().map(PickerCard::Curated).collect();
+    // 一族的**代表**是表里第一条（生成时按「缺省模式优先」排过，见 `gen_brands.py`）。
+    let mut seen_families: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // 被品牌卡取代的 agent 卡（一族的成员只该出现在族卡的模式切换器里）。
+    let mut claimed_drivers: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+    for brand in brands::all() {
+        if !seen_families.insert(brand.family) {
+            continue;
+        }
+        if curated_families.contains(brand.family) {
+            continue;
+        }
+        let via_agent = brand.driver().is_some_and(|key| agent_keys.contains(key));
+        let multi_mode = brands::family_of(brand.key).len() > 1;
+        // 单模式 + 已有 agent 卡 → 那张卡就是它，不重复画。
+        if !multi_mode && via_agent {
+            continue;
+        }
+        // 单模式 + 要驱动但**装不了**（不在数据源清单里）→ 不画：画出来就是
+        // 「点得进去、装不出来」。这与 `agent_sources` 的筛选同一条口径。
+        if !multi_mode && brand.driver().is_some() {
+            continue;
+        }
+        if multi_mode {
+            for member in brands::family_of(brand.key) {
+                if let Some(key) = member.driver() {
+                    claimed_drivers.insert(key);
+                }
+            }
+        }
+        cards.push(PickerCard::Brand(brand));
+    }
+
+    for entry in duck_drivers::agent_sources() {
+        if curated_ids.contains(entry.key) || claimed_drivers.contains(entry.key) {
+            continue;
+        }
+        cards.push(PickerCard::Agent(entry));
+    }
+    cards
+}
 
 /// 一条连接钩子的执行记录（会话内环形缓冲的条目）。
 ///
@@ -1184,6 +1608,16 @@ struct Session {
     /// 认错一层，「选中项」就会被当成库名去重连（PG），或者当成 schema 去内省（MySQL），
     /// 两种都表现为「点了没反应」。
     kind: DatabaseKind,
+    /// 这条连接**标识符用什么引号**（`None` = 这条驱动没有引号概念，即「不是 SQL 引擎」）。
+    ///
+    /// 为什么在会话上存一份而不到处问 `session.conn`：那是 `Arc<Mutex<…>>`，后台线程
+    /// 跑长查询时**一直握着它** —— 在 `render` 里 `lock()` 会让整个界面卡到来查询结束。
+    /// 而这件事建连时就定死了（agent 档问对端、内建七档看引擎），所以建连时取一次。
+    ///
+    /// ⚠️ 界面里「这条引擎接不接 SQL」与「拿什么引号拼标识符」**都读这一个字段** ——
+    /// 前者看 `is_some()`，后者 `unwrap_or('"')`。别退回 `kind.identifier_quote()`：
+    /// 那对 agent 档恒 `None`（它是一整个家族），会把整片 SQL 面一起关掉。
+    quote: Option<char>,
     /// 传输通道句柄（有则连接经 `127.0.0.1:{local_port}`；断开随会话释放）。
     transport: Option<Transport>,
     /// 是否处于**显式事务**（用户敲过 BEGIN / START TRANSACTION，还没 COMMIT / ROLLBACK）。
@@ -1244,10 +1678,11 @@ impl Introspection {
 }
 
 /// 左栏树的一个分类节点（表 / 视图 / 索引 / 存储过程 / 函数 / 触发器 / 事件 /
-/// 用户与权限）。
+/// 序列 / 用户与权限）。
 ///
 /// 顺序即展示顺序 —— 与 DBX / DBFlux 的左栏一致（表在最前，权限类在最后）；索引紧跟
-/// 视图，因为它是「表这类东西」的伴生对象（存储过程往后的四类都是程序对象）。
+/// 视图，因为它是「表这类东西」的伴生对象（存储过程往后的几类都是程序对象，序列是
+/// PG / SQL Server 的取号器，跟着事件排在权限前）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TreeCategory {
     Table,
@@ -1257,12 +1692,13 @@ enum TreeCategory {
     Function,
     Trigger,
     Event,
+    Sequence,
     User,
 }
 
 impl TreeCategory {
     /// 全部分类，按展示顺序。
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Table,
         Self::View,
         Self::Index,
@@ -1270,6 +1706,7 @@ impl TreeCategory {
         Self::Function,
         Self::Trigger,
         Self::Event,
+        Self::Sequence,
         Self::User,
     ];
 
@@ -1284,6 +1721,7 @@ impl TreeCategory {
             Self::Function => "function",
             Self::Trigger => "trigger",
             Self::Event => "event",
+            Self::Sequence => "sequence",
             Self::User => "user",
         }
     }
@@ -1298,13 +1736,15 @@ impl TreeCategory {
             Self::Function => tr(cx, "函数"),
             Self::Trigger => tr(cx, "触发器"),
             Self::Event => tr(cx, "事件"),
+            Self::Sequence => tr(cx, "序列"),
             Self::User => tr(cx, "用户与权限"),
         }
         .to_string()
     }
 
     /// 分类图标：触发器取闪电、事件取时钟（与 DBX 的取意一致），用户取人形，
-    /// 索引取「带序号的清单」（索引就是列的有序清单）。
+    /// 索引取「带序号的清单」（索引就是列的有序清单），序列同取它 —— 与
+    /// [`table_kind_icon`] 给序列行的那枚一致（分类图标要跟自己的行同形）。
     const fn icon(self) -> DuckIcon {
         match self {
             Self::Table => DuckIcon::Columns2,
@@ -1314,6 +1754,7 @@ impl TreeCategory {
             Self::Function => DuckIcon::SquareFunction,
             Self::Trigger => DuckIcon::Zap,
             Self::Event => DuckIcon::Clock,
+            Self::Sequence => DuckIcon::ListOrdered,
             Self::User => DuckIcon::User,
         }
     }
@@ -1326,12 +1767,58 @@ impl TreeCategory {
                 | (Self::View, TableKind::View)
                 | (Self::Procedure, TableKind::Procedure)
                 | (Self::Function, TableKind::Function)
+                | (Self::Sequence, TableKind::Sequence)
         )
+    }
+
+    /// 该引擎**有没有这个概念**：有的话清单为空也画分类节点（DBX 同款「视图 0」
+    /// —— 数得出「没有」比节点凭空消失更可预期）；没有概念的才不画，免得左栏
+    /// 挂一排点开必为空的哑节点。判定与 duck-db 驱动的分派同口径
+    /// （`list_events` / `list_users` 等对不支持的引擎恒返回空清单）。
+    const fn concept_supported(self, kind: DatabaseKind) -> bool {
+        match self {
+            Self::Table | Self::View => true,
+            // ⚠️ agent 档在这三档上返回 `false`，但**不是**「那些引擎没有索引 / 触发器」——
+            // Oracle / 达梦 / DB2 都有。返回 `false` 是因为**协议只有「按表看」那一形态**
+            // （`list_indexes` / `list_triggers` 是表级方法），而我们画的是**库级**分类节点，
+            // 聚合不出清单来。要打开它得在 `catalog` 里逐表聚合（连接时几十张表各来一次），
+            // 那是另一件事；现在宁可少画一个节点，也不给一个点开必为空的哑节点。
+            Self::Index | Self::Trigger => matches!(
+                kind,
+                DatabaseKind::Sqlite
+                    | DatabaseKind::Postgres
+                    | DatabaseKind::Mysql
+                    | DatabaseKind::SqlServer
+            ),
+            // agent 档的目录是 `list_tables` + `list_objects` 两路取的，后一路正好给
+            // 过程 / 函数 / 序列，所以这三档**有清单可画**（不像索引那样聚合不出来）。
+            Self::Procedure | Self::Function => matches!(
+                kind,
+                DatabaseKind::Postgres
+                    | DatabaseKind::Mysql
+                    | DatabaseKind::SqlServer
+                    | DatabaseKind::Agent
+            ),
+            // 事件是 MySQL 独有的调度器对象，别家（含 agent 那一族）没有这个统一概念。
+            Self::Event => matches!(kind, DatabaseKind::Mysql),
+            // 序列：PostgreSQL 与 SQL Server 有（后者走 `sys.sequences`）；
+            // MySQL / SQLite 用 AUTO_INCREMENT / rowid 顶替，没有独立对象。
+            // agent 档跟着 `list_objects` 走（Oracle `SEQUENCE`、达梦 `序列` 都报得出来）。
+            Self::Sequence => matches!(
+                kind,
+                DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Agent
+            ),
+            Self::User => matches!(
+                kind,
+                DatabaseKind::Postgres | DatabaseKind::Mysql | DatabaseKind::SqlServer
+            ),
+        }
     }
 }
 
 impl Session {
-    /// 某个分类对应的**库级对象**清单；目录类分类（表 / 视图 / 过程 / 函数）给空。
+    /// 某个分类对应的**库级对象**清单；目录类分类（表 / 视图 / 过程 / 函数 / 序列）
+    /// 给空。
     fn database_objects(&self, category: TreeCategory) -> &[DatabaseObject] {
         match category {
             TreeCategory::Trigger => &self.triggers,
@@ -1341,7 +1828,8 @@ impl Session {
             TreeCategory::Table
             | TreeCategory::View
             | TreeCategory::Procedure
-            | TreeCategory::Function => &[],
+            | TreeCategory::Function
+            | TreeCategory::Sequence => &[],
         }
     }
 }
@@ -1410,6 +1898,10 @@ enum TabKind {
     Data { object: TableRef },
     /// 结构标签：一张表一个（同连接同表复用），标题 = `结构 表名@库`。
     Structure { object: TableRef },
+    /// 新建表标签：dbx `openTableStructure(…, "")` 对位 —— 不弹窗，直接进结构
+    /// 编辑器的**建表模式**（表名 / 注释 / 字段网格都现场填）。**永不复用**，
+    /// 每点一次新开一个；应用成功后原地转正成 [`TabKind::Structure`]。
+    NewTable { schema: Option<String> },
     /// 实例标签：仪表盘 / 实例概览 / 实例指标 / 实例检查器各一个（同连接同档复用）。
     ///
     /// 从「页面级 `Mode` 直切」迁到标签层：直切会把当前标签正在看的内容整个盖掉，
@@ -1437,6 +1929,9 @@ struct CompareSpec {
     target_conn: String,
     /// 目标命名空间（页面上选）。
     target_ns: String,
+    /// 只比较这些表（表节点右键「比较数据」带单张；**空 = 全库**，库级入口
+    /// 与工具条按钮都不带 —— 与 `TransferSpec::tables` 同一条口径）。
+    tables: Vec<TableRef>,
 }
 
 /// 数据传输的规格：源连接 + 源命名空间的若干表 → 目标连接 + 目标命名空间。
@@ -1738,15 +2233,23 @@ struct CellDetailEditor {
 struct StructureColumnDraft {
     /// 原列名；`None` = 本轮新增（库里还没有这一列，SQL 预览走 `ADD COLUMN`）。
     original: Option<String>,
-    /// 打开时内核报的类型名（判「类型改没改」的基准；新增列为空串）。
+    /// 打开时内核报的**基础类型名**（判「类型改没改」的基准；新增列为空串）。
+    /// 长度已拆到 [`Self::original_length`]：`varchar(50)` → `varchar` + `50`。
     original_type: String,
+    /// 打开时内核报的**长度修饰**（`50` / `14,3`；空串 = 无长度）。PG 的
+    /// `numeric(10,2)` 与 MySQL 的 `decimal(14,3)` 都落在这一格，原样回填。
+    original_length: String,
     /// 打开时读到的可空（新增列为 `true`；内核拿不到的引擎按打开值原样保留——
     /// 不改就不生成语句，改了由「该属性对引擎是否可编辑」的闸门拦住）。
     original_nullable: bool,
     /// 字段名输入框（受控显示：当前生效的列名在这份草稿里，框只是显示）。
     name: Entity<InputState>,
-    /// 类型输入框（`bigint` / `varchar(50)` 整段文本；不拆长度——那是另一层语义）。
+    /// 类型输入框（**基础类型名**：`bigint` / `varchar`；长度在 [`Self::length`]）。
+    /// 与类型下拉共用：下拉只往这个框里写候选值，框仍可自由输入任意类型名
+    /// （PG 的 `timestamptz` / `uuid`、SQLite 的 `INTEGER` 都塞不进固定候选表）。
     kind: Entity<InputState>,
+    /// 长度输入框（`50` / `14,3`；空 = 不带括号）。
+    length: Entity<InputState>,
     /// 可空勾选（新增列默认可空；主键勾上时联动关掉）。
     nullable: bool,
     /// 打开时读到的默认值（空串 = 无默认值；新增列为空串）。
@@ -1771,6 +2274,106 @@ struct StructureColumnDraft {
     dropped: bool,
 }
 
+/// 字段网格的列数（序号+操作 / 字段名 / 类型 / 长度 / 可为空 / 主键 / 默认值 /
+/// 注释 / 字符集 / 排序规则）。
+pub(super) const STRUCTURE_COLUMNS: usize = 10;
+
+/// 字段网格十列的默认宽度（对齐 dbx `TableStructureEditor` 的 `th` 宽度；注释列
+/// 吃掉余量，故与其余九列之和正好凑够 `min-width: 1360px`）。列宽可拖拽，
+/// 拖出来的宽度存在 [`StructureDraft::column_widths`]。
+pub(super) const STRUCTURE_DEFAULT_WIDTHS: [f32; STRUCTURE_COLUMNS] = [
+    120.0, 160.0, 140.0, 90.0, 64.0, 64.0, 130.0, 372.0, 100.0, 120.0,
+];
+
+/// 表结构编辑器里**一个索引**的草稿。
+///
+/// 内联编辑：名称 / 唯一 / 组成列都能改，改动在「应用变更」时生成
+/// `CREATE INDEX` / `DROP INDEX`（重建 = 先 DROP 再 CREATE）。
+/// `system` 是引擎自建的索引（MySQL 的 `PRIMARY`、SQLite 的 `sqlite_autoindex_*`）：
+/// 名称与列都不可改，只能看——删了它等于删主键。
+struct StructureIndexDraft {
+    /// 原索引名；`None` = 本轮新增。
+    original: Option<String>,
+    /// 打开时的组成列（判「改没改」的基准）。
+    original_columns: Vec<String>,
+    /// 打开时的唯一性（判「改没改」的基准）。
+    original_unique: bool,
+    /// 引擎自建（主键索引 / SQLite 的 `sqlite_autoindex_*` 约束隐式索引）：
+    /// 名称与列只读——删它等于删主键 / 约束。
+    system: bool,
+    /// 索引名输入框。
+    name: Entity<InputState>,
+    /// 唯一索引开关。
+    unique: bool,
+    /// 组成列（勾选顺序即索引内列序）。
+    columns: Vec<String>,
+    /// 「重建」已排入本次变更：即使一个字没改也要出 `DROP INDEX` + `CREATE INDEX`
+    /// （重建的真实用途是刷碎片 / 换存储参数）。
+    rebuild: bool,
+    /// 本轮标记删除：生成 `DROP INDEX`。
+    dropped: bool,
+}
+
+/// 表结构编辑器里**一条外键**的草稿（内联编辑：本表列 / 引用表 / 引用列 /
+/// 更新删除动作）。
+struct StructureForeignKeyDraft {
+    /// 原约束名；`None` = 本轮新增。SQLite 没有约束名，落空串。
+    original: Option<String>,
+    /// 打开时的本表列（判「改没改」的基准）。
+    original_columns: Vec<String>,
+    /// 打开时的被引用表。
+    original_ref_table: String,
+    /// 打开时的被引用列。
+    original_ref_columns: Vec<String>,
+    /// 打开时的更新动作。
+    original_on_update: String,
+    /// 打开时的删除动作。
+    original_on_delete: String,
+    /// 约束名输入框（MySQL / PG / T-SQL 的 `ADD CONSTRAINT <name>` 用；留空则由
+    /// 引擎自动命名）。
+    name: Entity<InputState>,
+    /// 本表引用列（勾选顺序即声明顺序）。
+    columns: Vec<String>,
+    /// 被引用的表（`schema.table` 文本）。
+    ref_table: String,
+    /// 被引用的列（与 [`Self::columns`] 按序对齐——复合外键要求两边列数一致，
+    /// 生成前校验）。
+    ref_columns: Vec<String>,
+    /// 更新动作（`NO ACTION` / `CASCADE` / `SET NULL` / `RESTRICT` / `SET DEFAULT`）。
+    on_update: String,
+    /// 删除动作（同上）。
+    on_delete: String,
+    /// 本轮标记删除：生成 `DROP CONSTRAINT`。
+    dropped: bool,
+}
+
+/// 表结构编辑器里**一条新增触发器**的草稿。
+///
+/// 只有**新增**的可编辑（已有触发器只读清单，见 [`StructureDraft::triggers`]）：
+/// 生成 `CREATE TRIGGER` 是单向动作，改 / 删已有触发器要按引擎补齐整套
+/// `DROP TRIGGER` / `CREATE OR REPLACE` 口径，没这部分能力就不冒充。
+struct StructureTriggerDraft {
+    /// 触发器名输入框。
+    name: Entity<InputState>,
+    /// 时机（`BEFORE` / `AFTER`）。
+    timing: &'static str,
+    /// 事件（`INSERT` / `UPDATE` / `DELETE`）。
+    event: &'static str,
+    /// 触发体：MySQL / SQLite 填内联 SQL 语句（`FOR EACH ROW` 后跟的语句）；
+    /// PG 填函数名（生成时补 `EXECUTE FUNCTION …()`）。
+    statement: Entity<InputState>,
+}
+
+/// 「字段注释放大编辑」弹窗的草稿（一次编辑一行；`row` 指向字段草稿的下标）。
+struct StructureCommentDraft {
+    /// 目标字段行。
+    row: usize,
+    /// 弹窗里显示的目标字段名（打开时快照，字段名改了也不影响它——只是标题）。
+    field: String,
+    /// 多行注释输入框。
+    text: Entity<TextareaState>,
+}
+
 /// 结构编辑器网格的行密度（dbx 同款三档；页内记忆，刷新 / 换表回落「标准」）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StructureDensity {
@@ -1792,17 +2395,18 @@ struct CopyFieldsDraft {
 /// 表结构编辑器的标签（dbx `TableStructureEditor` 的 Tabs 对位）。
 ///
 /// 按内核内省能力只开五个：约束、分区内核没有对应读取，**不冒充**（dbx 同款：
-/// 能力之外的标签直接不显示）。索引 / 外键 / 触发器三个标签本轮只读——内核没有
-/// 生成对应 DDL 的能力，摆一个改不动的编辑器只会让人误会。
+/// 能力之外的标签直接不显示）。字段 / 索引 / 外键三个标签都能编辑（各自生成
+/// 引擎支持的 DDL）；DDL 与触发器只读——触发器没有生成 DDL 的能力，
+/// 摆一个改不动的编辑器只会让人误会。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StructureTab {
     /// 只读展示打开时读到的建表 DDL + 复制入口。
     Ddl,
     /// 字段网格（本编辑器的主编辑面：改名 / 改类型 / 增删列）。
     Columns,
-    /// 只读索引清单。
+    /// 索引卡片（内联编辑 + 新增 / 重建 / 删除）。
     Indexes,
-    /// 只读外键清单。
+    /// 外键卡片（内联编辑 + 新增 / 删除）。
     ForeignKeys,
     /// 只读触发器清单。
     Triggers,
@@ -1812,19 +2416,63 @@ enum StructureTab {
 struct StructureDraft {
     /// 目标表。
     table: TableRef,
+    /// **建表模式**（`TabKind::NewTable` 的标签）：服务器上还没有这张表——
+    /// 表名现场填（[`Self::new_table_name`]），字段从零加，「应用变更」生成
+    /// `CREATE TABLE` 而不是 `ALTER`（dbx 的 `isCreateMode` 对位）。
+    is_create: bool,
+    /// 建表模式的表名输入框（编辑模式没有 —— 表名是打开时定死的）。
+    new_table_name: Option<Entity<InputState>>,
     /// 当前激活的标签（打开 / 刷新时回落「字段」；页内记忆，切标签不丢）。
     active_tab: StructureTab,
     /// 字段搜索框（客户端过滤字段名 / 类型；`Change` 订阅在
     /// [`DatabasePage::_subscriptions`]，见 `build_structure_draft`）。
     search: Entity<InputState>,
-    /// 打开时读到的建表 DDL（DDL 标签的数据源；读取失败落 `None`，只影响 DDL
-    /// 标签显示空态，不拖垮编辑器）。
+    /// 打开时读到的建表 DDL（判「DDL 页编辑过没有」的基准；读取失败落 `None`，
+    /// 只影响 DDL 标签显示空态，不拖垮编辑器）。
     ddl: Option<String>,
-    /// 打开时读到的索引 / 外键 / 触发器（三个只读标签的数据源；与右栏同口径：
-    /// 哪个内省失败落空清单，不互相拖垮）。
-    indexes: Vec<TableIndex>,
-    foreign_keys: Vec<TableForeignKey>,
+    /// DDL 标签的可编辑 SQL 编辑器（高亮 + 行号，见 `build_structure_draft`）；
+    /// 打开时用 [`Self::ddl`] 播种。`None` = 引擎给不出 DDL → 标签显示空态。
+    ddl_editor: Option<Entity<EditorState>>,
+    /// 表注释输入框 / 打开时读到的表注释（`None` = 该引擎拿不到 → 表级属性行不显示）。
+    /// 只有 MySQL 的 `SHOW CREATE TABLE` 尾部带 `COMMENT='…'`，从 DDL 里解析。
+    table_comment: Option<Entity<InputState>>,
+    original_table_comment: Option<String>,
+    /// 存储引擎（打开时读到的值 + 下拉候选；`None` = 不是 MySQL → 不显示这一行）。
+    table_engine: Option<String>,
+    original_table_engine: Option<String>,
+    engine_options: Vec<String>,
+    /// 索引 / 外键草稿（可编辑；当前引擎生成不了 DDL 时落空清单，对应标签
+    /// 只显示口径提示，不摆改不动的编辑器）。
+    indexes: Vec<StructureIndexDraft>,
+    foreign_keys: Vec<StructureForeignKeyDraft>,
+    /// 索引 / 外键对该引擎可不可生成 DDL（闸门见 `structure_capabilities`）。
+    index_editable: bool,
+    foreign_key_editable: bool,
+    /// 引用表 → 列候选缓存（选「引用表」时后台取一次该表列清单；键为表名）。
+    ref_columns: BTreeMap<String, Vec<String>>,
+    /// 字段网格十列的当前宽度（列宽可拖拽；刷新 / 换表回落默认）。
+    column_widths: [Pixels; STRUCTURE_COLUMNS],
+    /// SQL 预览卡是否折叠（dbx 的 `▴ / ▾`，页内记忆）。
+    preview_collapsed: bool,
+    /// SQL 预览正文的编辑器（**高亮 + 可编辑**）：内容 = 由草稿实时生成的语句，
+    /// 或用户手改后的文本。只在有 `window` 的地方建（打开草稿时），与 DDL 页
+    /// 的 `ddl_editor` 同一套组件。
+    preview_editor: Option<Entity<EditorState>>,
+    /// 预览正文是否处于**编辑态**（`Editor::readonly(false)`）。非编辑态下
+    /// 生成文本变了就同步进来，让预览始终是草稿的投影。
+    preview_editing: bool,
+    /// 预览文本被**手改**过：此后「应用变更」/「复制 SQL」都用编辑器里的这段，
+    /// 不再用生成结果（网格再改动不会覆盖手改 —— 要回到生成态按「重新生成」）。
+    preview_manual: bool,
+    /// 已有触发器清单（**只读**：改 / 删已有触发器要按引擎补齐 DROP / REPLACE
+    /// 口径，没有就不冒充；新增走 [`Self::new_triggers`]）。
     triggers: Vec<TableTrigger>,
+    /// 本轮新增的触发器草稿（可编辑；应用时生成 `CREATE TRIGGER`，引擎可不可
+    /// 生成见 [`Self::trigger_editable`]）。
+    new_triggers: Vec<StructureTriggerDraft>,
+    /// 触发器可不可新增：MySQL / SQLite 内联语句、PG 函数名都能生成
+    /// `CREATE TRIGGER`；其余引擎（T-SQL 等方言差异大）不给入口，不冒充。
+    trigger_editable: bool,
     /// 「复制其他表字段」的来源表清单（打开时的库内表快照，不含当前表；按名字排序）。
     source_tables: Vec<String>,
     /// 打开时的原列序（仅原列名；判「顺序变没变」——MySQL 生成物理重排 `AFTER`，
@@ -1864,6 +2512,20 @@ struct TableMeta {
     indexes: Vec<TableIndex>,
     row_count: Option<RowCount>,
     columns: Vec<Column>,
+    foreign_keys: Vec<TableForeignKey>,
+    triggers: Vec<TableTrigger>,
+}
+
+/// 左栏树里**一张表**展开后的四份子清单（列 / 索引 / 外键 / 触发器）。
+///
+/// 与 [`TableMeta`] 不是一份状态：那是**表页**的元信息（跟着选中表走、翻页不重取），
+/// 这是**树上每个表节点**自己的子级（一个库几百张表，只在用户展开节点时才取一次，
+/// 取完缓存住 —— 再展开直接命中，不重复打服务器）。四个槽位互相独立兜底，
+/// 某个内省失败落空清单，不拖垮其余三份。
+#[derive(Default)]
+struct TableTreeMeta {
+    columns: Vec<Column>,
+    indexes: Vec<TableIndex>,
     foreign_keys: Vec<TableForeignKey>,
     triggers: Vec<TableTrigger>,
 }
@@ -2013,24 +2675,28 @@ struct RowCell {
     null: Rc<std::cell::Cell<bool>>,
 }
 
-/// JSON 档（[`ResultViewMode::Json`]）里的**字段表单**。
+/// JSON 档（[`ResultViewMode::Json`]）的**行 JSON 编辑器**（Redis 值编辑器同款）。
 ///
-/// 与右栏的行编辑卡**同型不同体**（各自一份 [`RowCell`]）：
-/// - 元素 id 必须错开（`db-json-*` / `db-row-*`）：同一个窗口里 ElementId 就是状态键，
-///   两份表单同时在场时共用一格会让勾选 / 焦点互相串；
-/// - 右栏那份可能停在别的行（用户在网格里双击过），JSON 这份永远跟着 JSON 档当前
-///   显示的那一行走。
+/// 一份带语法高亮（tree-sitter json）的代码编辑器，内容是当前行的美化 JSON——
+/// 直接在里面改，改动经「暂存更改」进与网格 / 右栏**同一条** `pending_edits`
+/// 暂存路径（[`DatabasePage::stage_json_edits`]）。
 ///
-/// 由渲染期同步（[`DatabasePage::sync_json_editor`]）维护：构造输入框实体需要
-/// `&mut Window`，而渲染是唯一拿得到它的时机。
+/// 由渲染期同步（[`DatabasePage::sync_json_editor`]）维护：构造 `EditorState`
+/// 需要 `&mut Window`，而渲染是唯一拿得到它的时机。
 struct JsonEditor {
-    /// 这份表单服务的那一行（当前结果集内的下标）。
+    /// 这份编辑器服务的那一行（当前结果集内的下标）。
     row: usize,
     /// 那一行的指纹（列名 + 展示原值 + NULL 位，见 [`specs_stamp`]）。对不上就整份
     /// 重建 —— 结果重取 / 翻页 / 换表之后「同一下标」已经是另一行数据了。
     stamp: u64,
-    /// 每列一个输入框（与 [`RowEditor::cells`] 同型：暂存路径只认它）。
-    cells: Vec<RowCell>,
+    /// 这一行能不能改（单表 + 主键齐全）：不能改时编辑器只读，照常选中复制。
+    editable: bool,
+    /// 每列的「展示原值 + NULL 位」（[`row_editor_specs`] 口径）：暂存时拿编辑器里
+    /// 解析出的 JSON 值与它逐列 diff，只暂存**真的变了**的列。藏列不在编辑器
+    /// 文本里，天然不参与 diff。
+    specs: Vec<(String, String, bool)>,
+    /// JSON 代码编辑器（行号 + 软换行 + 高亮）。
+    input: Entity<EditorState>,
 }
 
 /// 单元格就地编辑器（双击进入）：一行输入框，回车提交。
@@ -2141,6 +2807,19 @@ struct EditFormView {
     /// `None` = 新建。
     id: Option<String>,
     kind: DatabaseKind,
+    /// **agent 档**具体是哪条驱动（[`duck_drivers::DriverEntry::key`]）；内建档位恒 `None`。
+    ///
+    /// 表单一开就定死、**不给改成别的驱动**：换驱动 = 换一个引擎（缺省端口、品牌名、
+    /// 协议都不一样），那是「重新选一次引擎」，回到选择器即可。做成只读之后，
+    /// 这里就能安全地拿它回答「缺省端口 / 惯用账号 / 叫什么」。
+    driver: Option<&'static str>,
+    /// **牌子**（品牌表 [`brands::brand`] 的键）。`None` = 推不出牌子。
+    ///
+    /// 与 `driver` 一样是只读的：它是「选引擎」那一步的结果，表单一开就定死。
+    /// 唯一能改它的入口是**模式族切换器**（`EngineRef::variants` 多于一条时画出来）——
+    /// OceanBase 从 MySQL 模式切到 Oracle 模式换的是整条路（内建 mysql → agent），
+    /// 那不是「改一个字段」，而是「重新选一次引擎」，所以由切换器整体换掉。
+    profile: Option<&'static str>,
     tls: TlsMode,
     env_tag: EnvTag,
     name: Entity<InputState>,
@@ -2156,11 +2835,42 @@ struct EditFormView {
     schema: Entity<InputState>,
     /// 连接级**只读档**：建连后立刻把会话切到只读（由服务器兜底拒绝写）。
     read_only: bool,
+    /// 当前 Tab（[`FORM_TABS`] 的下标；dbx 同形四页签）。
+    tab: usize,
+    /// 认证方式（网络引擎才有；引擎不认得的档位在 `new` 里就落回口令）。
+    auth_mode: AuthMode,
+    /// 连接串模式的串（`auth_mode == ConnectionString` 时显示并生效）。
+    connection_string: Entity<InputState>,
+    /// **URL 附加参数**（JDBC URL 里 `?` 之后那截）。
+    ///
+    /// 品牌自己的缺省值由品牌表给（星环 Argo `auth=noSasl`、Impala 同、Kyuubi `auth=NONE`）——
+    /// 那几个引擎**少了它就拒绝连接**，所以这一格不是「高级选项」，是必填项之一。
+    /// 只有 agent 轨消费它；内建驱动的 URL 由各自的驱动拼。
+    url_params: Entity<InputState>,
+    /// **服务名**（GBase 8s 的 GBASESQLI / Informix 的 `INFORMIXSERVER` 双用途）。
+    ///
+    /// 只有 `EngineRef::server_name` 认得的两个 agent 引擎才显示与写入（各归各家的
+    /// 档案字段）；其余引擎这一格不画、恒存 `None`。
+    server_name: Entity<InputState>,
+    /// 自签 CA 证书路径（TLS/SSL 分区；PG / MySQL 驱动真消费）。
+    ca_cert_path: Entity<InputState>,
+    /// 客户端证书路径（双向 TLS）。
+    client_cert_path: Entity<InputState>,
+    /// 客户端私钥路径。
+    client_key_path: Entity<InputState>,
+    /// 侧栏可见库白名单（`None` = 不过滤；「选择显示数据库」写回）。
+    visible_databases: Option<Vec<String>>,
     ssh_enabled: bool,
     ssh_host: Entity<InputState>,
     ssh_port: Entity<InputState>,
     ssh_user: Entity<InputState>,
     ssh_remote_host: Entity<InputState>,
+    /// SSH 认证方式（口令 / 私钥 / 私钥 + 口令 / agent）。
+    ssh_auth_method: SshAuthMethod,
+    /// SSH 私钥路径（私钥两档才显示）。
+    ssh_key_path: Entity<InputState>,
+    /// SSH 私钥口令（掩码；只有「私钥 + 口令」档显示）。
+    ssh_key_passphrase: Entity<InputState>,
     ssh_password: Entity<InputState>,
     /// 代理开关（SOCKS5 / HTTP CONNECT）；关掉即把 `proxy` 写回 `None`。
     proxy_enabled: bool,
@@ -2191,6 +2901,25 @@ struct EditFormView {
     hook_results: std::collections::HashMap<String, HookOutcome>,
 }
 
+/// 「选择显示数据库」弹窗的正文 —— **独立视图**，理由同 [`DriverPickerView`]：
+/// 搜索框要边打边筛勾选列表，弹窗 `content` 闭包拿不到宿主的 `notify()`。
+///
+/// 交互对齐 dbx：用当前表单配置**临时连一次**拿库清单，用户勾选哪些库显示在侧栏；
+/// 确认时把白名单写回表单的 `visible_databases`（勾满全部或全空 = 清空，不存死快照，
+/// 之后新建的库才还能自动出现）。
+struct VisibleDatabasesView {
+    /// 回调宿主（确认时把勾选写回表单）。
+    form: WeakEntity<EditFormView>,
+    /// 临时连接拉到的库清单（顺序即弹窗展示顺序）。
+    names: Vec<String>,
+    /// 当前勾选。
+    selected: std::collections::HashSet<String>,
+    /// 过滤搜索框。
+    search: Entity<InputState>,
+    /// 搜索框订阅（延长生命周期，丢掉就不再有 `Change` 回调）。
+    _subscription: Subscription,
+}
+
 /// 新建连接的第一步：驱动选择网格 —— **独立视图**（弹窗的正文就是它）。
 ///
 /// 与 [`EditFormView`] 同因（弹窗 `content` 闭包是 `Fn`，拿不到 `&mut DatabasePage`），
@@ -2207,8 +2936,89 @@ struct DriverPickerView {
     search: Entity<InputState>,
     /// 关键字（小写；订阅里算好，`render` 只读它）。
     query: String,
+    /// 当前分类（侧栏选中项；搜索态下右侧跨分类显示命中）。
+    active_section: PickerSection,
+    /// 单击选中的卡片 id（`None` = 还没选；「下一步」据此禁用与放行）。
+    ///
+    /// 存 id 而不是 `PickerTarget`：target 里带着引用，而 id 是卡片去重与搜索的
+    /// **同一个键** —— 存它一份，`proceed` 时再按 id 找回卡片即可。
+    selected: Option<&'static str>,
     /// 搜索框订阅（延长生命周期 —— 丢掉就不再有 `Change` 回调）。
     _subscription: Subscription,
+}
+
+/// 驱动商店（驱动管理弹窗的正文）—— **独立视图**，理由同 [`DriverPickerView`]：
+/// 搜索框要边打边筛、安装进度要自己重绘，而弹窗 `content` 闭包是 `Fn`、
+/// 拿不到 `&mut DatabasePage`。
+///
+/// # 状态从哪来
+///
+/// 三份事实各自有源，这里只**缓存**不重算：
+///
+/// | 事实 | 源 |
+/// | --- | --- |
+/// | 有哪些驱动、叫什么、属于哪个分类 | [`duck_drivers::catalog`]（编进二进制的清单，恒可用） |
+/// | 每条的版本 / 工件 | 远端注册表（`registry::registry`，**要联网**，故可为 `None`） |
+/// | 装了哪些、哪条有新版 | 本地状态（`DriverStore::state` / `installed`） |
+///
+/// 清单与本地状态是同步的、随时可读；注册表是阻塞网络调用，开弹窗时丢到后台线程
+/// 去拉（[`RegistryState`] 记它的进度）。**注册表没拉到时列表照常能画** ——
+/// 只是版本栏与「安装」按钮变成禁用态，而不是整页空着。
+struct DriverManagerView {
+    /// 归属页面（装完之后叫它刷一下，连接表单里的「去装驱动」提示才会消失）。
+    page: WeakEntity<DatabasePage>,
+    /// 过滤列表的搜索框。
+    search: Entity<InputState>,
+    /// 关键字（小写；订阅里算好，`render` 只读它）。
+    query: String,
+    /// 分类筛选（[`duck_drivers::DriverCategory::key`]；`None` = 全部）。
+    category: Option<&'static str>,
+    /// 只显示**已安装**的那几条。
+    only_installed: bool,
+    /// 远端注册表（`None` = 还没拉到 / 拉失败）。
+    registry: Option<Arc<DriverRegistry>>,
+    /// 拉注册表的状态。
+    registry_state: RegistryState,
+    /// 正在跑的安装：键 → 最近一步（界面据此画进度文案并禁用按钮）。
+    running: HashMap<String, ProgressStep>,
+    /// 批量安装的进度（第几个 / 共几个）。
+    batch: Option<(u32, u32)>,
+    /// 最近一条结果提示。
+    notice: Option<DriverNotice>,
+    /// 事件接收端；**只在有活儿在跑时是 `Some`**（收工置回 `None` 让轮询任务退出）。
+    events: Option<std::sync::mpsc::Receiver<DriverEvent>>,
+    /// 取消标志（有活儿在跑时挂上；内核每个步骤都会 `check()`）。
+    cancel: Option<CancelFlag>,
+    /// 事件轮询任务是否已经起来（避免每条驱动都起一个）。
+    pumping: bool,
+    /// 磁盘用量（收工时算一次，不在 `render` 里 `du`）。
+    bytes_installed: u64,
+    /// 搜索框订阅（延长生命周期 —— 丢掉就不再有 `Change` 回调）。
+    _subscription: Subscription,
+}
+
+/// 远端注册表的拉取状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RegistryState {
+    /// 还没开始（弹窗刚开）。
+    Idle,
+    /// 正在拉。
+    Loading,
+    /// 拉到了（`Ok` 的载荷在视图的 `registry` 字段里）。
+    Ready,
+    /// 拉失败（英文原文来自内核，展示时包一层中文外壳）。
+    Failed(String),
+}
+
+/// 驱动管理弹窗里的一条结果提示（成功 / 失败）。
+///
+/// 与 `notify` 的气泡**不同**：那是「此刻发生了一件事」的一次性提示，这是一条
+/// **留在弹窗里**的状态 —— 用户点完「安装」会接着往下看列表，气泡早消失了。
+struct DriverNotice {
+    /// 是不是失败（决定配色）。
+    failed: bool,
+    /// 文案（已经是成品中文，展示层拼好）。
+    text: String,
 }
 
 /// 连接档案导入失败的原因。
@@ -2344,10 +3154,12 @@ enum Transport {
 /// 光看调用点已经分不清谁是谁，而**送错口令**的后果是「认证失败」这种最难查的错。
 #[derive(Debug, Clone, Default)]
 struct Credentials {
-    /// 数据库口令。
+    /// 数据库口令（ES 的 API Key 模式也走这一格：值是 key 原文）。
     db: Option<String>,
     /// SSH 跳板机口令。
     ssh: Option<String>,
+    /// SSH 私钥口令（加密私钥的 passphrase；「私钥 + 口令」档用）。
+    ssh_key: Option<String>,
     /// SOCKS5 / HTTP CONNECT 代理口令。
     proxy: Option<String>,
 }
@@ -2421,6 +3233,11 @@ pub struct DatabasePage {
     sql: Entity<EditorState>,
     /// 「编辑器 / 结果区」的竖向分栏状态（拖下边框调编辑器高度；尺寸由组件自管）。
     sql_split: Entity<ResizableState>,
+    /// 「表结构：编辑面 / SQL 预览」的竖向分栏状态（同 [`Self::sql_split`] 的机制）。
+    ///
+    /// 与 SQL 分栏**分开两份**：两处的合理比例不一样（那边是「输入 SQL / 看结果」，
+    /// 这边是「改字段 / 看将执行的 DDL」），共用一个状态会把对方的拖拽结果吃过去。
+    structure_split: Entity<ResizableState>,
     /// 自引用：右栏 / 网格渲染闭包要把点击送回来。
     view: WeakEntity<Self>,
     /// 订阅句柄（延长生命周期）。
@@ -2639,8 +3456,29 @@ pub struct DatabasePage {
     table_triggers: Vec<TableTrigger>,
     /// 表级元信息是为哪张表取的（翻页不重复 `COUNT(*)`）。
     table_meta_for: Option<TableRef>,
+    /// 表剪贴板（dbx 的复制表 / 粘贴表对位）：树上「复制表」记下源连接与表，
+    /// 在别的库 / 表分类节点上「粘贴表」—— 同连接生成 CTAS 语句，跨连接开
+    /// 数据传输标签（源 = 剪贴板那张表，目标在页面上落到粘贴处）。
+    table_clipboard: Option<(String, TableRef)>,
+    /// 建表标签的**落库回执旗标**：确认执行 `CREATE TABLE` 时置上（带着新表名），
+    /// 执行成功由 `install_query_result` 消费 —— 标签原地转正成这张表的结构
+    /// 编辑器（dbx `onStructureEditorSaved` 的 `createdTable` 分支同口径）。
+    /// 失败在 `execute_sql` 的失败分支清掉，不污染下一次普通查询。
+    create_applied: Option<TableRef>,
     /// 表结构编辑器的草稿（当前标签的那一份；`None` = 列清单还没取回）。按标签存。
     structure: Option<StructureDraft>,
+    /// 字段网格的横向 / 纵向滚动句柄（滚动条从它们读位置、拖拽写回偏移）。
+    ///
+    /// **跨帧持久**是硬要求：每帧新建会把滚轮写进来的偏移下一帧就丢
+    /// （`tests/db_grid_horizontal_scroll.rs` 的注释钉过这条）。页面级即可——
+    /// 偏移跟着滚动容器走，切标签重建草稿时容器还在。
+    structure_grid_x_scroll: ScrollHandle,
+    structure_grid_y_scroll: ScrollHandle,
+    /// 结果区「列」视图（转置）的横向 / 纵向滚动句柄：口径同
+    /// [`Self::structure_grid_x_scroll`] —— `Scrollbar` 要跨帧持久的句柄才读得到
+    /// 偏移、拖得出位置。
+    result_columns_x_scroll: ScrollHandle,
+    result_columns_y_scroll: ScrollHandle,
     /// ER 关系图的数据（当前标签的那一份；`None` = 还没取回）。按标签存。
     er: Option<ErData>,
     /// 比较数据的状态（当前标签的那一份；`None` = 不是比较标签）。按标签存。
@@ -2650,10 +3488,15 @@ pub struct DatabasePage {
     /// 「复制其他表字段」弹窗的草稿（`None` = 没开；见 [`CopyFieldsDraft`]）。
     /// **不随标签走**：弹窗是一次「从源表挑字段追加进当前草稿」的临时态。
     copy_fields: Option<CopyFieldsDraft>,
+    /// 「字段注释放大编辑」弹窗的草稿（`None` = 没开）；与 `copy_fields` 同口径，
+    /// 页面级、不随标签走（弹窗确认时要把长注释写回字段草稿）。
+    structure_comment: Option<StructureCommentDraft>,
+    /// 「复制全部列名」弹窗是否打开（列名清单现读当前草稿，不另存快照）。
+    structure_copy_names: bool,
     /// 行编辑器（暂存式）：改动只存输入框，点保存才落库。
     row_editor: Option<RowEditor>,
-    /// JSON 档的字段表单（同上，见 [`JsonEditor`]）。**不随标签走**：它是一次
-    /// 「看着 JSON 改这一格」的临时态，渲染期按当前行同步（`filter_value` /
+    /// JSON 档的行 JSON 编辑器（见 [`JsonEditor`]）。**不随标签走**：它是一次
+    /// 「看着 JSON 改这一行」的临时态，渲染期按当前行同步（`filter_value` /
     /// `batch_value` 同一条口径 —— 未提交的输入不是某个标签的结果区状态）。
     json_editor: Option<JsonEditor>,
     /// 结果区的图表视角配置（`None` = 看表格）。按标签存（见 [`SessionView`]）。
@@ -2759,7 +3602,17 @@ pub struct DatabasePage {
     /// 后来的新 toast 一起抹掉，第二条等于没弹。
     toast_seq: u64,
     /// 有后台数据库操作在跑：期间禁用会触发同类操作的按钮。
+    ///
+    /// ⚠️ **建连不走这里**（见 [`Self::connecting`]）：连接是「等远端回话」，等着的时候
+    /// 用户理应能去点别的档案、跑别的查询 —— 拿全局 `busy` 拦它，就成了「一次只能
+    /// 连一个」的假排队。
     busy: bool,
+    /// 正在建立连接的档案 id 集合（**并发建连**的在途标记）。
+    ///
+    /// 只有两件事：① 同一条在途时再点忽略（不弹 toast —— 行首圆点已经是琥珀色，
+    /// 再弹一条「正在连接」是噪音）；② 左栏圆点据此显示「连的是哪几条」。
+    /// 连接完成后（无论成败）由 [`DbShell::spawn_connect`] 摘除。
+    connecting: std::collections::HashSet<String>,
     /// 正在跑的**可取消**工作（有则工具条显示「停止」，见 [`RunningQuery`]）。
     running: Option<RunningQuery>,
     /// 本次运行是否被用户点过「停止」：决定 [`DbError::Cancelled`] 的文案
@@ -2814,6 +3667,11 @@ pub struct DatabasePage {
     /// —— 与 `tree_open` 同口径：是「这一次看库」的视图，不是偏好设置）。
     /// 排序规则：置顶的排在本分类最前，其余保持目录原序。
     pinned_tables: std::collections::BTreeSet<String>,
+    /// 表节点展开后的**结构缓存**（键 = [`table_tree_key`]；会话内有效，不进 kv）。
+    /// 只在节点首次展开时取一次（见 [`DatabasePage::load_table_tree`]），之后命中缓存。
+    table_tree: std::collections::HashMap<String, TableTreeMeta>,
+    /// 正在取结构的表（同键口径）：加载中再点展开不重复发起，回来后摘除。
+    table_tree_loading: std::collections::HashSet<String>,
 }
 
 #[cfg(test)]

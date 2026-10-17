@@ -309,6 +309,8 @@ pub(super) const DATABASE_PAGE: &str = "database";
 pub(super) const MAIL_PAGE: &str = "email";
 /// 「Redis」模块页的 key（规格表与渲染分支同源）。
 pub(super) const REDIS_PAGE: &str = "redis";
+/// 「项目管理」模块页的 key（规格表与渲染分支同源）。
+pub(super) const PROJECTS_PAGE: &str = "projects";
 
 /// 分类清单（顺序即导航顺序）。
 pub(super) const PAGES: &[SettingsPageSpec] = &[
@@ -380,6 +382,13 @@ pub(super) const PAGES: &[SettingsPageSpec] = &[
         title: "Redis",
         description: "键扫描与会话",
         icon: DuckIcon::DatabaseZap,
+        group: PageGroup::Module,
+    },
+    SettingsPageSpec {
+        key: PROJECTS_PAGE,
+        title: "项目管理",
+        description: "到期提醒与久未更新口径",
+        icon: DuckIcon::Kanban,
         group: PageGroup::Module,
     },
     SettingsPageSpec {
@@ -1041,6 +1050,7 @@ impl SettingsWindowView {
             DATABASE_PAGE => super::module_settings::database_body(cx),
             MAIL_PAGE => super::module_settings::mail_body(cx),
             REDIS_PAGE => super::module_settings::redis_body(cx),
+            PROJECTS_PAGE => super::module_settings::projects_body(cx),
             crate::audit::AUDIT_PAGE => self.audit_body(cx),
             // 更新相关的整块已并入「关于」页（原独立分类页已废除）。
             _ => self.about_body(cx),

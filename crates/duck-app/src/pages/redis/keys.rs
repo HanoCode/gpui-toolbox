@@ -1,5 +1,7 @@
 //! 键空间浏览与键级操作：分页 / 过滤 / 命名空间树 / 选中 / 重命名 / TTL。
 
+use std::path::PathBuf;
+
 use super::*;
 
 impl RedisPage {
@@ -585,6 +587,8 @@ impl RedisPage {
             // 外层闭包是 `Fn`（每次重排都重跑）→ 每一轮都得重新克隆一份交给内层。
             let action_for_ok = action.clone();
             let view_for_ok = view.clone();
+            let action_for_footer = action.clone();
+            let view_for_footer = view.clone();
             let drag_for_content = drag.clone();
             let message_for_content = message.clone();
 
@@ -594,12 +598,6 @@ impl RedisPage {
                 .margin_top(dialog_top_offset(cx) + offset.y)
                 .opacity(offset.opacity)
                 .close_button(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(tr(cx, "确认执行"))
-                        .cancel_text(tr(cx, "取消"))
-                        .show_cancel(true),
-                )
                 .content(move |content, _, cx| {
                     content.child(modal_drag_area(
                         &drag_for_content,
@@ -614,6 +612,21 @@ impl RedisPage {
                             .child(body_text(message_for_content.clone(), cx)),
                     ))
                 })
+                // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+                // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+                .footer(dialog_footer(
+                    "redis-confirm",
+                    tr(cx, "确认执行"),
+                    ButtonVariant::Primary,
+                    Rc::new(move |window, cx| {
+                        let _ = view_for_footer.update(cx, |this, cx| {
+                            this.run_pending(action_for_footer.clone(), window, cx);
+                        });
+                        true
+                    }),
+                    cx,
+                ))
+                // 键盘 ⏎ 走 base 的 `Confirm` action → 这里；鼠标点按钮走上面 footer。
                 .on_ok(move |_, window, cx| {
                     // 确认后才真正动手；视图已销毁（`update` 返回 `Err`）也照样关弹窗，
                     // 不让一个点不掉的确认框挂在屏幕上。
@@ -659,6 +672,8 @@ impl RedisPage {
             }
             PendingAction::SlowlogReset => self.reset_slowlog_at(window, cx),
             PendingAction::ClientKill { addr } => self.kill_client_at(addr, window, cx),
+            PendingAction::DeleteKeys { keys, .. } => self.delete_keys_at(keys, window, cx),
+            PendingAction::PersistKeys { keys, .. } => self.persist_keys_at(keys, window, cx),
         }
     }
 
@@ -942,6 +957,1004 @@ impl RedisPage {
         }
         self.query_mode = mode;
         self.refresh_keys(cx);
+    }
+
+    // ------------------------------------------------------------------
+    // 键树右键菜单（2026-10-16）：复制 / TTL / 批量 / 导出。
+    //
+    // 批量动作的键名都来自**服务端 SCAN**（文件夹里可能有还没翻到的页），
+    // 收集与执行两段分开：先收齐、给用户看清数量与前缀、再动手。
+    // ------------------------------------------------------------------
+
+    /// 把某个键名复制到剪贴板（纯本地，零网络、不过闸门）。
+    pub(super) fn copy_key_name(key: String, cx: &mut App) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(key));
+    }
+
+    /// 复制一个键的值。
+    ///
+    /// 选中键已在详情里：直接取**当前展示文本**（解码档位与界面所见一致）；
+    /// 其它键现取一页（读操作，不过写闸门）。取回即复制，不改变选中状态。
+    pub(super) fn copy_key_value(
+        &mut self,
+        key: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 已是当前选中的键：详情就是最新的一份，不必再发一次 GET。
+        if let Some(detail) = &self.detail
+            && detail.key == key
+        {
+            let text = key_value_text(detail);
+            if text.is_empty() {
+                notify::warning(tr(cx, "这个键还没有可复制的值"), _window, cx);
+                return;
+            }
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            notify::success(tr(cx, "已复制键值"), _window, cx);
+            return;
+        }
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = session.conn.clone();
+        self.spawn_redis(
+            cx,
+            move || -> Result<String, RedisError> {
+                let mut conn = lock(&conn)?;
+                let key_type = conn.key_type(&key)?;
+                if key_type == KeyType::Missing {
+                    return Ok(String::new());
+                }
+                let value = conn.load_value(&key, key_type, VALUE_PAGE)?;
+                Ok(redis_value_text(&value))
+            },
+            move |this, result, window, cx| match result {
+                Ok(text) if !text.is_empty() => {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    notify::success(tr(cx, "已复制键值"), window, cx);
+                    let _ = this;
+                }
+                Ok(_) => notify::warning(tr(cx, "这个键还没有可复制的值"), window, cx),
+                Err(error) => notify::error(
+                    trf(cx, "读取键值失败：{}", &[&error.to_string()]),
+                    window,
+                    cx,
+                ),
+            },
+        );
+    }
+
+    /// 「刷新文件夹」：把过滤串设为该文件夹的前缀并重扫（对齐 zedis 的
+    /// `RefreshFolder` 语义——列表里只留这个文件夹的键）。
+    ///
+    /// 关键字与模式任一变化都等于换问题，所以模式一并切到「前缀匹配」，
+    /// 让 `scan_plan` 统一负责转义。
+    pub(super) fn refresh_folder(
+        &mut self,
+        prefix: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.query_mode = QueryMode::Prefix;
+        self.pattern.update(cx, |input, cx| {
+            input.set_value(prefix, window, cx);
+        });
+        self.refresh_keys(cx);
+    }
+
+    /// 「重新载入」：按当前过滤条件从零重扫整个键空间。
+    pub(super) fn rescan_keys(&mut self, cx: &mut Context<Self>) {
+        self.refresh_keys(cx);
+    }
+
+    /// 收集某文件夹前缀下的**全部键名**（服务端 SCAN 循环），收齐后交给 `then`。
+    ///
+    /// 上限 [`BATCH_KEYS_MAX`]：到顶就停并如实提示——批量动作的键名必须来自
+    /// 一次完整、可数的收集，不能拿「已加载的键」冒充（列表是分页的）。
+    fn scan_prefix_keys<F>(&mut self, prefix: String, cx: &mut Context<Self>, then: F)
+    where
+        F: FnOnce(&mut Self, Arc<Vec<String>>, &mut Window, &mut Context<Self>) + 'static,
+    {
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = session.conn.clone();
+        let separator = self
+            .active_config()
+            .map_or(":", |cfg| cfg.effective_separator())
+            .to_owned();
+        let pattern = prefix_pattern(&prefix, &separator);
+        self.status = trf(cx, "正在收集前缀 {} 下的键…", &[&prefix]).into();
+        self.spawn_redis(
+            cx,
+            move || -> Result<Vec<String>, RedisError> {
+                let mut conn = lock(&conn)?;
+                let mut keys = Vec::new();
+                let mut cursor = 0u64;
+                loop {
+                    let page = conn.scan(cursor, Some(pattern.as_str()), SCAN_PAGE, None)?;
+                    let finished = page.is_finished();
+                    cursor = page.cursor;
+                    keys.extend(page.keys);
+                    if finished || keys.len() >= BATCH_KEYS_MAX {
+                        break;
+                    }
+                }
+                keys.truncate(BATCH_KEYS_MAX);
+                Ok(keys)
+            },
+            move |this, result, window, cx| match result {
+                Ok(keys) => {
+                    let keys = Arc::new(keys);
+                    this.status = trf(
+                        cx,
+                        "前缀 {} 下共 {} 个键",
+                        &[&prefix, &keys.len().to_string()],
+                    )
+                    .into();
+                    then(this, keys, window, cx);
+                }
+                Err(error) => {
+                    notify::error(
+                        trf(cx, "收集键名失败：{}", &[&error.to_string()]),
+                        window,
+                        cx,
+                    );
+                }
+            },
+        );
+    }
+
+    /// 右键「批量删除键…」：先收集、再确认（数量与前缀写进确认框正文）。
+    pub(super) fn batch_delete_keys(
+        &mut self,
+        prefix: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scan_prefix_keys(prefix.clone(), cx, move |this, keys, window, cx| {
+            if keys.is_empty() {
+                notify::info(tr(cx, "该前缀下没有键"), window, cx);
+                return;
+            }
+            this.confirm_or_run(
+                Capability::DeleteKey,
+                PendingAction::DeleteKeys { prefix, keys },
+                window,
+                cx,
+            );
+        });
+    }
+
+    /// 右键「批量设置 TTL…」：先收集、再弹秒数输入框。
+    pub(super) fn batch_set_ttl(
+        &mut self,
+        prefix: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scan_prefix_keys(prefix.clone(), cx, move |this, keys, window, cx| {
+            if keys.is_empty() {
+                notify::info(tr(cx, "该前缀下没有键"), window, cx);
+                return;
+            }
+            this.open_ttl_secs_dialog(TtlPromptTarget::Many { prefix, keys }, window, cx);
+        });
+    }
+
+    /// 右键「批量移除 TTL」：先收集、再确认。
+    pub(super) fn batch_persist_keys(
+        &mut self,
+        prefix: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scan_prefix_keys(prefix.clone(), cx, move |this, keys, window, cx| {
+            if keys.is_empty() {
+                notify::info(tr(cx, "该前缀下没有键"), window, cx);
+                return;
+            }
+            this.confirm_or_run(
+                Capability::SetTtl,
+                PendingAction::PersistKeys { prefix, keys },
+                window,
+                cx,
+            );
+        });
+    }
+
+    /// 真正执行批量删除（闸门已过、确认已给）。
+    ///
+    /// ⚠️ **批量删除不入回收站**：回收站的「抄一份」是每键三条命令
+    /// （`MEMORY USAGE` / `PTTL` / `DUMP`），上千键的批量会把删除拖成分钟级，
+    /// 且 `DUMP` 载荷会瞬间撑爆回收站的体积预算。确认框正文里已如实说明。
+    pub(super) fn delete_keys_at(
+        &mut self,
+        keys: Arc<Vec<String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(reason) = self.check(Capability::DeleteKey) {
+            notify::warning(deny_message(reason, cx), window, cx);
+            return;
+        }
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = session.conn.clone();
+        let keys_for_done = keys.clone();
+        self.spawn_redis(
+            cx,
+            move || -> Result<u64, RedisError> {
+                let mut conn = lock(&conn)?;
+                conn.del_many(&keys)
+            },
+            move |this, result, window, cx| match result {
+                Ok(deleted) => {
+                    let removed: HashSet<&str> = keys_for_done.iter().map(String::as_str).collect();
+                    // 本地列表摘掉被删的键；`selected` / `detail` 若指向它们一并清。
+                    this.keys.retain(|key| !removed.contains(key.as_str()));
+                    this.dbsize = this.dbsize.saturating_sub(deleted);
+                    if let Some(detail) = &this.detail
+                        && removed.contains(detail.key.as_str())
+                    {
+                        this.detail = None;
+                        this.selected = None;
+                    }
+                    // 键没了，本地标注跟着丢（与单键删除同一条口径）。
+                    for key in keys_for_done.iter() {
+                        this.forget_key_tags(key, cx);
+                    }
+                    this.rebuild_views();
+                    this.status =
+                        trf(cx, "已删除 {} 个键（未进回收站）", &[&deleted.to_string()]).into();
+                    notify::success(
+                        trf(cx, "已删除 {} 个键", &[&deleted.to_string()]),
+                        window,
+                        cx,
+                    );
+                    this.probe_status(cx);
+                    cx.notify();
+                }
+                Err(error) => {
+                    notify::error(
+                        trf(cx, "批量删除失败：{}", &[&error.to_string()]),
+                        window,
+                        cx,
+                    );
+                }
+            },
+        );
+    }
+
+    /// 真正执行批量设置 TTL。
+    pub(super) fn expire_keys_at(
+        &mut self,
+        keys: Arc<Vec<String>>,
+        seconds: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.allow_write(Capability::SetTtl, window, cx) {
+            return;
+        }
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = session.conn.clone();
+        let keys_for_done = keys.clone();
+        self.spawn_redis(
+            cx,
+            move || -> Result<u64, RedisError> {
+                let mut conn = lock(&conn)?;
+                conn.expire_many(&keys, seconds)
+            },
+            move |this, result, window, cx| match result {
+                Ok(applied) => {
+                    // TTL 芯片读 `key_meta` 缓存：批量改完把这一批的元数据重取一遍。
+                    let fresh: Vec<String> = keys_for_done.iter().cloned().collect();
+                    this.fetch_key_meta(fresh, cx);
+                    this.status = trf(
+                        cx,
+                        "已为 {} / {} 个键设置过期时间",
+                        &[&applied.to_string(), &keys_for_done.len().to_string()],
+                    )
+                    .into();
+                    notify::success(
+                        trf(cx, "已为 {} 个键设置过期时间", &[&applied.to_string()]),
+                        window,
+                        cx,
+                    );
+                    cx.notify();
+                }
+                Err(error) => {
+                    notify::error(
+                        trf(cx, "批量设置失败：{}", &[&error.to_string()]),
+                        window,
+                        cx,
+                    );
+                }
+            },
+        );
+    }
+
+    /// 真正执行批量移除过期时间（闸门已过、确认已给）。
+    pub(super) fn persist_keys_at(
+        &mut self,
+        keys: Arc<Vec<String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.allow_write(Capability::SetTtl, window, cx) {
+            return;
+        }
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = session.conn.clone();
+        let keys_for_done = keys.clone();
+        self.spawn_redis(
+            cx,
+            move || -> Result<u64, RedisError> {
+                let mut conn = lock(&conn)?;
+                conn.persist_many(&keys)
+            },
+            move |this, result, window, cx| match result {
+                Ok(applied) => {
+                    let fresh: Vec<String> = keys_for_done.iter().cloned().collect();
+                    this.fetch_key_meta(fresh, cx);
+                    this.status = trf(
+                        cx,
+                        "已移除 {} / {} 个键的过期时间",
+                        &[&applied.to_string(), &keys_for_done.len().to_string()],
+                    )
+                    .into();
+                    notify::success(
+                        trf(cx, "已移除 {} 个键的过期时间", &[&applied.to_string()]),
+                        window,
+                        cx,
+                    );
+                    cx.notify();
+                }
+                Err(error) => {
+                    notify::error(
+                        trf(cx, "批量移除失败：{}", &[&error.to_string()]),
+                        window,
+                        cx,
+                    );
+                }
+            },
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // TTL 弹窗（值头部下拉与批量右键共用）：按时长 / 按到期时刻。
+    // ------------------------------------------------------------------
+
+    /// 「按时长设置」弹窗（单键或批量共用）。目标在打开那一刻冻结，
+    /// 确认期间不回读输入框（`confirm_or_run` 同一条纪律）。
+    ///
+    /// 输入框实体是页面上的一份（`ttl_secs_input`）：弹窗里渲染它、
+    /// 确认时读它。右栏键管理的 `ttl_input` 保持独立——常驻表单与临时
+    /// 弹窗共用一个输入框会互相污染对方的占位与残留值。
+    pub(super) fn open_ttl_secs_dialog(
+        &mut self,
+        target: TtlPromptTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = self.view.clone();
+        let drag = modal_drag(cx);
+        let input = self.ttl_secs_input.clone();
+        let title: SharedString = match &target {
+            TtlPromptTarget::One { key } => format!("{} · {}", tr(cx, "设置过期时间"), key).into(),
+            TtlPromptTarget::Many { prefix, keys } => format!(
+                "{} · {}（{} 个键）",
+                tr(cx, "批量设置过期时间"),
+                prefix,
+                keys.len()
+            )
+            .into(),
+        };
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let offset = modal_offset(&drag, cx);
+            let view_for_ok = view.clone();
+            let target_for_ok = target.clone();
+            let view_for_footer = view.clone();
+            let target_for_footer = target.clone();
+            let drag_for_content = drag.clone();
+            let title_for_content = title.clone();
+            let input_for_content = input.clone();
+            dialog
+                .w(px(CONFIRM_DIALOG_WIDTH))
+                .ml(offset.x)
+                .margin_top(dialog_top_offset(cx) + offset.y)
+                .opacity(offset.opacity)
+                .close_button(false)
+                .content(move |content, _, cx| {
+                    let drag_for_content = drag_for_content.clone();
+                    let title_for_content = title_for_content.clone();
+                    let input_for_content = input_for_content.clone();
+                    content.child(modal_drag_area(
+                        &drag_for_content,
+                        v_flex()
+                            .w_full()
+                            .gap(form_gap(cx))
+                            .child(modal_title_row(
+                                "redis-ttl-secs-title",
+                                &drag_for_content,
+                                title_for_content,
+                                cx,
+                            ))
+                            .child(body_text(
+                                tr(cx, "秒数必须大于 0；要永不过期请用「移除 TTL」。"),
+                                cx,
+                            ))
+                            .child(form_field(
+                                tr(cx, "过期时间（秒）"),
+                                Input::new(&input_for_content)
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .w_full(),
+                                None,
+                                None,
+                                cx,
+                            )),
+                    ))
+                })
+                // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+                // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+                .footer(dialog_footer(
+                    "redis-ttl-secs",
+                    tr(cx, "设置"),
+                    ButtonVariant::Primary,
+                    Rc::new(move |window, cx| {
+                        let _ = view_for_footer.update(cx, |this, cx| {
+                            this.apply_ttl_secs(&target_for_footer, window, cx);
+                        });
+                        true
+                    }),
+                    cx,
+                ))
+                // 键盘 ⏎ 走 base 的 `Confirm` action → 这里；鼠标点按钮走上面 footer。
+                .on_ok(move |_, window, cx| {
+                    let _ = view_for_ok.update(cx, |this, cx| {
+                        this.apply_ttl_secs(&target_for_ok, window, cx);
+                    });
+                    true
+                })
+        });
+    }
+
+    /// 读取「按时长设置」弹窗的输入并下发（弹窗确认与回车共用）。
+    fn apply_ttl_secs(
+        &mut self,
+        target: &TtlPromptTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self.ttl_secs_input.read(cx).value().to_string();
+        let Ok(seconds) = text.trim().parse::<i64>() else {
+            notify::warning(tr(cx, "请填写整数秒数"), window, cx);
+            return;
+        };
+        if seconds <= 0 {
+            // 0 在服务端语义里是「立即删除」（单键）或「全部立即删除」（批量），
+            // 比任何手滑都危险，拦在按下去之前。
+            notify::warning(tr(cx, "秒数必须大于 0"), window, cx);
+            return;
+        }
+        match target {
+            TtlPromptTarget::One { key } => self.expire_key_at(key.clone(), seconds, window, cx),
+            TtlPromptTarget::Many { keys, .. } => {
+                self.expire_keys_at(keys.clone(), seconds, window, cx)
+            }
+        }
+    }
+
+    /// 「按到期时刻设置」弹窗（单键）。
+    pub(super) fn open_ttl_at_dialog(
+        &mut self,
+        key: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = self.view.clone();
+        let drag = modal_drag(cx);
+        let input = self.ttl_at_input.clone();
+        let title: SharedString = format!("{} · {}", tr(cx, "按到期时刻设置"), key).into();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let offset = modal_offset(&drag, cx);
+            let view_for_ok = view.clone();
+            let key_for_ok = key.clone();
+            let view_for_footer = view.clone();
+            let key_for_footer = key.clone();
+            let drag_for_content = drag.clone();
+            let title_for_content = title.clone();
+            let input_for_content = input.clone();
+            dialog
+                .w(px(CONFIRM_DIALOG_WIDTH))
+                .ml(offset.x)
+                .margin_top(dialog_top_offset(cx) + offset.y)
+                .opacity(offset.opacity)
+                .close_button(false)
+                .content(move |content, _, cx| {
+                    let drag_for_content = drag_for_content.clone();
+                    let title_for_content = title_for_content.clone();
+                    let input_for_content = input_for_content.clone();
+                    content.child(modal_drag_area(
+                        &drag_for_content,
+                        v_flex()
+                            .w_full()
+                            .gap(form_gap(cx))
+                            .child(modal_title_row(
+                                "redis-ttl-at-title",
+                                &drag_for_content,
+                                title_for_content,
+                                cx,
+                            ))
+                            .child(body_text(
+                                tr(cx, "格式 YYYY-MM-DD HH:MM[:SS]，按本机时区解释；时刻已过去会立即删除键。"),
+                                cx,
+                            ))
+                            .child(form_field(
+                                tr(cx, "到期时刻"),
+                                Input::new(&input_for_content)
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .w_full(),
+                                None,
+                                None,
+                                cx,
+                            )),
+                    ))
+                })
+                // ⚠️ 可见按钮必须显式挂 footer：`button_props` 只登记回调，
+                // `Dialog::render` 只渲染 `.footer(...)`，不挂就是「只有一个 ✕」的空壳。
+                .footer(dialog_footer(
+                    "redis-ttl-at",
+                    tr(cx, "设置"),
+                    ButtonVariant::Primary,
+                    Rc::new(move |window, cx| {
+                        let _ = view_for_footer.update(cx, |this, cx| {
+                            this.apply_ttl_at(&key_for_footer, window, cx);
+                        });
+                        true
+                    }),
+                    cx,
+                ))
+                // 键盘 ⏎ 走 base 的 `Confirm` action → 这里；鼠标点按钮走上面 footer。
+                .on_ok(move |_, window, cx| {
+                    let _ = view_for_ok.update(cx, |this, cx| {
+                        this.apply_ttl_at(&key_for_ok, window, cx);
+                    });
+                    true
+                })
+        });
+    }
+
+    /// 读取「按到期时刻设置」弹窗的输入并下发。
+    fn apply_ttl_at(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.ttl_at_input.read(cx).value().to_string();
+        let Some(unix_secs) = parse_local_datetime(text.trim()) else {
+            notify::warning(
+                tr(cx, "格式不对：请按 YYYY-MM-DD HH:MM[:SS] 填写"),
+                window,
+                cx,
+            );
+            return;
+        };
+        if unix_secs <= now_secs() {
+            // EXPIREAT 对过去时刻的语义是「立即删除」。与单键 EXPIRE 的 0 同一级别
+            // 的危险，宁可让用户重填，也别替他按下去。
+            notify::warning(
+                tr(cx, "时刻已过去；EXPIREAT 会立即删除键，请重新填写"),
+                window,
+                cx,
+            );
+            return;
+        }
+        if !self.allow_write(Capability::SetTtl, window, cx) {
+            return;
+        }
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = session.conn.clone();
+        let key = key.to_owned();
+        let key_for_done = key.clone();
+        self.spawn_redis(
+            cx,
+            move || -> Result<bool, RedisError> {
+                let mut conn = lock(&conn)?;
+                conn.expire_at(&key, unix_secs)
+            },
+            move |this, result, window, cx| match result {
+                Ok(true) => {
+                    if let Some(detail) = &mut this.detail
+                        && detail.key == key_for_done
+                    {
+                        detail.ttl = unix_secs - now_secs();
+                    }
+                    // 键树行上的 TTL 芯片读 `key_meta` 缓存，重取这一条。
+                    this.fetch_key_meta(vec![key_for_done.clone()], cx);
+                    this.status = trf(cx, "已为 {} 设置到期时刻", &[&key_for_done]).into();
+                    notify::success(tr(cx, "到期时刻已设置"), window, cx);
+                    cx.notify();
+                }
+                Ok(false) => notify::warning(tr(cx, "键已不存在"), window, cx),
+                Err(error) => {
+                    notify::error(trf(cx, "设置失败：{}", &[&error.to_string()]), window, cx);
+                }
+            },
+        );
+    }
+
+    /// 给单个键设置存活秒数（右键菜单「设置 TTL…」与 TTL 弹窗共用的执行端）。
+    ///
+    /// 与旧入口 [`Self::set_ttl`] 的差别只在目标来源：那条读右栏输入框 +
+    /// 当前选中键，这条的目标在弹窗打开那一刻就冻结了。
+    fn expire_key_at(
+        &mut self,
+        key: String,
+        seconds: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.allow_write(Capability::SetTtl, window, cx) {
+            return;
+        }
+        let Some(session) = self.active_session() else {
+            return;
+        };
+        let conn = session.conn.clone();
+        let key_for_done = key.clone();
+        self.spawn_redis(
+            cx,
+            move || -> Result<bool, RedisError> {
+                let mut conn = lock(&conn)?;
+                conn.expire(&key, seconds)
+            },
+            move |this, result, window, cx| match result {
+                Ok(true) => {
+                    if let Some(detail) = &mut this.detail
+                        && detail.key == key_for_done
+                    {
+                        detail.ttl = seconds;
+                    }
+                    this.fetch_key_meta(vec![key_for_done.clone()], cx);
+                    this.status = trf(cx, "已为 {} 设置过期时间", &[&seconds.to_string()]).into();
+                    notify::success(tr(cx, "过期时间已设置"), window, cx);
+                    cx.notify();
+                }
+                Ok(false) => notify::warning(tr(cx, "键已不存在"), window, cx),
+                Err(error) => {
+                    notify::error(trf(cx, "设置失败：{}", &[&error.to_string()]), window, cx);
+                }
+            },
+        );
+    }
+
+    /// 右键「导出文件夹…」：收集前缀下的键与值，拼好 JSON **再**开保存面板。
+    ///
+    /// 文件面板是异步的（`file_dialogs` 模块头）：回调跑起来时页面状态可能早变了，
+    /// 所以内容在打开面板之前就固化成 `Arc<String>`，回调里只写盘。
+    pub(super) fn export_folder(
+        &mut self,
+        prefix: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scan_prefix_keys(prefix.clone(), cx, move |this, keys, _window, cx| {
+            if keys.is_empty() {
+                notify::info(tr(cx, "该前缀下没有键"), _window, cx);
+                return;
+            }
+            let Some(session) = this.active_session() else {
+                return;
+            };
+            let conn = session.conn.clone();
+            let db = this.active_config().map_or(0, |cfg| cfg.db);
+            let prefix_for_done = prefix.clone();
+            this.spawn_redis(
+                cx,
+                move || -> Result<String, RedisError> {
+                    let mut conn = lock(&conn)?;
+                    let mut entries = Vec::with_capacity(keys.len());
+                    for key in keys.iter() {
+                        let key_type = conn.key_type(key)?;
+                        let ttl = conn.ttl(key)?;
+                        // 模块类型没有通用读法（要 `DUMP`），导出 null 值并如实标注。
+                        let value = if key_type == KeyType::Module {
+                            Ok(RedisValue::Missing)
+                        } else {
+                            conn.load_value(key, key_type, EXPORT_VALUE_PAGE)
+                        };
+                        entries.push(match value {
+                            Ok(value) => serde_json::json!({
+                                "key": key,
+                                "type": redis_type_name(key_type),
+                                "ttl": ttl,
+                                "value": redis_value_json(&value),
+                            }),
+                            Err(error) => serde_json::json!({
+                                "key": key,
+                                "type": redis_type_name(key_type),
+                                "ttl": ttl,
+                                "value": null,
+                                "error": error.to_string(),
+                            }),
+                        });
+                    }
+                    let document = serde_json::json!({
+                        "prefix": prefix,
+                        "db": db,
+                        "count": entries.len(),
+                        "keys": entries,
+                    });
+                    serde_json::to_string_pretty(&document)
+                        .map_err(|error| RedisError::Command(format!("serialize export: {error}")))
+                },
+                move |_this, result, window, cx| match result {
+                    Ok(json) => {
+                        let default_name = format!(
+                            "{}.json",
+                            prefix_for_done
+                                .trim_end_matches(':')
+                                .replace(['/', '\\'], "_")
+                        );
+                        // 内容已固化成 `json`：保存面板回调里只做「写盘」，不再回读页面
+                        //（写盘本身也丢后台，回调里只发结果通知——`file_dialogs` 的契约）。
+                        crate::file_dialogs::save_file(cx, &default_name, move |path, this, cx| {
+                            this.spawn_redis(
+                                cx,
+                                move || -> Result<PathBuf, String> {
+                                    std::fs::write(&path, json.as_bytes())
+                                        .map(|_| path)
+                                        .map_err(|error| error.to_string())
+                                },
+                                move |this, result, window, cx| match result {
+                                    Ok(path) => {
+                                        let message =
+                                            trf(cx, "已导出到 {}", &[&path.display().to_string()]);
+                                        this.status = message.clone().into();
+                                        notify::success(message, window, cx);
+                                    }
+                                    Err(reason) => {
+                                        let message =
+                                            trf(cx, "写文件失败：{}", &[&reason]).to_owned();
+                                        this.status = message.clone().into();
+                                        notify::error(message, window, cx);
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    Err(error) => {
+                        notify::error(trf(cx, "导出失败：{}", &[&error.to_string()]), window, cx);
+                    }
+                },
+            );
+        });
+    }
+}
+
+/// 把「YYYY-MM-DD HH:MM[:SS]」按**本机时区**解析成 Unix 秒。
+///
+/// 本仓不引时区库（见 `helpers.rs::relative_age` 的注释），本地时间只能靠
+/// 平台的 C 库：`mktime` 吃本地墙钟、吐 Unix 秒，`tm_isdst = -1` 让它自己
+/// 判断夏令时。Windows 的 CRT 同样导出 `mktime`，结构布局按 MSVC `struct tm`。
+pub(super) fn parse_local_datetime(text: &str) -> Option<i64> {
+    let (date, time) = match text.split_once([' ', 'T']) {
+        Some(parts) => parts,
+        None => return None,
+    };
+    let mut date_parts = date.split('-');
+    let year: i32 = date_parts.next()?.parse().ok()?;
+    let month: u32 = date_parts.next()?.parse().ok()?;
+    let day: u32 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let mut time_parts = time.split(':');
+    let hour: i32 = time_parts.next()?.parse().ok()?;
+    let minute: i32 = time_parts.next()?.parse().ok()?;
+    let second: i32 = time_parts.next().map_or(Ok(0), str::parse).ok()?;
+    if time_parts.next().is_some()
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
+        return None;
+    }
+    platform_mktime(year, month, day, hour, minute, second)
+}
+
+#[cfg(unix)]
+fn platform_mktime(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+) -> Option<i64> {
+    let mut tm = libc::tm {
+        tm_sec: second,
+        tm_min: minute,
+        tm_hour: hour,
+        tm_mday: day as i32,
+        tm_mon: month as i32 - 1,
+        tm_year: year - 1900,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: -1,
+        tm_gmtoff: 0,
+        tm_zone: std::ptr::null_mut(),
+    };
+    let unix = unsafe { libc::mktime(&mut tm) };
+    (unix >= 0).then_some(unix)
+}
+
+/// Windows 的 CRT `mktime`（libc crate 不导出，直接 FFI；MSVC 与 GNU 工具链
+/// 链的都是 msvcrt，符号可用）。`struct tm` 布局按 MSVC。
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsTm {
+    tm_sec: i32,
+    tm_min: i32,
+    tm_hour: i32,
+    tm_mday: i32,
+    tm_mon: i32,
+    tm_year: i32,
+    tm_wday: i32,
+    tm_yday: i32,
+    tm_isdst: i32,
+}
+
+#[cfg(windows)]
+extern "C" {
+    fn mktime(tm: *mut WindowsTm) -> i64;
+}
+
+#[cfg(windows)]
+fn platform_mktime(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+) -> Option<i64> {
+    let mut tm = WindowsTm {
+        tm_sec: second,
+        tm_min: minute,
+        tm_hour: hour,
+        tm_mday: day as i32,
+        tm_mon: month as i32 - 1,
+        tm_year: year - 1900,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: -1,
+    };
+    let unix = unsafe { mktime(&mut tm) };
+    (unix >= 0).then_some(unix)
+}
+
+/// 把一个已加载的值转成**可复制文本**（右键「复制键值」用）。
+///
+/// 集合类按「一行一项」转写；字段与成员之间用制表符，粘进表格软件还能分列。
+pub(super) fn redis_value_text(value: &RedisValue) -> String {
+    match value {
+        RedisValue::String(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        RedisValue::Hash(pairs) => pairs
+            .iter()
+            .map(|(field, item)| format!("{}\t{}", decode_pair(field), decode_pair(item)))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        RedisValue::List(items) | RedisValue::Set(items) => items
+            .iter()
+            .map(|item| decode_pair(item))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        RedisValue::ZSet(items) => items
+            .iter()
+            .map(|(member, score)| format!("{}\t{}", decode_pair(member), score))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        RedisValue::Stream(entries) => entries
+            .iter()
+            .map(|(id, fields)| {
+                let pairs = fields
+                    .iter()
+                    .map(|(field, item)| format!("{}: {}", decode_pair(field), decode_pair(item)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}: {pairs}", String::from_utf8_lossy(id))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        RedisValue::Missing => String::new(),
+    }
+}
+
+/// 字节 → 文本（UTF-8 lossy）；集合元素大都是 ASCII，这里统一口径。
+fn decode_pair(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(bytes)
+}
+
+/// 键类型 → 导出 JSON 里的类型名（小写、与服务端 `TYPE` 应答一致；零本地化，
+/// 后台线程里没有 `App` 可查表，也不能有——导出文件不该随界面语言变）。
+pub(super) fn redis_type_name(key_type: KeyType) -> &'static str {
+    match key_type {
+        KeyType::String => "string",
+        KeyType::List => "list",
+        KeyType::Set => "set",
+        KeyType::ZSet => "zset",
+        KeyType::Hash => "hash",
+        KeyType::Stream => "stream",
+        KeyType::Module => "module",
+        KeyType::Missing => "missing",
+    }
+}
+
+/// 把一个已加载的值转成 JSON（「导出文件夹」用）。
+///
+/// 字段名对齐 tiny-rdm 的导出习惯（`key/type/ttl/value`）；二进制不进 JSON
+/// ——`String::from_utf8_lossy` 转写，非 UTF-8 载荷会带替换符，宁缺毋滥。
+pub(super) fn redis_value_json(value: &RedisValue) -> serde_json::Value {
+    match value {
+        RedisValue::String(bytes) => {
+            serde_json::Value::String(String::from_utf8_lossy(bytes).into_owned())
+        }
+        RedisValue::Hash(pairs) => {
+            let mut object = serde_json::Map::new();
+            for (field, item) in pairs {
+                object.insert(
+                    String::from_utf8_lossy(field).into_owned(),
+                    serde_json::Value::String(String::from_utf8_lossy(item).into_owned()),
+                );
+            }
+            serde_json::Value::Object(object)
+        }
+        RedisValue::List(items) | RedisValue::Set(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|item| serde_json::Value::String(String::from_utf8_lossy(item).into_owned()))
+                .collect(),
+        ),
+        RedisValue::ZSet(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|(member, score)| {
+                    serde_json::json!({
+                        "member": String::from_utf8_lossy(member),
+                        "score": score,
+                    })
+                })
+                .collect(),
+        ),
+        RedisValue::Stream(entries) => serde_json::Value::Array(
+            entries
+                .iter()
+                .map(|(id, fields)| {
+                    serde_json::json!({
+                        "id": String::from_utf8_lossy(id),
+                        "fields": fields
+                            .iter()
+                            .map(|(field, item)| {
+                                serde_json::json!({
+                                    "field": String::from_utf8_lossy(field),
+                                    "value": String::from_utf8_lossy(item),
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        ),
+        RedisValue::Missing => serde_json::Value::Null,
     }
 }
 

@@ -62,7 +62,7 @@ impl ProjectStore {
     pub fn find_tag_by_name(&self, name: &str) -> Result<Option<Tag>> {
         let mut statement = self
             .conn
-            .prepare("SELECT id, name, color FROM tags WHERE name = ?1")?;
+            .prepare("SELECT id, name, color, is_favorite FROM tags WHERE name = ?1")?;
         let mut rows = statement.query([name])?;
         match rows.next()? {
             Some(row) => Ok(Some(tag_from_row(row)?)),
@@ -96,6 +96,19 @@ impl ProjectStore {
     /// 删除标签（`task_tags` 走 `ON DELETE CASCADE`，任务本身不受影响）。
     pub fn delete_tag(&self, id: i64) -> Result<()> {
         let affected = self.conn.execute("DELETE FROM tags WHERE id = ?1", [id])?;
+        if affected == 0 {
+            return Err(not_found("tag"));
+        }
+        Ok(())
+    }
+
+    /// 改收藏（左栏标签段「收藏在前」的开关；排序口径在 [`Self::tag_usage`] 的
+    /// `ORDER BY` 里，界面只拨这个开关、不自己排）。
+    pub fn set_tag_favorite(&self, id: i64, favorite: bool) -> Result<()> {
+        let affected = self.conn.execute(
+            "UPDATE tags SET is_favorite = ?1 WHERE id = ?2",
+            rusqlite::params![i64::from(favorite), id],
+        )?;
         if affected == 0 {
             return Err(not_found("tag"));
         }
@@ -136,7 +149,7 @@ impl ProjectStore {
     /// 某个任务的标签（按名称升序）。
     pub fn tags_of_task(&self, task_id: i64) -> Result<Vec<Tag>> {
         let mut statement = self.conn.prepare(
-            "SELECT g.id, g.name, g.color FROM task_tags tt JOIN tags g ON g.id = tt.tag_id \
+            "SELECT g.id, g.name, g.color, g.is_favorite FROM task_tags tt JOIN tags g ON g.id = tt.tag_id \
              WHERE tt.task_id = ?1 ORDER BY g.name COLLATE NOCASE ASC",
         )?;
         let mut rows = statement.query([task_id])?;
@@ -150,7 +163,7 @@ impl ProjectStore {
     fn find_tag(&self, id: i64) -> Result<Option<Tag>> {
         let mut statement = self
             .conn
-            .prepare("SELECT id, name, color FROM tags WHERE id = ?1")?;
+            .prepare("SELECT id, name, color, is_favorite FROM tags WHERE id = ?1")?;
         let mut rows = statement.query([id])?;
         match rows.next()? {
             Some(row) => Ok(Some(tag_from_row(row)?)),
@@ -164,6 +177,48 @@ mod tests {
     use super::ProjectStore;
     use crate::error::{ProjectError, Result};
     use crate::models::{NewTag, NewTask, TaskStatus};
+
+    #[test]
+    fn favorite_orders_first_and_persists() -> Result<()> {
+        let store = ProjectStore::open_in_memory()?;
+        store.create_tag(NewTag::new("后端"))?;
+        let frontend = store.create_tag(NewTag::new("前端"))?;
+        // 默认都按名称排（前端在后端之后？不 —— 按码点序「前端」<「后端」）。
+        assert_eq!(store.list_tags()?[0].name, "前端");
+        assert!(!store.list_tags()?[0].is_favorite);
+
+        store.set_tag_favorite(frontend, true)?;
+        // 收藏的排前面；`ORDER BY` 里 DESC 优先于名称。
+        let tags = store.list_tags()?;
+        assert_eq!(tags[0].name, "前端");
+        assert!(tags[0].is_favorite);
+        assert!(!tags[1].is_favorite);
+
+        // 取消收藏后回到纯名称序；关掉不存在的标签照样报 NotFound。
+        store.set_tag_favorite(frontend, false)?;
+        assert!(!store.list_tags()?[0].is_favorite);
+        assert!(matches!(
+            store.set_tag_favorite(9999, true),
+            Err(ProjectError::NotFound("tag"))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn favorite_survives_merge_and_list_tags_default() -> Result<()> {
+        let store = ProjectStore::open_in_memory()?;
+        let from = store.create_tag(NewTag::new("旧名"))?;
+        let into = store.create_tag(NewTag::new("新名"))?;
+        store.set_tag_favorite(from, true)?;
+        let task = store.create_task(NewTask::new("a").tags([from]))?;
+        store.merge_tags(&[from], into)?;
+        // 合并后 `from` 没了，收藏标记随行消失 —— 收藏是**标签**的属性，不搬到目标。
+        let tags = store.list_tags()?;
+        assert_eq!(tags.len(), 1);
+        assert!(!tags[0].is_favorite);
+        assert_eq!(store.tags_of_task(task)?[0].name, "新名");
+        Ok(())
+    }
 
     #[test]
     fn create_list_update_delete() -> Result<()> {

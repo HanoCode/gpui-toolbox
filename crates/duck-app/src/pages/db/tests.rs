@@ -556,22 +556,15 @@ fn binary_format_enables_only_for_raw_payloads() {
     assert!(!ResultFormat::Csv.exportable(false, true, true));
 }
 
-/// 结构管理的三条骨架：有 DDL 的引擎给语句，MongoDB / Elasticsearch 一律 `None`
-/// （界面据此**不给入口**，而不是给了再报错）。
+/// 结构管理的骨架：有 DDL 的引擎给语句，MongoDB / Elasticsearch 一律 `None`
+/// （界面据此**不给入口**，而不是给了再报错）。建表已改道结构编辑器，这里只钉
+/// 改表 / 删表两条。
 #[test]
 fn ddl_templates_cover_sql_engines_only() {
     for engine in DatabaseKind::ALL {
-        let create = create_table_template(engine, "t");
         let alter = alter_table_template(engine, "t");
         let drop = drop_table_template(engine, "t");
         if supports_ddl(engine) {
-            let create = create.expect("有 DDL 的引擎必须给建表骨架");
-            assert!(
-                create.starts_with("CREATE TABLE t ("),
-                "{engine:?}: {create}"
-            );
-            // 骨架要能直接跑起来：主键列自带 `NOT NULL`，不留待填的空壳。
-            assert!(create.contains("PRIMARY KEY (id)"), "{engine:?}: {create}");
             let alter = alter.expect("有 DDL 的引擎必须给改表骨架");
             assert!(
                 alter.starts_with("ALTER TABLE t ADD COLUMN"),
@@ -582,15 +575,17 @@ fn ddl_templates_cover_sql_engines_only() {
                 "DROP TABLE IF EXISTS t;"
             );
         } else {
-            assert!(
-                create.is_none() && alter.is_none() && drop.is_none(),
-                "{engine:?}"
-            );
+            assert!(alter.is_none() && drop.is_none(), "{engine:?}");
         }
     }
 }
 
 /// 「支持 DDL」的两个判据（引号有没有 / 类型占位表有没有）必须同源。
+///
+/// ⚠️ 只覆盖**内建七档**。agent 档是**故意分叉**的：那边确实接 SQL（连上会报引号），
+/// 但清单里没有方言字段、给不出列类型名，所以模板一律 `None`（理由见 `supports_ddl`）。
+/// 下面两行断言把「分叉是故意的」写进代码里 —— 免得后来者按「两集合必须一致」
+/// 把它改回去，又给 40 多个引擎生成一堆跑不通的 `CREATE TABLE`。
 #[test]
 fn ddl_support_judgements_agree() {
     for engine in DatabaseKind::ALL {
@@ -600,6 +595,8 @@ fn ddl_support_judgements_agree() {
             "{engine:?}"
         );
     }
+    assert!(!supports_ddl(DatabaseKind::Agent));
+    assert!(column_type_placeholders(DatabaseKind::Agent).is_none());
 }
 
 /// 对象树筛选：大小写不敏感的子串匹配；空筛选词**通过全部**（不是筛掉全部）。
@@ -2050,4 +2047,124 @@ fn build_table_model_applies_thousands_only_to_numeric_columns() {
     // 列注释进了列规格（表头第三行 / 悬停详情的数据源）。
     assert_eq!(model.columns()[0].comment.as_ref(), "数量");
     assert_eq!(model.columns()[1].comment.as_ref(), "");
+}
+
+/// 选择器上「**品牌 ≠ 档位**」的三条映射。
+///
+/// 它们曾经都落在 `PickerTarget::Unsupported`（点了弹「该数据库类型的支持即将到来」）：
+/// MariaDB 与 MySQL 是同一个线协议、Redshift 是 PostgreSQL 的线协议、Redis 在本仓
+/// 另有专页。三条都是「换个牌子 / 换个入口」，**不是「没实现的引擎」**——钉在这里，
+/// 免得哪天被当成熟度不够又灰回去。
+#[test]
+fn branded_picker_cards_route_to_a_real_backend() {
+    let card = |id: &str| {
+        PICKER_DRIVERS
+            .iter()
+            .find(|driver| driver.id == id)
+            .unwrap_or_else(|| panic!("选择器里没有 `{id}` 这张卡"))
+    };
+    assert_eq!(
+        card("mariadb").target,
+        PickerTarget::Builtin(DatabaseKind::Mysql)
+    );
+    assert_eq!(
+        card("redshift").target,
+        PickerTarget::Builtin(DatabaseKind::Postgres)
+    );
+    assert_eq!(card("redis").target, PickerTarget::Page(REDIS_ROUTE));
+}
+
+/// 还标着「未支持」的**就剩这三条**。
+///
+/// 这是一条**清单式**断言，故意写死：接上一条就该来改这里，而且改的时候要顺手把
+/// `PICKER_DRIVERS` 里那张卡的注释一起划掉 —— 「注释说没实现、代码已经能连」比
+/// 没有注释更害人。剩两张的成因各不相同（DynamoDB：要 AWS 签名加一份新引擎；
+/// InfluxDB：连可下的工件都没有）。
+///
+/// DuckDB 曾经在这里，现已接上（`duck-db` 的 `drivers::duckdb` 说的是它那套 NDJSON
+/// sidecar）—— 所以这张表**只减不增**，减的时候连着断言一起改。
+#[test]
+fn the_unsupported_cards_are_still_the_two_known_ones() {
+    let unsupported: Vec<&str> = PICKER_DRIVERS
+        .iter()
+        .filter(|driver| matches!(driver.target, PickerTarget::Unsupported))
+        .map(|driver| driver.id)
+        .collect();
+    assert_eq!(unsupported, ["dynamodb", "influxdb"]);
+}
+
+/// 手写卡的 id 两两不同 —— [`picker_cards`] 就是靠 id 去重、并且靠它跟 44 条驱动
+/// 清单对号的。重复的症状很隐蔽：同一格里画两张一样的卡，或者清单里那条被静默吞掉。
+#[test]
+fn curated_picker_card_ids_are_unique() {
+    let mut seen = std::collections::BTreeSet::new();
+    for driver in PICKER_DRIVERS {
+        assert!(seen.insert(driver.id), "选择器卡片 id 重复：{}", driver.id);
+    }
+}
+
+/// **全部**卡片（手写 + 品牌 + 驱动清单三档）的 id 两两不同。
+///
+/// 三档各自内部不重是显然的，**跨档重了才隐蔽**：网格那一格的元素 id 重复时，
+/// 同 id 后注册的会静默盖掉先注册的（gpui 的元素 id 语义），症状是「画了两张、
+/// 只看见一张」，或者搜索时两张卡一起冒出来却长得一模一样。
+///
+/// 品牌卡的 id 取**族 id**（OceanBase 的 MySQL / Oracle 两种模式共用一个格子，
+/// 模式由表单里的切换器选），而 `oracle` / `mongodb` 这两个族名恰好与手写卡的 id
+/// 同名 —— `picker_cards` 里那句 `curated_ids.contains(brand.family)` 就是为它们写的。
+#[test]
+fn picker_card_ids_are_globally_unique() {
+    let mut seen = std::collections::BTreeSet::new();
+    for card in picker_cards() {
+        let id = card.id();
+        assert!(
+            seen.insert(id),
+            "选择器卡片 id 重复：{id}（三档里至少有两档画了同一个 id）"
+        );
+    }
+}
+
+/// 墙上那张 OceanBase 卡：**一族一格，点进去还要选一次模式**。
+///
+/// 这一条钉的是「品牌 ≠ 档位」最尖锐的那个样板（用户就是这么发现的）：OceanBase
+/// 的 MySQL 模式是**内建 `mysql` 档**、Oracle 模式是 **agent 轨**，两条路完全不同的
+/// 引擎，端口却都是 2883、账号一个 `root` 一个 `SYS`。所以它必须是**一张品牌卡**
+/// 而不是两张（否则墙上看到两个同名产品），点下去带的是族而不是具体模式。
+#[test]
+fn oceanbase_is_one_card_carrying_two_modes() {
+    let card = picker_cards()
+        .into_iter()
+        .find(|card| card.id() == "oceanbase")
+        .expect("选择器里没有 OceanBase 这张卡");
+    let PickerTarget::Brand(brand) = card.target() else {
+        panic!("OceanBase 应该是一张品牌卡，实际：{:?}", card.target());
+    };
+    assert_eq!(brand.family, "oceanbase");
+    let modes = brands::family_of(brand.key);
+    assert_eq!(modes.len(), 2, "OceanBase 该有 MySQL / Oracle 两种模式");
+    // 两种模式走**两条轨**：内建 mysql ↔ agent，这正是品牌卡必须能同时表达两者的原因。
+    let kinds: Vec<DatabaseKind> = modes.iter().map(|mode| mode.kind()).collect();
+    assert!(kinds.contains(&DatabaseKind::Mysql));
+    assert!(kinds.contains(&DatabaseKind::Agent));
+}
+
+/// 墙上的名字**两两不同** —— 三档是三个来源，撞名就是「同一个产品画了两张卡」。
+///
+/// 这一条抓到的是真实发生过的那种重复：手写卡叫 `PostgreSQL`（id 是界面习惯的
+/// `postgresql`），品牌表里那个牌子叫 `postgres` —— 两边对不上号时墙上就会出现
+/// 两张一模一样的 PostgreSQL。去重靠 `picker_cards` 里的 `CURATED_BRAND_ALIAS`。
+#[gpui::test]
+fn picker_card_names_are_unique(cx: &mut TestAppContext) {
+    init_theme(cx);
+    cx.update(|cx| {
+        let mut seen: std::collections::BTreeMap<String, &'static str> =
+            std::collections::BTreeMap::new();
+        for card in picker_cards() {
+            let name = card.name(cx).to_string();
+            assert!(!name.is_empty(), "卡片 {} 没有名字", card.id());
+            if let Some(previous) = seen.insert(name.clone(), card.id()) {
+                panic!("墙上两张卡同名：{name}（{previous} 与 {}）", card.id());
+            }
+        }
+    });
 }

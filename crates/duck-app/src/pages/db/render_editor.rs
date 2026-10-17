@@ -65,7 +65,9 @@ impl DatabasePage {
                             .min_w_0()
                             .truncate()
                             .text_color(tokens.colors.foreground)
-                            .child(SharedString::from(diagnostic.message.clone())),
+                            .child(selectable_text(SharedString::from(
+                                diagnostic.message.clone(),
+                            ))),
                     )
             })
             .collect::<Vec<_>>();
@@ -88,11 +90,11 @@ impl DatabasePage {
                             .flex_none()
                             .text_size(tokens.typography.xs.size)
                             .text_color(tokens.colors.muted_foreground)
-                            .child(SharedString::from(trf(
+                            .child(selectable_text(SharedString::from(trf(
                                 cx,
                                 "共 {} 个问题",
                                 &[&total.to_string()],
-                            ))),
+                            )))),
                     )
                 })
                 .into_any_element(),
@@ -286,7 +288,8 @@ impl DatabasePage {
                     }
                 }),
             )
-            // 「注释 / 压缩」（设计稿 `commentBtn` / `compactBtn`）：注释按整行切、
+            // 「注释 / 压缩」（设计稿 `commentBtn` / `compactBtn`）：注释 `--` /
+            // `/* */` 二合一（多行选区整段包块注释，见 `sqlintel::toggle_comments`）、
             // 压缩只动注释与空白。编辑器为空时两个都是点了没意义，禁用。
             .child(
                 tb(
@@ -708,7 +711,7 @@ impl DatabasePage {
                                     .text_size(tokens.typography.xs.size)
                                     .line_height(tokens.typography.xs.line_height)
                                     .text_color(tokens.colors.muted_foreground)
-                                    .child(SharedString::from(readout)),
+                                    .child(selectable_text(SharedString::from(readout))),
                             ),
                     );
                 }

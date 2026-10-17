@@ -251,9 +251,11 @@ fn open_file(window: Option<&mut Window>, path: &Path, cx: &mut App) {
 fn notice(window: Option<&mut Window>, message: SharedString, cx: &mut App) {
     match window {
         Some(window) => duck_components::notify::success(message, window, cx),
-        None => update::on_notify_window(cx, move |window, cx| {
-            duck_components::notify::success(message, window, cx);
-        }),
+        None => {
+            update::on_notify_window(cx, move |window, cx| {
+                duck_components::notify::success(message, window, cx);
+            });
+        }
     }
 }
 
