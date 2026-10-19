@@ -1,0 +1,128 @@
+/************************************************************
+ * 文件名称: Host{{ function_id }}.java
+ * 系统名称: 综合理财管理平台V6.0
+ * 模块名称: {{ business_domain }}
+ * 软件版权: 恒生电子股份有限公司
+ * 功能说明: {{ description }}
+ * 系统版本: 6.0.0.1
+ * 开发人员: 
+ * 开发时间: 
+ * 审核人员:
+ * 相关文档:
+ * 修改记录: 修改日期    修改人员    修改说明
+ *
+ *
+ * --- 可用模板变量 ---
+ *   function_id      - 交易码
+ *   description      - 接口描述
+ *   business_domain  - 业务域
+ *   package_base     - 包基路径（含银行代码）
+ *   bank_code        - 银行代码
+ *   request_fields[] - 请求字段列表（每项含 java_const, esb_name, meaning, is_numeric, is_amount, is_array, array_items）
+ *   response_fields[] - 应答字段列表（同上）
+ ************************************************************/
+
+package {{ package_base }}.bank.impl.{{ function_id }};
+
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
+import com.hundsun.jres.common.xml.parser.Tag;
+import com.hundsun.jres.common.xml.parser.xml.XmlParser;
+import com.hundsun.jres.common.xml.parser.xml.XmlTag;
+import com.hundsun.jres.impl.bizkernel.runtime.exception.BizBussinessException;
+import com.hundsun.lcpt.gateway.host.constant.EsbConstant;
+import com.hundsun.lcpt.gateway.host.constant.EsbTag;
+import com.hundsun.lcpt.gateway.host.constant.ITag;
+import com.hundsun.lcpt.gateway.host.tcp.AbstractTcpComm;
+import com.hundsun.lcpt.gateway.host.utils.LogUtil;
+import com.hundsun.lcpt.gateway.host.utils.XmlUtil;
+import org.springframework.stereotype.Service;
+
+import static com.hundsun.lcpt.gateway.host.utils.JsonUtils.extractFirstElement;
+
+@Service("Host{{ function_id }}")
+public class Host{{ function_id }} extends AbstractTcpComm {
+
+    @Override
+    public byte[] packRequest(String request) throws Exception {
+        Tag requestXml = null;
+        LogUtil.info("{{ function_id }} \u7EC4\u88C5\u8BF7\u6C42\u62A5\u6587\u5F00\u59CB\uFF1A", request);
+        JSONObject bodyJson = extractFirstElement(request);
+        try {
+            requestXml = packRequestBase(request);
+            Tag body = requestXml.getTagWithPath(EsbTag.BODY);
+            Tag t = null;
+
+{% if request_fields is defined and request_fields | length > 0 %}
+{% for field in request_fields %}
+{% if field.is_array %}
+            // {{ field.meaning }}
+            JSONArray {{ field.java_const }}Array = bodyJson.getJSONArray(ITag.{{ field.java_const }});
+            if ({{ field.java_const }}Array != null) {
+                for (int i = 0; i < {{ field.java_const }}Array.size(); i++) {
+                    JSONObject item = {{ field.java_const }}Array.getJSONObject(i);
+                    XmlTag itemTag = new XmlTag(EsbTag.{{ field.esb_name }});
+{% for sub in field.array_items %}
+                    itemTag.addTag(new XmlTag(EsbTag.{{ sub.esb_name }}).setContent(item.getString(ITag.{{ sub.java_const }})));
+{% endfor %}
+                    body.addTag(itemTag);
+                }
+            }
+{% else %}
+            t = new XmlTag(EsbTag.{{ field.esb_name }});
+            t.setContent(bodyJson.getString(ITag.{{ field.java_const }}));
+            body.addTag(t);
+
+{% endif %}
+{% endfor %}
+{% endif %}
+        } catch (Exception e) {
+            LogUtil.error("\u7EC4\u4E3B\u673A\u8BF7\u6C42\u62A5\u6587\u9519\u8BEF", e);
+            throw new BizBussinessException("1015", "\u7EC4\u4E3B\u673A\u8BF7\u6C42\u62A5\u6587\u9519\u8BEF\uFF1A" + e.getMessage());
+        }
+        LogUtil.info("{{ function_id }} \u7EC4\u88C5\u8BF7\u6C42\u62A5\u6587\u7ED3\u675F\uFF1A", requestXml.toString());
+        return requestXml.toString().getBytes();
+    }
+
+    @Override
+    public String packAnswer(byte[] result) throws Exception {
+        JSONObject resJson = new JSONObject();
+        LogUtil.info("{{ function_id }} \u7EC4\u88C5\u5E94\u7B54\u5F00\u59CB");
+        resJson = packResponseBase(result);
+        Tag responseXml = new XmlParser().parseString(new String(result, EsbConstant.CHARSET_DEFAULT));
+        Tag bodyXml = responseXml.getTagWithPath(EsbTag.BODY);
+        Tag sysHeadXml = responseXml.getTagWithPath(EsbTag.SYS_HEAD);
+        try {
+{% if response_fields is defined and response_fields | length > 0 %}
+{% for field in response_fields %}
+{% if field.is_array %}
+            // {{ field.meaning }}
+            Tag {{ field.java_const }}Tag = bodyXml.getTagWithPath(EsbTag.{{ field.esb_name }});
+            if ({{ field.java_const }}Tag != null) {
+                JSONArray {{ field.java_const }}Array = new JSONArray();
+                for (Tag item : {{ field.java_const }}Tag.getTags()) {
+                    JSONObject obj = new JSONObject();
+{% for sub in field.array_items %}
+                    obj.put(ITag.{{ sub.java_const }}, XmlUtil.getDataFromTag(item.getTagWithPath(EsbTag.{{ sub.esb_name }})));
+{% endfor %}
+                    {{ field.java_const }}Array.add(obj);
+                }
+                resJson.put(ITag.{{ field.java_const }}, {{ field.java_const }}Array);
+            }
+{% else %}
+            resJson.put(ITag.{{ field.java_const }}, XmlUtil.getDataFromTag(bodyXml.getTagWithPath(EsbTag.{{ field.esb_name }})));
+{% endif %}
+{% endfor %}
+{% endif %}
+        } catch (Exception e) {
+            LogUtil.error("\u7EC4\u54CD\u5E94\u62A5\u6587\u53D1\u751F\u5F02\u5E38", e);
+            throw new BizBussinessException("1025", "\u7EC4\u54CD\u5E94\u62A5\u6587\u53D1\u751F\u5F02\u5E38\uFF1A" + e.getMessage());
+        }
+        LogUtil.info("{{ function_id }} \u7EC4\u88C5\u62A5\u6587\u7ED3\u675F\uFF1A", resJson.toString());
+        return resJson.toJSONString();
+    }
+
+    public String getVersion() {
+        return "6.0.0.1";
+    }
+}

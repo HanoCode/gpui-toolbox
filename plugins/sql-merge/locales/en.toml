@@ -1,0 +1,137 @@
+# duck.sql.sql-merge 英文译文。键 = 中文源串。
+#
+# 大部分条目来自 `duck-sql-core/src/sql_merge.rs`（复刻参考仓）：那些是 `format!`
+# 插值后的日志/错误，运行时走 `duck-sql-tool::i18n::Renderer` 的模板反查，
+# **`{}` 的数量与顺序必须与源串一致**。带 `{:?}` / `{:.1}` 的条目由 `normalize`
+# 统一成 `{}` 再匹配，译文里也照写 `{}` 即可（参数已经是格式化好的串）。
+
+"SQL 合并" = "SQL Merge"
+"把多个版本包里的 SQL 按目录归并成单文件：SPSQL / db-*.zip / 标准目录三种模式" = "Merge SQL from many version packages into one file per directory: SPSQL, db-*.zip, or plain directory layouts"
+
+"源目录" = "Source directory"
+"选择版本包所在目录" = "Pick the directory holding the version packages"
+"客户号过滤" = "Customer filter"
+"只保留路径含该串的文件，留空不过滤" = "Keep only files whose path contains this string; leave empty for no filtering"
+"数据库类型过滤" = "Database filter"
+"如 oracle,mysql，逗号分隔，留空不过滤" = "e.g. oracle,mysql — comma separated; leave empty for no filtering"
+"合并结果" = "Merge result"
+
+# ── 阶段标签（源仓 SQLMerge.vue::stageLabel）──
+"扫描包目录…" = "Scanning packages…"
+"收集 SQL 文件…" = "Collecting SQL files…"
+"分组中…" = "Grouping…"
+"合并中…" = "Merging…"
+"复制脚本…" = "Copying scripts…"
+"合并完成" = "Merge finished"
+
+# ── 结果拼版（duck-sql-tool）──
+"请选择要合并的源目录" = "Pick the source directory to merge"
+"合并完成：{} 个合并组 · {} 条 SQL · {} s" = "Merge finished: {} groups · {} statements · {} s"
+"输出目录：{}" = "Output directory: {}"
+"扫描到 {} 个版本包" = "Scanned {} version packages"
+"{} 个源文件 · {} 条 SQL" = "{} source files · {} statements"
+"输出：{}" = "Output: {}"
+"条数校验：通过（合并后 {} 条）" = "Statement check: passed ({} statements after merging)"
+"条数校验：不一致，请人工核对" = "Statement check: mismatch — please verify manually"
+"处理日志（{} 行）" = "Process log ({} lines)"
+
+# ── 逐源文件明细表（源仓右栏那张五列表）──
+"来源包" = "Source package"
+"源文件" = "Source file"
+"合并到" = "Merged into"
+"SQL 条数" = "Statements"
+"大小" = "Size"
+
+# ── 使用说明（源仓帮助弹窗；勾「只看使用说明」时打进结果区）──
+"只看使用说明（不执行合并）" = "Show usage only (skip merging)"
+"SQL 文件合并 · 使用说明" = "SQL file merge · usage"
+"一、它做什么" = "1. What it does"
+"把多个升级包里的 .sql 按「同一相对目录」分组，按包版本先后追加成一个文件；" = "Groups the .sql files of several upgrade packages by relative directory, then appends them into one file in package-version order;"
+"文件名含 ddl 的（不分大小写）单独归入 DDL 组。源文件内容原样追加，不做改写。" = "files whose name contains ddl (case-insensitive) go to a separate DDL group. Source content is appended verbatim, never rewritten."
+"二、怎么用" = "2. How to use"
+"1. 「源目录」选存放多个包的父目录（也可直接选 libs/spsql/ 或含 db-*.zip 的目录）；" = "1. In \"Source directory\", pick the parent of several packages (or libs/spsql/, or a directory holding db-*.zip);"
+"2. 「客户号过滤」「数据库类型过滤」可留空；填了就只保留路径命中该串的文件；" = "2. \"Customer filter\" and \"Database filter\" may stay empty; once filled, only files whose path contains the string are kept;"
+"3. 执行。结果落在源目录下的 merge_sql_<时间戳>/，同级的 merge.log 是完整日志。" = "3. Run it. Output lands in merge_sql_<timestamp>/ under the source directory, with the full log beside it as merge.log."
+"三、三种目录结构（自动识别，不用选）" = "3. Three directory layouts (detected automatically — nothing to choose)"
+"标准结构——包目录里有 database/：" = "Standard layout — each package directory contains database/:"
+"- packages/IFMS3.0V202501.08.028/database/spsql/<版本>/base/001_xxx.sql" = "- packages/IFMS3.0V202501.08.028/database/spsql/<version>/base/001_xxx.sql"
+"- packages/IFMS3.0V202503.15.033/database/spsql/<版本>/base/001_xxx.sql" = "- packages/IFMS3.0V202503.15.033/database/spsql/<version>/base/001_xxx.sql"
+"路径里 V202501.08.028 这样的版本段会被忽略，用来对齐不同版本的同一目录。" = "Version segments such as V202501.08.028 are ignored, so the same directory lines up across versions."
+"SPSQL 库——libs/spsql/ 下每个版本目录：" = "SPSQL library — one version directory per package under libs/spsql/:"
+"- libs/spsql/pub/IFMS6.0V202405.04.005/pub/004_xxx.sql" = "- libs/spsql/pub/IFMS6.0V202405.04.005/pub/004_xxx.sql"
+"顶层目录（pub/、trans/…）当容器，按「容器/子目录」分组。" = "Top-level directories (pub/, trans/, …) act as containers; grouping is container/subdirectory."
+"ZIP 库——目录里有 db-*.zip：" = "ZIP library — the directory holds db-*.zip files:"
+"- db.zip → pub/、trans/；db-HAXM.zip → HAXM/pub/、HAXM/trans/" = "- db.zip → pub/, trans/; db-HAXM.zip → HAXM/pub/, HAXM/trans/"
+"解压出的临时文件在合并结束后自动清理。" = "Files unpacked to a temporary directory are cleaned up once merging finishes."
+"四、输出长什么样" = "4. What the output looks like"
+"- merge_sql_20261018_2340/spsql/base/IFMS3.0V202501.08.028～IFMS3.0V202503.15.033.sql" = "- merge_sql_20261018_2340/spsql/base/IFMS3.0V202501.08.028～IFMS3.0V202503.15.033.sql"
+"文件名是「起始包～终止包」；每组都会核对「合并后条数 = 各源文件条数之和」，" = "The file is named first-package～last-package; every group is checked so the merged count equals the sum of its source files,"
+"不一致时单独提示，交付前请人工核对。" = "and any mismatch is flagged on its own — please verify before delivery."
+
+# ── 入口校验（sql_merge.rs::merge_sql）──
+"源目录不能为空" = "Source directory must not be empty"
+"源目录不存在: {}" = "Source directory does not exist: {}"
+"用户取消" = "Cancelled by user"
+# 输出目录里的注意事项文件名与源仓一致（下游脚本可能按名字找它），不翻译。
+"注意事项.txt" = "注意事项.txt"
+
+# ── 读文件 / 解码 ──
+"读取文件失败 {}: {}" = "Failed to read file {}: {}"
+"UTF-8 BOM 文件解码失败: {}" = "Failed to decode UTF-8 BOM file: {}"
+"UTF-16LE 文件解码失败: {}" = "Failed to decode UTF-16LE file: {}"
+"UTF-16BE 文件解码失败: {}" = "Failed to decode UTF-16BE file: {}"
+"读取目录失败 {}: {}" = "Failed to read directory {}: {}"
+"读取目录失败: {}" = "Failed to read directory: {}"
+"读取 {} 目录失败: {}" = "Failed to read {} directory: {}"
+"读取 sqls 子目录失败: {}" = "Failed to read the sqls subdirectory: {}"
+
+# ── 临时目录 / ZIP ──
+"创建临时目录失败: {}" = "Failed to create temp directory: {}"
+"创建临时子目录失败: {}" = "Failed to create temp subdirectory: {}"
+"打开 ZIP 失败 {}: {}" = "Failed to open ZIP {}: {}"
+"读取 ZIP 失败 {}: {}" = "Failed to read ZIP {}: {}"
+"读取 ZIP 条目 {} 失败: {}" = "Failed to read ZIP entry {}: {}"
+"未找到有效的 db-*.zip 文件" = "No valid db-*.zip file found"
+
+# ── 输出目录 / 写文件 ──
+"创建 merge_sql 目录失败: {}" = "Failed to create the merge_sql directory: {}"
+"创建输出目录失败 {}: {}" = "Failed to create output directory {}: {}"
+"创建分组目录失败: {}" = "Failed to create group directory: {}"
+"创建 DDL 输出目录失败: {}" = "Failed to create the DDL output directory: {}"
+"写入 DDL 文件失败 ({}): {}" = "Failed to write DDL file ({}): {}"
+"创建 DML 输出目录失败: {}" = "Failed to create the DML output directory: {}"
+"写入 DML 文件失败 ({}): {}" = "Failed to write DML file ({}): {}"
+"写入合并文件失败 {}: {}" = "Failed to write merged file {}: {}"
+"创建目录失败 {}: {}" = "Failed to create directory {}: {}"
+"创建文件失败 {}: {}" = "Failed to create file {}: {}"
+"写入文件失败 {}: {}" = "Failed to write file {}: {}"
+"复制文件失败 {}: {}" = "Failed to copy file {}: {}"
+"创建脚本分组目录失败: {}" = "Failed to create the script group directory: {}"
+"复制脚本失败 {}: {}" = "Failed to copy script {}: {}"
+"删除已存在的脚本目录失败 {}: {}" = "Failed to remove the existing script directory {}: {}"
+
+# ── 扫描 / 分组 / 合并过程日志 ──
+"未找到包含 database/ 目录的有效包" = "No valid package containing a database/ directory"
+"未找到有效的版本目录" = "No valid version directory found"
+"开始扫描包目录: {}" = "Scanning the package directory: {}"
+"检测到 db-*.zip 文件，自动切换 ZIP 合并模式" = "Found db-*.zip files; switching to ZIP merge mode"
+"检测到 SPSQL 参考库结构，按容器分组合并" = "Detected the SPSQL reference layout; grouping by container"
+"扫描到 {} 个包: {:?}" = "Scanned {} packages: {:?}"
+"开始收集 SQL 文件..." = "Collecting SQL files…"
+"  📦 {}: 找到 {} 个 SQL 文件" = "  📦 {}: {} SQL files found"
+"开始分组..." = "Grouping…"
+"分组完成: {} 个目录组" = "Grouping done: {} directory groups"
+"开始合并..." = "Merging…"
+"▶ 合并组 [{}/{}]: {}" = "▶ Merge group [{}/{}]: {}"
+"  └─ DDL 文件合并..." = "  └─ merging DDL files…"
+"  └─ DML 文件合并..." = "  └─ merging DML files…"
+"  ✅ 组完成: {} ({} 个合并文件, 耗时 {:.1}s)" = "  ✅ group done: {} ({} merged files, {:.1}s)"
+"  📄 [{}] {} → {} ({} 条SQL)" = "  📄 [{}] {} → {} ({} statements)"
+"  {} 合并完成: {} (源 {} 条SQL → 合并 {} 条SQL, 大小 {} bytes)" = "  {} merged: {} ({} source statements → {} merged statements, {} bytes)"
+"文件末尾缺少分号: {} ({}) 末句: {}" = "Missing trailing semicolon: {} ({}) last statement: {}"
+# 这条带真实换行（源串里是 `\n` 转义）：键照抄那个转义，TOML 会把它解析成换行，
+# 与运行时渲染出来的消息一致（模板反查按换行对齐）。
+"[{}] {} 文件末尾缺少分号，已自动补全\n      └─ 末句: {}" = "[{}] {} is missing a trailing semicolon, appended\n      └─ last statement: {}"
+"已复制 {} 个 Shell 脚本/目录到对应分组目录" = "Copied {} shell scripts/directories into their group directories"
+"🎉 合并完成！共 {} 个合并组, {} 条SQL, 输出到: {}" = "🎉 Merge finished: {} groups, {} statements, output at: {}"
+"⚠️ 存在 {} 个注意事项，请查看: {}" = "⚠️ {} notices to review: {}"

@@ -1,0 +1,25 @@
+# duck.codec.encoding-converter 英文译文。键 = 中文源串。
+
+"编码转换" = "Encoding Converter"
+"Unicode / HTML 实体 / URL / Hex / 二进制 / 八进制 / Base32 / Base58 编解码互转" = "Convert between text and Unicode escapes, HTML entities, URL, Hex, binary, octal, Base32 and Base58"
+
+"输入" = "Input"
+"粘贴要转换的内容…" = "Paste the content to convert…"
+"方向" = "Direction"
+"编码（文本 → 编码）" = "Encode (text → escape)"
+"解码（编码 → 文本）" = "Decode (escape → text)"
+"编码方案" = "Scheme"
+"Unicode (\\uXXXX)" = "Unicode (\\uXXXX)"
+"Unicode (\\UXXXXXXXX)" = "Unicode (\\UXXXXXXXX)"
+"HTML 实体 (&#x;)" = "HTML entities (&#x;)"
+"URL 编码 (%XX)" = "URL encoding (%XX)"
+"Hex (0x)" = "Hex (0x)"
+"二进制 (01)" = "Binary (01)"
+"八进制 (0OO)" = "Octal (0OO)"
+"转换结果" = "Converted result"
+
+"请输入要转换的内容" = "Enter the content to convert"
+"未知编码：{}" = "Unknown scheme: {}"
+"无效的 Base58 字符：{}" = "Invalid Base58 character: {}"
+"URL 解码失败：输入里有不完整或非法的 %XX 转义" = "URL decoding failed: the input contains an incomplete or invalid %XX escape"
+"没有可转换的内容：检查输入是否与所选编码方案匹配" = "Nothing to convert: check that the input matches the selected scheme"

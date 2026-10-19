@@ -1,0 +1,22 @@
+[package]
+name = "duck-finance-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "金融工具族内核：PowerDesigner PDM 读取（表结构 / 建表 SQL / 数据字典）与渠道网关模型生成（Excel 接口文档 → Java 报文转换代码 / XML 模板）。零 gpui、全同步。"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# PDM 是 PowerDesigner 的 XML 方言（`o:` / `a:` / `c:` 三个命名空间）。
+quick-xml.workspace = true
+# 从 `pdm/*.pdm` 目录里递归找文件。
+walkdir.workspace = true
+# 读银行给的接口 Excel（多 sheet、合并单元格、共享字符串）。
+calamine.workspace = true
+# 数据字典里的「生成时间」跟系统时区（参考仓同款 `chrono::Local`）。
+chrono.workspace = true
+
+[lints]
+workspace = true

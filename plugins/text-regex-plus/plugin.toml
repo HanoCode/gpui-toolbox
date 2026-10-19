@@ -1,0 +1,59 @@
+# Duck Toolbox 插件：正则测试（duck.text.regex-plus）。
+#
+# 一工具一插件（见 plugins/text-formatter/plugin.toml 的说明）。
+
+id = "duck.text.regex-plus"
+name = "正则增强"
+description = "实时匹配、分组捕获与替换预览"
+version = "0.1.0"
+category = "development"
+tags = ["文本", "测试", "正则"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.text.regex-plus"
+name = "正则增强"
+description = "实时匹配、分组捕获与替换预览"
+category = "development"
+group = "测试"
+icon = "regex"
+keywords = ["regex", "正则", "匹配", "regexp", "regex-plus"]
+
+[tools.io]
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "测试文本"
+placeholder = "粘贴要匹配的文本…"
+required = true
+
+[[tools.io.params]]
+id = "pattern"
+kind = "text"
+label = "正则表达式"
+placeholder = "如 (\\w+)@(\\w+)\\.com"
+required = true
+
+[[tools.io.params]]
+id = "flags"
+kind = "text"
+label = "标志"
+placeholder = "g / i / m 组合，默认 g"
+default = "g"
+
+[[tools.io.params]]
+id = "replacement"
+kind = "text"
+label = "替换为（可选）"
+placeholder = "$1 … 引用分组；留空只测匹配"
+
+[tools.io.output]
+kind = "text"
+label = "匹配结果"

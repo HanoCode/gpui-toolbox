@@ -1,0 +1,26 @@
+# duck.sql.sql-classifier 英文译文。键 = 中文源串。
+
+"SQL 分类抽取" = "SQL Classifier"
+"把一批发布脚本拆成建表 / 改表 / 数据三类，并生成备份与回滚 SQL" = "Split a release's scripts into table creation / table changes / data changes, plus backup and rollback SQL"
+
+"源目录" = "Source directory"
+"选择版本包目录（含 pub / trans 时只处理这两个子目录）" = "Pick the release package directory (only pub / trans are processed when present)"
+"输出目录" = "Output directory"
+"留空 = <源目录>/exec" = "Empty = <source>/exec"
+"分类结果" = "Classification result"
+
+"请选择要分类的源目录" = "Pick the source directory to classify"
+"源目录不存在：{}" = "Source directory does not exist: {}"
+"{} 下没有 SQL 文件" = "No SQL file under {}"
+"跳过 {}：{}" = "Skipped {}: {}"
+"没有找到可读取的 SQL 文件" = "No readable SQL file was found"
+"无法创建输出目录 {}：{}" = "Cannot create the output directory {}: {}"
+"写入 {} 失败：{}" = "Failed to write {}: {}"
+"六个输出文件都是空的：这批脚本里没有可分类的语句" = "All six output files would be empty: these scripts hold no classifiable statement"
+
+"分类完成：{} 个目录 · {} 个文件" = "Classified {} directories, {} files"
+"（跳过 {} 个无法读取的文件）" = " ({} unreadable files skipped)"
+"输出目录：{}" = "Output directory: {}"
+"写入 {} 个文件" = "Wrote {} files"
+"{}（{} 行）" = "{} ({} lines)"
+"未分类语句 {} 条：三类规则都没命中，未写入任何文件" = "Unclassified statements: {} (matched none of the three rule sets, not written anywhere)"

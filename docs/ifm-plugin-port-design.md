@@ -31,7 +31,7 @@
 | 后端代码 | `src-tauri/src` 104,474 行 + workspace crates 405,652 行 | 按 crate 分域（`duck-db` / `duck-redis` / `duck-ssh` / `duck-mail` / `duck-project` …） |
 | 插件样例 | 无插件机制（`src/plugins` 只有 markdown-editor 组件） | `plugins/text-stat`（`plugin.toml` + `main.js` + `locales/en.toml`） |
 | MSRV | `rust-version = "1.93"`，edition 2021 | 1.85，edition 2024 |
-| 分类 | 15 个中文分类 | `ToolCategory` 7 档（`duck-tools/src/category.rs`） |
+| 分类 | 15 个中文分类 | `ToolCategory` 13 档（`duck-tools/src/category.rs`）：前 8 档与源仓同名同序（代码开发 / 数据管理 / 网络调试 / 代码比对 / 上线合并 / 效率工具 / 文件工具 / 帮助中心），后 5 档是宿主原有的内置分类 |
 | i18n | 中文硬编码 | 源串即键 + `en.toml` + 插件 `locales/<tag>.toml` |
 
 ---
@@ -204,9 +204,13 @@
 
 工具不再靠页面，而是声明输入与结果形状：
 
+> 落地口径见 `ifm-plugin-port-plan.md` ADR-7：**一工具一插件**，`tool.id` 直接等于
+> 插件 id（`manifest.rs` 放行这一写法）。下面这段是设计期的形状示意，最终字段以
+> `crates/duck-plugin/src/io.rs` 为准（`[[tools.io.fields]]` / `[[tools.io.params]]`）。
+
 ```toml
 [[tools]]
-id = "duck.devkit.text.case"
+id = "duck.text.case-convert"
 name = "大小写转换"
 description = "驼峰 / 蛇形 / 常量 / 短横线互转"
 icon = "case-sensitive"
@@ -385,9 +389,76 @@ plugins/<plugin_id>/
 | 议题 | 结论 |
 | --- | --- |
 | M0 是否先行 | **先做**。M0 不落地，后面所有工具只能读剪贴板 |
-| `[io]` 字段种类 | 6 类参数 + 6 类输出够用；「多列可编辑」不做，改为「选文件 + 只读预览 + 导出」 |
+| `[io]` 字段种类 | 6 类参数 + 6 类输出够用；~~「多列可编辑」不做，改为「选文件 + 只读预览 + 导出」~~ → **2026-10-18 已补上**：`[io.output.cells]` 声明可编辑列（`text` / `select`），配合 `TableDoc.row_ids` 与 `params.__edits`（前置修改语义）实现「就地改 → 重跑」。见 §13 |
 | `devkit.ops`（部署/集群/应用中心） | **不迁**（归入 SSH 域），只留 `nginx-generator` / `s3-manager` 组成 `devkit.config` |
 | `device-pool` | **不迁**：源工具含 Cursor 账号自动注册、临时邮箱池、无限重置，属绕过厂商授权，合规上不做 |
 | 核对时的 7 项裁撤 | Prompt 优化、Protobuf、存储估算、金融文件解析、敏感扫描、截图、Mermaid 渲染 |
 
 剩余开放项（实施中再定，不阻塞）：`s3-manager` 源页面仅 17 行，开工前先核实是否空壳。
+
+## 13. 可编辑结果表（2026-10-18 落地，补 §12 那条「不做」）
+
+参考项目里 `ChannelGatewayFieldTable.vue`（22 个 select 逐行改）/ `DataFormat.vue` /
+`CsvTableEditor.vue` 三处都是「表格里就地改」，而 `[io]` 原本只声明只读表格。补齐方式：
+
+### 声明（插件侧）
+```toml
+[tools.io.output]
+kind = "table"
+fallback = "code"          # 表格解不出来时按代码渲染（保住 Java 源码的等宽）
+columns = ["交易码", "方向", "字段", "类型", "必填", "含义"]
+
+[[tools.io.output.cells]]  # 可编辑列；不写 = 整表只读
+column = "类型"
+kind = "select"
+options = [{ value = "string", label = "string" }, { value = "number", label = "number" }]
+
+[[tools.io.output.cells]]
+column = "含义"
+kind = "text"
+```
+
+### 数据（插件 → 宿主）
+`body` 里除 `columns` / `rows` 再多一个 `row_ids`（与 `rows` 一一对应）。
+
+**`row_ids` 不是可选的锦上添花**：没有它，宿主只认「第 3 行第 2 列」，而重跑后行序一变，
+改动就落到别的行上。网关用的是 `交易码|方向|字段名`。
+
+### 回传（宿主 → 插件）
+点「应用 N 处改动」→ 宿主把脏格子序列化成 `params.__edits`：
+
+```json
+{"__edits": [{"row_id": "B100001|request|SerialNo", "column": "含义", "value": "流水号"}]}
+```
+
+**不开双向协议**：语义定成「前置修改」——插件收到后先落库，再照常执行原本的动作。
+于是「改几格 → 重跑」用的还是同一个动作（网关的 `bank-load` 就是「改完读回来看」），
+宿主不需要 v3 才有的 dispatch 能力，插件也不必保存会话状态。
+
+### 宿主侧实现（三处）
+| 位置 | 改动 |
+|---|---|
+| `duck-plugin/src/io.rs` | `OutputSpec.cells` / `fallback`、`CellSpec`、`CellKind`；装载期校验「声明了就得能兑现」（非 table 不许有 cells、列名必须在 columns 里、select 必须有 options） |
+| `duck-plugin/src/table.rs` | `TableDoc.row_ids` + `row_id(i)`、`CellEdit`、`EDIT_PARAM` |
+| `duck-app/src/pages/tool_table.rs` | 只读 / 可编辑两种形态的渲染 + 编辑状态（从 `tool_run.rs` 搬出，避免把 v3 要压到 400 行的文件再撑大） |
+
+⚠️ 编辑控件要 `window` 才建得出来，而结果是从后台回调里落的（那里没有窗口）
+⇒ 在 `Render::render` 入口懒建，不在 `run` 的完成回调里建。
+
+### 一条硬规则：没有 `row_ids` 就不给输入框
+
+宿主侧（`ToolRunView::ensure_table_editor`）看到「声明了 cells 但表里一个 `row_id` 都没有」
+时**不建编辑器**。理由不是保守，而是：
+
+- 编辑的价值是「改完之后它还在」。行序一变，「第 3 行」就换了人，改动落到别的行上比不给改更糟。
+- 插件不给 `row_ids` ＝ 说「这张表不打算被编辑」。典型例子是 Excel 解析结果：它没有可落库的
+  去处，改了下次重跑就没了。
+
+所以网关的两张表分工是：**`parse`（Excel 来源）只读**、**`bank-load`（库来源）可编辑**。
+想改字段就先「存入接口库」，再在读回的表里改——这也正是参考仓「先导入、再反复生成」的路径。
+
+### 另一个静默陷阱：宿主塞的默认值不算改动
+
+`select` 格遇到**空值**时会显示成第一个候选（空下拉框等于告诉用户「没得选」），但这只是
+显示用的默认值。`Slot::Select` 因此带一个 `injected` 标志：它仍为真时，`edits()` **跳过这一格**。
+少了这个标志，用户什么都没点，「应用」就会把一个本来为空的字段悄悄写成 `string`。

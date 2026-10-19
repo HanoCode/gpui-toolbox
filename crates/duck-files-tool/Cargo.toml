@@ -1,0 +1,15 @@
+[package]
+name = "duck-files-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "文件批处理族（`duck.files.*`）的 process 轨入口：搜索 / 目录树 / 批量改写 / CSV / 格式转换。"
+
+[dependencies]
+duck-plugin.workspace = true
+duck-plugin-process.workspace = true
+duck-files-core.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

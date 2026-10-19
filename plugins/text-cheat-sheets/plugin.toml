@@ -1,0 +1,131 @@
+# Duck Toolbox 插件：速查手册（duck.text.cheat-sheets）。
+#
+# **process 轨**：解析器在 `crates/duck-misc-core/src/cheat.rs`，逐行移植参考仓
+# `ifm_ai_tools/src/tools/cheat-parser.ts`（188 行）；20 张表的数据来自同仓
+# `cheat-sheets-data.ts`（2390 行），由 `scripts/gen_cheat_sheets.py` 转成
+# `crates/duck-misc-core/src/cheat_sheets/*.cheat` 并由 `include_str!` 编进二进制
+# —— 参考仓也是把表编进前端的，不是运行时读盘。
+#
+# 二进制 = `crates/duck-misc-tool`（零散工具族共用一个，按 `tool` 分派）。
+#
+# 参考页 `CheatSheets.vue` 是「左侧分类列表 + 搜索框 + 导入按钮 / 右侧命令模板 +
+# 速查正文」的浏览器。进程轨插件是「填表单 → 跑一次 → 出文本」，所以映射成：
+#
+# | 参考页 | 这里 |
+# | --- | --- |
+# | 左侧分类列表 | `sheet` 下拉（21 项，超过 12 项宿主自动换成可搜索下拉） |
+# | 搜索框 | `keyword`（同一套模糊打分：名称 1.0 / slug 0.9 / 分类 0.6） |
+# | 右侧命令模板 + 变量输入 | `vars` 一行赋值（见下）+ 渲染后的命令块 |
+# | 导入速查表目录 | `dir`（递归扫 `.cheat`，slug 加 `import-` 前缀） |
+# | 全部 / 仅命令 / 仅正文 | `view`（参考页没有这个开关，是本仓的输出惯例） |
+#
+# ⚠️ **两处有意不照抄**（理由在 `cheat.rs` 模块头）：
+# 1. `$ var: <命令>` 的候选**不执行**。参考仓在插件进程里 `sh -c` 跑任意命令；
+#    这里只把命令原文列出来，由用户自己跑。
+# 2. 变量不用「每个变量一个输入框」（声明式 IO 没有动态字段），改成一行
+#    `branch=main message=修复 登录`：值里可以有空格，`;` 或换行分隔多组。
+#    与 `text-data-format` 的「定长列宽」是同一种取舍——能复制存档、能进版本库。
+#
+# `allow_files = "read"`：只有 `dir` 会读盘，且只读用户显式选中的目录。
+
+id = "duck.text.cheat-sheets"
+name = "速查手册"
+description = "20 张速查表（git / docker / k8s / SQL / 正则 / 语言语法）：全文检索 + 命令模板"
+version = "0.2.0"
+category = "help"
+tags = ["文本", "生成", "速查", "命令", "navi"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.text.cheat-sheets"
+name = "速查手册"
+description = "20 张速查表（git / docker / k8s / SQL / 正则 / 语言语法）：全文检索 + 命令模板"
+category = "help"
+group = "生成"
+icon = "book-open"
+keywords = ["cheatsheet", "navi", "git", "docker", "k8s", "速查", "命令", "手册"]
+
+[tools.io]
+allow_files = "read"
+# 工作台骨架（原型 F）：左侧速查表列表（scan 回填：内置表 + 导入目录），
+# 右侧完整执行区。点列表项回填 `sheet` 参数——原版页面的左列表就是这个语义。
+layout = "workbench"
+scan = { src = "dir" }
+
+[tools.io.workbench]
+target = "sheet"
+
+[[tools.io.params]]
+id = "sheet"
+kind = "select"
+label = "速查表"
+default = "auto"
+# `auto` = 只搜索不出正文。20 张表就是参考仓的全部表，一项不多一项不少。
+options = [
+  { value = "auto", label = "搜索 / 列出全部" },
+  { value = "python", label = "Python" },
+  { value = "javascript", label = "JavaScript" },
+  { value = "typescript", label = "TypeScript" },
+  { value = "java", label = "Java" },
+  { value = "go", label = "Go" },
+  { value = "vue", label = "Vue" },
+  { value = "react", label = "React" },
+  { value = "git", label = "Git" },
+  { value = "mysql", label = "MySQL" },
+  { value = "redis", label = "Redis" },
+  { value = "bash", label = "Bash" },
+  { value = "ssh", label = "SSH" },
+  { value = "regex", label = "正则表达式" },
+  { value = "nginx", label = "NGINX" },
+  { value = "http-status", label = "HTTP 状态码" },
+  { value = "json", label = "JSON" },
+  { value = "docker", label = "Docker" },
+  { value = "docker-compose", label = "Docker Compose" },
+  { value = "kubernetes", label = "Kubernetes" },
+  { value = "vscode", label = "VS Code" },
+]
+
+# 只在「搜索 / 列出全部」时有意义：选中具体表之后正文已经是那一张，搜索框无处可用。
+[[tools.io.params]]
+id = "keyword"
+kind = "text"
+label = "搜索"
+placeholder = "模糊匹配名称 / slug / 分类，例如 dcom、正则、数据库"
+visible_when = { sheet = "auto" }
+
+[[tools.io.params]]
+id = "vars"
+kind = "text"
+label = "变量"
+placeholder = "branch=main message=修复 登录；留空则保留 <占位符>"
+
+[[tools.io.params]]
+id = "view"
+kind = "select"
+label = "显示"
+default = "all"
+options = [
+  { value = "all", label = "命令模板 + 速查内容" },
+  { value = "commands", label = "仅命令模板" },
+  { value = "content", label = "仅速查内容" },
+]
+
+[[tools.io.params]]
+id = "dir"
+kind = "path"
+pick = "folder"
+label = "导入目录"
+placeholder = "递归扫这个目录里的 .cheat 文件（navi 原生语法）"
+
+[tools.io.output]
+kind = "text"
+label = "速查结果"

@@ -1,0 +1,29 @@
+[package]
+name = "duck-sql-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SQL 工具核心逻辑：DDL 生成/分表等（复刻自 ifm_ai_tools 后端，零 gpui / 零 tokio）。"
+
+[dependencies]
+# 源仓同一套实现就用 `regex`：换成手写匹配等于重写逻辑，会自动作废源仓的验证。
+# `regex 1.13.1` 原本就在依赖图里（传递依赖），提成直接依赖不新增包、不动 license 清单。
+regex.workspace = true
+# `sql_checker.rs` 的全部规则都建在 sqlparser 的 AST 上（`sql_safety` / `duck-db` 也用它，
+# 版本同为 0.52，提成直接依赖不新增包）。
+serde.workspace = true
+sqlparser.workspace = true
+# `sql_merge.rs` 的配套：GBK 自动解码（银行脚本大量是 GBK）、ZIP 解包、
+# 目录遍历、日志时间戳。四者版本与参考仓一致，见工作区注释。
+chrono.workspace = true
+encoding_rs.workspace = true
+walkdir.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+# 复刻件自带的 5 条「SQL 丢失版本」缺陷复现测试要把 mtime 设成指定值，
+# 源仓用的就是 `filetime`（早就在依赖图里，0.2.29）。
+filetime = "0.2"
+
+[lints]
+workspace = true

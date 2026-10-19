@@ -1,0 +1,118 @@
+%% name TypeScript
+%% category 编程语言
+%% content
+# TypeScript 速查表
+
+## 基本类型
+
+```typescript
+let name: string = "张三";
+let age: number = 25;
+let isValid: boolean = true;
+let items: number[] = [1, 2, 3];
+let tuple: [string, number] = ["hello", 10];
+```
+
+## 接口与类型
+
+```typescript
+// 接口
+interface Person {
+    name: string;
+    age: number;
+    email?: string;  // 可选
+    readonly id: number;  // 只读
+}
+
+// 类型别名
+type ID = string | number;
+type Result<T> = { data: T; success: boolean };
+```
+
+## 函数类型
+
+```typescript
+function greet(name: string): string {
+    return `Hello, ${name}`;
+}
+
+const add = (a: number, b: number): number => a + b;
+
+// 可选参数
+function greet(name: string, msg?: string): string {
+    return `${msg || "Hello"}, ${name}`;
+}
+
+// 默认参数
+function greet(name: string, msg: string = "Hello"): string {
+    return `${msg}, ${name}`;
+}
+
+// 可变参数
+function sum(...nums: number[]): number {
+    return nums.reduce((a, b) => a + b, 0);
+}
+```
+
+## 泛型
+
+```typescript
+// 泛型函数
+function identity<T>(arg: T): T {
+    return arg;
+}
+
+// 泛型接口
+interface ApiResponse<T> {
+    data: T;
+    status: number;
+}
+
+// 泛型约束
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+    return obj[key];
+}
+```
+
+## 类型守卫
+
+```typescript
+function isString(value: unknown): value is string {
+    return typeof value === "string";
+}
+
+function process(value: string | number) {
+    if (isString(value)) {
+        console.log(value.toUpperCase());
+    } else {
+        console.log(value.toFixed(2));
+    }
+}
+```
+
+## 映射类型
+
+```typescript
+type Partial<T> = { [P in keyof T]?: T[P] };
+type Required<T> = { [P in keyof T]-?: T[P] };
+type Readonly<T> = { readonly [P in keyof T]: T[P] };
+type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+type Record<K extends keyof any, T> = { [P in K]: T };
+```
+
+## 条件类型
+
+```typescript
+type IsString<T> = T extends string ? "yes" : "no";
+type A = IsString<string>;  // "yes"
+type B = IsString<number>;  // "no"
+```
+
+## 常用工具类型
+
+```typescript
+type Exclude<T, U> = T extends U ? never : T;
+type Extract<T, U> = T extends U ? T : never;
+type NonNullable<T> = T extends null | undefined ? never : T;
+type ReturnType<T> = T extends (...args: any[]) => infer R ? R : any;
+```

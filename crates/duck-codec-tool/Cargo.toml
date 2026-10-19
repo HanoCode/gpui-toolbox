@@ -1,0 +1,21 @@
+[package]
+name = "duck-codec-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "加解密工具包（duck.codec.crypto-bundle）的 process 轨入口。"
+
+[dependencies]
+# 内核（复刻件）+ 插件框架的 stdio 协议层。字符串处理零额外依赖：
+# Base64 / URL / Hex / 哈希 / 密码生成全部走内核或标准库。
+duck-codec-core.workspace = true
+duck-plugin.workspace = true
+duck-plugin-process.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "duck-codec-tool"
+path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,47 @@
+# duck.merge.manifest-extract 英文译文。键 = 中文源串。
+#
+# 大部分条目来自 `duck-merge-core/src/manifest_extract.rs`（复刻参考仓）：那些是
+# `format!` 插值后的日志/错误，运行时走 `duck_plugin_process::render::Renderer`
+# 的模板反查，**`{}` 的数量与顺序必须与源串一致**。
+
+"清单提取" = "Manifest extract"
+"按清单文件从合并输出目录里提取对应文件：能找到的原样复制（保留相对路径），找不到的单独列出" = "Extract the files a manifest lists from a merge output directory: matches are copied with their relative paths, misses are listed separately"
+
+"清单文件" = "Manifest file"
+"选择清单文件 (.txt)" = "Pick the manifest file (.txt)"
+"源目录" = "Source directory"
+"SP 合并输出目录" = "SP merge output directory"
+"目标目录" = "Target directory"
+"提取结果输出目录" = "Where extracted files go"
+"提取结果" = "Extract result"
+
+# ── 入口校验（manifest_extract.rs::extract）──
+"清单文件、源目录和目标目录不能为空" = "Manifest file, source directory and target directory are all required"
+"源目录不存在: {}" = "Source directory does not exist: {}"
+"创建目标目录失败: {}" = "Failed to create the target directory: {}"
+"读取清单文件失败: {}" = "Failed to read the manifest file: {}"
+"清单文件中没有有效的文件条目" = "The manifest contains no usable file entries"
+
+# ── 逐条日志 ──
+"跳过目录条目: {}" = "Skipping directory entry: {}"
+"复制失败 {}: {}" = "Copy failed {}: {}"
+"未找到: {}" = "Not found: {}"
+"目录条目，已跳过" = "Directory entry — skipped"
+"未找到匹配文件" = "No matching file found"
+"复制失败: {}" = "Copy failed: {}"
+
+# ── 结果拼版（duck-merge-tool）──
+"共 {} 条清单项 · 找到 {} · 未找到 {} · {} s" = "{} manifest entries · {} found · {} missing · {} s"
+"目标目录：{}" = "Target directory: {}"
+"未找到的文件（{}）" = "Missing files ({})"
+"处理日志（{} 行）" = "Process log ({} lines)"
+"已取消。" = "Cancelled."
+
+# ── 长任务页（layout = job）：按钮 / 空态提示 / 分组标题 / 统计卡标签 ──
+"开始提取" = "Start extraction"
+"选择清单文件后点击「开始提取」" = "Pick a manifest file, then click \"Start extraction\""
+"清单项" = "Manifest entries"
+"找到" = "Found"
+"未找到" = "Not found"
+"总耗时" = "Total time"
+"输出" = "Output"

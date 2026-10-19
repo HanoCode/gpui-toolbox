@@ -1,0 +1,19 @@
+[package]
+name = "duck-merge-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "上线包合并族（duck.merge.*）的 process 轨入口：stdio JSONL，按 tool id 分派到 duck-merge-core（零 gpui）。"
+
+[[bin]]
+name = "duck-merge-tool"
+path = "src/main.rs"
+
+[dependencies]
+duck-plugin.workspace = true
+duck-plugin-process.workspace = true
+duck-merge-core.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

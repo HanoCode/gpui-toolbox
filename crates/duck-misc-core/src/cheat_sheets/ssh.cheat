@@ -1,0 +1,113 @@
+%% name SSH
+%% category CLI/Shell
+%% content
+# SSH 速查表
+
+## 基本连接
+
+```bash
+ssh user@host                     # 基本连接
+ssh -p 2222 user@host             # 指定端口
+ssh -v user@host                  # 调试模式
+```
+
+## 密钥管理
+
+```bash
+ssh-keygen -t ed25519 -C "email"  # 生成密钥对
+ssh-keygen -t rsa -b 4096         # RSA 密钥
+ssh-add ~/.ssh/id_ed25519         # 添加到代理
+ssh-add -l                        # 列出已加载的密钥
+ssh-copy-id user@host             # 复制公钥到服务器
+```
+
+## 配置文件
+
+```bash
+# ~/.ssh/config
+Host myserver
+  HostName 192.168.1.100
+  User admin
+  Port 22
+  IdentityFile ~/.ssh/id_ed25519
+
+Host *
+  ServerAliveInterval 60
+  ServerAliveCountMax 3
+```
+
+## 文件传输
+
+```bash
+scp file.txt user@host:/path/           # 上传文件
+scp user@host:/path/file.txt ./         # 下载文件
+scp -r folder/ user@host:/path/         # 递归复制目录
+scp -P 2222 file.txt user@host:/path/   # 指定端口
+rsync -avz folder/ user@host:/path/     # 同步目录
+rsync -avz --delete src/ dest/          # 同步并删除
+```
+
+## 隧道转发
+
+```bash
+# 本地转发: 本地8080 -> 远程80
+ssh -L 8080:localhost:80 user@host
+
+# 远程转发: 远程9090 -> 本地3000
+ssh -R 9090:localhost:3000 user@host
+
+# 动态代理 (SOCKS)
+ssh -D 1080 user@host
+
+# 后台运行隧道
+ssh -fNL 8080:localhost:80 user@host
+```
+
+## 执行远程命令
+
+```bash
+ssh user@host "ls -la /path"            # 单条命令
+ssh user@host "command1 && command2"    # 多条命令
+ssh user@host << 'EOF'
+cd /path
+./script.sh
+EOF
+```
+
+## 常用选项
+
+| 选项 | 说明 |
+|------|------|
+| -f | 后台运行 |
+| -N | 不执行远程命令 |
+| -T | 不分配终端 |
+| -C | 启用压缩 |
+| -v | 调试模式 |
+| -o StrictHostKeyChecking=no | 跳过主机密钥验证 |
+|
+%% commands
+% ssh
+# 连接远程主机
+ssh <user>@<host>
+$ user: =root|admin
+$ host: =192.168.1.100
+
+# 执行远程命令
+ssh <user>@<host> "<command>"
+$ user: =root
+$ host: =192.168.1.100
+$ command: =ls -la /opt|tail -n 50 /var/log/syslog|df -h
+
+# 上传文件到远程
+scp <local_file> <user>@<host>:<remote_dir>
+$ user: =root
+$ host: =192.168.1.100
+$ local_file: =./app.jar
+$ remote_dir: =/opt/
+
+# 本地端口转发
+ssh -L <local_port>:localhost:<remote_port> <user>@<host>
+$ local_port: =8080|9090|3306
+$ remote_port: =80|8080|3306
+$ user: =root
+$ host: =192.168.1.100

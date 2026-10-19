@@ -1,0 +1,99 @@
+%% name Kubernetes
+%% category 容器/云
+%% content
+# Kubernetes 速查表
+
+## kubectl 命令
+
+```bash
+kubectl get pods                     # 查看 Pod
+kubectl get pods -o wide             # 详细信息
+kubectl get pods --all-namespaces    # 所有命名空间
+kubectl describe pod <pod-name>      # 查看 Pod 详情
+kubectl logs <pod-name>              # 查看日志
+kubectl logs -f <pod-name>           # 实时日志
+kubectl exec -it <pod-name> -- bash  # 进入 Pod
+kubectl delete pod <pod-name>        # 删除 Pod
+```
+
+## 部署
+
+```bash
+kubectl apply -f deployment.yaml     # 创建/更新
+kubectl delete -f deployment.yaml    # 删除
+kubectl rollout status deployment/myapp  # 部署状态
+kubectl rollout undo deployment/myapp     # 回滚
+kubectl scale deployment/myapp --replicas=3  # 扩缩容
+```
+
+## 服务
+
+```bash
+kubectl get svc                      # 查看服务
+kubectl expose deployment/myapp --port=80 --type=LoadBalancer  # 暴露服务
+```
+
+## 配置映射和密钥
+
+```bash
+kubectl create configmap myconfig --from-file=config.yaml
+kubectl create secret generic mysecret --from-literal=password=123456
+kubectl get configmap myconfig -o yaml
+kubectl get secret mysecret -o yaml
+```
+
+## 常用资源清单
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+      - name: myapp
+        image: myapp:latest
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+```
+
+## 调试命令
+
+```bash
+kubectl get events                  # 查看事件
+kubectl top pods                    # 资源使用
+kubectl port-forward pod/myapp 8080:80  # 端口转发
+kubectl cp pod/myapp:/path ./local  # 复制文件
+```
+%% commands
+% kubernetes
+# 查看 Pod 日志
+kubectl logs -f <pod> -n <namespace>
+$ pod: kubectl get pods --no-headers -o custom-columns=NAME:.metadata.name | head -20
+$ namespace: =default|kube-system|production
+
+# 进入 Pod 终端
+kubectl exec -it <pod> -n <namespace> -- <shell>
+$ pod: kubectl get pods --no-headers -o custom-columns=NAME:.metadata.name | head -20
+$ namespace: =default|kube-system
+$ shell: =bash|sh
+
+# 重启 Deployment（滚动重启）
+kubectl rollout restart deployment/<name>
+$ name: kubectl get deployments --no-headers -o custom-columns=NAME:.metadata.name | head -20
+
+# 查看节点资源使用
+kubectl top nodes

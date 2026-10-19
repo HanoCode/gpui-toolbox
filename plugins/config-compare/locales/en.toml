@@ -1,0 +1,39 @@
+# duck.compare.config-compare 英文译文。键 = 中文源串。
+#
+# 与 `plugins/dir-compare` / `plugins/text-diff` 的表**故意有重叠**（「比对」「状态」
+# 「修改」…）：运行时每个插件只读自己目录下的 `locales/`，同族共用的词必须各写
+# 一份，否则英文界面会显示中文而漏译闸门全绿。
+
+"配置比较" = "Config Compare"
+"比两份配置（properties / YAML / JSON）：归一后按键显示修改、单侧新增与删除" = "Compare two configs (properties / YAML / JSON): normalize, flatten, then diff key by key"
+"比对" = "Compare"
+"配置 A" = "Config A"
+"粘贴左侧（基准）配置，支持 properties / YAML / JSON" = "Paste the left (base) config; properties / YAML / JSON are all supported"
+"配置 B" = "Config B"
+"粘贴右侧（对比）配置，支持 properties / YAML / JSON" = "Paste the right (target) config; properties / YAML / JSON are all supported"
+"显示" = "Show"
+"仅差异" = "Differences only"
+"全部" = "All"
+"输出格式" = "Output format"
+"清单" = "List"
+"表格（Markdown）" = "Table (Markdown)"
+"配置差异" = "Config differences"
+
+# ── 结果（清单与表格共用同一份词表）──
+"状态" = "Status"
+"左侧值" = "Left value"
+"右侧值" = "Right value"
+"修改" = "Modified"
+"仅左" = "Left only"
+"仅右" = "Right only"
+"相同" = "Same"
+"两侧都没读到配置项" = "Neither side yielded any config entry"
+"两侧配置完全一致" = "The two configs are identical"
+
+# ── 工具层（duck-compare-tool）──
+"两侧都要有内容" = "Paste content on both sides"
+"比对完成" = "Comparison finished"
+"配置差异 · 修改 {} 个 · 仅左 {} 个 · 仅右 {} 个 · 相同 {} 个" = "Config diff · {} modified · {} left only · {} right only · {} same"
+
+# ── 内核错误（duck-compare-core）──
+"JSON 解析失败: {}" = "Failed to parse JSON: {}"

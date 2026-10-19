@@ -1,0 +1,118 @@
+# Duck Toolbox 插件：Git 文本生成（duck.misc.git-tools）。
+#
+# **process 轨**：逻辑在 `crates/duck-misc-core/src/git.rs`，二进制 =
+# `crates/duck-misc-tool`。
+#
+# 参考仓 `GitTools.vue` 的三个页签，全是纯前端字符串处理 —— **一次 `git` 子进程都
+# 没调**（计划里写的「外部命令（git）」是误判，已在 §6.8 更正）。所以这里既不需要
+# `process_exec` 能力，也不需要工作区路径：
+#
+# 1. `commit`：从粘贴的 `git diff` 里认出变更文件、挑一句摘要，拼 Conventional
+#    Commits 标题（单文件时带 scope）。标题与文件清单回填，用户改完自己提交。
+# 2. `hook`：给 `pre-commit` / `commit-msg` / `pre-push` / `post-merge` 四种钩子
+#    生成 bash 或 node 脚本，落进 `.git/hooks/` 即可用。
+# 3. `gitignore`：按语言/平台拼 `.gitignore`，11 套模板照抄参考仓。
+#
+# 三个模式共用底部那个输入框（`diff`）：只有 commit 模式用它，另外两个模式忽略 ——
+# 这是「三种模式共用一张表单」的取舍，比拆三个插件更省一次跳转。
+#
+# `allow_files = "none"`：产物是文本，写不写文件由用户自己决定。
+
+id = "duck.misc.git-tools"
+name = "Git 文本生成"
+description = "从 git diff 生成 Conventional Commits 提交信息、常见钩子脚本，或按时选语言拼 .gitignore"
+version = "0.1.0"
+category = "development"
+tags = ["git", "commit", "hook", "gitignore", "提交", "钩子"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.misc.git-tools"
+name = "Git 文本生成"
+description = "从 git diff 生成 Conventional Commits 提交信息、常见钩子脚本，或按时选语言拼 .gitignore"
+category = "development"
+group = "开发"
+icon = "code"
+keywords = ["git", "commit", "conventional", "hook", "gitignore", "提交", "钩子", "忽略"]
+
+[tools.io]
+allow_files = "none"
+
+[[tools.io.fields]]
+id = "diff"
+kind = "textarea"
+label = "git diff 原文"
+placeholder = "粘贴 `git diff`（或 `git diff --cached`）的输出；只有提交信息模式用得到"
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+style = "tabs"
+label = "做什么"
+default = "commit"
+options = [
+  { value = "commit", label = "提交信息" },
+  { value = "hook", label = "钩子脚本" },
+  { value = "gitignore", label = ".gitignore" },
+]
+
+[[tools.io.params]]
+id = "type"
+kind = "select"
+label = "提交类型"
+default = "feat"
+options = [
+  { value = "feat", label = "feat: 新功能" },
+  { value = "fix", label = "fix: 修复" },
+  { value = "refactor", label = "refactor: 重构" },
+  { value = "chore", label = "chore: 杂项" },
+  { value = "docs", label = "docs: 文档" },
+  { value = "style", label = "style: 格式" },
+  { value = "test", label = "test: 测试" },
+]
+visible_when = { mode = "commit" }
+
+[[tools.io.params]]
+id = "hook"
+kind = "select"
+label = "钩子"
+default = "pre-commit"
+options = [
+  { value = "pre-commit", label = "pre-commit" },
+  { value = "commit-msg", label = "commit-msg" },
+  { value = "pre-push", label = "pre-push" },
+  { value = "post-merge", label = "post-merge" },
+]
+visible_when = { mode = "hook" }
+
+[[tools.io.params]]
+id = "lang"
+kind = "select"
+label = "脚本语言"
+default = "bash"
+options = [
+  { value = "bash", label = "Bash" },
+  { value = "node", label = "Node.js" },
+]
+visible_when = { mode = "hook" }
+
+[[tools.io.params]]
+id = "langs"
+kind = "text"
+label = "语言 / 平台"
+default = "Node,IDE"
+placeholder = "逗号或空格分隔，例如 Node,Python,Rust"
+visible_when = { mode = "gitignore" }
+
+[tools.io.output]
+kind = "text"
+label = "生成结果"

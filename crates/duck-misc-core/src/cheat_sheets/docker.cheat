@@ -1,0 +1,110 @@
+%% name Docker
+%% category 容器/云
+%% content
+# Docker 速查表
+
+## 一般命令
+
+| 命令 | 说明 |
+|------|------|
+| docker ps | 列出运行中的容器 |
+| docker ps -a | 列出所有容器 |
+| docker images | 列出所有镜像 |
+| docker exec -it <容器> bash | 进入容器 |
+| docker logs <容器> | 查看容器日志 |
+| docker stop <容器> | 停止容器 |
+| docker rm <容器> | 删除容器 |
+| docker rmi <镜像> | 删除镜像 |
+
+## 容器操作
+
+```bash
+docker run -d -p 80:80 nginx       # 后台运行并映射端口
+docker run -it --rm nginx          # 前台运行（退出自动删除）
+docker run -it -p 80:80 --name my-nginx nginx  # 指定名称
+docker start/stop/restart <容器>   # 启停容器
+docker pause/unpause <容器>        # 暂停/恢复
+docker kill <容器>                 # 强制停止
+docker rename <旧名> <新名>        # 重命名
+docker update -m 300M <容器>       # 更新资源限制
+```
+
+## 镜像操作
+
+```bash
+docker build -t <镜像名>:<标签> .  # 构建镜像
+docker tag <镜像> <新标签>         # 打标签
+docker push <镜像>                 # 推送镜像
+docker pull <镜像>                 # 拉取镜像
+docker save -o <文件> <镜像>       # 导出镜像
+docker load -i <文件>              # 导入镜像
+docker history <镜像>              # 查看构建历史
+docker commit <容器> <镜像名>      # 从容器创建镜像
+```
+
+## 网络操作
+
+```bash
+docker network create <名称>       # 创建网络
+docker network ls                  # 列出网络
+docker network inspect <网络>      # 查看网络详情
+docker network connect <网络> <容器>    # 连接容器到网络
+docker network disconnect <网络> <容器> # 断开连接
+docker network rm <网络>           # 删除网络
+```
+
+## 数据卷
+
+```bash
+docker volume create <名称>        # 创建卷
+docker volume ls                   # 列出卷
+docker volume inspect <卷>         # 查看卷详情
+docker volume prune                # 清理未使用的卷
+docker run -v <卷名>:/app nginx     # 挂载卷
+docker run -v /host/path:/container/path nginx  # 挂载目录
+```
+
+## 批量清理
+
+```bash
+docker stop -f $(docker ps -a -q)    # 停止所有容器
+docker rm -f $(docker ps -a -q)      # 删除所有容器
+docker rmi -f $(docker images -q)    # 删除所有镜像
+docker system prune                  # 清理未使用的资源
+docker image prune                   # 删除悬空镜像
+docker container prune               # 删除未使用的容器
+docker volume prune                  # 删除未使用的卷
+docker network prune                 # 删除未使用的网络
+```
+
+## 常用示例
+
+```bash
+# Nginx
+docker run -d -p 80:80 -v /data/html:/usr/share/nginx/html nginx
+
+# MySQL
+docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=123456 -v /data/mysql:/var/lib/mysql mysql:8.0
+
+# Redis
+docker run -d -p 6379:6379 -v /data/redis:/data redis
+
+# PostgreSQL
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=123456 -v /data/postgres:/var/lib/postgresql/data postgres
+```
+%% commands
+% docker
+# 进入容器
+docker exec -it <container> <shell>
+$ container: docker ps --format '{{.Names}}'
+$ shell: =bash|sh
+
+# 查看容器日志
+docker logs -f <container>
+$ container: docker ps --format '{{.Names}}'
+
+# 停止所有容器
+docker stop $(docker ps -q)
+
+# 清理无用资源
+docker system prune -f

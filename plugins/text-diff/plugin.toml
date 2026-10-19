@@ -1,0 +1,78 @@
+# Duck Toolbox 插件：文本差异（duck.compare.text-diff）。
+#
+# **process 轨**：算法在 `crates/duck-compare-core/src/text_diff.rs`，逐字复刻参考仓
+# `ifm_ai_tools/src-tauri/src/file_ops.rs::compute_diff`（生产已验证：`TextDiff::from_lines`
+# 找行块，`Replace` 段内再按字符做一次内联差异）。
+# 二进制 = `crates/duck-compare-tool`（比对整族共用一个，按 `tool` 分派）。
+#
+# `[io.output] kind = "diff"`：宿主画 A/B 双栏 + 行内高亮。结构化行数据走
+# process 协议的 `body` 事件，可复制的纯文本（unified diff）走 `result`。
+#
+# 两个输入框是 `[io.fields]` 的上限（0~2 个）：A/B 两段文本本来就该是两个框，
+# 而不是一个框里塞分隔符。字段值除拼进 `input` 外，还会按 id（`text_a` / `text_b`）
+# 单独放进参数，插件按 id 取——否则两段文本会有歧义。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 从 `target/<profile>/duck-compare-tool`
+# 拷进来），不入库；缺失时执行页会提示先构建。
+
+id = "duck.compare.text-diff"
+name = "文本对比"
+description = "两段文本逐行比对：A/B 双栏、行内高亮、复制为 unified diff"
+version = "0.1.0"
+category = "compare"
+tags = ["diff", "compare", "比对", "差异", "文本"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.compare.text-diff"
+name = "文本对比"
+description = "两段文本逐行比对：A/B 双栏、行内高亮、复制为 unified diff"
+category = "compare"
+group = "比对"
+icon = "columns-2"
+keywords = ["diff", "compare", "比对", "差异", "文本", "unified"]
+
+# 纯内存运算：不读文件、不出网。
+[tools.io]
+fields_layout = "row"
+swap_fields = true
+allow_files = "none"
+
+[[tools.io.fields]]
+id = "text_a"
+kind = "textarea"
+label = "文本 A"
+placeholder = "粘贴左侧（基准）文本"
+
+[[tools.io.fields]]
+id = "text_b"
+kind = "textarea"
+label = "文本 B"
+placeholder = "粘贴右侧（对比）文本"
+
+[[tools.io.params]]
+id = "ignore_whitespace"
+kind = "switch"
+label = "忽略行尾空白"
+default = "false"
+
+# 参考仓 `TextDiff.vue` 的「忽略大小写」**默认开着**，这里照抄那个默认值：
+# 实施场景里比的多是配置文件 / 建表脚本，大小写差异基本不是重点。
+[[tools.io.params]]
+id = "ignore_case"
+kind = "switch"
+label = "忽略大小写"
+default = "true"
+
+[tools.io.output]
+kind = "diff"
+label = "差异"

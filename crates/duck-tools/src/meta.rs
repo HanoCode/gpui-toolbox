@@ -170,10 +170,10 @@ impl ToolMetaBuilder {
         self
     }
 
-    /// 二级分组。
+    /// 二级分组；`None` = 不分组。
     #[must_use]
-    pub fn group(mut self, group: &'static str) -> Self {
-        self.meta.group = Some(group);
+    pub fn group(mut self, group: Option<&'static str>) -> Self {
+        self.meta.group = group;
         self
     }
 
@@ -253,7 +253,7 @@ mod tests {
             .description("一句话说明")
             .keywords(&["demo", "演示"])
             .category(ToolCategory::Development)
-            .group("调试")
+            .group(Some("调试"))
             .beta()
             .dev()
             .build();

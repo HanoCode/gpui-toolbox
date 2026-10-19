@@ -1,0 +1,27 @@
+# `duck.misc.json-schema` 的英译表（中文源串即键，见 AGENTS §i18n）。
+#
+# 注意两类不走这里的字符串：
+# - **Schema 的校验文案**（`must be string` / `must have required property 'x'`）
+#   是 ajv 的英文原文、内核常量，本来就与界面语言无关；
+# - Schema / JSON 本身是数据。
+
+"JSON Schema 校验" = "JSON Schema Validator"
+"按 Draft-07 Schema 校验 JSON，按 ajv 的口径逐条列出错误位置与原因" = "Validate JSON against a Draft-07 schema and list every error with its location, ajv-style"
+
+"JSON 实例" = "JSON instance"
+"贴一份 Draft-07 Schema，例如 {\"type\":\"object\",\"required\":[\"name\"]}" = "Paste a Draft-07 schema, e.g. {\"type\":\"object\",\"required\":[\"name\"]}"
+"贴要校验的 JSON" = "Paste the JSON to validate"
+"校验结果" = "Validation result"
+
+"：" = ": "
+"Schema 和 JSON 实例都要填" = "Both the schema and the JSON instance are required"
+"正在校验…" = "Validating…"
+"校验通过" = "Validation passed"
+"✓ 校验通过" = "✓ Valid"
+"{} 个错误" = "{} error(s)"
+"Schema JSON 格式错误" = "Schema is not valid JSON"
+"实例 JSON 格式错误" = "Instance is not valid JSON"
+"Schema 必须是 JSON 对象（或布尔值）" = "Schema must be a JSON object (or a boolean)"
+"Schema 引用了找不到的定义" = "Schema references a definition that does not exist"
+"Schema 里的正则写错了" = "Schema contains an invalid regular expression"
+"Schema 嵌套太深（可能有循环引用）" = "Schema nests too deeply (a circular $ref?)"

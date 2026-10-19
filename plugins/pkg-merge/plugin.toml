@@ -1,0 +1,137 @@
+# Duck Toolbox 插件：上线包合并（duck.merge.pkg-merge）。
+#
+# **process 轨**：逻辑在 `crates/duck-merge-core/src/sp_merge.rs`，那份代码逐字
+# 复刻参考仓 `ifm_ai_tools/src-tauri/src/sp_merge.rs`（1,460 行），共用
+# `merge_common` / `upd_merge` / `duck-sql-core::sql_merge`。二进制 =
+# `crates/duck-merge-tool`（整族共用一个，按 `tool` 分派）。
+#
+# 参考页面 `SpMerge.vue`（约 760 行）就是设计稿原型 D（长任务页）：垂直分组配置 +
+# 进度 + 统计卡 + 右侧固定日志。`layout = "job"` 让宿主按这个形态渲染。
+#
+# 参考页面的「待合并版本列表 / 版本范围」两格是页面自己 `scanPackages()` 后回填的
+# 展示值——这里以**只读 display 参数**补上，由 `[io] scan` 的「重新扫描」按钮回填
+# （宿主以 `action = "scan"` 复用同一份二进制扫 `sp_merge::scan_versions`）。
+# 回填按声明序：第 1 个 display ← 逗号连接的完整列表，第 2 个 ← 「首 → 末」，
+# 所以 `merge_versions` 必须声明在 `version_range` 之前（显示顺序与参考页相反，
+# 代价是零特判）。只读 = 不存在「改了却不生效」的误导。
+#
+# `allow_files = "read_write"`：读包目录里的 ZIP、往结果目录写合并产物。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 从 `target/<profile>/duck-merge-tool`
+# 拷进来），不入库；缺失时执行页会提示先构建。
+
+id = "duck.merge.pkg-merge"
+name = "SP 包合并"
+description = "把一批 IFMS 上线包（SP 3.0/4.0、IFMS6.0）按版本排序合并成一个输出目录：解压去重、服务目录归并、SQL 脚本合并、需求单说明合并"
+version = "0.1.0"
+category = "merge"
+tags = ["merge", "sp", "ifms", "上线包", "合并"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.merge.pkg-merge"
+name = "SP 包合并"
+description = "把一批 IFMS 上线包（SP 3.0/4.0、IFMS6.0）按版本排序合并成一个输出目录：解压去重、服务目录归并、SQL 脚本合并、需求单说明合并"
+category = "merge"
+group = "合并"
+icon = "layers"
+keywords = ["merge", "sp", "ifms", "上线包", "合并", "合并包"]
+
+[tools.io]
+allow_files = "read_write"
+layout = "job"
+run_label = "开始合并"
+log_hint = "选择包目录后点击「开始合并」"
+scan = { src = "src_dir" }
+
+[[tools.io.params]]
+id = "src_dir"
+kind = "path"
+pick = "folder"
+label = "包目录"
+placeholder = "选择包含 ZIP 包的目录"
+required = true
+
+[[tools.io.params]]
+id = "dst_dir"
+kind = "path"
+pick = "folder"
+label = "结果目录"
+placeholder = "选择合并后输出位置"
+required = true
+
+# 参考页面的「系统版本」是四个静态按钮（全部 / 3.0 / 4.0 / 6.0），不是扫出来的
+# 版本号列表——`run_merge` 拿它比的是包名里的**产品版本**（`p.version`）。
+# `pills` = 原版那排药丸按钮的形态（提交值与 select 一致）。
+[[tools.io.params]]
+id = "version_filter"
+kind = "pills"
+label = "系统版本"
+default = "all"
+options = [
+    { value = "all", label = "全部" },
+    { value = "3.0", label = "3.0" },
+    { value = "4.0", label = "4.0" },
+    { value = "6.0", label = "6.0" },
+]
+
+# 只读展示（扫描回填）：对应参考页面的「待合并版本列表」。
+# 必须是**第 1 个** display 参数——回填约定按声明序（见文件头注释）。
+[[tools.io.params]]
+id = "merge_versions"
+kind = "display"
+label = "待合并版本列表"
+
+# 只读展示（扫描回填）：对应参考页面的「版本范围」。
+[[tools.io.params]]
+id = "version_range"
+kind = "display"
+label = "版本范围"
+
+[[tools.io.params]]
+id = "include_database"
+kind = "switch"
+label = "包含 database（追加模式）"
+default = "true"
+group = "合并选项"
+
+[[tools.io.params]]
+id = "include_documents"
+kind = "switch"
+label = "包含 documents（追加模式）"
+default = "true"
+group = "合并选项"
+
+[[tools.io.params]]
+id = "include_sql_merge"
+kind = "switch"
+label = "SQL 合并（追加到 merge_sql/）"
+default = "true"
+group = "合并选项"
+
+[[tools.io.params]]
+id = "include_service_merge"
+kind = "switch"
+label = "服务合并（ifmpub / jres 分发到各服务的 WEB-INF/lib）"
+default = "true"
+group = "合并选项"
+
+[[tools.io.params]]
+id = "include_upd_merge"
+kind = "switch"
+label = "需求单说明合并（merge_upd.xml）"
+default = "true"
+group = "合并选项"
+
+[tools.io.output]
+kind = "text"
+label = "合并结果"

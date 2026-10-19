@@ -1,0 +1,16 @@
+[package]
+name = "duck-misc-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "零散工具族内核：JSON Schema（Draft-07 子集）校验、Git 文本生成（提交信息/Hook/.gitignore）、Nginx 配置生成（零 gpui、全同步）。"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# JSON Schema 的 `pattern` / `patternProperties` 与 `format` 校验（email/uri/ipv4…）。
+regex.workspace = true
+
+[lints]
+workspace = true

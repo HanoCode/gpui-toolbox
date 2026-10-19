@@ -1,0 +1,80 @@
+# duck.text.data-format 英文译文。键 = 中文源串。
+#
+# 与同族插件的表**故意有重叠**：运行时每个插件只读自己目录下的 `locales/`，所以
+# `fail()` 里那十几条共用错误串必须各写一份，否则英文界面会显示中文而漏译闸门全绿
+# （闸门查的是所有插件表的并集）。
+#
+# 带 `{}` 的条目来自 `duck-files-tool` 的 `fill`：占位符数量与顺序必须与源串一致。
+
+# ── 清单 ──
+"数据格式转换" = "Data Format Converter"
+"CSV / 定长文件 / 固定分隔符解析，导出 JSON、Markdown、SQL INSERT、文本表" = "Parse CSV, fixed-width or fixed-delimiter files and export JSON, Markdown, SQL INSERT or a text table"
+
+# ── 表单 ──
+"输入" = "Input"
+"粘贴数据；上面选了文件就忽略这里" = "Paste the data here; ignored when a file is picked above"
+"文件类型" = "File kind"
+"CSV" = "CSV"
+"定长文件" = "Fixed-width"
+"固定分隔符" = "Fixed delimiter"
+"导入文件" = "Import file"
+"选择 .csv / .tsv / .txt / .dat" = "Pick a .csv / .tsv / .txt / .dat file"
+
+# ── CSV 段 ──
+"分隔符" = "Delimiter"
+"自动识别" = "Detect automatically"
+"逗号 ," = "Comma ,"
+"制表符 Tab" = "Tab"
+"分号 ;" = "Semicolon ;"
+"竖线 |" = "Pipe |"
+"首行为表头" = "First row is header"
+"输出格式" = "Output format"
+"JSON 数组" = "JSON array"
+"JSON 对象" = "JSON objects"
+"Markdown" = "Markdown"
+"SQL INSERT" = "SQL INSERT"
+"文本表格" = "Text table"
+"表名" = "Table name"
+"INSERT 语句用的表名" = "Table name used by the INSERT statements"
+
+# ── 定长段 ──
+"列宽配置" = "Column widths"
+"10:姓名,8:城市,4:年龄（只写宽度也行：10,8,4）" = "10:name,8:city,4:age (widths only also works: 10,8,4)"
+"去除首尾空格" = "Trim surrounding spaces"
+"定长格式" = "Fixed-width"
+
+# ── 固定分隔符段 ──
+"逗号 ( , )" = "Comma ( , )"
+"制表符" = "Tab"
+"竖线 ( | )" = "Pipe ( | )"
+"分号 ( ; )" = "Semicolon ( ; )"
+"井号 ( # )" = "Hash ( # )"
+"美元 ( $ )" = "Dollar ( $ )"
+"波浪 ( ~ )" = "Tilde ( ~ )"
+"其他" = "Other"
+"自定义分隔符" = "Custom delimiter"
+"可以是多个字符，如 ||" = "Multiple characters are allowed, e.g. ||"
+"列名" = "Column names"
+"可选，逗号分隔；无表头时用" = "Optional, comma separated; used when there is no header"
+"分隔符格式" = "Delimited"
+
+# ── 结果 ──
+"转换结果" = "Converted result"
+"列" = "Column"
+"{} 行 × {} 列" = "{} rows × {} columns"
+
+# ── 错误（`duck-files-tool::fail`） ──
+"路径不存在" = "Path not found"
+"路径不是目录" = "Not a directory"
+"路径不是文件" = "Not a file"
+"路径包含非法字符 '..'，拒绝访问" = "Path contains '..'; access denied"
+"拒绝访问系统路径" = "System paths are off limits"
+"文件不是 UTF-8 编码，无法处理" = "File is not UTF-8 text and cannot be processed"
+"正则表达式写错了" = "Invalid regular expression"
+"输入是空的，没有可处理的内容" = "Nothing to work with: the input is empty"
+"这种格式不支持" = "This format is not supported"
+"文件太大" = "File too large"
+"目标已存在，改名会覆盖" = "Target already exists; the rename would overwrite it"
+"没有可撤销的记录" = "Nothing to undo"
+"读写文件失败" = "File I/O failed"
+"配置写错了，检查一下再试" = "The configuration is invalid; please check it"

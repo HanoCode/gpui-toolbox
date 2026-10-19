@@ -1,0 +1,101 @@
+# Duck Toolbox 插件：SEE 包合并（duck.merge.see-merge）。
+#
+# **process 轨**：逻辑在 `crates/duck-merge-core/src/see_merge.rs`（1,082 行，逐字复刻
+# 参考仓同名文件），二进制与 `duck.merge.*` 全族共用一个。
+#
+# 参考页面 `SeeMerge.vue`：目录 + 客户号 + 版本 + 两个勾选框（Slim 模式 / 自定义
+# 脚本），带一份内置帮助。这里按同样字段声明；帮助文本由插件说明承载。
+#
+# `allow_files = "read_write"`：读 SEE 分包 ZIP、往结果目录写合并产物。
+
+id = "duck.merge.see-merge"
+name = "FINFSS 包合并"
+description = "把一批 SEE 分包 ZIP 合成一份：解压、内层包去重、按客户号个性化 SQL、Slim JAR 瘦身、生成 MD5 校验文件后重新打包"
+version = "0.1.0"
+category = "merge"
+tags = ["merge", "see", "合包", "上线包"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.merge.see-merge"
+name = "FINFSS 包合并"
+description = "把一批 SEE 分包 ZIP 合成一份：解压、内层包去重、按客户号个性化 SQL、Slim JAR 瘦身、生成 MD5 校验文件后重新打包"
+category = "merge"
+group = "合并"
+icon = "folders"
+keywords = ["merge", "see", "合包", "上线包", "SEE"]
+
+[tools.io]
+allow_files = "read_write"
+layout = "job"
+run_label = "开始合并"
+log_hint = "选择包目录后点击「开始合并」"
+
+[[tools.io.params]]
+id = "src_dir"
+kind = "path"
+pick = "folder"
+label = "包目录"
+placeholder = "选择 SEE 分包 ZIP 所在目录"
+required = true
+
+[[tools.io.params]]
+id = "dst_dir"
+kind = "path"
+pick = "folder"
+label = "结果目录"
+placeholder = "选择输出位置"
+required = true
+
+# 只有勾了「处理自定义脚本」才用到客户号做个性化 SQL；但参考页面是常显的，
+# 这里也常显（不设 `visible_when`——留空即「只做通用合并」）。
+[[tools.io.params]]
+id = "customer_no"
+kind = "text"
+label = "客户编号"
+placeholder = "用于个性化脚本，可留空"
+
+[[tools.io.params]]
+id = "db_type"
+kind = "text"
+label = "数据库类型"
+placeholder = "oracle / mysql，可留空"
+
+[[tools.io.params]]
+id = "current_version"
+kind = "text"
+label = "当前版本"
+placeholder = "可选"
+
+[[tools.io.params]]
+id = "target_version"
+kind = "text"
+label = "目标版本"
+placeholder = "可选"
+
+[[tools.io.params]]
+id = "handle_custom_script"
+kind = "switch"
+label = "处理自定义脚本"
+default = "false"
+
+group = "合并选项"
+[[tools.io.params]]
+id = "slim_mode"
+kind = "switch"
+label = "Slim 模式（瘦身 JAR）"
+default = "false"
+
+group = "合并选项"
+[tools.io.output]
+kind = "text"
+label = "合并结果"

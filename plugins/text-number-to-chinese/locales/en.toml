@@ -1,0 +1,17 @@
+# duck.text.number-to-chinese 英文译文。键 = 中文源串。
+
+"数字转中文大写" = "Number to Chinese"
+"金额转人民币大写（票据用）与纯数字中文读法（报表用）" = "Amounts to RMB uppercase for invoices, plain Chinese readings for reports"
+
+"输入数字" = "Number input"
+"如 123456.78，支持每行一个" = "e.g. 123456.78, one per line"
+"输出风格" = "Output style"
+"人民币大写（壹拾万元整）" = "RMB uppercase (壹拾万元整)"
+"中文读法（十万）" = "Chinese reading (十万)"
+"两种都要" = "Both"
+"转换结果" = "Converted result"
+
+"{} → 无法识别的数字" = "{} → unrecognized number"
+"{} → {}" = "{} → {}"
+"{} → {} / {}" = "{} → {} / {}"
+"请输入数字，支持每行一个" = "Enter numbers, one per line"

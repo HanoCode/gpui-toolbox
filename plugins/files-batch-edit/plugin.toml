@@ -1,0 +1,143 @@
+# Duck Toolbox 插件：批量改写（duck.files.batch-edit）。
+#
+# **process 轨**：逻辑在 `crates/duck-files-core/src/batch.rs`，两份来源：
+#   1. 内容替换 —— 逐字复刻参考仓 `ifm_ai_tools/src-tauri/src/batch_replace.rs`
+#      （`build_regex` / `expand_group_refs` / `locate_matches` 原样搬过来，生产已验证）；
+#   2. 批量改名 —— 参考仓只有前端实现（`BatchRenamer.vue`），按「复刻不复研」的口径
+#      把那段前端逻辑移植成 Rust（只改主名、`{name}{index}{ext}` 占位符、`index` 补零 3 位）。
+#
+# 与参考仓的三处主动差异，都是「源仓做不到、本仓必须做」的：
+#   • **两阶段改名**：源仓直接 `rename(a → b)`，遇到链式（`a→b` 且 `b→c`）或环（`a↔b`）
+#     会覆盖数据；这里先全改成临时名再落目标名。
+#   • **撤销落盘**：源仓只写 `.bak`，跟本没法回滚整批；这里把原文/原名写进
+#     `<plugin>/data/undo/<时间戳>/journal.json`，**下一次运行**还能撤（只留最近 20 条）。
+#   • **先预览后应用**：`action` 的默认值是「预览」，跑一次只列「将改成什么 / 为什么跳过」，
+#     确认后再改成「应用」。批量改名不可逆，这一步不能省。
+#
+# `dir` **故意不是必填**：撤销上一次（`action = 撤销`）只需要撤销目录，与刚才改的是
+# 哪个目录无关；非撤销动作缺目录时插件自己报「输入是空的」。
+#
+# `allow_files = "read_write"`：应用阶段要回写文件、还要写撤销日志。
+#
+# `bin/run` 是构建产物，不入库（`sbin/plugins.sh` 投放）。
+
+id = "duck.files.batch-edit"
+name = "批量文件查找替换"
+description = "按目录批量改名或替换内容：先预览再应用，每次操作都可在下一次运行里撤销"
+version = "0.1.0"
+category = "files"
+tags = ["batch", "rename", "replace", "批量", "改名", "替换", "撤销"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.files.batch-edit"
+name = "批量文件查找替换"
+description = "按目录批量改名或替换内容：先预览再应用，每次操作都可在下一次运行里撤销"
+category = "files"
+group = "文件"
+icon = "pencil"
+keywords = ["batch", "rename", "replace", "批量", "改名", "重命名", "替换", "正则", "撤销"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.fields]]
+id = "pattern"
+kind = "text"
+label = "查找"
+placeholder = "改名模式下是文件名里要找的片段（留空 = 只加前缀后缀）；替换模式下是要找的内容"
+
+[[tools.io.fields]]
+id = "replacement"
+kind = "text"
+label = "替换为"
+placeholder = "改名模式下留空 = 删掉找到的片段；替换模式支持 $1 / ${name} 引用分组"
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+style = "tabs"
+label = "改写什么"
+default = "rename"
+options = [
+  { value = "rename", label = "文件名" },
+  { value = "replace", label = "文件内容" },
+]
+
+[[tools.io.params]]
+id = "action"
+kind = "select"
+label = "动作"
+default = "preview"
+options = [
+  { value = "preview", label = "预览（不改动）" },
+  { value = "apply", label = "应用" },
+  { value = "undo", label = "撤销上一次" },
+  { value = "undo-list", label = "查看撤销记录" },
+]
+
+[[tools.io.params]]
+id = "dir"
+kind = "path"
+pick = "folder"
+label = "目录"
+placeholder = "选择要处理的目录（撤销时可不填）"
+
+[[tools.io.params]]
+id = "is_regex"
+kind = "switch"
+label = "按正则解析"
+default = "false"
+
+[[tools.io.params]]
+id = "case_sensitive"
+kind = "switch"
+label = "区分大小写"
+default = "false"
+
+[[tools.io.params]]
+id = "prefix"
+kind = "text"
+label = "加前缀"
+placeholder = "如 backup_，留空不加"
+visible_when = { mode = "rename" }
+
+[[tools.io.params]]
+id = "suffix"
+kind = "text"
+label = "加后缀"
+placeholder = "如 _2024，留空不加"
+visible_when = { mode = "rename" }
+
+[[tools.io.params]]
+id = "include"
+kind = "text"
+label = "只处理这些文件"
+placeholder = "*.txt,*.md，逗号分隔，留空 = 全部（.bak 永远跳过）"
+
+[[tools.io.params]]
+id = "max_depth"
+kind = "number"
+label = "最大深度"
+default = "0"
+min = 0
+max = 64
+
+[[tools.io.params]]
+id = "show_hidden"
+kind = "switch"
+label = "包含隐藏项"
+default = "false"
+
+[tools.io.output]
+kind = "text"
+label = "改写报告"

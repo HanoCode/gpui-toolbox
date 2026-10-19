@@ -1,0 +1,23 @@
+[package]
+name = "duck-compare-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "比对插件的 process 轨入口：stdio JSONL，按 tool id 分派到 duck-compare-core（零 gpui）。"
+
+[[bin]]
+name = "duck-compare-tool"
+path = "src/main.rs"
+
+[dependencies]
+duck-plugin.workspace = true
+duck-plugin-process.workspace = true
+duck-compare-core.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# 端到端测试要造真 JAR（`jar_compare` 会打开 ZIP 读 class）。
+zip.workspace = true
+
+[lints]
+workspace = true

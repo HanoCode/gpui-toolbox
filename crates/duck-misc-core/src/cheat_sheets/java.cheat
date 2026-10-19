@@ -1,0 +1,157 @@
+%% name Java
+%% category 编程语言
+%% content
+# Java 速查表
+
+## 基础语法
+
+```java
+// 变量
+int age = 25;
+double pi = 3.14;
+String name = "张三";
+boolean isValid = true;
+
+// 数组
+int[] arr = {1, 2, 3, 4, 5};
+String[] names = new String[10];
+
+// 常量
+final int MAX = 100;
+```
+
+## 字符串
+
+```java
+String s = "Hello World";
+s.toLowerCase();           // 转小写
+s.toUpperCase();           // 转大写
+s.trim();                  // 去除空白
+s.replace("H", "J");       // 替换
+s.split(" ");              // 分割
+s.substring(0, 5);         // 截取
+s.indexOf("ello");         // 位置
+s.contains("ello");        // 包含
+s.length();                // 长度
+```
+
+## 集合框架
+
+```java
+// ArrayList
+List<String> list = new ArrayList<>();
+list.add("item");
+list.get(0);
+list.remove(0);
+list.size();
+
+// HashMap
+Map<String, Integer> map = new HashMap<>();
+map.put("key", 1);
+map.get("key");
+map.containsKey("key");
+map.values();
+
+// HashSet
+Set<Integer> set = new HashSet<>();
+set.add(1);
+set.contains(1);
+set.remove(1);
+```
+
+## 类与对象
+
+```java
+public class Person {
+    private String name;
+    private int age;
+
+    public Person(String name, int age) {
+        this.name = name;
+        this.age = age;
+    }
+
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+
+    @Override
+    public String toString() {
+        return "Person{name='" + name + "', age=" + age + "}";
+    }
+}
+
+// 继承
+public class Student extends Person {
+    private String grade;
+}
+```
+
+## 异常处理
+
+```java
+try {
+    int result = 10 / 0;
+} catch (ArithmeticException e) {
+    System.out.println("除数不能为0");
+} catch (Exception e) {
+    System.out.println("错误: " + e.getMessage());
+} finally {
+    System.out.println("总会执行");
+}
+```
+
+## Stream API
+
+```java
+List<String> names = Arrays.asList("张三", "李四", "王五");
+
+// 过滤
+names.stream()
+    .filter(name -> name.startsWith("张"))
+    .collect(Collectors.toList());
+
+// 映射
+names.stream()
+    .map(String::toUpperCase)
+    .collect(Collectors.toList());
+
+// 归约
+int sum = IntStream.range(1, 101).sum();
+
+// 分组
+Map<Integer, List<String>> grouped = names.stream()
+    .collect(Collectors.groupingBy(String::length));
+```
+
+## Lambda 表达式
+
+```java
+// 函数式接口
+@FunctionalInterface
+interface Calculator {
+    int calculate(int a, int b);
+}
+
+// Lambda
+Calculator add = (a, b) -> a + b;
+Calculator multiply = (a, b) -> a * b;
+
+// 方法引用
+names.forEach(System.out::println);
+```
+
+## 并发
+
+```java
+// ExecutorService
+ExecutorService executor = Executors.newFixedThreadPool(4);
+executor.submit(() -> {
+    System.out.println("Task running");
+});
+executor.shutdown();
+
+// CompletableFuture
+CompletableFuture.supplyAsync(() -> fetchData())
+    .thenApply(data -> processData(data))
+    .thenAccept(result -> System.out.println(result));
+```

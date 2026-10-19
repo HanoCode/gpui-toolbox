@@ -1,0 +1,159 @@
+%% name Go
+%% category 编程语言
+%% content
+# Go 速查表
+
+## 基础语法
+
+```go
+// 变量
+var name string = "张三"
+age := 25  // 短变量声明
+const Pi = 3.14
+
+// 基本类型
+var i int = 42
+var f float64 = 3.14
+var s string = "hello"
+var b bool = true
+
+// 数组和切片
+arr := [5]int{1, 2, 3, 4, 5}
+slice := []int{1, 2, 3}
+slice = append(slice, 4)
+
+// 映射
+m := make(map[string]int)
+m["key"] = 1
+delete(m, "key")
+```
+
+## 函数
+
+```go
+// 基本函数
+func greet(name string) string {
+    return "Hello, " + name
+}
+
+// 多返回值
+func divide(a, b float64) (float64, error) {
+    if b == 0 {
+        return 0, errors.New("division by zero")
+    }
+    return a / b, nil
+}
+
+// 可变参数
+func sum(nums ...int) int {
+    total := 0
+    for _, n := range nums {
+        total += n
+    }
+    return total
+}
+
+// 匿名函数
+add := func(a, b int) int {
+    return a + b
+}
+```
+
+## 结构体与方法
+
+```go
+// 结构体
+type Person struct {
+    Name string
+    Age  int
+}
+
+// 方法
+func (p Person) Greet() string {
+    return "我是" + p.Name
+}
+
+// 指针接收者
+func (p *Person) SetAge(age int) {
+    p.Age = age
+}
+```
+
+## 接口
+
+```go
+type Writer interface {
+    Write([]byte) (int, error)
+}
+
+// 实现接口
+type ConsoleWriter struct{}
+
+func (cw ConsoleWriter) Write(data []byte) (int, error) {
+    return fmt.Print(string(data))
+}
+```
+
+## 错误处理
+
+```go
+result, err := divide(10, 0)
+if err != nil {
+    fmt.Println("Error:", err)
+    return
+}
+fmt.Println("Result:", result)
+```
+
+## Goroutine 与 Channel
+
+```go
+// Goroutine
+go func() {
+    fmt.Println("Running in goroutine")
+}()
+
+// Channel
+ch := make(chan int)
+go func() {
+    ch <- 42
+}()
+value := <-ch
+
+// 带缓冲的 Channel
+ch := make(chan int, 10)
+
+// 关闭 Channel
+close(ch)
+```
+
+## 常用标准库
+
+```go
+import (
+    "fmt"
+    "strings"
+    "strconv"
+    "math"
+    "time"
+    "net/http"
+    "encoding/json"
+    "os"
+    "io"
+    "log"
+)
+```
+
+## 错误处理模式
+
+```go
+// 自定义错误
+type ValidationError struct {
+    Field   string
+    Message string
+}
+
+func (e *ValidationError) Error() string {
+    return e.Field + ": " + e.Message
+}
+```

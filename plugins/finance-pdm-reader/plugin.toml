@@ -1,0 +1,124 @@
+# Duck Toolbox 插件：PDM 文件阅读器（duck.finance.pdm-reader）。
+#
+# **process 轨**：内核在 `crates/duck-finance-core/src/pdm/`，二进制与本族另一个
+# 插件共用 `crates/duck-finance-tool`。
+#
+# 移植参考仓 `src-tauri/src/pdm/`（1,344 行）的**只读部分**：
+# `parser.rs` 逐字复制（事件流 + Id→列下标 两段式引用）、`sql_gen.rs` 与
+# `export.rs` 的结构逐行保留。两个文件没迁，理由写在 `duck-finance-core` 的 crate
+# 文档里：`db_import.rs` / `generator.rs` 要数据库连接（反向导出 PDM），不属于阅读器。
+#
+# ## 为什么是「一个动作一次运行」
+#
+# 参考仓是「左侧表列表 / 中间字段表 / 右侧导出面板」的三栏视图，本仓执行页由
+# `[io]` 声明驱动（ADR-1：操作区置顶 → 结果居中 → 输入框沉底），没有三栏容器。
+# 所以能力面按**动作**摊平：一次跑一个动作，结果是一份可复制的文本
+# （预览是等宽表格，导出是 SQL / Markdown / HTML 原文）。导出不落盘——
+# `allow_files = "read"`，产物由用户复制（与 nginx 族同口径）。
+#
+# ## 与参考仓的三处主动偏离
+#
+# 1. **建表 SQL 的表名**：源仓写成 `CREATE TABLE {q} (` + `\n {code} (\n`，表名没进
+#    语句、括号还少一个（产出 `CREATE TABLE " (`）。这里按显而易见的意图修正，
+#    其余排版不动。详见 crate 文档。
+# 2. **多了一个「注释语句」动作**：来自参考仓**前端**的 `generateCommentSql`
+#    （Oracle 的 `COMMENT ON`，后端没有对应实现）。导完建表语句紧接着就要它。
+# 3. **`Word` / `Excel` / `PDF` 三种导出**是同一批行换一层外壳（Office 的 HTML 方言 /
+#    A4 打印版），源仓有，这里保留——内容照旧，用户复制进 `.doc` / `.xls` / 打印。
+
+id = "duck.finance.pdm-reader"
+name = "PDM 阅读器"
+description = "解析 PowerDesigner PDM（.pdm / .xml）：浏览表结构与字段、生成建表 SQL 与注释、导出数据字典"
+version = "0.1.0"
+category = "data"
+tags = ["pdm", "powerdesigner", "数据字典", "建表", "ddl", "oracle", "mysql", "表结构"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.finance.pdm-reader"
+name = "PDM 阅读器"
+description = "解析 PowerDesigner PDM（.pdm / .xml）：浏览表结构与字段、生成建表 SQL 与注释、导出数据字典"
+category = "data"
+group = "数据管理"
+icon = "table"
+keywords = ["pdm", "powerdesigner", "数据字典", "建表", "ddl", "oracle", "mysql", "表结构", "xml"]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.params]]
+id = "action"
+kind = "select"
+label = "动作"
+default = "list"
+options = [
+  { value = "list", label = "表清单" },
+  { value = "table", label = "字段明细" },
+  { value = "ddl", label = "建表 SQL" },
+  { value = "insert", label = "插入 SQL" },
+  { value = "comment", label = "注释语句" },
+  { value = "markdown", label = "数据字典 Markdown" },
+  { value = "html", label = "数据字典 HTML" },
+  { value = "word", label = "数据字典 Word" },
+  { value = "excel", label = "数据字典 Excel" },
+  { value = "pdf", label = "数据字典 PDF" },
+]
+
+[[tools.io.params]]
+id = "source"
+kind = "select"
+label = "来源"
+default = "file"
+options = [
+  { value = "file", label = "单个 PDM 文件" },
+  { value = "dir", label = "整个目录（合并）" },
+]
+
+[[tools.io.params]]
+id = "file"
+kind = "path"
+pick = "file"
+label = "PDM 文件"
+placeholder = "选一个 .pdm 或 .xml"
+visible_when = { source = "file" }
+
+[[tools.io.params]]
+id = "dir"
+kind = "path"
+pick = "folder"
+label = "目录"
+placeholder = "递归找 .pdm / .xml 并合并成一份模型"
+visible_when = { source = "dir" }
+
+[[tools.io.params]]
+id = "table"
+kind = "text"
+label = "表"
+# 逗号 / 换行分隔多个词：单词是「筛出所有命中」，多词是「每个词各挑一张表」
+# ——参考页搜索框的原始语义，也是「手上有一批表名只想导这几张」的用法。
+placeholder = "表代码 / 名字 / 注释的一部分，或逗号、换行分隔多张；留空 = 全部（「字段明细」必填）"
+
+[[tools.io.params]]
+id = "dialect"
+kind = "select"
+label = "方言"
+default = "oracle"
+options = [
+  { value = "oracle", label = "Oracle（双引号 + 分号）" },
+  { value = "mysql", label = "MySQL（反引号 + 列注释）" },
+]
+visible_when = { action = "ddl" }
+
+[tools.io.output]
+# 产出是 SQL / Markdown / HTML 原文，等宽比正文体更好认（与 `sql-ddl-generator` 同口径）。
+kind = "code"
+label = "结果"

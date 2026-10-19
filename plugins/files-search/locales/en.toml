@@ -1,0 +1,59 @@
+# duck.files.search 英文译文。键 = 中文源串。
+#
+# 与同族另外四个插件的表**故意有重叠**：运行时每个插件只读自己目录下的 `locales/`，
+# 所以「路径不存在」「正则表达式写错了」这类共用错误串必须各写一份，否则英文界面
+# 会显示中文而漏译闸门全绿（闸门查的是所有插件表的并集）。
+#
+# 带 `{}` 的条目来自 `duck-files-tool` 里的 `fill`：占位符数量与顺序必须与源串一致
+# （实参按序填，数量不一致时多出的丢掉、不足的留 `{}`）。
+
+# ── 清单 ──
+"文件内容搜索" = "File Search"
+"按文件名或内容搜索目录：命中带行列号，支持正则、包含/排除通配、深度与结果上限" = "Search a directory by file name or content: hits carry line:column, with regex, include/exclude globs, depth and result caps"
+"文件" = "Files"
+"关键词" = "Keyword"
+"文件名片段或要搜索的文本；勾选「按正则解析」后按正则处理" = "A file-name fragment or the text to look for; treated as a regular expression once \"Match as regex\" is on"
+"搜索目录" = "Search in"
+"选择要搜索的目录" = "Pick the directory to search"
+"搜索方式" = "Search by"
+"按内容" = "Content"
+"按文件名" = "File name"
+"按正则解析" = "Match as regex"
+"区分大小写" = "Case sensitive"
+"全词匹配" = "Whole word"
+"全词" = "whole word"
+"只查这些文件" = "Only these files"
+"*.rs,*.md，逗号分隔，留空 = 全部" = "*.rs,*.md — comma separated; empty means all files"
+"跳过这些" = "Skip these"
+"最大深度" = "Max depth"
+"最多命中" = "Max hits"
+"包含隐藏项" = "Include hidden entries"
+"搜索结果" = "Search results"
+
+# ── 报告 ──
+"正在遍历目录…" = "Walking the directory…"
+"搜索完成" = "Search finished"
+"搜索范围：{}" = "Scope: {}"
+"关键词：{}" = "Keyword: {}"
+"命中 {} 处" = "hits {}"
+"扫描 {} 个文件" = "scanned {} files"
+"跳过 {} 个（二进制或过大）" = "skipped {} (binary or too large)"
+"结果已截断（只显示前 {} 处）" = "Results truncated (showing the first {})"
+"没有匹配的文件" = "No matching files"
+"没有匹配的内容" = "No matching content"
+"（该文件共 {} 处）" = "(hits in this file: {})"
+
+# ── 内核错误（稳定码 → 一句话；细节原样附在后面，不翻译）──
+"路径不存在" = "Path not found"
+"路径不是目录" = "Not a directory"
+"路径不是文件" = "Not a file"
+"路径包含非法字符 '..'，拒绝访问" = "Path contains '..'; access denied"
+"拒绝访问系统路径" = "System paths are off limits"
+"文件不是 UTF-8 编码，无法处理" = "File is not UTF-8 text and cannot be processed"
+"正则表达式写错了" = "Invalid regular expression"
+"输入是空的，没有可处理的内容" = "Nothing to work with: the input is empty"
+"这种格式不支持" = "This format is not supported"
+"文件太大" = "File too large"
+"目标已存在，改名会覆盖" = "Target already exists; the rename would overwrite it"
+"没有可撤销的记录" = "Nothing to undo"
+"读写文件失败" = "File I/O failed"

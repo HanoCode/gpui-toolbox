@@ -1,0 +1,33 @@
+[package]
+name = "duck-net-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "网络与联调内核：HTTP 请求、TCP/XML/FIX 报文收发、S3/FTP/SFTP 连通检测、hosts 解析合并（零 gpui、零 tauri、全同步）。"
+
+[dependencies]
+# SFTP 连通检测复用「驱动系统 ssh」那条已经验证过的路（`duck-ssh` 本身零依赖、
+# 零 gpui）：口令走 askpass 助手、连接复用与超时都由它拼好。这里不引 `ssh2`
+# —— 理由与 `duck-ssh` crate 文档里「为什么不用 russh」完全一致。
+duck-ssh = { path = "../duck-ssh" }
+serde.workspace = true
+serde_json.workspace = true
+# hosts 解析与校验（IPv4/IPv6/主机名三条正则，口径照抄参考仓 `utils/hosts.ts`）。
+regex.workspace = true
+# HTTP 与 S3 的传输：阻塞式、纯 Rust TLS（rustls/ring），不带 tokio —— 插件进程
+# 是「跑一次就退」的短命进程，异步运行时纯属负担。
+ureq.workspace = true
+# SigV4 签名：HMAC-SHA256 链 + 十六进制摘要（参考仓 `conn_check.rs` 同一套）。
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
+# Basic 认证头与 S3 的签名串都要 base64。
+base64.workspace = true
+# hosts 合并结果要写生成时间（参考仓 `mergeProfiles` 同口径）。
+chrono.workspace = true
+# 报文收发的 GBK / GB18030（银行老系统几乎都是 GBK；参考仓的 `charset` 参数同义）。
+encoding_rs.workspace = true
+
+[lints]
+workspace = true

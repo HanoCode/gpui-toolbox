@@ -1,0 +1,140 @@
+%% name React
+%% category 前端框架
+%% content
+# React 速查表
+
+## 组件基础
+
+```jsx
+// 函数组件
+function Welcome({ name }) {
+  return <h1>Hello, {name}</h1>;
+}
+
+// 箭头函数
+const Welcome = ({ name }) => <h1>Hello, {name}</h1>;
+```
+
+## Hook
+
+```jsx
+import { useState, useEffect, useContext, useRef, useMemo, useCallback } from 'react';
+
+function Counter() {
+  const [count, setCount] = useState(0);
+  
+  useEffect(() => {
+    document.title = `Count: ${count}`;
+    return () => { /* 清理 */ };
+  }, [count]);
+  
+  return (
+    <button onClick={() => setCount(c => c + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+```
+
+## Context
+
+```jsx
+const ThemeContext = React.createContext('light');
+
+function App() {
+  return (
+    <ThemeContext.Provider value="dark">
+      <Child />
+    </ThemeContext.Provider>
+  );
+}
+
+function Child() {
+  const theme = useContext(ThemeContext);
+  return <div className={theme}>...</div>;
+}
+```
+
+## refs
+
+```jsx
+function TextInput() {
+  const inputRef = useRef(null);
+  
+  const focus = () => {
+    inputRef.current.focus();
+  };
+  
+  return <input ref={inputRef} />;
+}
+```
+
+## useMemo / useCallback
+
+```jsx
+function App({ items, query }) {
+  const filtered = useMemo(
+    () => items.filter(item => item.includes(query)),
+    [items, query]
+  );
+  
+  const handleClick = useCallback(() => {
+    console.log('clicked');
+  }, []);
+}
+```
+
+## 自定义 Hook
+
+```jsx
+function useCounter(initialValue = 0) {
+  const [count, setCount] = useState(initialValue);
+  
+  const increment = () => setCount(c => c + 1);
+  const decrement = () => setCount(c => c - 1);
+  
+  return { count, increment, decrement };
+}
+```
+
+## 路由
+
+```jsx
+import { BrowserRouter, Routes, Route, Link, useParams } from 'react-router-dom';
+
+function App() {
+  return (
+    <BrowserRouter>
+      <nav>
+        <Link to="/">首页</Link>
+        <Link to="/about">关于</Link>
+      </nav>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/user/:id" element={<User />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+function User() {
+  const { id } = useParams();
+  return <div>User: {id}</div>;
+}
+```
+
+## 状态管理 (Zustand)
+
+```jsx
+import { create } from 'zustand';
+
+const useStore = create((set) => ({
+  count: 0,
+  increment: () => set((state) => ({ count: state.count + 1 })),
+}));
+
+function Counter() {
+  const { count, increment } = useStore();
+  return <button onClick={increment}>{count}</button>;
+}
+```

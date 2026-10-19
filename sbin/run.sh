@@ -58,6 +58,9 @@ if [ "$do_build" -eq 1 ]; then
     else
         cargo build -p "$DUCK_CRATE"
     fi
+    # process 轨插件的可执行文件是**构建产物**（清单只声明相对路径），
+    # 不投放过去执行页就会提示「二进制缺失」。assemble 脚本幂等，重复跑无副作用。
+    "$DUCK_ROOT/sbin/plugins.sh" ${profile:+"--$profile"}
 fi
 
 bin="$DUCK_ROOT/target/$profile/$DUCK_BIN_NAME"

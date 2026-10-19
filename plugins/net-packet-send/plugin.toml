@@ -1,0 +1,174 @@
+# Duck Toolbox 插件：报文调试（duck.net.packet-send）。
+#
+# **process 轨**：逻辑在 `crates/duck-net-core/src/codec.rs` + `tcp.rs`，二进制 =
+# `crates/duck-net-tool`。分帧规则逐字移植参考仓 `src-tauri/src/net/codec.rs`（240 行），
+# 通信骨架合并自 `TcpRequest.vue`（651）/ `XmlSend.vue`（584）/ `FixSend.vue`（612）
+# 三个页面 —— 三者共用同一套「连 → 发 → 收 → 写日志」，差异只有「报文怎么编帧」。
+#
+# 相对源页面的两处主动差异（模块头里有完整理由）：
+# 1. **没有长连接**：插件进程跑一次就退，每次执行都是「连 → 发 → 收 → 断」；
+# 2. **编码显式**：GBK 走 `encoding_rs`（银行老系统几乎都是 GBK），报告里一定写明
+#    用了哪种 —— GBK 报文发成 UTF-8 是「对面说不响应」最常见的原因。
+#
+# 布局：操作区（协议、地址、分帧参数）置顶 → 结果居中 → 报文沉底。
+#
+# 分帧参数按协议显隐：`visible_when` 只能守 select/switch，且被引用的参数必须更早
+# 声明，所以 `protocol` 排在最前面，四个分帧旋钮各自挂在它的一种取值下。
+
+id = "duck.net.packet-send"
+name = "报文调试"
+description = "TCP 报文收发：原始 / 长度字段 / ASCII 长度 / 分隔符 / 定长五种分帧，支持 GBK 与十六进制报文"
+version = "0.1.0"
+category = "net"
+tags = ["tcp", "socket", "xml", "fix", "hex", "报文", "socket", "联调"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.net.packet-send"
+name = "报文调试"
+description = "TCP 报文收发：原始 / 长度字段 / ASCII 长度 / 分隔符 / 定长五种分帧，支持 GBK 与十六进制报文"
+category = "net"
+group = "网络"
+icon = "radio"
+keywords = ["tcp", "socket", "xml", "fix", "hex", "gbk", "报文", "收发", "联调", "网络"]
+
+[tools.io]
+allow_files = "none"
+
+[[tools.io.fields]]
+id = "payload"
+kind = "textarea"
+label = "报文"
+placeholder = "要发送的报文；勾选「按十六进制」后按 `3C 3F 78 6D` 或 `3C3F786D` 解析"
+
+[[tools.io.params]]
+id = "protocol"
+kind = "select"
+style = "tabs"
+label = "分帧"
+default = "raw"
+options = [
+  { value = "raw", label = "原始 TCP" },
+  { value = "length_field", label = "长度字段（二进制大端）" },
+  { value = "ascii_length", label = "ASCII 长度（补零）" },
+  { value = "delimiter", label = "分隔符" },
+  { value = "fixed_length", label = "定长帧" },
+]
+
+[[tools.io.params]]
+id = "host"
+kind = "text"
+label = "主机"
+placeholder = "10.0.0.11 或 host.example.com"
+required = true
+
+[[tools.io.params]]
+id = "port"
+kind = "number"
+label = "端口"
+default = "8080"
+min = 1
+max = 65535
+required = true
+
+[[tools.io.params]]
+id = "header_len"
+kind = "number"
+label = "长度字段宽度（字节）"
+default = "4"
+min = 1
+max = 4
+visible_when = { protocol = "length_field" }
+
+[[tools.io.params]]
+id = "ascii_width"
+kind = "number"
+label = "ASCII 头部宽度（位）"
+default = "8"
+min = 1
+max = 16
+visible_when = { protocol = "ascii_length" }
+
+[[tools.io.params]]
+id = "delimiter"
+kind = "text"
+label = "分隔符"
+default = "\\n"
+placeholder = "支持 \\n 与 \\r\\n；也可以直接填一个符号"
+visible_when = { protocol = "delimiter" }
+
+[[tools.io.params]]
+id = "frame_len"
+kind = "number"
+label = "帧长（字节）"
+default = "1024"
+min = 1
+max = 1048576
+visible_when = { protocol = "fixed_length" }
+
+[[tools.io.params]]
+id = "charset"
+kind = "select"
+label = "编码"
+default = "utf-8"
+options = [
+  { value = "utf-8", label = "UTF-8" },
+  { value = "gbk", label = "GBK / GB18030" },
+]
+
+[[tools.io.params]]
+id = "hex"
+kind = "switch"
+label = "报文是十六进制"
+default = "false"
+
+[[tools.io.params]]
+id = "show_hex"
+kind = "switch"
+label = "结果用十六进制显示"
+default = "false"
+
+[[tools.io.params]]
+id = "connect_timeout"
+kind = "number"
+label = "连接超时（ms）"
+default = "5000"
+min = 200
+max = 60000
+
+[[tools.io.params]]
+id = "read_timeout"
+kind = "number"
+label = "读超时（ms）"
+default = "5000"
+min = 200
+max = 60000
+
+[[tools.io.params]]
+id = "max_replies"
+kind = "number"
+label = "最多收几帧"
+default = "16"
+min = 1
+max = 1000
+
+[[tools.io.params]]
+id = "max_bytes"
+kind = "number"
+label = "应答字节上限"
+default = "2097152"
+min = 1024
+max = 67108864
+
+[tools.io.output]
+kind = "text"
+label = "应答与通信日志"

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?pdmodels CreationDate="20240101000000" Target="Oracle 11g"?>
+<o:RootObject>
+  <o:Model>
+    <a:Name>存款核心</a:Name>
+    <a:Code>deposit</a:Code>
+    <c:Tables>
+      <o:Table>
+        <a:Name>账户表</a:Name>
+        <a:Code>T_ACCOUNT</a:Code>
+        <a:Comment>账户主表</a:Comment>
+        <c:Columns>
+          <o:Column Id="o1">
+            <a:Name>账号</a:Name>
+            <a:Code>ACC_NO</a:Code>
+            <a:DataType>VARCHAR2(32)</a:DataType>
+            <a:Length>32</a:Length>
+            <a:Mandatory>1</a:Mandatory>
+            <a:Comment>主账号</a:Comment>
+          </o:Column>
+          <o:Column Id="o2">
+            <a:Name>余额</a:Name>
+            <a:Code>BALANCE</a:Code>
+            <a:DataType>NUMBER(18,2)</a:DataType>
+            <a:Precision>2</a:Precision>
+            <a:DefaultValue>0</a:DefaultValue>
+            <a:Comment>账户余额</a:Comment>
+          </o:Column>
+        </c:Columns>
+        <c:Keys>
+          <o:Key Id="k1">
+            <a:Name>PK_ACCOUNT</a:Name>
+            <a:Code>PK_ACCOUNT</a:Code>
+            <c:Key.Columns>
+              <o:Column Ref="o1"/>
+            </c:Key.Columns>
+          </o:Key>
+        </c:Keys>
+        <c:PrimaryKey>
+          <o:Key Ref="k1"/>
+        </c:PrimaryKey>
+        <c:Indexes>
+          <o:Index>
+            <a:Name>IDX_BAL</a:Name>
+            <a:Code>IDX_BAL</a:Code>
+            <c:IndexColumns>
+              <o:IndexColumn>
+                <c:Column>
+                  <o:Column Ref="o2"/>
+                </c:Column>
+              </o:IndexColumn>
+            </c:IndexColumns>
+          </o:Index>
+        </c:Indexes>
+      </o:Table>
+      <o:Table>
+        <a:Name>交易流水</a:Name>
+        <a:Code>T_LOG</a:Code>
+        <c:Columns>
+          <o:Column Id="l1">
+            <a:Name>流水号</a:Name>
+            <a:Code>SERIAL_NO</a:Code>
+            <a:DataType>VARCHAR2(64)</a:DataType>
+            <a:Length>64</a:Length>
+            <a:Mandatory>1</a:Mandatory>
+          </o:Column>
+        </c:Columns>
+      </o:Table>
+    </c:Tables>
+  </o:Model>
+</o:RootObject>

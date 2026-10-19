@@ -1,0 +1,17 @@
+[package]
+name = "duck-net-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "网络与联调族（`duck.net.*`）的 process 轨入口：HTTP 请求 / 报文调试 / S3·FTP·SFTP 连通检测 / Hosts 管理。"
+
+[dependencies]
+duck-plugin.workspace = true
+duck-plugin-process.workspace = true
+duck-net-core.workspace = true
+serde_json.workspace = true
+# HTTP 历史（最近 20 条）与合并结果的时间戳。
+chrono.workspace = true
+
+[lints]
+workspace = true

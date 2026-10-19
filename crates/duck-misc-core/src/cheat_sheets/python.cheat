@@ -1,0 +1,129 @@
+%% name Python
+%% category 编程语言
+%% content
+# Python 速查表
+
+## 基础语法
+
+```python
+# 变量与类型
+x = 10              # 整数
+y = 3.14            # 浮点数
+name = "Python"     # 字符串
+is_valid = True     # 布尔值
+items = [1, 2, 3]   # 列表
+person = {"name": "张三", "age": 25}  # 字典
+unique = {1, 2, 3}  # 集合
+coords = (1, 2)     # 元组
+
+# 字符串操作
+s = "Hello World"
+s.lower()           # 转小写
+s.upper()           # 转大写
+s.strip()           # 去除空白
+s.replace("H", "J") # 替换
+s.split()           # 分割
+",".join(["a","b"]) # 连接
+f"Name: {name}"     # f-string
+
+# 列表操作
+lst = [1, 2, 3, 4, 5]
+lst.append(6)       # 添加元素
+lst.pop()           # 弹出最后一个
+lst.insert(0, 0)    # 插入
+lst.remove(3)       # 删除指定值
+lst.sort()          # 排序
+lst.reverse()       # 反转
+len(lst)            # 长度
+lst[1:3]            # 切片
+
+# 字典操作
+d = {"name": "张三", "age": 25}
+d.keys()            # 键
+d.values()          # 值
+d.items()           # 键值对
+d.get("name", "")   # 安全获取
+d.update({"age": 26})  # 更新
+del d["age"]        # 删除
+```
+
+## 函数
+
+```python
+# 基本函数
+def greet(name):
+    return f"Hello, {name}"
+
+# 默认参数
+def greet(name, msg="你好"):
+    return f"{msg}, {name}"
+
+# 可变参数
+def add(*args):
+    return sum(args)
+
+def add_dict(**kwargs):
+    return kwargs
+
+# lambda
+square = lambda x: x ** 2
+
+# 列表推导式
+squares = [x**2 for x in range(10)]
+evens = [x for x in range(10) if x % 2 == 0]
+```
+
+## 类与面向对象
+
+```python
+class Person:
+    def __init__(self, name, age):
+        self.name = name
+        self.age = age
+
+    def greet(self):
+        return f"我是{self.name}，今年{self.age}岁"
+
+# 继承
+class Student(Person):
+    def __init__(self, name, age, grade):
+        super().__init__(name, age)
+        self.grade = grade
+```
+
+## 异常处理
+
+```python
+try:
+    result = 10 / 0
+except ZeroDivisionError:
+    print("除数不能为0")
+except Exception as e:
+    print(f"错误: {e}")
+finally:
+    print("总会执行")
+```
+
+## 文件操作
+
+```python
+# 读取文件
+with open("file.txt", "r") as f:
+    content = f.read()
+
+# 写入文件
+with open("file.txt", "w") as f:
+    f.write("Hello")
+```
+
+## 常用模块
+
+```python
+import os
+import sys
+import json
+import re
+from datetime import datetime
+from collections import Counter, defaultdict
+from pathlib import Path
+```

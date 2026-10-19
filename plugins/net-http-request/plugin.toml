@@ -1,0 +1,251 @@
+# Duck Toolbox 插件：HTTP 请求（duck.net.http-request）。
+#
+# **process 轨**：逻辑在 `crates/duck-net-core/src/http.rs`，二进制 =
+# `crates/duck-net-tool`（网络族共用一个，按 `tool` 分派）。
+#
+# 参考仓是前端 `HttpRequest.vue`（1,518 行）—— Postman 式的工作台：左栏集合与
+# 历史、顶部多标签、环境变量管理器、集合导入导出。本仓**只做单请求**：那套容器
+# 要持久化多份请求，与工具箱「跑一次看结果」的形态冲突（设计稿已核对）。
+# 页面上其余按钮级能力逐条落在参数上：
+#
+#   Params 标签            → query（每行 `键=值`，或单行用 `&` 连写）
+#   变量 `{{var}}`         → vars（未定义即报错，不静默替换成空串）
+#   Body 五种形态          → body_type（none / raw / urlencoded / form-data / binary）
+#   raw 的 JSON/XML/文本   → body_format（只决定默认 Content-Type）
+#   form-data 的「文件」列 → form_fields 里写 `字段=@路径`
+#   API Key 放 header/query→ key_in
+#   Import cURL            → source = curl（命令粘到底部输入框，报告回显解析结果）
+#   响应 Body/Headers/Cookies → 报告按段展开（含 Set-Cookie 解析）
+#   Copy as cURL           → 报告尾部固定给等价 curl
+#   常用头预设 / UA 预设   → 不迁（输入辅助，写进 headers 即可）
+#   保存请求 / 集合 / 环境管理器 → 不迁（要持久化多份请求）；历史只留最近 20 条
+#                           方法·地址·状态·耗时，不含头体凭据
+#
+# 布局按本仓铁律：操作区（来源、方法、URL、认证、高级参数）置顶 → 结果居中 →
+# 请求体沉底，所以请求体是 `[io.fields]` 而不是普通参数。cURL 命令也粘在这个
+# 框里（框架的 `text` 参数是单行输入，粘不下带续行的命令）。
+#
+# ⚠️ **凭据不落盘**：token / 口令 / API Key 只活在这一次运行的进程里；报告与日志
+# 一律走 `redact_headers`（值替换成 `***`），变量与查询参数里名字像凭据的也打码。
+# curl 那一行把密钥写成 `$TOKEN` 占位，粘贴前由用户自己导出变量。
+#
+# `allow_files = "read"`：`binary_file` 与 form-data 的 `@路径` 只读，不写任何文件。
+
+id = "duck.net.http-request"
+name = "HTTP 请求"
+description = "发一条 HTTP 请求：七种方法、五种请求体、四种认证、变量插值、cURL 导入；结果带状态、耗时、体积、Set-Cookie 与等价 curl"
+version = "0.2.0"
+category = "net"
+tags = ["http", "api", "rest", "curl", "请求", "接口", "联调"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.net.http-request"
+name = "HTTP 请求"
+description = "发一条 HTTP 请求：七种方法、五种请求体、四种认证、变量插值、cURL 导入；结果带状态、耗时、体积、Set-Cookie 与等价 curl"
+category = "net"
+group = "网络"
+icon = "globe"
+keywords = ["http", "https", "rest", "api", "curl", "请求", "接口", "联调", "postman"]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.fields]]
+id = "body"
+kind = "textarea"
+label = "请求体 / cURL 命令"
+placeholder = "手工模式：raw 请求体（JSON / XML / 文本）。cURL 模式：把整条 curl 命令粘进来，参数区的方法与地址会被它覆盖"
+
+[[tools.io.params]]
+id = "source"
+kind = "select"
+label = "来源"
+default = "manual"
+style = "tabs"
+options = [
+  { value = "manual", label = "手工填写" },
+  { value = "curl", label = "从 cURL 导入" },
+]
+
+[[tools.io.params]]
+id = "method"
+kind = "select"
+label = "方法"
+default = "GET"
+visible_when = { source = "manual" }
+options = [
+  { value = "GET", label = "GET" },
+  { value = "POST", label = "POST" },
+  { value = "PUT", label = "PUT" },
+  { value = "DELETE", label = "DELETE" },
+  { value = "PATCH", label = "PATCH" },
+  { value = "HEAD", label = "HEAD" },
+  { value = "OPTIONS", label = "OPTIONS" },
+]
+
+[[tools.io.params]]
+id = "url"
+kind = "text"
+label = "URL"
+placeholder = "https://api.example.com/v1/orders"
+required = true
+visible_when = { source = "manual" }
+
+[[tools.io.params]]
+id = "query"
+kind = "text"
+label = "查询参数"
+placeholder = "键=值，多个用 & 连接；值会被百分号编码后拼到 URL"
+
+[[tools.io.params]]
+id = "vars"
+kind = "text"
+label = "变量"
+placeholder = "键=值，多个用 & 连接；URL / 头 / 体里的 {{名字}} 会被替换，# 开头的行是注释"
+
+[[tools.io.params]]
+id = "auth"
+kind = "select"
+label = "认证"
+default = "none"
+options = [
+  { value = "none", label = "无" },
+  { value = "bearer", label = "Bearer" },
+  { value = "basic", label = "Basic" },
+  { value = "apikey", label = "API Key" },
+]
+
+[[tools.io.params]]
+id = "token"
+kind = "text"
+label = "Token"
+placeholder = "只用于本次请求，不进历史、不进日志"
+visible_when = { auth = "bearer" }
+
+[[tools.io.params]]
+id = "user"
+kind = "text"
+label = "用户名"
+visible_when = { auth = "basic" }
+
+[[tools.io.params]]
+id = "password"
+kind = "text"
+label = "口令"
+placeholder = "只用于本次请求，不进历史、不进日志"
+visible_when = { auth = "basic" }
+
+[[tools.io.params]]
+id = "key_name"
+kind = "text"
+label = "键名"
+default = "X-Api-Key"
+visible_when = { auth = "apikey" }
+
+[[tools.io.params]]
+id = "key_value"
+kind = "text"
+label = "键值"
+visible_when = { auth = "apikey" }
+
+[[tools.io.params]]
+id = "key_in"
+kind = "select"
+label = "放在哪"
+default = "header"
+visible_when = { auth = "apikey" }
+options = [
+  { value = "header", label = "请求头" },
+  { value = "query", label = "查询参数" },
+]
+
+[[tools.io.params]]
+id = "headers"
+kind = "text"
+label = "请求头"
+placeholder = "每行一个「名字: 值」，例如 Content-Type: application/json"
+
+[[tools.io.params]]
+id = "body_type"
+kind = "select"
+label = "请求体格式"
+default = "raw"
+visible_when = { source = "manual" }
+options = [
+  { value = "none", label = "不发请求体" },
+  { value = "raw", label = "raw（原样发送）" },
+  { value = "urlencoded", label = "x-www-form-urlencoded" },
+  { value = "form-data", label = "form-data（含文件）" },
+  { value = "binary", label = "binary（整个文件）" },
+]
+
+[[tools.io.params]]
+id = "body_format"
+kind = "select"
+label = "raw 的内容"
+default = "json"
+visible_when = { body_type = "raw" }
+options = [
+  { value = "json", label = "JSON" },
+  { value = "xml", label = "XML" },
+  { value = "html", label = "HTML" },
+  { value = "text", label = "纯文本" },
+]
+
+[[tools.io.params]]
+id = "form"
+kind = "text"
+label = "表单字段"
+placeholder = "键=值，多个用 & 连接；值会百分号编码"
+visible_when = { body_type = "urlencoded" }
+
+[[tools.io.params]]
+id = "form_fields"
+kind = "text"
+label = "表单字段（multipart）"
+placeholder = "键=值，多个用 & 连接；文件写 字段=@/路径/文件"
+visible_when = { body_type = "form-data" }
+
+[[tools.io.params]]
+id = "binary_file"
+kind = "path"
+label = "文件"
+placeholder = "选择要当请求体发送的文件"
+pick = "file"
+visible_when = { body_type = "binary" }
+
+[[tools.io.params]]
+id = "timeout_ms"
+kind = "number"
+label = "超时（ms）"
+default = "30000"
+min = 1000
+max = 600000
+
+[[tools.io.params]]
+id = "max_redirects"
+kind = "number"
+label = "最多跟随重定向"
+default = "5"
+min = 0
+max = 20
+
+[[tools.io.params]]
+id = "insecure"
+kind = "switch"
+label = "跳过证书校验"
+default = "false"
+
+[tools.io.output]
+kind = "text"
+label = "响应"

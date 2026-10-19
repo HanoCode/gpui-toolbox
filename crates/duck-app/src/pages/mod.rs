@@ -21,6 +21,11 @@ mod terminal_canvas;
 mod terminal_data;
 mod terminal_dialogs;
 mod toolbox;
+// 插件工具的通用执行页（声明式 IO）：由工具箱页按路由懒创建，无独立入口。
+pub(crate) mod tool_run;
+// 结果表的两种形态（只读 / 可编辑）与编辑状态：执行页的控件层，单独成文件
+// 是为了别把 `tool_run.rs` 再撑大（v3 要把它压到 400 行以内）。
+pub(crate) mod tool_table;
 
 pub use assistant::AssistantPage;
 pub use db::DatabasePage;

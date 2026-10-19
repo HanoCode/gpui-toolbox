@@ -18,11 +18,11 @@ use duck_components::content::{
 };
 use duck_components::{
     ButtonVariant, DuckIcon, SidebarPanel, SidebarState, beta_badge, body_text, button,
-    caption_number, icon_button, meta_text, notify, option_row, selectable_text, settings_section,
-    sidebar_navigation_button, switch_control, tabular_numbers,
+    icon_button, meta_text, notify, option_row, selectable_text, settings_section, switch_control,
+    tabular_numbers,
 };
 use duck_shell::left_edge_probe;
-use duck_theme::{active_theme, t, tf, tr, trf};
+use duck_theme::{active_theme, t, tr, trf};
 use duck_tools::paste::detect;
 use duck_tools::settings as tool_settings;
 use duck_tools::settings::{SettingValue, ToolSettingKind, ToolSettingSpec};
@@ -44,14 +44,21 @@ use crate::pages::open_settings_at;
 use crate::pages::settings::{CONTENT_PADDING_LEFT, CONTENT_PADDING_RIGHT};
 use crate::pages::status_support::{disk_free_bytes, format_bytes};
 
-/// 工具箱侧栏默认宽度（px）。
-const SIDEBAR_DEFAULT_WIDTH: f32 = 230.;
+/// 工具箱侧栏默认宽度（px）：参考项目 `w-60` = 240px。
+const SIDEBAR_DEFAULT_WIDTH: f32 = 240.;
 /// 侧栏可拖拽的宽度范围（px）。
 const SIDEBAR_MIN_WIDTH: f32 = 184.;
 const SIDEBAR_MAX_WIDTH: f32 = 320.;
 
 /// 路由标签页的最大宽度（名称超出截断，防长名挤掉关闭按钮）。
 const ROUTE_TAB_MAX_WIDTH: f32 = 160.;
+
+/// 侧栏工具行的左缩进（参考项目 `NavItem` 的 `pl-10` = 40px）：
+/// 比分组标题的图标再进一级，形成「标题 ／ 子项」的层级。
+const SIDEBAR_TOOL_INDENT: f32 = 40.;
+
+/// 「最近使用」最多列几条（参考项目也是短列表，多了就失去「最近」的意义）。
+const RECENT_LIMIT: usize = 6;
 
 /// 一个打开的工具路由（一个标签页）。
 ///
@@ -63,6 +70,9 @@ struct ToolRoute {
     /// 工作区滚动位置。内容只在激活时渲染，但偏移存在句柄里，
     /// 切回来时由 `track_scroll` 恢复。
     scroll: ScrollHandle,
+    /// 插件 io 工具的通用执行页（声明式 `[io]` 才建，懒创建）。
+    /// 状态（填过的参数、上次结果）跟着路由走：切走再切回来原样保留。
+    run: Option<Entity<crate::pages::tool_run::ToolRunView>>,
 }
 
 /// 工具渲染快照（侧栏子项、工作区与右侧栏共用）。
@@ -120,6 +130,208 @@ fn snapshot_of(id: &str, cx: &App) -> Option<ToolRow> {
         .map(|tool| snapshot(tool, cx))
 }
 
+/// 侧栏分组标题行（参考项目 `NavSection` 的按钮）：
+/// 折叠箭头（12px，展开时朝下）+ 图标（14px）+ 名称（14px / 中等字重），
+/// 右侧是可选的计数角标。参 `cx` 只为取主题，交互由调用方挂。
+fn sidebar_section_header(
+    id: SharedString,
+    label: SharedString,
+    icon: DuckIcon,
+    count: Option<usize>,
+    expanded: bool,
+    cx: &App,
+) -> gpui::Stateful<gpui::Div> {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let chevron = if expanded {
+        DuckIcon::ChevronDown
+    } else {
+        DuckIcon::ChevronRight
+    };
+    h_flex()
+        .id(id)
+        .h(theme.density().nav_row)
+        .w_full()
+        .flex_none()
+        .items_center()
+        .gap(tokens.spacing.sm)
+        .px(tokens.spacing.md)
+        .rounded(theme.components().nav_item_radius)
+        .cursor_pointer()
+        .text_size(tokens.typography.sm.size)
+        .line_height(tokens.typography.sm.line_height)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(tokens.colors.muted_foreground)
+        .hover(|style| style.bg(extended.colors.nav_hover))
+        // 箭头在**最左边**（参考项目如此），展开时朝下、收起时朝右。
+        .child(
+            Icon::new(chevron)
+                .size(extended.icon.sm)
+                .text_color(extended.colors.text_tertiary),
+        )
+        // 图标与文字同色（参考项目用 `currentColor`）。
+        .child(
+            Icon::new(icon)
+                .size(extended.icon.md)
+                .text_color(tokens.colors.muted_foreground),
+        )
+        .child(div().flex_1().min_w_0().truncate().child(label))
+        .when_some(count, |row, count| {
+            row.child(sidebar_count_badge(count, cx))
+        })
+}
+
+/// 分组标题右侧的计数角标（参考项目 `NavSection` 的 `count`）。
+fn sidebar_count_badge(count: usize, cx: &App) -> gpui::Div {
+    let theme = active_theme(cx);
+    let extended = theme.extended();
+    div()
+        .flex_none()
+        .px(px(4.))
+        .rounded(theme.components().badge_radius)
+        .bg(extended.colors.nav_hover)
+        .text_size(extended.badge.size)
+        .line_height(extended.badge.line_height)
+        .text_color(extended.colors.text_tertiary)
+        .child(count.to_string())
+}
+
+/// 空分组提示（参考项目「暂无收藏」/「暂无记录」那一行）。
+fn sidebar_hint(text: SharedString, cx: &App) -> gpui::Div {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    div()
+        .w_full()
+        .px(tokens.spacing.md)
+        .py(tokens.spacing.xs)
+        .text_size(tokens.typography.xs.size)
+        .line_height(tokens.typography.xs.line_height)
+        .text_color(theme.extended().colors.text_tertiary)
+        .child(text)
+}
+
+/// 分组之间的分隔线（参考项目 `my-2 mx-3 h-px`）。
+fn sidebar_divider(cx: &App) -> gpui::Div {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    div()
+        .flex_none()
+        .h(px(1.))
+        .mx(tokens.spacing.md)
+        .my(tokens.spacing.xs)
+        .bg(theme.extended().colors.hairline)
+}
+
+/// 侧栏工具行（参考项目 `NavItem`）：
+/// 图标（14px，未选中用最弱文字色）+ 名称（12px，截断）+ BETA 角标 + 收藏星标。
+///
+/// 星标默认 `opacity(0)`、悬停整行时浮现（参考项目 `group-hover:opacity-100`），
+/// 已收藏则恒亮；点击星标只切收藏、不打开工具（`stop_propagation`）。
+fn sidebar_tool_row(
+    view: &gpui::WeakEntity<ToolboxPage>,
+    row: &ToolRow,
+    label: SharedString,
+    selected: bool,
+    favorite: bool,
+    show_star: bool,
+    cx: &App,
+) -> gpui::Stateful<gpui::Div> {
+    let theme = active_theme(cx);
+    let tokens = theme.tokens();
+    let extended = theme.extended();
+    let group = SharedString::from(format!("toolbox-row-{}", row.id));
+    let star_group = group.clone();
+    let icon_color = if selected {
+        extended.colors.nav_selected_icon
+    } else {
+        extended.colors.text_tertiary
+    };
+    let star_color = if favorite {
+        extended.colors.warning
+    } else {
+        extended.colors.text_tertiary
+    };
+
+    let mut el = h_flex()
+        .id(SharedString::from(format!("toolbox-tool-{}", row.id)))
+        // 悬停组名逐行唯一：星标的显隐跟着**这一行**，不能串到邻行。
+        .group(group)
+        .h(theme.density().nav_row)
+        .w_full()
+        .flex_none()
+        .items_center()
+        .gap(tokens.spacing.sm)
+        .pl(px(SIDEBAR_TOOL_INDENT))
+        .pr(tokens.spacing.md)
+        .rounded(theme.components().nav_item_radius)
+        .cursor_pointer()
+        .text_size(tokens.typography.xs.size)
+        .line_height(tokens.typography.xs.line_height)
+        .text_color(if selected {
+            extended.colors.nav_selected_foreground
+        } else {
+            tokens.colors.muted_foreground
+        });
+    el = if selected {
+        el.bg(extended.colors.nav_selected)
+    } else {
+        el.hover(|style| style.bg(extended.colors.nav_hover))
+    };
+    el = el
+        .child(
+            Icon::new(row.icon)
+                .size(extended.icon.md)
+                .text_color(icon_color),
+        )
+        .child(div().flex_1().min_w_0().truncate().child(label));
+    if row.beta {
+        el = el.child(beta_badge(cx));
+    }
+    if show_star {
+        el = el.child(
+            h_flex()
+                .id(SharedString::from(format!("toolbox-fav-{}", row.id)))
+                .flex_none()
+                .items_center()
+                .gap(px(2.))
+                // 未收藏时整块透明、悬停浮现；已收藏恒亮（参考项目同款处理）。
+                .opacity(if favorite { 1. } else { 0. })
+                .group_hover(star_group, |style| style.opacity(1.))
+                .child(
+                    Icon::new(DuckIcon::Star)
+                        .size(extended.icon.sm)
+                        .text_color(star_color),
+                )
+                .child(
+                    div()
+                        .text_size(extended.badge.size)
+                        .line_height(extended.badge.line_height)
+                        .text_color(star_color)
+                        .child(tr(cx, if favorite { "已收藏" } else { "收藏" })),
+                )
+                .on_click({
+                    let view = view.clone();
+                    let tool_id = row.id;
+                    move |_, _, cx| {
+                        cx.stop_propagation();
+                        ToolRegistry::toggle_favorite(cx, tool_id);
+                        if let Ok(()) = view.update(cx, |_, cx| cx.notify()) {}
+                    }
+                }),
+        );
+    }
+    el.on_click({
+        let view = view.clone();
+        let tool_id = row.id;
+        move |_, _, cx| {
+            if let Ok(()) = view.update(cx, |this, cx| {
+                this.open_route(tool_id, cx);
+            }) {}
+        }
+    })
+}
+
 /// 工具箱页。
 pub struct ToolboxPage {
     sidebar: Entity<SidebarState>,
@@ -127,14 +339,19 @@ pub struct ToolboxPage {
     routes: Vec<ToolRoute>,
     /// 激活路由的工具 id；`routes` 非空时必有一些。
     active: Option<&'static str>,
-    /// 折叠的分类（默认全展开）。
+    /// 已折叠的分类（默认**全部折叠**，点标题展开）。
     collapsed: HashSet<ToolCategory>,
+    /// 「收藏夹」分组是否折叠（默认折叠，照参考项目）。
+    favorites_collapsed: bool,
+    /// 「最近使用」分组是否折叠（默认折叠，照参考项目）。
+    recent_collapsed: bool,
     /// 内容区左缘的窗口横坐标（上一帧测得），供顶栏搜索框对齐。
     content_left: Pixels,
 }
 
 impl ToolboxPage {
-    /// 创建页面：默认展开 230px 侧栏；分类**默认全部折叠**（点开才见工具子行）。
+    /// 创建页面：默认展开 240px 侧栏；分类**默认全部折叠**——首屏只列一级分类，
+    /// 点标题展开二级工具行（与「收藏夹 / 最近使用」两个分组的默认态一致）。
     /// 右侧栏由 shell 统一持有（顶栏开关常显），本页只提供内容。
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
@@ -147,7 +364,10 @@ impl ToolboxPage {
             }),
             routes: Vec::new(),
             active: None,
+            // 分类默认**全部折叠**：侧栏首屏只有一级标题，点开才见工具。
             collapsed: ToolCategory::ALL.iter().copied().collect(),
+            favorites_collapsed: true,
+            recent_collapsed: true,
             content_left: px(0.),
         }
     }
@@ -173,9 +393,9 @@ impl ToolboxPage {
 
     /// 打开某个工具的路由：已有则只激活（保留其工作区状态），没有则新建。
     ///
-    /// 分类默认折叠（见 [`Self::new`]），所以顺手把该工具所属的分类展开，
-    /// 别让侧栏选中项藏在折叠区里。命令面板「打开工具」也走这里（见 `app.rs`
-    /// 的 `OpenTool` 处理器），保证两条入口行为完全一致。
+    /// 顺手把该工具所属的分类展开（用户可能手动收起过），别让侧栏选中项藏在
+    /// 折叠区里。命令面板「打开工具」也走这里（见 `app.rs` 的 `OpenTool` 处理器），
+    /// 保证两条入口行为完全一致。
     pub fn open_route(&mut self, id: &'static str, cx: &mut Context<Self>) {
         if let Some(tool) = snapshot_of(id, cx) {
             self.collapsed.remove(&tool.category);
@@ -184,8 +404,13 @@ impl ToolboxPage {
             self.routes.push(ToolRoute {
                 tool_id: id,
                 scroll: ScrollHandle::new(),
+                run: None,
             });
         }
+        // 「最近使用」分组的唯一写入点：**打开工具**（不是执行）。
+        // 参考项目同样是「选中即记一条」。用 `mark_used` 而不是 `record_use`：
+        // 后者会顺带累加使用次数，而这里只是打开了标签、没真跑。
+        ToolRegistry::mark_used(cx, id);
         self.activate(id, cx);
     }
 
@@ -195,6 +420,30 @@ impl ToolboxPage {
             self.active = Some(id);
             cx.notify();
         }
+    }
+
+    /// 为激活路由懒建插件 io 工具的执行页（`Render::render` 入口调用）。
+    ///
+    /// `ToolRunView` 的输入框状态要 `&mut Window` 才能建，而渲染层只有这里
+    /// 拿得到窗口，所以在页面渲染最前面补建。非插件 io 工具（`run_context`
+    /// 返回 `None`）保持 `None`，继续走占位画布。
+    fn ensure_run_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self
+            .active
+            .or_else(|| self.routes.last().map(|route| route.tool_id));
+        let Some(active) = active else {
+            return;
+        };
+        let Some(route) = self.routes.iter_mut().find(|route| route.tool_id == active) else {
+            return;
+        };
+        if route.run.is_some() {
+            return;
+        }
+        let Some(ctx) = crate::plugins::run_context(cx, active) else {
+            return;
+        };
+        route.run = Some(cx.new(|cx| crate::pages::tool_run::ToolRunView::new(ctx, window, cx)));
     }
 
     /// 关闭一个路由；关的是激活路由时，优先落到原位置的下一个标签，
@@ -228,11 +477,17 @@ impl ToolboxPage {
         cx.notify();
     }
 
-    /// 左侧两级导航：分类行（可折叠）+ 工具子行（选中即激活路由）。
+    /// 左侧导航，**布局与参考项目 `Sidebar.vue` 一一对应**：
+    /// 收藏夹 → 最近使用 → 分隔线 → 各分类（一级标题 + 二级工具行）。
     ///
-    /// 行规格与 [`sidebar_navigation_button`] 一致（`density.navRow` 高、
-    /// `nav_item_radius` 圆角、状态层交叉淡入）；子行整体缩进一级。
-    /// 顶栏搜索词非空时进入过滤形态：只显示命中的工具，折叠态忽略。
+    /// 几条照抄参考项目的口径：
+    /// - 三个分组都可折叠；收藏夹 / 最近使用**默认折叠**（参考仓
+    ///   `favCollapsed = ref(true)` / `recentCollapsed = ref(true)`）；
+    /// - 分类同样默认折叠：首屏只有一级菜单，点开才见工具行；
+    /// - 分组标题 `px-3` + 14px 中等字重、左侧折叠箭头；工具行缩进 `pl-10`（40px）
+    ///   + 12px 常规字重（Tailwind `px-3` / `text-sm` / `pl-10` / `text-xs` 直译）；
+    /// - 收藏星标默认透明、悬停行时浮现（`group-hover:opacity-100`），已收藏恒亮；
+    /// - 顶栏搜索词非空时进入过滤形态：只显示命中的工具，分组与折叠态忽略。
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = active_theme(cx);
         let tokens = theme.tokens();
@@ -244,16 +499,109 @@ impl ToolboxPage {
         let categories = ToolRegistry::present_categories(cx);
         let view = cx.entity().downgrade();
 
-        // 子行缩进：对齐父行的图标（行内边距 + 图标 + 图标与文字的间距）。
-        let indent = tokens.spacing.sm + extended.icon.lg + tokens.spacing.sm;
-
-        // 侧栏项间距：可在「设置 → 外观 → 布局 → 侧栏项间距」调（0 ~ 24px，0 为贴紧）。
+        // 分组间距沿用「设置 → 外观 → 布局 → 侧栏项间距」（0 ~ 24px）。
         // `Pixels` 是 Copy，取值后不延长对 `theme` 的借用。
         let nav_gap = theme.appearance().nav_gap;
-
         let mut nav = v_flex().w_full().gap(px(nav_gap));
         let mut any_match = false;
 
+        // ── 收藏夹 / 最近使用 ──
+        // 只在非搜索态出现：参考项目的搜索走独立弹窗，侧栏不参与过滤；
+        // 我们的搜索框在顶栏，过滤时把这两组藏掉，避免「命中了什么」说不清。
+        if !searching {
+            let favorites: Vec<&RegisteredTool> = ToolRegistry::favorites(cx);
+            let mut section = v_flex().w_full().gap(px(2.));
+            section = section.child(
+                sidebar_section_header(
+                    SharedString::from("toolbox-section-favorites"),
+                    SharedString::from(tr(cx, "收藏夹")),
+                    DuckIcon::Star,
+                    Some(favorites.len()),
+                    !self.favorites_collapsed,
+                    cx,
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        if let Ok(()) = view.update(cx, |this, cx| {
+                            this.favorites_collapsed = !this.favorites_collapsed;
+                            cx.notify();
+                        }) {}
+                    }
+                }),
+            );
+            if !self.favorites_collapsed && favorites.is_empty() {
+                section = section.child(sidebar_hint(SharedString::from(tr(cx, "暂无收藏")), cx));
+            } else if !self.favorites_collapsed {
+                for tool in favorites {
+                    let row = snapshot(tool, cx);
+                    section = section.child(sidebar_tool_row(
+                        &view,
+                        &row,
+                        SharedString::from(crate::plugins::plugin_text_of_tool(
+                            cx, lang, row.id, row.name,
+                        )),
+                        self.active == Some(row.id),
+                        // 收藏夹里的每一条本身就是收藏，但参考项目这一组**不画星标**
+                        // （`NavItem` 没传 `show-fav`）—— 去收藏得回分类里点。
+                        false,
+                        false,
+                        cx,
+                    ));
+                }
+            }
+            nav = nav.child(section);
+
+            let recent: Vec<&RegisteredTool> = ToolRegistry::recent(cx, RECENT_LIMIT)
+                .into_iter()
+                .filter(|tool| ToolRegistry::is_listed(cx, tool))
+                .collect();
+            let mut section = v_flex().w_full().gap(px(2.));
+            section = section.child(
+                sidebar_section_header(
+                    SharedString::from("toolbox-section-recent"),
+                    SharedString::from(tr(cx, "最近使用")),
+                    DuckIcon::Clock,
+                    Some(recent.len()),
+                    !self.recent_collapsed,
+                    cx,
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        if let Ok(()) = view.update(cx, |this, cx| {
+                            this.recent_collapsed = !this.recent_collapsed;
+                            cx.notify();
+                        }) {}
+                    }
+                }),
+            );
+            if !self.recent_collapsed {
+                if recent.is_empty() {
+                    section =
+                        section.child(sidebar_hint(SharedString::from(tr(cx, "暂无记录")), cx));
+                } else {
+                    for tool in recent {
+                        let row = snapshot(tool, cx);
+                        section = section.child(sidebar_tool_row(
+                            &view,
+                            &row,
+                            SharedString::from(crate::plugins::plugin_text_of_tool(
+                                cx, lang, row.id, row.name,
+                            )),
+                            self.active == Some(row.id),
+                            ToolRegistry::is_favorite(cx, row.id),
+                            true,
+                            cx,
+                        ));
+                    }
+                }
+            }
+            nav = nav.child(section);
+            nav = nav.child(sidebar_divider(cx));
+        }
+
+        // ── 分类（一级标题 + 二级工具行）──
         for category in &categories {
             let tools_in_category = ToolRegistry::in_category(cx, Some(*category));
             let tools = if searching {
@@ -267,23 +615,16 @@ impl ToolboxPage {
             any_match |= !tools.is_empty();
 
             let expanded = searching || !self.collapsed.contains(category);
-            let chevron_icon = if expanded {
-                DuckIcon::ChevronDown
-            } else {
-                DuckIcon::ChevronRight
-            };
             let category_id = *category;
 
-            nav = nav.child(
-                sidebar_navigation_button(
+            let mut section = v_flex().w_full().gap(px(2.));
+            section = section.child(
+                sidebar_section_header(
                     SharedString::from(format!("toolbox-category-{}", category.id())),
                     SharedString::from(t(lang, category.label())),
-                    // 图标不设色，继承行的文字色：悬停/选中随文字一起转强调色。
-                    Icon::new(category.icon()).size(extended.icon.lg),
-                    Icon::new(chevron_icon)
-                        .size(extended.icon.sm)
-                        .text_color(tokens.colors.muted_foreground),
-                    false,
+                    category.icon(),
+                    None,
+                    expanded,
                     cx,
                 )
                 .on_click({
@@ -299,33 +640,21 @@ impl ToolboxPage {
             if expanded {
                 for tool in tools {
                     let row = snapshot(tool, cx);
-                    let selected = self.active == Some(row.id);
-                    nav = nav.child(
-                        sidebar_navigation_button(
-                            SharedString::from(format!("toolbox-tool-{}", row.id)),
-                            // 插件工具走「插件表 → 宿主表 → 源串」；内置工具直接走宿主表。
-                            SharedString::from(crate::plugins::plugin_text_of_tool(
-                                cx, lang, row.id, row.name,
-                            )),
-                            // 图标不设色，继承行的文字色：悬停/选中随文字一起转强调色。
-                            Icon::new(row.icon).size(extended.icon.md),
-                            div(),
-                            selected,
-                            cx,
-                        )
-                        .pl(indent)
-                        .on_click({
-                            let view = view.clone();
-                            let tool_id = row.id;
-                            move |_, _, cx| {
-                                if let Ok(()) = view.update(cx, |this, cx| {
-                                    this.open_route(tool_id, cx);
-                                }) {}
-                            }
-                        }),
-                    );
+                    section = section.child(sidebar_tool_row(
+                        &view,
+                        &row,
+                        // 插件工具走「插件表 → 宿主表 → 源串」；内置工具直接走宿主表。
+                        SharedString::from(crate::plugins::plugin_text_of_tool(
+                            cx, lang, row.id, row.name,
+                        )),
+                        self.active == Some(row.id),
+                        ToolRegistry::is_favorite(cx, row.id),
+                        true,
+                        cx,
+                    ));
                 }
             }
+            nav = nav.child(section);
         }
 
         if searching && !any_match {
@@ -343,45 +672,17 @@ impl ToolboxPage {
             .size_full()
             .min_h_0()
             .flex_col()
-            .bg(tokens.colors.surface)
-            .child(
-                h_flex()
-                    .h(theme.density().section_header)
-                    .flex_none()
-                    .items_center()
-                    .px(tokens.spacing.sm)
-                    .child(
-                        div()
-                            .text_size(tokens.typography.xs.size)
-                            .line_height(tokens.typography.xs.line_height)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(extended.colors.text_tertiary)
-                            .child(t(lang, "分类")),
-                    ),
-            )
+            .bg(extended.colors.chrome)
             .child(
                 div()
                     .id("toolbox-sidebar-nav")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    // 参考项目 `px-2 py-3`：左右 8、上下 12。
                     .px(tokens.spacing.sm)
-                    .py(tokens.spacing.xs)
+                    .py(tokens.spacing.md)
                     .child(nav),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .px(tokens.spacing.md)
-                    .pb(tokens.spacing.sm)
-                    .child(caption_number(
-                        SharedString::from(tf(
-                            lang,
-                            "{} 个工具",
-                            &[&ToolRegistry::listed(cx).len().to_string()],
-                        )),
-                        cx,
-                    )),
             )
     }
 
@@ -663,7 +964,26 @@ impl ToolboxPage {
                 .into_any_element();
         };
 
-        self.render_workspace_body(&tool, &scroll, cx)
+        self.render_workspace_body(
+            &tool,
+            &scroll,
+            self.workspace_canvas_for(route, &tool, cx),
+            cx,
+        )
+    }
+
+    /// 工作区画布分流：插件 io 工具走通用执行页（状态挂在路由上），
+    /// 其余工具走占位说明 + 运行入口。
+    fn workspace_canvas_for(
+        &self,
+        route: &ToolRoute,
+        tool: &ToolRow,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if let Some(view) = &route.run {
+            return view.clone().into_any_element();
+        }
+        self.render_workspace_canvas(tool, cx)
     }
 
     /// 工作区内容区：该工具的操作区域，滚动容器挂在路由自己的句柄上，
@@ -672,9 +992,9 @@ impl ToolboxPage {
         &self,
         tool: &ToolRow,
         scroll: &ScrollHandle,
+        canvas: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let canvas = self.render_workspace_canvas(tool, cx);
         let tokens = active_theme(cx).tokens();
 
         div()
@@ -1125,6 +1445,9 @@ impl ToolboxPage {
 
 impl Render for ToolboxPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 激活路由若是插件 io 工具，先把通用执行页懒建出来（控件状态需要
+        // `window` 建输入框，只有这里拿得到）。
+        self.ensure_run_view(window, cx);
         let content = self.render_main(cx);
         let mut panel = SidebarPanel::new("toolbox-content", &self.sidebar, content, window, cx);
         if panel.is_sidebar_visible() {

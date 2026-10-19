@@ -21,6 +21,8 @@
 //! - `duck.id` / `duck.dataDir`：插件标识与数据目录（能力 glob 的根）；
 //! - `duck.locale`：当前语言 tag（`"en"` / `"zh-Hans"`），在**执行时**由宿主注入，
 //!   跟随「外观 → 语言」开关；
+//! - `duck.params`：清单 `[tools.io]` 参数区本次收集到的值（JSON 对象）；
+//!   无参数时是空对象 `{}`。与 `duck.locale` 同级，不加能力闸门；
 //! - `duck.t(source, ...args)`：用**插件自己的** `locales/<tag>.toml` 取词
 //!   （装载与降级链见 `duck_plugin::i18n`）；miss 返回源串本身；给了 `args` 就按
 //!   顺序替换模板里的 `{}`（语义同宿主 `trf`）。与 `duck.locale` 一样**不加能力
@@ -96,6 +98,9 @@ type SharedState = Rc<RefCell<ExecState>>;
 /// - `granted`：用户授予的能力（安装确认框上勾过的那些）；
 /// - `tool_id`：被调用的工具 id（原样传给 `handle`）；
 /// - `input`：输入文本（P1 固定空串，插件可自行读剪贴板）；
+/// - `params`：清单 `[io]` 参数区序列化成的 JSON 对象字面量（如
+///   `{"style":"snake"}`）。空串 = 无参数，沙箱里拿到空对象 `{}`；
+///   非空但解析失败视为宿主 bug，直接报错而不是静默丢参数。
 /// - `lang`：当前语言 tag（如 `"en"` / `"zh-Hans"`）。喂给沙箱里的
 ///   `duck.locale` 与 `duck.t`，让插件自己产出的文案跟随宿主的语言开关。
 ///   按**执行时**的语言取值：插件跑到一半用户切了语言，本次提示仍是发起时的语言。
@@ -106,6 +111,10 @@ type SharedState = Rc<RefCell<ExecState>>;
 ///
 /// # Errors
 /// 入口缺失、脚本异常、能力被拒、超时等均返回 [`PluginError`]。
+#[allow(
+    clippy::too_many_arguments,
+    reason = "these eight arguments are the complete shape of one run request (they map 1:1 onto the W3 process track's stdio JSONL request); a struct would just shuffle the same fields around at both call sites"
+)]
 pub fn run_tool(
     plugin_dir: &Path,
     data_dir: &Path,
@@ -113,6 +122,7 @@ pub fn run_tool(
     granted: &Capabilities,
     tool_id: &str,
     input: &str,
+    params: &str,
     lang: &str,
 ) -> Result<JsToolOutcome, PluginError> {
     let entry = plugin_dir.join(ENTRY_FILE);
@@ -158,6 +168,7 @@ pub fn run_tool(
             &ctx,
             &manifest.id,
             &data_dir_string,
+            params,
             lang,
             &locales,
             &state,
@@ -217,10 +228,15 @@ fn js_failure(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> PluginError {
 }
 
 /// 在全局对象上安装 `duck`（宿主能力）与 `console`（日志收集）。
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same request shape as run_tool, expanded; see the note there"
+)]
 fn install_host_functions<'js>(
     ctx: &rquickjs::Ctx<'js>,
     plugin_id: &str,
     data_dir: &str,
+    params: &str,
     lang: &str,
     locales: &PluginLocales,
     state: &SharedState,
@@ -233,6 +249,16 @@ fn install_host_functions<'js>(
     let duck = rquickjs::Object::new(ctx.clone())?;
     duck.set("id", plugin_id)?;
     duck.set("dataDir", data_dir)?;
+    // 声明式 IO 的参数区（W4）：宿主把表单收集到的值序列化成 JSON 传进来。
+    // 空串 = 本次没有参数（W4 之前的调用方全是这条路）→ 给空对象，
+    // 让插件侧 `duck.params.style ?? "camel"` 之类的兜底写法无差别成立。
+    let params_value = if params.trim().is_empty() {
+        rquickjs::Object::new(ctx.clone())?.into_value()
+    } else {
+        ctx.json_parse(params)
+            .map_err(|error| js_error(ctx, format!("host passed invalid params JSON: {error}")))?
+    };
+    duck.set("params", params_value)?;
     // 当前语言 tag 与「用插件自己的 locales/ 取词」。两者都**不加能力闸门**：
     // 它们只在插件自己的包内数据上做纯查表，和 `duck.id` 同级，不触达宿主资源。
     duck.set("locale", lang)?;
@@ -651,6 +677,7 @@ mod tests {
             &granted,
             "dev.duck.i18n.stats",
             "",
+            "",
             "en",
         )
         .expect("must run");
@@ -665,6 +692,7 @@ mod tests {
             &manifest,
             &granted,
             "dev.duck.i18n.stats",
+            "",
             "",
             "zh-Hans",
         )
@@ -690,6 +718,7 @@ mod tests {
             &granted,
             "dev.duck.sample.hash",
             "duck",
+            "",
             "zh-Hans",
         )
         .expect("must run");
@@ -711,6 +740,7 @@ mod tests {
             &manifest,
             &granted,
             "dev.duck.sample.hash",
+            "",
             "",
             "zh-Hans",
         )
@@ -735,6 +765,7 @@ mod tests {
             &granted,
             "dev.duck.sample.hash",
             "deny",
+            "",
             "zh-Hans",
         )
         .expect("must run");

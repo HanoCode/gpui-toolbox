@@ -1,8 +1,12 @@
 # 终端智能提示（命令自动补全）设计分析
 
-> 状态：**分析稿，未实施**。目标：在本地与 SSH 终端里提供命令智能提示
-> （history 灰字补全 / 弹出候选列表），参考 temp 下相关项目的实现方式，
-> 给出与现有架构的集成方案。
+> 状态：**已实施（L0 + L1 全量，L2 注入已落地；SSH 远端路径补全未做）**。
+> 实现落点：vendor 补丁（`Event::ShellMark` 带列号）→ `duck-term`
+> （`input_line` / `drain_commands` / `suggest` 引擎）→ `duck-app`
+> （`terminal/suggest.rs` + `terminal_canvas.rs` 胶水：弹层 / 按键拦截 /
+> 历史采集 / L2 注入）。设置：「会话」节的「智能提示」（默认开）与
+> 「注入 shell 集成脚本」（默认关）。接受键位：`→` 与 `Tab` 都开；
+> 历史按 host 隔离。SSH 远端路径补全需走 SFTP 异步通道，留待后续。
 
 ## 1. 问题本质
 

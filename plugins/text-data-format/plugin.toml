@@ -1,0 +1,228 @@
+# Duck Toolbox 插件：数据格式转换（duck.text.data-format）。
+#
+# 逐条复刻参考仓 `src/tools/DataFormat.vue`（1,449 行，纯前端）的三段：
+# **CSV / 定长文件 / 固定分隔符**，每段都能导出成 JSON 数组、JSON 对象、
+# Markdown、SQL INSERT 或等宽文本表。
+#
+# 三段之间的关系（参考页那排标签页）在本仓表达为 `mode` + `visible_when`：
+# 切到哪一段就只看见那一段的旋钮，隐藏的参数不会进运行请求。
+#
+# 与参考页唯一一处形态差异：**「配置管理」弹窗换成了 `fixed_columns` 一行文本**
+# （`10:姓名,8:城市,4:年龄`）。参考页把配置存进 localStorage，process 轨插件拿不到
+# 宿主的 kv；改成一行文本后可以复制存档、贴进交接文档，反而更适合团队共用。
+#
+# 逻辑在 `crates/duck-files-core/src/data_format.rs`，二进制 = `crates/duck-files-tool`。
+# `bin/run` 是构建产物，不入库（`sbin/plugins.sh` 投放）。
+
+id = "duck.text.data-format"
+name = "数据格式转换"
+description = "CSV / 定长文件 / 固定分隔符解析，导出 JSON、Markdown、SQL INSERT、文本表"
+version = "0.2.0"
+category = "development"
+tags = ["csv", "定长", "固定分隔符", "delimiter", "表格", "解析", "转换", "markdown", "sql", "json"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.text.data-format"
+name = "数据格式转换"
+description = "CSV / 定长文件 / 固定分隔符解析，导出 JSON、Markdown、SQL INSERT、文本表"
+category = "development"
+group = "转换"
+icon = "table"
+keywords = ["csv", "定长", "fixed-width", "固定分隔符", "delimiter", "表格", "解析", "转换", "markdown", "sql", "json"]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "输入"
+placeholder = "粘贴数据；上面选了文件就忽略这里"
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+style = "tabs"
+label = "文件类型"
+default = "csv"
+options = [
+  { value = "csv", label = "CSV" },
+  { value = "fixed", label = "定长文件" },
+  { value = "delim", label = "固定分隔符" },
+]
+
+[[tools.io.params]]
+id = "file"
+kind = "path"
+pick = "file"
+label = "导入文件"
+placeholder = "选择 .csv / .tsv / .txt / .dat"
+
+# ── CSV 段 ────────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "csv_delimiter"
+kind = "select"
+label = "分隔符"
+default = "auto"
+options = [
+  { value = "auto", label = "自动识别" },
+  { value = "comma", label = "逗号 ," },
+  { value = "tab", label = "制表符 Tab" },
+  { value = "semicolon", label = "分号 ;" },
+  { value = "pipe", label = "竖线 |" },
+]
+visible_when = { mode = "csv" }
+
+[[tools.io.params]]
+id = "csv_has_header"
+kind = "switch"
+label = "首行为表头"
+default = "true"
+visible_when = { mode = "csv" }
+
+[[tools.io.params]]
+id = "csv_output"
+kind = "select"
+label = "输出格式"
+default = "csv"
+options = [
+  { value = "csv", label = "CSV" },
+  { value = "json-array", label = "JSON 数组" },
+  { value = "json-objects", label = "JSON 对象" },
+  { value = "markdown", label = "Markdown" },
+  { value = "sql-insert", label = "SQL INSERT" },
+  { value = "text-table", label = "文本表格" },
+]
+visible_when = { mode = "csv" }
+
+[[tools.io.params]]
+id = "csv_table_name"
+kind = "text"
+label = "表名"
+default = "data"
+placeholder = "INSERT 语句用的表名"
+visible_when = { mode = "csv", csv_output = "sql-insert" }
+
+# ── 定长文件段 ────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "fixed_columns"
+kind = "text"
+label = "列宽配置"
+placeholder = "10:姓名,8:城市,4:年龄（只写宽度也行：10,8,4）"
+visible_when = { mode = "fixed" }
+
+[[tools.io.params]]
+id = "fixed_trim"
+kind = "switch"
+label = "去除首尾空格"
+default = "true"
+visible_when = { mode = "fixed" }
+
+[[tools.io.params]]
+id = "fixed_output"
+kind = "select"
+label = "输出格式"
+default = "fixed-format"
+options = [
+  { value = "fixed-format", label = "定长格式" },
+  { value = "json-array", label = "JSON 数组" },
+  { value = "json-objects", label = "JSON 对象" },
+  { value = "markdown", label = "Markdown" },
+  { value = "sql-insert", label = "SQL INSERT" },
+  { value = "text-table", label = "文本表格" },
+]
+visible_when = { mode = "fixed" }
+
+[[tools.io.params]]
+id = "fixed_table_name"
+kind = "text"
+label = "表名"
+default = "data"
+placeholder = "INSERT 语句用的表名"
+visible_when = { mode = "fixed", fixed_output = "sql-insert" }
+
+# ── 固定分隔符段 ──────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "delim_delimiter"
+kind = "select"
+label = "分隔符"
+default = "comma"
+options = [
+  { value = "comma", label = "逗号 ( , )" },
+  { value = "tab", label = "制表符" },
+  { value = "pipe", label = "竖线 ( | )" },
+  { value = "semicolon", label = "分号 ( ; )" },
+  { value = "hash", label = "井号 ( # )" },
+  { value = "dollar", label = "美元 ( $ )" },
+  { value = "tilde", label = "波浪 ( ~ )" },
+  { value = "custom", label = "其他" },
+]
+visible_when = { mode = "delim" }
+
+[[tools.io.params]]
+id = "delim_custom"
+kind = "text"
+label = "自定义分隔符"
+placeholder = "可以是多个字符，如 ||"
+visible_when = { mode = "delim", delim_delimiter = "custom" }
+
+[[tools.io.params]]
+id = "delim_has_header"
+kind = "switch"
+label = "首行为表头"
+default = "true"
+visible_when = { mode = "delim" }
+
+[[tools.io.params]]
+id = "delim_columns"
+kind = "text"
+label = "列名"
+placeholder = "可选，逗号分隔；无表头时用"
+visible_when = { mode = "delim" }
+
+[[tools.io.params]]
+id = "delim_trim"
+kind = "switch"
+label = "去除首尾空格"
+default = "true"
+visible_when = { mode = "delim" }
+
+[[tools.io.params]]
+id = "delim_output"
+kind = "select"
+label = "输出格式"
+default = "delim-format"
+options = [
+  { value = "delim-format", label = "分隔符格式" },
+  { value = "json-array", label = "JSON 数组" },
+  { value = "json-objects", label = "JSON 对象" },
+  { value = "markdown", label = "Markdown" },
+  { value = "sql-insert", label = "SQL INSERT" },
+  { value = "text-table", label = "文本表格" },
+]
+visible_when = { mode = "delim" }
+
+[[tools.io.params]]
+id = "delim_table_name"
+kind = "text"
+label = "表名"
+default = "data"
+placeholder = "INSERT 语句用的表名"
+visible_when = { mode = "delim", delim_output = "sql-insert" }
+
+[tools.io.output]
+kind = "code"
+label = "转换结果"

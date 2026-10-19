@@ -15,6 +15,11 @@ use crate::settings;
 
 /// 开发者模式开关的存储键（`kv` 表）。
 const DEV_MODE_KEY: &str = "dev_mode";
+/// 收藏夹的存储键（`kv` 表）：一行一个工具 id，**行序即侧栏顺序**。
+///
+/// 用换行分隔而不是 JSON：id 里不可能有换行，读回来零解析成本、也不给
+/// `duck-tools` 添 serde 依赖（本 crate 的其余持久化都走 `duck-store` 的现成表）。
+const FAVORITES_KEY: &str = "tool_favorites";
 /// 「最近使用」的类别名（`recent` 表）。
 const RECENT_KIND: &str = "tool";
 /// 一天的秒数（「最近 N 天」换算成 `recent_since` 要的秒数）。
@@ -274,6 +279,59 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// 收藏的工具（**按收藏顺序**；已注销的、被 dev 模式过滤掉的自动跳过）。
+    ///
+    /// 侧栏「收藏夹」分组用它。参考项目里收藏夹是一等公民（排在所有分类之前），
+    /// 这里保持同样的语义：收藏不改变工具所属分类，只是多一个快捷入口。
+    #[must_use]
+    pub fn favorites(cx: &App) -> Vec<&RegisteredTool> {
+        Self::favorite_ids(cx)
+            .iter()
+            .filter_map(|id| Self::get(cx, id))
+            .filter(|tool| Self::is_listed(cx, tool))
+            .collect()
+    }
+
+    /// 某个工具是否已收藏。
+    #[must_use]
+    pub fn is_favorite(cx: &App, id: &str) -> bool {
+        Self::favorite_ids(cx).iter().any(|saved| saved == id)
+    }
+
+    /// 切换收藏状态；返回**切换后**是否处于收藏。
+    pub fn toggle_favorite(cx: &App, id: &str) -> bool {
+        let mut ids = Self::favorite_ids(cx);
+        let favorited = match ids.iter().position(|saved| saved == id) {
+            Some(index) => {
+                ids.remove(index);
+                false
+            }
+            None => {
+                ids.push(id.to_string());
+                true
+            }
+        };
+        duck_store::kv_put(cx, FAVORITES_KEY, ids.join("\n"));
+        favorited
+    }
+
+    /// 已收藏的 id 列表（按收藏顺序）。
+    ///
+    /// 每次读一遍 KV：单个工具的收藏切换频率极低（人手点的），而 KV 读是内存里
+    /// 的一次 `SELECT`，比在 `ToolRegistry` 里再挂一份缓存（还要处理多窗口同步）
+    /// 便宜得多。
+    fn favorite_ids(cx: &App) -> Vec<String> {
+        duck_store::kv_get(cx, FAVORITES_KEY)
+            .map(|raw| {
+                raw.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// 取工具的执行入口；`None` 表示未注册或后端未接入。
     #[must_use]
     pub fn run(cx: &App, id: &str) -> Option<ToolRun> {
@@ -382,9 +440,11 @@ mod tests {
         let media = index.filter(|tool| tool.meta().category() == ToolCategory::Media);
         assert_eq!(media.len(), 1);
         assert_eq!(media[0].id(), "demo.media");
+        // 顺序跟随 `ToolCategory::ALL`（侧栏顺序），不是插入顺序：
+        // `ALL` 已按参考项目的分类顺序排列（代码开发在前，内置的媒体等在后）。
         assert_eq!(
             index.categories_of(&index.all().iter().collect::<Vec<_>>()),
-            vec![ToolCategory::Media, ToolCategory::Development]
+            vec![ToolCategory::Development, ToolCategory::Media]
         );
     }
 }

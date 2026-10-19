@@ -1,0 +1,159 @@
+# Duck Toolbox 插件：S3 / FTP 连通检测（duck.net.s3-ftp-checker）。
+#
+# **process 轨**：逻辑在 `crates/duck-net-core/src/conn.rs`，二进制 =
+# `crates/duck-net-tool`。移植参考仓 `src-tauri/src/net/conn_check.rs`（374 行）里的
+# 三个 `#[tauri::command]`：`conn_check_s3` / `conn_check_ftp` / `conn_check_sftp`
+#（`conn_check_port` 不迁 —— 本仓已有报文收发，单独一个「只连不发」的工具没有独立价值）。
+#
+# ## 为什么合并成一个工具
+#
+# 设计稿核对结论：三者共用「地址 + 凭据 → 连通性」这一套输入，差异只有协议。分成三个
+# 插件会得到三份几乎一样的表单与三份一样的错误话术。
+#
+# ## 分步报告是本工具的全部价值
+#
+# 源仓只回 `{ok, detail}` 一句话，`ok=false` 时用户不知道是网络、凭据还是权限。
+# 这里把过程摊成步骤：TCP 连接 → 欢迎语 → USER → PASS → PWD（FTP）/
+# TCP → SSH 认证 → 远端路径（SFTP）/ 凭据 → 请求 → 响应（S3），
+# 失败的那一步会附一句「下一步查什么」。
+#
+# ## SFTP 走系统 `ssh`
+#
+# 不引 `ssh2`（与 `duck-ssh` crate 的选择一致）：OpenSSH 的 stderr 本身就是最准确的
+# 诊断，口令认证走 askpass 助手，超时用 `-o ConnectTimeout`。检测完立刻关掉那条
+# 复用的 master —— 那是不该留在用户会话里的东西。
+#
+# ⚠️ **凭据不落盘**：AccessKey / 口令只在这一次运行的进程内存里；报告里不出现密钥，
+# 失败细节只引用对端原文（`Permission denied (password).` 这类英文串）。
+
+id = "duck.net.s3-ftp-checker"
+name = "S3 / FTP 连通检测"
+description = "分步检测 S3 兼容存储、FTP 与 SFTP 的连通性：网络、凭据、权限分别给结论"
+version = "0.1.0"
+category = "net"
+tags = ["s3", "ftp", "sftp", "minio", "connectivity", "连通", "检测", "对象存储"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.net.s3-ftp-checker"
+name = "S3 / FTP 连通检测"
+description = "分步检测 S3 兼容存储、FTP 与 SFTP 的连通性：网络、凭据、权限分别给结论"
+category = "net"
+group = "网络"
+icon = "plug"
+keywords = ["s3", "ftp", "sftp", "minio", "oss", "connectivity", "连通", "检测", "上传"]
+
+[tools.io]
+# `key_path` 是路径参数：声明 path 就必须给出 allow_files（装载期会校验）。
+allow_files = "read"
+
+[[tools.io.params]]
+id = "protocol"
+kind = "select"
+style = "tabs"
+label = "协议"
+default = "s3"
+options = [
+  { value = "s3", label = "S3 / 兼容对象存储" },
+  { value = "ftp", label = "FTP" },
+  { value = "sftp", label = "SFTP" },
+]
+
+[[tools.io.params]]
+id = "host"
+kind = "text"
+label = "主机 / Endpoint"
+placeholder = "S3 填 https://s3.amazonaws.com 或 minio.lan:9000；FTP/SFTP 填 10.0.0.11"
+required = true
+
+[[tools.io.params]]
+id = "port"
+kind = "number"
+label = "端口"
+default = "21"
+min = 1
+max = 65535
+placeholder = "FTP 21、SFTP 22（S3 不用）"
+
+[[tools.io.params]]
+id = "username"
+kind = "text"
+label = "用户名"
+placeholder = "FTP / SFTP 用户名（S3 不用）"
+
+[[tools.io.params]]
+id = "password"
+kind = "text"
+label = "口令"
+placeholder = "只用于本次检测，不落盘、不进日志"
+
+[[tools.io.params]]
+id = "key_path"
+kind = "path"
+pick = "file"
+label = "私钥"
+placeholder = "选用密钥登录时指定（留空则用口令）"
+visible_when = { protocol = "sftp" }
+
+[[tools.io.params]]
+id = "remote_path"
+kind = "text"
+label = "远端目录"
+placeholder = "留空 = 只验证认证，不检查目录（例如 /data/incoming）"
+visible_when = { protocol = "sftp" }
+
+[[tools.io.params]]
+id = "bucket"
+kind = "text"
+label = "Bucket"
+placeholder = "my-bucket"
+visible_when = { protocol = "s3" }
+
+[[tools.io.params]]
+id = "access_key"
+kind = "text"
+label = "Access Key"
+placeholder = "留空 = 匿名访问（公共桶）"
+visible_when = { protocol = "s3" }
+
+[[tools.io.params]]
+id = "secret_key"
+kind = "text"
+label = "Secret Key"
+placeholder = "与 Access Key 一起填，或者都留空"
+visible_when = { protocol = "s3" }
+
+[[tools.io.params]]
+id = "region"
+kind = "text"
+label = "Region"
+placeholder = "留空 = us-east-1"
+visible_when = { protocol = "s3" }
+
+[[tools.io.params]]
+id = "insecure"
+kind = "switch"
+label = "跳过证书校验"
+default = "false"
+visible_when = { protocol = "s3" }
+
+[[tools.io.params]]
+id = "timeout_ms"
+kind = "number"
+label = "超时（ms）"
+default = "10000"
+min = 1000
+max = 120000
+
+[tools.io.output]
+kind = "text"
+label = "检测结果"

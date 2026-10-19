@@ -1,0 +1,78 @@
+# Duck Toolbox 插件：SQL 合并（duck.sql.sql-merge）。
+#
+# **process 轨**：逻辑在 `crates/duck-sql-core/src/sql_merge.rs`，那份代码逐字
+# 复刻参考仓 `ifm_ai_tools/src-tauri/src/sql_merge.rs`（2,101 行，生产已验证）。
+# 二进制 = `crates/duck-sql-tool`（整族共用一个，按 `tool` 分派）。
+#
+# 参数只开放参考仓前端那三个（`src_dir` / `customer_no` / `db_type`）：
+# 输出目录由 core 自己定在 `<源目录>/merge_sql_<时间戳>`，与源仓一致，不另开旋钮。
+#
+# `allow_files = "read_write"`：合并**会往源目录里写**（`merge_sql_*` 输出目录、
+# `merge.log`、`注意事项.txt`），只读授权不够用。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 从 `target/<profile>/duck-sql-tool`
+# 拷进来），不入库；缺失时执行页会提示先构建。
+
+id = "duck.sql.sql-merge"
+name = "SQL 合并"
+description = "把多个版本包里的 SQL 按目录归并成单文件：SPSQL / db-*.zip / 标准目录三种模式"
+version = "0.1.0"
+category = "merge"
+tags = ["sql", "merge", "合并", "版本", "发布"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+# 不申请任何额外能力：文件访问只走本次运行的路径授权（`[io] allow_files`），
+# 插件数据目录与网络都不碰。
+
+[[tools]]
+id = "duck.sql.sql-merge"
+name = "SQL 合并"
+description = "把多个版本包里的 SQL 按目录归并成单文件：SPSQL / db-*.zip / 标准目录三种模式"
+category = "merge"
+group = "SQL"
+icon = "layers"
+keywords = ["sql", "merge", "合并", "版本", "spsql", "zip", "打包"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.params]]
+id = "src_dir"
+kind = "path"
+pick = "folder"
+label = "源目录"
+placeholder = "选择版本包所在目录"
+# 不声明 `required`：勾了「只看使用说明」时这个框是用不上的，宿主侧的必填校验
+# 会先拦住。空目录的报错由工具层给（「请选择要合并的源目录」）。
+
+[[tools.io.params]]
+id = "customer_no"
+kind = "text"
+label = "客户号过滤"
+placeholder = "只保留路径含该串的文件，留空不过滤"
+
+[[tools.io.params]]
+id = "db_type"
+kind = "text"
+label = "数据库类型过滤"
+placeholder = "如 oracle,mysql，逗号分隔，留空不过滤"
+
+# 参考页标题栏那个「?」帮助弹窗（四节：功能 / 操作 / 三种目录结构 / 结果目录）。
+# 执行页没有弹窗容器，改成一个开关把同一份说明打进结果区；勾上时不读目录、不写盘。
+[[tools.io.params]]
+id = "guide"
+kind = "switch"
+label = "只看使用说明（不执行合并）"
+
+[tools.io.output]
+kind = "text"
+label = "合并结果"

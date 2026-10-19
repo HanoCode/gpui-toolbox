@@ -1,0 +1,91 @@
+# Duck Toolbox 插件：目录树（duck.files.tree）。
+#
+# **process 轨**：逻辑在 `crates/duck-files-core/src/tree.rs`，移植参考仓
+# `ifm_ai_tools` 的「目录树」页。二进制 = `crates/duck-files-tool`（整族共用一个）。
+#
+# 两种输出：`text`（等宽树，直接看）与 `markdown`（```text 围栏，粘进文档不散版）。
+# 统计行（几个目录 / 几个文件 / 多大）由插件拼在树前面，用户最常问的就是这个。
+#
+# 布局：本工具没有「输入框」——输入是一个目录，属于操作区，所以结果区直接占满中间。
+# 这是「操作区置顶 → 结果居中 → 输入框沉底」铁律在「无文本输入」工具上的形态。
+#
+# `allow_files = "read"`：只列目录，不改文件。
+#
+# `bin/run` 是构建产物，不入库（`sbin/plugins.sh` 投放）。
+
+id = "duck.files.tree"
+name = "目录树生成"
+description = "把目录结构渲染成等宽树：深度、隐藏项、只列目录、显示大小，可输出 markdown"
+version = "0.1.0"
+category = "files"
+tags = ["tree", "directory", "目录树", "结构", "markdown"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.files.tree"
+name = "目录树生成"
+description = "把目录结构渲染成等宽树：深度、隐藏项、只列目录、显示大小，可输出 markdown"
+category = "files"
+group = "文件"
+icon = "folders"
+keywords = ["tree", "directory", "ls", "目录", "结构", "树", "markdown", "文档"]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.params]]
+id = "dir"
+kind = "path"
+pick = "folder"
+label = "目录"
+placeholder = "选择要展开的目录"
+required = true
+
+[[tools.io.params]]
+id = "format"
+kind = "select"
+label = "输出格式"
+default = "text"
+options = [
+  { value = "text", label = "纯文本树" },
+  { value = "markdown", label = "Markdown 代码块" },
+]
+
+[[tools.io.params]]
+id = "max_depth"
+kind = "number"
+label = "最大深度"
+default = "3"
+min = 1
+max = 16
+
+[[tools.io.params]]
+id = "show_size"
+kind = "switch"
+label = "显示文件大小"
+default = "false"
+
+[[tools.io.params]]
+id = "dirs_only"
+kind = "switch"
+label = "只列目录"
+default = "false"
+
+[[tools.io.params]]
+id = "show_hidden"
+kind = "switch"
+label = "包含隐藏项"
+default = "false"
+
+[tools.io.output]
+kind = "text"
+label = "目录树"

@@ -1,0 +1,50 @@
+# `duck.misc.nginx` 的英译表（中文源串即键）。
+#
+# 生成的 `nginx.conf` 里只有 **三句注释** 会被翻译（客户端最大请求体大小 / SSL 配置 /
+# 错误页面）—— 其余全是 nginx 指令，翻不得。
+
+"Nginx 配置生成" = "Nginx Config Builder"
+"按预设生成生产可用的 nginx.conf（反代/静态/Java 应用/混合），也可用一段 JSON 覆盖任意字段" = "Generate a production-ready nginx.conf from a preset (reverse proxy / static / Java app / mixed), or override any field with a JSON patch"
+
+"覆盖 JSON" = "JSON patch"
+"自定义模式用，例如 {\"server\":{\"listen_port\":\"8180\"},\"security\":{\"hsts\":true}}" = "For custom mode, e.g. {\"server\":{\"listen_port\":\"8180\"},\"security\":{\"hsts\":true}}"
+
+"生成方式" = "Mode"
+"直接用预设" = "Preset only"
+"预设 + JSON 覆盖" = "Preset + JSON patch"
+
+"预设" = "Preset"
+"基础配置（静态托管 + 一条反代）" = "Basic (static hosting + one proxy)"
+"反向代理（前后端分离）" = "Reverse proxy (split front/back end)"
+"静态站点（无 upstream）" = "Static site (no upstream)"
+"Java 应用（Spring Boot / Tomcat）" = "Java app (Spring Boot / Tomcat)"
+"混合配置（前端 + API + 下载）" = "Mixed (front end + API + downloads)"
+
+"nginx.conf" = "nginx.conf"
+"客户端最大请求体大小" = "maximum request body size"
+"SSL 配置" = "SSL settings"
+"错误页面" = "error pages"
+
+"：" = ": "
+"按预设 {} 生成" = "Generated from preset {}"
+"在预设 {} 上覆盖生成" = "Generated from preset {} with the JSON patch applied"
+"自定义模式要在输入框写一段 JSON（覆盖预设里想改的字段）" = "Custom mode needs a JSON patch in the input box (only the fields you want to change)"
+"JSON 解析失败" = "Could not parse the JSON"
+"覆盖内容必须是一个 JSON 对象" = "The patch must be a JSON object"
+"覆盖内容与配置结构对不上" = "The patch does not match the config structure"
+"配置校验没通过:" = "Config validation failed:"
+
+"监听端口不能为空" = "Listen port is required"
+"监听端口必须在 1-65535 之间" = "Listen port must be between 1 and 65535"
+"监听端口必须是有效数字" = "Listen port must be a number"
+"Server Name 不能为空" = "Server name is required"
+"网站根目录不能为空" = "Document root is required"
+"第 {} 个 Upstream 没有名字" = "Upstream #{} has no name"
+"Upstream {} 至少需要一个服务器" = "Upstream {} needs at least one server"
+"第 {} 个 Location 没有路径" = "Location #{} has no path"
+"Location {} 没有目标" = "Location {} has no target"
+"Location {} 的代理目标要以 http:// 或 https:// 开头" = "Location {} must proxy to a target starting with http:// or https://"
+"开了 SSL 就要填证书路径" = "SSL is enabled, so a certificate path is required"
+"开了 SSL 就要填证书私钥路径" = "SSL is enabled, so a certificate key path is required"
+"工作连接数必须是有效数字" = "worker_connections must be a number"
+"工作连接数必须在 1-65535 之间" = "worker_connections must be between 1 and 65535"

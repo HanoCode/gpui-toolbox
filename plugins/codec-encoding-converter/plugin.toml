@@ -1,0 +1,71 @@
+# Duck Toolbox 插件：编码转换（duck.codec.encoding-converter）。
+#
+# 一工具一插件（见 plugins/text-formatter/plugin.toml 的说明）。
+# 来源：ifm_ai_tools 的 EncodingConverter.vue；移植时把浏览器 `TextEncoder` /
+# `TextDecoder` / `BigInt` 依赖全部换成手写 UTF-8 与数组大数运算——QuickJS
+# 沙箱里没有这些宿主扩展。
+
+id = "duck.codec.encoding-converter"
+name = "编码转换"
+description = "Unicode / HTML 实体 / URL / Hex / 二进制 / 八进制 / Base32 / Base58 编解码互转"
+version = "0.1.0"
+category = "files"
+tags = ["编码", "转义", "unicode", "base32", "base58"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+# 不申请任何能力：纯函数，不读文件、不出网、不发通知。
+
+[[tools]]
+id = "duck.codec.encoding-converter"
+name = "编码转换"
+description = "Unicode / HTML 实体 / URL / Hex / 二进制 / 八进制 / Base32 / Base58 编解码互转"
+category = "files"
+group = "转换"
+icon = "globe"
+keywords = ["encode", "decode", "unicode", "escape", "url", "hex", "base32", "base58", "编码", "解码"]
+
+[tools.io]
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "输入"
+placeholder = "粘贴要转换的内容…"
+required = true
+
+[[tools.io.params]]
+id = "direction"
+kind = "select"
+label = "方向"
+default = "encode"
+options = [
+  { value = "encode", label = "编码（文本 → 编码）" },
+  { value = "decode", label = "解码（编码 → 文本）" },
+]
+
+[[tools.io.params]]
+id = "encoding"
+kind = "select"
+label = "编码方案"
+default = "unicode"
+options = [
+  { value = "unicode", label = "Unicode (\\uXXXX)" },
+  { value = "unicode_upper", label = "Unicode (\\UXXXXXXXX)" },
+  { value = "html", label = "HTML 实体 (&#x;)" },
+  { value = "url", label = "URL 编码 (%XX)" },
+  { value = "hex", label = "Hex (0x)" },
+  { value = "binary", label = "二进制 (01)" },
+  { value = "octal", label = "八进制 (0OO)" },
+  { value = "base32", label = "Base32" },
+  { value = "base58", label = "Base58" },
+]
+
+[tools.io.output]
+kind = "code"
+label = "转换结果"

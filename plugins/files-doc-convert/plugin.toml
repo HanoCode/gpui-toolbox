@@ -1,0 +1,107 @@
+# Duck Toolbox 插件：文档转换（duck.files.doc-convert）。
+#
+# **process 轨**：逻辑在 `crates/duck-files-core/src/convert.rs`，移植参考仓
+# `ifm_ai_tools` 的格式转换页（Markdown / HTML / TXT / JSON / CSV / YAML / TOML / INI /
+# XML / docx / pptx / xlsx / pdf 互相转）。二进制 = `crates/duck-files-tool`（整族共用一个）。
+#
+# 两处按本仓约束做的取舍：
+#   • **不用 `kreuzberg`**：它 4.10 的 MSRV 是 1.91，本仓硬门是 1.85。改成
+#     `zip + quick-xml`（OOXML 取文本）+ `calamine 0.30`（xlsx）+ `pdf-extract`，
+#     正文口径与参考仓一致（表格单元格用 `\t`、单元格内不换行）。
+#   • **不产出 PDF**：`printpdf` 出中文是空白页，宁可不提供这个方向，也不给一个
+#     「转出来是空文档」的按钮。输出格式因此只有 md / html / txt / json / csv。
+#
+# `output_dir` 留空 = 只在结果区预览（前 12 行 + 字符数/行数统计），这是「转换对了没」
+# 最快的验证方式；填了才落文件，同名文件默认不覆盖（`overwrite` 控制）。
+#
+# `allow_files = "read_write"`：读输入文件、写输出文件。
+#
+# `bin/run` 是构建产物，不入库（`sbin/plugins.sh` 投放）。
+
+id = "duck.files.doc-convert"
+name = "文档转换"
+description = "Markdown / HTML / TXT / JSON / CSV / YAML / TOML / docx / pptx / xlsx / pdf 互转"
+version = "0.1.0"
+category = "files"
+tags = ["convert", "markdown", "html", "docx", "pdf", "xlsx", "转换", "文档"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.files.doc-convert"
+name = "文档转换"
+description = "Markdown / HTML / TXT / JSON / CSV / YAML / TOML / docx / pptx / xlsx / pdf 互转"
+category = "files"
+group = "文件"
+icon = "file-text"
+keywords = ["convert", "markdown", "html", "docx", "pptx", "xlsx", "pdf", "转换", "文档"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+style = "tabs"
+label = "范围"
+default = "single"
+options = [
+  { value = "single", label = "单个文件" },
+  { value = "batch", label = "整个目录" },
+]
+
+[[tools.io.params]]
+id = "input_file"
+kind = "path"
+pick = "file"
+label = "输入文件"
+placeholder = "选择要转换的文件"
+required = true
+visible_when = { mode = "single" }
+
+[[tools.io.params]]
+id = "input_dir"
+kind = "path"
+pick = "folder"
+label = "输入目录"
+placeholder = "目录下的文档会按原结构转换到输出目录"
+required = true
+visible_when = { mode = "batch" }
+
+[[tools.io.params]]
+id = "format"
+kind = "select"
+label = "输出格式"
+default = "md"
+options = [
+  { value = "md", label = "Markdown" },
+  { value = "html", label = "HTML" },
+  { value = "txt", label = "纯文本" },
+  { value = "json", label = "JSON" },
+  { value = "csv", label = "CSV" },
+]
+
+[[tools.io.params]]
+id = "output_dir"
+kind = "path"
+pick = "folder"
+label = "输出目录"
+placeholder = "留空 = 只在结果区预览（批量模式必填）"
+
+[[tools.io.params]]
+id = "overwrite"
+kind = "switch"
+label = "覆盖同名文件"
+default = "false"
+
+[tools.io.output]
+kind = "text"
+label = "转换结果"

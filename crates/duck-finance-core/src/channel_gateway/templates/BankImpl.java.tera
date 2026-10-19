@@ -1,0 +1,117 @@
+/************************************************************
+ * 文件名称: Bank{{ function_id }}.java
+ * 系统名称: 综合理财管理平台V6.0
+ * 模块名称: {{ business_domain }}
+ * 软件版权: 恒生电子股份有限公司
+ * 功能说明: {{ description }}
+ * 系统版本: 6.0.0.1
+ * 开发人员: 
+ * 开发时间: 
+ * 审核人员:
+ * 相关文档:
+ * 修改记录: 修改日期    修改人员    修改说明
+ *
+ *
+ * --- 可用模板变量 ---
+ *   function_id      - 交易码
+ *   description      - 接口描述
+ *   business_domain  - 业务域
+ *   package_base     - 包基路径（含银行代码）
+ *   bank_code        - 银行代码
+ *   abstract_bank_comm_pkg - 抽象基类包路径
+ *   request_fields[] - 请求字段列表（每项含 java_const, esb_name, meaning, is_numeric, is_amount, is_array, array_items）
+ *   response_fields[] - 应答字段列表（同上）
+ ************************************************************/
+
+package {{ package_base }}.bank.impl.{{ function_id }};
+
+import org.springframework.stereotype.Service;
+
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
+import com.hundsun.jres.common.xml.parser.Tag;
+import com.hundsun.jres.common.xml.parser.xml.XmlParser;
+import com.hundsun.jres.common.xml.parser.xml.XmlTag;
+import com.hundsun.jres.impl.bizkernel.runtime.exception.BizBussinessException;
+import com.hundsun.lcpt.constant.IErrMsg;
+import com.hundsun.lcpt.constant.ITag;
+import com.hundsun.lcpt.gateway.bank.IBankComm;
+import {{ abstract_bank_comm_pkg }}.base.AbstractBankComm;
+import com.hundsun.lcpt.gateway.common.XmlUtil;
+
+@Service("Bank{{ function_id }}")
+public class Bank{{ function_id }} extends AbstractBankComm implements IBankComm {
+
+	@Override
+	public String packRequest(String request) throws Exception {
+		//xml请求转为联机json请求
+		JSONObject requestJson = packRequestBase(request);
+		Tag requestXml = null;
+		try {
+			requestXml = new XmlParser().parseString(request);
+{% if request_fields is defined and request_fields | length > 0 %}
+{% for field in request_fields %}
+{% if field.is_array %}
+			// {{ field.meaning }}
+			Tag {{ field.java_const }}Tag = requestXml.getTagWithPath("/"+ITag.{{ field.java_const }});
+			if ({{ field.java_const }}Tag != null) {
+				JSONArray {{ field.java_const }}Array = new JSONArray();
+				for (Tag item : {{ field.java_const }}Tag.getTags()) {
+					JSONObject obj = new JSONObject();
+{% for sub in field.array_items %}
+					obj.put(ITag.{{ sub.java_const }}, XmlUtil.getDataFromTag(item.getTagWithPath(ITag.{{ sub.java_const }})));
+{% endfor %}
+					{{ field.java_const }}Array.add(obj);
+				}
+				requestJson.put(ITag.{{ field.java_const }}, {{ field.java_const }}Array);
+			}
+{% else %}
+			requestJson.put(ITag.{{ field.java_const }}, XmlUtil.getDataFromTag(requestXml.getTagWithPath("/"+ITag.{{ field.java_const }}))); // {{ field.meaning }}
+{% endif %}
+{% endfor %}
+{% endif %}
+		} catch (Exception e) {
+			throw new BizBussinessException(IErrMsg.ERR_DEFAULT, "组请求报文错误");
+		}
+		return requestJson.toJSONString();
+	}
+
+	@Override
+	public String packResponse(String response) throws Exception {
+		Tag responseXml = null;
+		Tag t = null;
+
+		JSONObject responseJson = JSON.parseObject(response);
+		responseXml = packResponseBase( response);
+		try {
+{% if response_fields is defined and response_fields | length > 0 %}
+{% for field in response_fields %}
+{% if field.is_array %}
+			// {{ field.meaning }}
+			JSONArray {{ field.java_const }}Array = responseJson.getJSONArray(ITag.{{ field.java_const }});
+			if ({{ field.java_const }}Array != null) {
+				for (int i = 0; i < {{ field.java_const }}Array.size(); i++) {
+					JSONObject item = {{ field.java_const }}Array.getJSONObject(i);
+					XmlTag itemTag = new XmlTag(ITag.{{ field.java_const }});
+{% for sub in field.array_items %}
+					itemTag.addTag(new XmlTag(ITag.{{ sub.java_const }}).setContent(item.getString(ITag.{{ sub.java_const }})));
+{% endfor %}
+					responseXml.addTag(itemTag);
+				}
+			}
+{% else %}
+			t = new XmlTag(ITag.{{ field.java_const }}); // {{ field.meaning }}
+			t.setContent(responseJson.getString(ITag.{{ field.java_const }}));
+			responseXml.addTag(t);
+{% endif %}
+{% endfor %}
+{% endif %}
+		} catch (Exception e) {
+			throw new BizBussinessException(IErrMsg.ERR_DEFAULT, "组响应报文错误");
+		}
+
+		return responseXml.toString();
+	}
+
+}

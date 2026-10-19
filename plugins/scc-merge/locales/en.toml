@@ -1,0 +1,77 @@
+# duck.merge.scc-merge 英文译文。键 = 中文源串。
+#
+# 文案来自 `duck-merge-core::scc_merge`（逐字复刻件）与 `duck-merge-tool` 的结果
+# 拼版。键是**模板**（`{}` / `{:.1}` 原样保留），译文占位符数量必须相等。
+
+# ── 清单 / 参数 ──
+"SCC 包合并" = "SCC customer package merge"
+"按客户号裁剪标准包并合成客户包：脚本按版本校验、微服务过滤、Stack JSON 改写，支持跨大版本合包" = "Trim the standard packages down to one customer and merge them into a customer package: scripts are version-checked, microservices filtered and Stack JSON rewritten, with cross-major-version merge support"
+"包目录" = "Package directory"
+"选择 SCC ZIP 包目录" = "Pick the directory that holds the SCC ZIP packages"
+"结果目录" = "Output directory"
+"选择输出位置" = "Pick where the result goes"
+"客户编号" = "Customer number"
+"当前版本" = "Current version"
+"如 SCC10V202201.04.001" = "e.g. SCC10V202201.04.001"
+"目标版本" = "Target version"
+"如 SCC10V202201.05.000" = "e.g. SCC10V202201.05.000"
+"数据库类型" = "Database type"
+"oracle / mysql" = "oracle / mysql"
+"行业" = "Industry"
+"可选" = "Optional"
+"增值类型" = "Value-added type"
+"微服务列表" = "Microservice list"
+"逗号分隔，如 hswealth-scc-svr,hswealth-scc-web" = "Comma separated, e.g. hswealth-scc-svr,hswealth-scc-web"
+"栈包模式" = "Stack package mode"
+"新客户" = "New customer"
+"合并结果" = "Merge result"
+
+# ── 阶段标签（进度条文案） ──
+"遍历解压包…" = "Walking the packages…"
+"脚本合并…" = "Merging scripts…"
+"服务过滤…" = "Filtering services…"
+"处理 Stack JSON…" = "Processing Stack JSON…"
+"最终压缩…" = "Final compression…"
+
+# ── 内核日志 ──
+"遍历解压包..." = "Walking the packages..."
+"脚本合并..." = "Merging scripts..."
+"服务过滤..." = "Filtering services..."
+"处理 Stack JSON..." = "Processing Stack JSON..."
+"最终压缩..." = "Final compression..."
+"SCC 合包完成: {}" = "SCC merge complete: {}"
+"完成 {:.1}s" = "done in {:.1}s"
+"写入 {}" = "wrote {}"
+"写文件 {}" = "writing file {}"
+"拷贝 {}" = "copying {}"
+"移动 {}" = "moving {}"
+"清理 {}" = "cleaning {}"
+"读文件 {}" = "reading file {}"
+"读目录 {}" = "reading directory {}"
+"创建合并目录 {}" = "creating merge directory {}"
+"创建工作目录 {}" = "creating work directory {}"
+"创建文件 {}" = "creating file {}"
+"打开ZIP失败 {}" = "Failed to open ZIP {}"
+"读ZIP失败 {}" = "Failed to read ZIP {}"
+
+# ── 结果拼版 ──
+"合并完成 · {} 个包 · {} 个服务 · {} s" = "Merge complete · {} packages · {} services · {} s"
+"输出：{}" = "Output: {}"
+"本次为跨大版本合包" = "This merge crossed major versions"
+
+# ── 自有覆盖补齐（与同族共用）：运行时只加载本插件的表 ──
+"用户取消" = "Cancelled by user"
+"源目录和目标目录不能为空" = "Source and output directories are both required"
+"源目录不存在: {}" = "Source directory does not exist: {}"
+"创建目标目录失败: {}" = "Failed to create the output directory: {}"
+"解压与合并中…" = "Unzipping and merging…"
+
+# ── 长任务页（layout = job）：按钮 / 空态提示 / 分组标题 / 统计卡标签 ──
+"开始合并" = "Start merge"
+"选择包目录后点击「开始合并」" = "Pick a package directory, then click \"Start merge\""
+"合并选项" = "Merge options"
+"包数量" = "Packages"
+"服务数" = "Services"
+"跨大版本" = "Cross major version"
+"总耗时" = "Total time"
+"输出" = "Output"

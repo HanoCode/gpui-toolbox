@@ -20,10 +20,9 @@ use std::path::Path;
 use duck_components::body_text;
 use duck_theme::{active_theme, tr};
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement as _, Pixels, SharedString, div,
-    prelude::FluentBuilder as _, px, Styled as _,
+    AnyElement, App, IntoElement, ParentElement as _, Pixels, SharedString, Styled as _, div,
+    prelude::FluentBuilder as _, px,
 };
-use gpui_component::v_flex;
 
 use duck_term::{CellSize, SuggestSource, Suggestion};
 
@@ -79,7 +78,11 @@ pub(crate) fn save_history(cx: &App, history: &HashMap<String, Vec<String>>) {
 }
 
 /// 追加命令到某 host 的历史：先去重（挪到尾部 = 最近），再按上限截头。
-pub(crate) fn remember_command(history: &mut HashMap<String, Vec<String>>, host: &str, command: &str) {
+pub(crate) fn remember_command(
+    history: &mut HashMap<String, Vec<String>>,
+    host: &str,
+    command: &str,
+) {
     let command = command.trim();
     if command.is_empty() {
         return;

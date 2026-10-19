@@ -1,0 +1,33 @@
+[package]
+name = "duck-files-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "文件批处理内核：遍历搜索、目录树、批量改名/替换（可撤销）、CSV 表格与图表、文档格式转换（零 gpui、零 tauri）。"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# 搜索 / 批量替换的模式匹配（与参考仓同一套 `regex`）。
+regex.workspace = true
+# 遍历（深度、跳过符号链接、按文件名排序）。
+walkdir.workspace = true
+# INI / XML 之外的结构化配置都靠这三个：TOML 已在树内，YAML 与 CSV 由本族引入。
+toml.workspace = true
+serde_yaml.workspace = true
+csv.workspace = true
+# 读 docx / pptx（ZIP 容器 + XML 正文）。
+zip.workspace = true
+quick-xml.workspace = true
+# 读 xlsx（共享字符串、合并单元格、多 sheet）与 PDF 抽取文字。
+calamine.workspace = true
+pdf-extract.workspace = true
+# Markdown → HTML（参考仓用 comrak；换 pulldown 的理由见根 Cargo.toml 注释）。
+pulldown-cmark.workspace = true
+# 随机文本生成的「今天 / 此刻」口径要跟系统时区（参考仓用 `new Date()`）。
+chrono.workspace = true
+# 随机源：一次系统熵做种，之后走 SplitMix64（见 `datagen.rs` 模块头）。
+getrandom = "0.3"
+
+[lints]
+workspace = true

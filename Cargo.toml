@@ -37,6 +37,14 @@ duck-tools = { path = "crates/duck-tools" }
 duck-update = { path = "crates/duck-update" }
 duck-plugin = { path = "crates/duck-plugin" }
 duck-plugin-js = { path = "crates/duck-plugin-js" }
+duck-plugin-process = { path = "crates/duck-plugin-process" }
+duck-sql-core = { path = "crates/duck-sql-core" }
+# 上线包合并族的核心逻辑（`duck.merge.*`）：参考仓 `extract_by_manifest` /
+# 后续 `sp_merge` / `non_sp_merge` / `ifms6_merge` 的复刻件都落在这里。
+duck-merge-core = { path = "crates/duck-merge-core" }
+# Java `class` 解析与版本提取（`duck-merge-core` 判「同名文件留哪份」要用，
+# 将来的 class/jar 比对与反编译工具共用同一份解析器）。
+duck-classfile = { path = "crates/duck-classfile" }
 duck-plugin-registry = { path = "crates/duck-plugin-registry" }
 duck-db = { path = "crates/duck-db" }
 # 驱动商店内核（crates/duck-drivers，docs 见 crate 文档）：驱动目录 + 远端注册表 +
@@ -55,6 +63,31 @@ duck-mail = { path = "crates/duck-mail" }
 # 项目管理内核（crates/duck-project，docs/projects-design.md）：自管 SQLite、零 gpui、
 # 全同步。依赖全部已在图内（rusqlite 由 duck-store / duck-db 引入），零新增下载。
 duck-project = { path = "crates/duck-project" }
+# 比对族内核（crates/duck-compare-core，计划 §6.5）：文本差异、目录比对，
+# 以及后续的 class/jar 包比对。`similar` 与参考仓同版本（2.7.0），差异算法一致。
+duck-compare-core = { path = "crates/duck-compare-core" }
+# 文件批处理族内核（crates/duck-files-core，计划 §6.6）：遍历搜索、目录树、
+# 批量改名 / 替换（带撤销日志）、CSV 表格与图表、文档格式转换。
+duck-files-core = { path = "crates/duck-files-core" }
+# 网络与联调族内核（crates/duck-net-core，计划 §6.7）：HTTP 请求、报文调试
+#（TCP/XML/FIX 三协议共用一个连接骨架 + 四种编解码）、S3/FTP/SFTP 连通检测
+#（分步结果）、hosts 解析与合并。零 gpui、全同步。
+duck-net-core = { path = "crates/duck-net-core" }
+
+# 零散工具族内核（crates/duck-misc-core，计划 §6.8/§6.9 合并后的一包）：
+# JSON Schema（Draft-07 子集）校验、Git 文本生成（提交信息/Hook/.gitignore）、
+# Nginx 配置生成（逐字复刻参考仓 `nginx/` 786 行，渲染器替换掉 tera）。零 gpui、全同步。
+duck-misc-core = { path = "crates/duck-misc-core" }
+
+# 金融工具族内核（crates/duck-finance-core，计划 §6.10 / M6）：PDM 阅读器
+#（PowerDesigner XML → 表结构 / 建表 SQL / 数据字典）与渠道网关模型生成
+#（接口 Excel → Bank/Host Java 实现 / XML 报文骨架）。零 gpui、全同步；
+# 依赖 `calamine` / `quick-xml` / `walkdir` 全在既有图内（文件族已引入）。
+duck-finance-core = { path = "crates/duck-finance-core" }
+
+# 编解码族内核（crates/duck-codec-core）：恒生 LCPT 加解密（DES / DES(HsAndMoe) /
+# DES3 / SM4 + 柜员密码，逐字复刻 `hundsun_crypt.rs`）与文件哈希。零 gpui、全同步。
+duck-codec-core = { path = "crates/duck-codec-core" }
 
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1"
@@ -69,6 +102,40 @@ image = "=0.25.10"
 # 不依赖系统 OpenSSL；`gzip` 是 manifest 常见的传输压缩。
 semver = "1"
 sha2 = "0.10"
+# SigV4 签名（duck-net-core::s3）：HMAC-SHA256 链 + 摘要转十六进制。
+# 两者**本就在依赖图里**（`sha2` 见上、`hmac` 与 `hex` 由 russh / ring 一线传递），
+# 这里只是提成直接依赖；版本取图中已有的那一份，不引入新的 major。
+hmac = "0.12"
+hex = "0.4"
+# GBK / GB18030 收发（报文调试的 `charset`）。**不新增依赖**：`encoding_rs` 本就在
+# 图里（HTML 解析 / reqwest 一线传递）。WHATWG 的 `GBK` 解码器同时吃 GB18030，
+# 与参考仓 `invoke('encode_text', { charset: 'gbk' })` 覆盖的是同一片字符集。
+encoding_rs = "0.8"
+# 逐行/逐字符差异（参考仓同一份算法，本仓只做文本比对，不引它的 `unicode` 特性）。
+similar = "2.7"
+# 文档格式转换（duck-files-core::convert）的三件配套，版本与参考仓一致：
+# - `csv 1.4`：解析带引号 / 换行的 CSV（参考仓 `converter/data.rs` 用的就是它）。
+# - `serde_yaml 0.9`：YAML 本身就是 deprecated 分支，但参考仓锁的就是这一版，
+#   换 `serde_yml` 等于换一套实现，迁移期不引入第二处差异。
+# - `quick-xml 0.37`：读 docx / pptx 的正文 XML（`w:t` / `a:t` 文本运行）。
+# - `calamine 0.30`：读 xlsx（多 sheet、共享字符串、合表）。MSRV 1.75。
+#   0.36 起要 1.88，不可用；0.22 会再拖一个 zip 0.6，0.30 用的 zip 4.x 与本仓
+#   的 zip 2.4.2 只是「两个大版本并存」，不涉及同一份代码的分叉。
+# - `pdf-extract 0.7`：PDF 抽文字（扫描件抽不出，参考仓也是这样直接报错）。
+# - `pulldown-cmark 0.13`：Markdown → HTML。**不用参考仓的 comrak**：comrak 0.20
+#   默认带 `syntect` 做代码高亮，syntect → plist → `time`，而 `time 0.3.55` 要求
+#   Rust 1.88，会把全仓 1.85 硬门顶穿；pulldown 是纯 CommonMark 解析器，
+#   依赖只有 bitflags / memchr / unicase（MSRV 1.71）。
+csv = "1.4"
+serde_yaml = "0.9"
+quick-xml = "0.37"
+calamine = "0.30"
+pdf-extract = "0.7"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# SEE 包合并要出 `hash.txt`（逐文件 MD5）。参考仓用的是 `md5` crate，本仓改用它
+# 背后同一套 RustCrypto 实现 `md-5 0.10`（**已在依赖图里**，`digest` 同一版本、
+# 零新增下载、零新增许可证条目）；API 只差 crate 名，`{Digest, Md5}` 用法不变。
+md-5 = "0.10"
 ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"] }
 
 # 更新源签名校验（duck-update::signature）：minisign 格式（Ed25519 + BLAKE2b 预哈希）。
@@ -111,6 +178,32 @@ arboard = "3.6"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 toml = "0.8"
+# SQL 插件核心（`duck-sql-core`）：参考仓的 `ddl_generator` 等模块直接复刻，
+# 保留它们原本使用的 `regex`。1.13.1 早已在依赖图里（传递依赖），
+# 提成直接依赖不新增包，license 清单不变。
+regex = "1.13.1"
+# `sql_merge` 复刻件的三件配套：解压 db-*.zip、遍历版本目录、按本地时区打时间戳。
+# 版本与参考仓一致（zip 2.x）；`walkdir` / `chrono` 早已在依赖图里。
+# ⚠️ zip **不开默认特性**：默认会拉 zstd / xz / aes（含 `zstd-sys` 的 C 构建 +
+# `sha1`+`zeroize` 的加密栈），而银行交付的 db-*.zip 清一色 deflate。
+# 这里显式开 deflate（flate2 纯 Rust 后端）/ deflate64 / bzip2 / lzma——
+# 覆盖实际会遇到的四种压缩方法，同时不引入需要 cc 编译的 zstd-sys。
+# 注意：`deflate-flate2` 单独用不够（zip 2.4 的 `flate2` 是可选依赖，只有
+# `deflate` 这组特性才会连 `flate2/rust_backend` 一起打开）。
+zip = { version = "=2.4.2", default-features = false, features = [
+    "deflate",
+    "deflate64",
+    "bzip2",
+    "lzma",
+] }
+walkdir = "2.5"
+# 只要「本地时间」这一个能力：默认特性还带 wasm 绑定等，插件进程用不上。
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# 保留 ZIP 条目的原始修改时间（`duck.merge.*` 的「同名文件按日期取最新」要靠它把
+# 解压时的条目时间一路带到输出目录；否则所有文件都是「复制时刻」，去重直接失效）。
+# 0.2.29 早已在依赖图里（`tar` 的传递依赖），提成直接依赖**零新增下载**；
+# MIT/Apache-2.0，MSRV 1.63。
+filetime = "0.2"
 
 # 插件 JS 执行轨：QuickJS 高层绑定。钉 `=0.11.0`——0.12 起上游 MSRV 抬到 1.87，
 # 会顶破本仓 `rust-version = "1.85"`；升级必须同步核对 MSRV。MIT（QuickJS-NG 同 MIT）。
@@ -167,11 +260,9 @@ sqlparser = "0.52"
 # 默认无 feature（`debug` 才会拉 anstream/anstyle/okhsl，不启用）。
 # 传递依赖 `winnow 0.7` 早已在 Cargo.lock 内，零版本新增。
 sqlformat = "0.5.0"
-# `encoding_rs` 0.8：**执行 SQL 文件**（duck-db::sqlfile）要按文件真实编码解码
-# ——中文 dump 里 GBK / GB2312 很常见，按 UTF-8 硬解会整片变成 U+FFFD。
-# 它**已在锁文件与本 crate 的依赖图里**（`tiberius → encoding_rs`），这里只是提成
-# 直接依赖，**零新增下载**（同 `base64` 那一条先例）。MSRV 1.36，远低于全仓 1.85。
-encoding_rs = "0.8"
+# `encoding_rs` 已经在上面（报文调试那一段）提成直接依赖了，这里不再重复声明：
+# 同名键写两次是 TOML **重复键**，整份清单直接解析失败（`duplicate key`）。
+# 执行 SQL 文件（`duck-db::sqlfile`）按真实编码解码时用同一个版本约束即可。
 
 # MongoDB（docs/database-design.md §5 的 M2 选型）：**必须精确钉 `=3.6.0`**。
 # 与本仓其它「钉版本」的理由不同，这条不是 API 兼容问题而是**硬门**问题：

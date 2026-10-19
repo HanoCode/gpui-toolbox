@@ -7,6 +7,7 @@ description = "Duck Toolbox 插件框架：plugin.toml 清单解析、能力网�
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 

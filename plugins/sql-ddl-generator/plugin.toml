@@ -1,0 +1,99 @@
+# Duck Toolbox 插件：DDL 生成 / 分表（duck.sql.ddl-generator）。
+#
+# **process 轨**：逻辑在 `crates/duck-sql-core/src/ddl_generator.rs`，那份代码
+# 逐字复刻参考仓 `ifm_ai_tools/src-tauri/src/db/ddl_generator.rs`（生产已验证）。
+# 二进制 = `crates/duck-sql-tool`（整族共用一个，按 `tool` 分派）。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 从 `target/<profile>/duck-sql-tool`
+# 拷进来），不入库；缺失时执行页会提示先构建。
+
+id = "duck.sql.ddl-generator"
+name = "DDL 生成"
+description = "按分表数量生成建表语句，或生成 UNION ALL 视图；支持 TA 编码与占位符"
+version = "0.1.0"
+category = "data"
+tags = ["sql", "ddl", "分表", "视图"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+# 不申请任何能力：进程只做纯文本计算，不读写文件、不出网。
+
+[[tools]]
+id = "duck.sql.ddl-generator"
+name = "DDL 生成"
+description = "按分表数量生成建表语句，或生成 UNION ALL 视图；支持 TA 编码与占位符"
+category = "data"
+group = "SQL"
+icon = "database"
+keywords = ["ddl", "create table", "分表", "shard", "union", "view", "ta_code", "建表"]
+
+[tools.io]
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "原始 DDL"
+placeholder = "粘贴 CREATE TABLE 语句…"
+required = true
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+label = "输出"
+default = "shard"
+options = [
+  { value = "shard", label = "分表 DDL" },
+  { value = "view", label = "UNION ALL 视图" },
+]
+
+[[tools.io.params]]
+id = "shard_count"
+kind = "number"
+label = "分表数量"
+default = "16"
+min = 1.0
+max = 512.0
+
+[[tools.io.params]]
+id = "ta_code"
+kind = "text"
+label = "TA 编码"
+placeholder = "（可选）如 Y3"
+
+[[tools.io.params]]
+id = "with_seq"
+kind = "switch"
+label = "视图带分表序号"
+
+[[tools.io.params]]
+id = "table_index"
+kind = "number"
+label = "表索引"
+default = "1"
+min = 0.0
+placeholder = "仅占位符替换时使用"
+
+[[tools.io.params]]
+id = "num_placeholder"
+kind = "text"
+label = "索引占位符"
+placeholder = "默认 ${num}"
+
+[[tools.io.params]]
+id = "ta_placeholder"
+kind = "text"
+label = "TA 占位符"
+placeholder = "默认 ${TACODE}（兼容 ${ta_code}）"
+
+[tools.io.output]
+kind = "code"
+label = "生成结果"
+language = "sql"

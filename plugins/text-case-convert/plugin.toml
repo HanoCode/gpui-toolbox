@@ -1,0 +1,40 @@
+# Duck Toolbox 插件：大小写转换（duck.text.case-convert）。
+#
+# 一工具一插件（见 plugins/text-formatter/plugin.toml 的说明）。
+
+id = "duck.text.case-convert"
+name = "大小写转换"
+description = "camel / pascal / snake / kebab / 常量 / 标题等命名风格互转"
+version = "0.1.0"
+category = "productivity"
+tags = ["文本", "命名", "大小写"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.text.case-convert"
+name = "大小写转换"
+description = "camel / pascal / snake / kebab / 常量 / 标题等命名风格互转"
+category = "productivity"
+group = "转换"
+icon = "type"
+keywords = ["camel", "snake", "kebab", "case", "命名", "大小写"]
+
+[tools.io]
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "输入"
+placeholder = "粘贴变量名，支持每行一个…"
+required = true
+
+[tools.io.output]
+kind = "table"
+label = "六种命名风格"
+columns = ["风格", "结果"]

@@ -1,0 +1,154 @@
+# Duck Toolbox 插件：Hosts 管理（duck.net.hosts-manager）。
+#
+# **process 轨**：逻辑在 `crates/duck-net-core/src/hosts.rs`，二进制 =
+# `crates/duck-net-tool`。解析/合并/差异/应用命令四面逐条移植参考仓前端
+# `src/utils/hosts.ts`（154 行：三条正则、`#` 截断、域名查重、去注释求差集）。
+#
+# ## ⚠️ 硬约束：不碰系统 `/etc/hosts`
+#
+# 参考仓后端 `hosts_manager.rs` 会**直接写系统 hosts**（先备份、权限不足给
+# `ELEVATION_REQUIRED`）。本仓**不做**：写 `/etc/hosts` 需要 sudo，而插件进程没有
+# 任何提权通道，硬试只会得到一句「权限不足」。这是设计稿定下的硬约束，不是简化。
+#
+# 所以本工具做的是：合并 → 生成**用户自己执行**的命令（`sudo cp` 前先备份，
+# 带时间戳所以连点两次不会覆盖上一次的备份）→ 可选导出合并结果到用户选的路径。
+# 系统 hosts 可读时，还会顺便说清「覆盖后会多什么、少什么」。
+#
+# ## 与源页面的形态差异
+#
+# 源页面是「localStorage 里的多方案管理器 + 回收站 + 历史」，右侧七个标签页
+# （聚合预览 / 校验 / 查找替换 / 同步与应用 / 方案对比 / 历史留痕 / 回收站）。
+# 插件没有持久状态，于是：
+#
+# - **一个方案 = 一个文件**（`*.hosts` / `*.txt`，按文件名排序合并）。复制＝`cp`，
+#   删除＝`rm`，备份＝`cp -r` 整个目录 —— 都比 localStorage 更耐用。
+# - 方案元信息写在文件**开头连续的注释行**里：`# name:` / `# env:` / `# owner:`
+#   （负责人）/ `# ticket:`（变更单号）/ `# desc:`（备注）/ `# enabled: false`
+#   （停用，不参与合并但仍参与校验与查找）。
+# - 七个标签页里五个有对应参数：`merge`（预览 + 校验）、`keyword`（查找）、
+#   `replace_to` + `replace_out`（替换，**写到另一个目录**）、`diff_a`/`diff_b`
+#   （方案对比）、`with_script`（应用）。
+#
+# **不做的四件**（都是「源页面靠持久状态或提权，插件两样都没有」）：
+#   1. **历史留痕**：真相在文件 mtime 与版本库里，再记一份只会分叉；
+#   2. **回收站**：删除就是 `rm`，系统回收站比这里的私有回收站更可靠；
+#   3. **导出 / 导入备份 JSON**：方案目录本身就是备份（`cp -r` 或 `git add`）；
+#   4. **环境单选切换**（启用一个业务环境就停用其他）：那是一条**跨文件**的状态
+#      规则，插件一次运行只看一眼目录，没有「上一次谁开着」可依据。要单环境就
+#      只留一个文件带 `# enabled: true`、其余写 `false` —— 这条规则写在文件里，
+#      `git diff` 能看见，比藏在 localStorage 里清楚。
+#
+# `allow_files = "read_write"`：读方案目录，写导出文件 / 替换结果目录。
+
+id = "duck.net.hosts-manager"
+name = "Hosts 管理"
+description = "合并多个环境的 hosts 方案：逐方案校验、跨方案查找替换与对比，并给出写回系统 hosts 的命令"
+version = "0.1.0"
+category = "net"
+tags = ["hosts", "dns", "env", "switch", "方案", "环境", "域名"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.net.hosts-manager"
+name = "Hosts 管理"
+description = "合并多个环境的 hosts 方案：逐方案校验、跨方案查找替换与对比，并给出写回系统 hosts 的命令"
+category = "net"
+group = "网络"
+icon = "server"
+keywords = ["hosts", "dns", "env", "switch", "域名", "环境", "方案", "hosts 文件"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.params]]
+id = "profiles_dir"
+kind = "path"
+pick = "folder"
+label = "方案目录"
+placeholder = "每个 *.hosts / *.txt 文件算一个方案，按文件名排序合并；文件头可写 `# name:` / `# env:` / `# owner:` / `# ticket:` / `# enabled: false`"
+required = true
+
+[[tools.io.params]]
+id = "name"
+kind = "text"
+label = "方案名称"
+placeholder = "文件里没写 `# name:` 时用这个（如 张三-联调）"
+
+[[tools.io.params]]
+id = "env"
+kind = "select"
+label = "环境"
+default = "SIT"
+options = [
+  { value = "SIT", label = "SIT" },
+  { value = "UAT", label = "UAT" },
+  { value = "联调", label = "联调" },
+  { value = "开发", label = "开发" },
+  { value = "预生产", label = "预生产" },
+  { value = "生产", label = "生产" },
+  { value = "灾备", label = "灾备" },
+  { value = "公共", label = "公共" },
+]
+
+[[tools.io.params]]
+id = "include_disabled"
+kind = "switch"
+label = "连停用的方案一起合并"
+default = "false"
+
+[[tools.io.params]]
+id = "keyword"
+kind = "text"
+label = "跨方案查找"
+placeholder = "留空 = 不查（关键词会扫全部方案，含停用的；注释行也算）"
+
+[[tools.io.params]]
+id = "replace_to"
+kind = "text"
+label = "替换为"
+placeholder = "配合上面的关键词使用；留空 = 只查找不替换（字面量替换，`.` 不是通配符）"
+
+[[tools.io.params]]
+id = "replace_out"
+kind = "path"
+pick = "folder"
+label = "替换结果写到"
+placeholder = "留空 = 只报告处数不落盘。写出的每个方案为 <文件名>.hosts；不能与原目录相同"
+
+[[tools.io.params]]
+id = "diff_a"
+kind = "text"
+label = "对比方案 A"
+placeholder = "方案文件名（不带扩展名，如 a-sit），也可以写方案名"
+
+[[tools.io.params]]
+id = "diff_b"
+kind = "text"
+label = "对比方案 B"
+placeholder = "填齐 A / B 才对比；只比生效行（注释与空行不参与）"
+
+[[tools.io.params]]
+id = "out"
+kind = "path"
+pick = "file"
+label = "导出到"
+placeholder = "留空 = 只在结果区预览（例如 ~/Downloads/hosts.merged）"
+
+[[tools.io.params]]
+id = "with_script"
+kind = "switch"
+label = "附带写入命令"
+default = "true"
+
+[tools.io.output]
+kind = "text"
+label = "方案清单 · 合并结果 · 校验 · 查找 · 对比"

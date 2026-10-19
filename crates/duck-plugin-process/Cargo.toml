@@ -1,0 +1,18 @@
+[package]
+name = "duck-plugin-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Duck Toolbox 插件独立进程执行轨：stdio JSONL 协议、进度回调与取消（不依赖 gpui）。"
+
+[dependencies]
+duck-plugin.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+# 取消用 SIGTERM/SIGKILL。**零新下载**：libc 已在依赖图里（duck-platform 同款），
+# std 不暴露信号 API，绕开它就得引 nix——为一个 kill 不划算。
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+# duck.sql.ddl-generator 英文译文。键 = 中文源串。
+
+"DDL 生成" = "DDL Generator"
+"按分表数量生成建表语句，或生成 UNION ALL 视图；支持 TA 编码与占位符" = "Generate sharded CREATE TABLE statements or a UNION ALL view, with TA code and placeholder support"
+
+"原始 DDL" = "Source DDL"
+"粘贴 CREATE TABLE 语句…" = "Paste a CREATE TABLE statement…"
+"输出" = "Output"
+"分表 DDL" = "Sharded DDL"
+"UNION ALL 视图" = "UNION ALL view"
+"分表数量" = "Shard count"
+"TA 编码" = "TA code"
+"（可选）如 Y3" = "Optional, e.g. Y3"
+"视图带分表序号" = "Add shard index to the view"
+"表索引" = "Table index"
+"仅占位符替换时使用" = "Used only when replacing placeholders"
+"索引占位符" = "Index placeholder"
+"默认 ${num}" = "${num} by default"
+"TA 占位符" = "TA placeholder"
+"默认 ${TACODE}（兼容 ${ta_code}）" = "${TACODE} by default (also matches ${ta_code})"
+"生成结果" = "Generated SQL"
+
+"请粘贴原始 CREATE TABLE DDL" = "Paste the source CREATE TABLE DDL"
+"输入里没有找到 CREATE TABLE 语句" = "No CREATE TABLE statement found in the input"

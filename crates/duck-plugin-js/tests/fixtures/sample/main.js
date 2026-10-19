@@ -10,6 +10,7 @@ export function handle(toolId, input) {
       return "denied: " + error;
     }
   }
+  duck.writeFile("report.txt", "ok");
   duck.notify("已处理 1 项");
   return "handled: " + toolId + ":" + input;
 }

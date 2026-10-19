@@ -1,0 +1,105 @@
+# Duck Toolbox 插件：SQL 改写（duck.sql.sql-rewrite）。
+#
+# **js 轨**：参考仓这两个功能**没有 Rust 后端**（处理逻辑全在前端页面里），
+# 按移植规矩属于「纯前端算法」，允许直接搬前端逻辑。搬运时**逐函数照抄**，
+# 只把 Vue 的 `ref` / 模板接线换掉，算法一行没重写——重写就等于要重新验证
+# 四套 SQL 语法的边界，正是移植要避免的成本。
+#
+# 来源（HTML 设计稿里合并为一个工具，理由：都是「输入 SQL 文本 → 输出可执行 SQL」）：
+#   - `src/tools/SqlReplace.vue`（365 行）→ 模式 `param`：含参 SQL 日志 → 可执行 SQL
+#   - `src/tools/SqlReExec.vue`（1,093 行）→ 模式 `reexec` / `clean` / `backup`
+#
+# 参考仓的「选择文件 / 选择目录」三个入口不搬：本插件是纯函数，输入只有一个
+# 文本域。批量改写请用 sql-merge 的产物目录 + 本工具的单文件内容（宿主的
+# 多文件输入面板是 ADR-3 遗留项，落地后再加 `path` 参数）。
+
+id = "duck.sql.sql-rewrite"
+name = "SQL 改写"
+description = "含参 SQL 日志还原成可执行语句；或把脚本改写成可重复执行 / 纯净版 / 带备份回滚"
+version = "0.1.0"
+category = "development"
+tags = ["sql", "rewrite", "改写", "幂等", "参数", "备份", "回滚"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+# 不申请任何能力：纯文本进、纯文本出，不读文件、不出网、不发通知。
+
+[[tools]]
+id = "duck.sql.sql-rewrite"
+name = "SQL 改写"
+description = "含参 SQL 日志还原成可执行语句；或把脚本改写成可重复执行 / 纯净版 / 带备份回滚"
+category = "development"
+group = "SQL"
+icon = "pencil"
+keywords = ["sql", "rewrite", "redeploy", "idempotent", "replace", "backup", "rollback", "改写", "幂等", "参数替换", "备份"]
+
+[tools.io]
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "输入"
+placeholder = "粘贴 SQL 脚本，或应用日志里的含参 SQL 行"
+required = true
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+style = "tabs"
+label = "处理方式"
+default = "param"
+options = [
+  { value = "param", label = "参数替换（日志 → 可执行 SQL）" },
+  { value = "reexec", label = "可重复执行（补查询与删除）" },
+  { value = "clean", label = "纯净版（去注释与空行）" },
+  { value = "backup", label = "生成备份与回滚 SQL" },
+]
+
+[[tools.io.params]]
+id = "schema"
+kind = "text"
+label = "Schema（仅参数替换）"
+placeholder = "可选，如 app；填了就给表名加前缀"
+visible_when = { mode = "param" }
+
+[[tools.io.params]]
+id = "add_select_check"
+kind = "switch"
+label = "INSERT / UPDATE 前补查询"
+default = "true"
+visible_when = { mode = "reexec" }
+
+[[tools.io.params]]
+id = "add_delete"
+kind = "switch"
+label = "INSERT 前补删除"
+visible_when = { mode = "reexec" }
+
+[[tools.io.params]]
+id = "comment_delete"
+kind = "switch"
+label = "把 DELETE 注释掉"
+visible_when = { mode = "reexec" }
+
+[[tools.io.params]]
+id = "db_type"
+kind = "select"
+label = "数据库类型（仅生成备份）"
+default = "oracle"
+visible_when = { mode = "backup" }
+options = [
+  { value = "oracle", label = "Oracle" },
+  { value = "db2", label = "DB2" },
+  { value = "mysql", label = "MySQL" },
+  { value = "postgresql", label = "PostgreSQL" },
+]
+
+[tools.io.output]
+kind = "code"
+label = "改写结果"
+language = "sql"

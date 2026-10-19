@@ -1,0 +1,180 @@
+# Duck Toolbox 插件：S3 对象存储（duck.net.s3-manager）。
+#
+# **process 轨**：内核在 `crates/duck-net-core/src/s3/`（`sign.rs` SigV4 +
+# `xml.rs` 极简解析 + `mod.rs` 全套动作），二进制与同族三个插件共用
+# `crates/duck-net-tool`。
+#
+# 移植参考仓 `src-tauri/src/s3/{client,types}.rs` + `commands/s3.rs`（528 行，
+# `list_buckets` / `create_bucket` / `delete_bucket` / `list_objects` / `upload` /
+# `download` / `delete_object` / `copy_object` / `create_folder` / `rename` /
+# `get_object_content` / `get_object_url` 一整套），界面侧对应
+# `src/components/s3/` 的五个组件（2,544 行）。
+#
+# ## 为什么这里是「一个动作一次运行」
+#
+# 参考仓是「左侧桶列表 / 中间对象列表 / 右侧传输队列」的三栏文件管理器。本仓
+# 执行页由 `[io]` 声明驱动（ADR-1：操作区置顶 → 结果居中 → 输入框沉底），没有
+# 三栏容器，也不该为单个工具长一个。所以能力面按**动作**摊平：一次跑一个动作，
+# 结果是一份可复制的文本报告。好处是「删除 / 覆盖」这类破坏性动作天然要求一次
+# 明确的选择，不会误点。
+#
+# ## 凭据
+#
+# 不落盘：`access_key` / `secret_key` 只在本次运行里用。参考仓的
+# `s3_connections.json`（明文存 AK/SK）**不迁** —— 本仓凭据一律进 `vault`，
+# 而 process 轨拿不到 vault，所以连接参数每次由执行页填。
+#
+# ## 传输上限
+#
+# 单个对象 64 MB（`duck_net_core::s3::MAX_TRANSFER`）。参考仓无上限地
+# `read_to_end`，几百 MB 的对象会把进程打爆；这里越界报「内容超过上限」，
+# 而不是静默截断或 OOM。
+#
+# `allow_files = "read_write"`：上传要读本地文件，下载要写本地目录。
+#
+# `bin/run` 是构建产物，不入库（`sbin/plugins.sh` 投放）。
+
+id = "duck.net.s3-manager"
+name = "S3 对象存储"
+description = "浏览与操作 S3 兼容对象存储：列桶、列对象、上传下载、复制改名、删除、预览"
+version = "0.1.0"
+category = "network"
+tags = ["s3", "minio", "oss", "对象存储", "上传", "下载", "bucket", "object"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.net.s3-manager"
+name = "S3 对象存储"
+description = "浏览与操作 S3 兼容对象存储：列桶、列对象、上传下载、复制改名、删除、预览"
+category = "network"
+group = "网络"
+icon = "hard-drive"
+keywords = ["s3", "minio", "oss", "对象存储", "bucket", "object", "上传", "下载"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.fields]]
+id = "key"
+kind = "text"
+label = "对象 Key"
+placeholder = "例如 config/app.yaml（列桶 / 列对象时留空）"
+
+[[tools.io.params]]
+id = "action"
+kind = "select"
+label = "动作"
+default = "list"
+options = [
+  { value = "list", label = "列出对象" },
+  { value = "buckets", label = "列出存储桶" },
+  { value = "upload", label = "上传文件" },
+  { value = "download", label = "下载对象" },
+  { value = "copy", label = "复制 / 改名" },
+  { value = "mkdir", label = "新建目录" },
+  { value = "preview", label = "预览文本" },
+  { value = "delete-object", label = "删除对象" },
+  { value = "create-bucket", label = "新建存储桶" },
+  { value = "delete-bucket", label = "删除存储桶" },
+  { value = "url", label = "对象地址" },
+]
+
+[[tools.io.params]]
+id = "endpoint"
+kind = "text"
+label = "Endpoint"
+placeholder = "https://s3.amazonaws.com 或 http://minio.lan:9000"
+required = true
+
+[[tools.io.params]]
+id = "bucket"
+kind = "text"
+label = "存储桶"
+placeholder = "除「列出存储桶」外都要填"
+
+[[tools.io.params]]
+id = "prefix"
+kind = "text"
+label = "前缀"
+placeholder = "列举时当目录用；上传 / 新建时自动拼在 Key 前"
+
+[[tools.io.params]]
+id = "region"
+kind = "text"
+label = "区域"
+default = "us-east-1"
+placeholder = "留空 = us-east-1"
+
+[[tools.io.params]]
+id = "access_key"
+kind = "text"
+label = "Access Key"
+placeholder = "留空 = 匿名访问（公共桶）"
+
+[[tools.io.params]]
+id = "secret_key"
+kind = "text"
+label = "Secret Key"
+placeholder = "与 Access Key 一起填，或者都留空"
+
+[[tools.io.params]]
+id = "path_style"
+kind = "switch"
+label = "路径风格"
+default = "true"
+
+[[tools.io.params]]
+id = "insecure"
+kind = "switch"
+label = "跳过证书校验"
+default = "false"
+
+[[tools.io.params]]
+id = "dest_key"
+kind = "text"
+label = "目标 Key"
+placeholder = "复制 / 改名的目的地"
+visible_when = { action = "copy" }
+
+[[tools.io.params]]
+id = "remove_source"
+kind = "switch"
+label = "改名（删掉源对象）"
+default = "false"
+visible_when = { action = "copy" }
+
+[[tools.io.params]]
+id = "folder_name"
+kind = "text"
+label = "目录名"
+placeholder = "建在「前缀」下面"
+visible_when = { action = "mkdir" }
+
+[[tools.io.params]]
+id = "local_file"
+kind = "path"
+pick = "file"
+label = "本地文件"
+placeholder = "要上传的文件"
+visible_when = { action = "upload" }
+
+[[tools.io.params]]
+id = "local_dir"
+kind = "path"
+pick = "folder"
+label = "下载到"
+placeholder = "留空 = 当前目录"
+visible_when = { action = "download" }
+
+[tools.io.output]
+kind = "text"
+label = "结果"

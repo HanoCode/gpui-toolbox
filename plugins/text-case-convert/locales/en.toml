@@ -1,0 +1,20 @@
+# duck.text.case-convert 英文译文。键 = 中文源串。
+
+"大小写转换" = "Case Converter"
+"camel / pascal / snake / kebab / 常量 / 标题等命名风格互转" = "Convert between camel, pascal, snake, kebab, CONSTANT, Title and other naming styles"
+
+"输入" = "Input"
+"粘贴变量名，支持每行一个…" = "Paste identifiers, one per line…"
+"目标风格" = "Target style"
+"小驼峰 camelCase" = "camelCase"
+"大驼峰 PascalCase" = "PascalCase"
+"下划线 snake_case" = "snake_case"
+"中划线 kebab-case" = "kebab-case"
+"常量 CONSTANT_CASE" = "CONSTANT_CASE"
+"标题 Title Case" = "Title Case"
+"全大写 UPPER" = "UPPERCASE"
+"全小写 lower" = "lowercase"
+"转换结果" = "Converted result"
+
+"请粘贴要转换的文本" = "Paste the text to convert"
+"未知风格：{}" = "Unknown style: {}"

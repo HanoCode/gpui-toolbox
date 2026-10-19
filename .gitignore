@@ -33,3 +33,8 @@ __pycache__/
 *.py[cod]
 
 .workbuddy/
+# ---- 插件测试夹具的数据目录（测试运行时自建，不属于源码） --------------------
+crates/duck-plugin-js/tests/fixtures/*/data/
+
+# ---- process 轨插件的可执行文件（sbin/plugins.sh 投放，不属于源码） ----------
+plugins/*/bin/

@@ -1,0 +1,107 @@
+%% name JSON
+%% category 数据格式
+%% content
+# JSON 速查表
+
+## 基本语法
+
+```json
+{
+  "name": "张三",
+  "age": 25,
+  "isStudent": false,
+  "courses": ["数学", "英语", "物理"],
+  "address": {
+    "city": "北京",
+    "street": "XX路"
+  }
+}
+```
+
+## 数据类型
+
+| 类型 | 示例 |
+|------|------|
+| 字符串 | "hello" |
+| 数字 | 42, 3.14 |
+| 布尔值 | true, false |
+| 数组 | [1, 2, 3] |
+| 对象 | {"key": "value"} |
+| null | null |
+
+## JSON 操作
+
+### JavaScript
+
+```javascript
+// 解析
+const obj = JSON.parse('{"name": "张三"}');
+
+// 序列化
+const str = JSON.stringify(obj);
+
+// 格式化
+JSON.stringify(obj, null, 2);
+
+// 遍历
+for (const [key, value] of Object.entries(obj)) {
+  console.log(key, value);
+}
+```
+
+### Python
+
+```python
+import json
+
+# 解析
+data = json.loads('{"name": "张三"}')
+
+# 序列化
+text = json.dumps(data, ensure_ascii=False, indent=2)
+
+# 读取文件
+with open('data.json') as f:
+    data = json.load(f)
+```
+
+## 常见模式
+
+```json
+// 配置文件
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.0.0"
+  }
+}
+
+// API 响应
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "id": 1,
+    "name": "张三"
+  }
+}
+```
+
+## JSON Schema
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string" },
+    "age": { "type": "number", "minimum": 0 }
+  },
+  "required": ["name"]
+}
+```

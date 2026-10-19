@@ -1,0 +1,177 @@
+# Duck Toolbox 插件：class 比对（`duck.compare.class-compare`）。
+#
+# **process 轨**：逻辑在 `crates/duck-compare-core/src/class_compare/`，逐字复刻参考仓
+# `ifm_ai_tools/src-tauri/src/class_compare/`（`scanner` + `version_extractor` +
+# `compare_engine`）。二进制 = `crates/duck-compare-tool`（比对整族共用一个）。
+#
+# ## 它比的是什么
+#
+# 银行核心系统的上线包通常是「解压后的 webapp 目录」：`<服务>/WEB-INF/classes/**/*.class`。
+# 每个类里都有一个 `getVersion()`（或 `HUNDSUN_VERSION` 常量）写着版本号。这个工具把
+# 两套目录的同名类配起来，比版本号：
+#
+# - **回退**（基准侧版本更低）→ 异常，这是最重要的输出；
+# - 升级、新增（只在基准侧）、相同（只报数）。
+#
+# ## 两条源仓口径（照抄，别按直觉改）
+#
+# 1. **基准 = 新版本那一侧**。`基准 1.2.4 / 对比 1.2.3` 判「升级」。
+# 2. 只在**对比**侧存在的类不进结果 —— 它们本来就在对比环境里，不属于本轮上线内容。
+#
+# ## 与参考页逐件对齐（`ClassCompare.vue`，629 行）
+#
+# | 参考页 | 这里 |
+# |---|---|
+# | 基准/对比环境下拉（上线包 / 生产包 / 测试包 / 下发包 / 自定义） | `env_a` / `env_b` + 两个 `*_custom` 文本框 |
+# | 统计条（新增/升级/回退/异常/相同/总计） | 报告头部同一行 |
+# | 筛选按钮（全部 / 仅异常 / 升级 / 回退 / 新增） | `view` |
+# | 结果表 9 列 | 报告按组逐行给 6 列（服务/类名/包名/两边版本/级差） |
+# | 导出 CSV / Excel | `csv_dir`（两个按钮在源页**都是 CSV**，见下） |
+# | 日志 tab / 进度条 | `progress` 事件（宿主渲染） |
+#
+# ## 有意不迁的三件
+#
+# 1. **源码级 diff**（`compute_source_diff`）：要 `java -jar cfr.jar` 反编译两边字节码，
+#    插件进程没有 JRE，也不该带 20 MB 反编译器。要看两段文本差在哪，用「文本差异」。
+# 2. **分页（200 条/页）**：纯文本报告一次给全，分页是滚动容器的产物。
+# 3. **「重新对比（强制刷新缓存）」**：本工具没有跨次缓存，每次都真扫。
+#
+# ## 一处有意偏离
+#
+# `compare_lib` 默认**不勾**（参考页默认勾）。lib 条目的「版本」是
+# `jar:<大小>:<修改时间>` 指纹——两个包只要打包时间不同，每个 lib JAR 都会变成一条
+# 「升级/回退」，把真正要看的类差异埋掉。需要连 lib 一起看时手动勾上。
+#
+# ## 输出
+#
+# 纯文本报告（`kind = "text"`）：宿主的结果表渲染器还没做（`table` 那一档只有声明）。
+# 等它落地后改一行 `kind` 即可，插件侧不用动。
+#
+# `allow_files = "read_write"`：读两个目录里的 `.class` / `.jar`；给了 `csv_dir` 时
+# 只往那个目录写一个 CSV。
+
+id = "duck.compare.class-compare"
+name = "Class 代码比对"
+description = "两套应用目录里的同名 .class 逐个比版本：升级 / 回退 / 新增"
+version = "0.1.0"
+category = "compare"
+tags = ["compare", "比对", "class", "jar", "版本", "上线", "部署"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.compare.class-compare"
+name = "Class 代码比对"
+description = "两套应用目录里的同名 .class 逐个比版本：升级 / 回退 / 新增"
+category = "compare"
+group = "比对"
+icon = "code"
+keywords = ["class", "比对", "版本", "回退", "升级", "上线", "webapp", "hswealth"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.params]]
+id = "dir_a"
+kind = "path"
+pick = "folder"
+label = "目录 A"
+placeholder = "选择基准目录（新版本一侧）"
+required = true
+
+[[tools.io.params]]
+id = "dir_b"
+kind = "path"
+pick = "folder"
+label = "目录 B"
+placeholder = "选择对比目录（现场一侧）"
+required = true
+
+# 环境名是**下拉 + 自定义框**（参考页 `baseEnv` + `baseCustomEnv`）。下拉省得每次
+# 手打「上线包」，也把四种常见叫法固定下来；「自定义」占一个哨兵值 `custom`。
+[[tools.io.params]]
+id = "env_a"
+kind = "select"
+label = "基准环境"
+default = "上线包"
+options = [
+  { value = "上线包", label = "上线包" },
+  { value = "生产包", label = "生产包" },
+  { value = "测试包", label = "测试包" },
+  { value = "下发包", label = "下发包" },
+  { value = "custom", label = "自定义" },
+]
+
+[[tools.io.params]]
+id = "env_a_custom"
+kind = "text"
+label = "自定义基准环境名"
+placeholder = "例如 财务生产 / 2026 一季度上线"
+visible_when = { env_a = "custom" }
+
+[[tools.io.params]]
+id = "env_b"
+kind = "select"
+label = "对比环境"
+default = "生产包"
+options = [
+  { value = "上线包", label = "上线包" },
+  { value = "生产包", label = "生产包" },
+  { value = "测试包", label = "测试包" },
+  { value = "下发包", label = "下发包" },
+  { value = "custom", label = "自定义" },
+]
+
+[[tools.io.params]]
+id = "env_b_custom"
+kind = "text"
+label = "自定义对比环境名"
+placeholder = "例如 现场生产 / 客户 UAT"
+visible_when = { env_b = "custom" }
+
+# 筛选：参考页那排按钮。`all` 不含「相同」——几百条同版本内容会把要看的那几十条
+# 埋掉；要看相同请显式选它。
+[[tools.io.params]]
+id = "view"
+kind = "select"
+label = "显示"
+default = "all"
+options = [
+  { value = "all", label = "全部差异" },
+  { value = "abnormal", label = "仅异常" },
+  { value = "update", label = "升级" },
+  { value = "rollback", label = "回退" },
+  { value = "new", label = "新增" },
+  { value = "same", label = "相同" },
+]
+
+[[tools.io.params]]
+id = "compare_lib"
+kind = "switch"
+label = "连 WEB-INF/lib 下的 JAR 一起比"
+default = "false"
+
+[[tools.io.params]]
+id = "jar_exclude"
+kind = "text"
+label = "排除的 JAR"
+placeholder = "逗号分隔，支持 * 通配，例如 spring-*,*-sources.jar"
+
+[[tools.io.params]]
+id = "csv_dir"
+kind = "path"
+pick = "folder"
+label = "CSV 导出目录"
+placeholder = "留空 = 只出报告（不写盘）"
+
+[tools.io.output]
+kind = "text"
+label = "比对结果"

@@ -1,0 +1,77 @@
+# Duck Toolbox 插件：SQL 脚本检查（duck.sql.script-check）。
+#
+# **process 轨**：逻辑在 `crates/duck-sql-core/src/sql_checker.rs`，那份代码逐字
+# 复刻参考仓 `ifm_ai_tools/src-tauri/src/sql_checker.rs`（3,198 行、28 类规则，
+# 生产已验证）。二进制 = `crates/duck-sql-tool`（整族共用一个，按 `tool` 分派）。
+#
+# 参数只开放 `db_type`：参考仓 `SQLChecker.vue` 就只让选数据库，阈值
+# （DELETE/UPDATE 10000 条）、`allow_unconditional_delete`、`check_timeout`、
+# 表空间白名单都是前端写死的。多开一个旋钮 = 多一种没验证过的组合。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 从 `target/<profile>/duck-sql-tool`
+# 拷进来），不入库；缺失时执行页会提示先构建。
+
+id = "duck.sql.script-check"
+name = "SQL 质量检查"
+description = "按 28 类规则检查 SQL 脚本：语法、事务、破坏性操作、一致性、规范、表空间"
+version = "0.1.0"
+category = "development"
+tags = ["sql", "check", "lint", "脚本检查", "审核"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+# 不申请任何能力：进程只做纯文本计算，不读写文件、不出网。
+# 宿主的 `[io] allow_files` + `path` 参数面板**已接**（`sql-merge` 在用），
+# 但本工具还没改用它：参考仓的「打开 .sql 文件」是**把文件内容读进文本框**，
+# 要么加一个 `path` 参数、要么走拖拽（Flow A），两种都要先定交互，故先留纯粘贴。
+
+[[tools]]
+id = "duck.sql.script-check"
+name = "SQL 质量检查"
+description = "按 28 类规则检查 SQL 脚本：语法、事务、破坏性操作、一致性、规范、表空间"
+category = "development"
+group = "SQL"
+icon = "shield-check"
+keywords = ["sql", "check", "lint", "审核", "脚本检查", "质量", "where", "commit"]
+
+[tools.io]
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "SQL 脚本"
+placeholder = "粘贴要检查的 SQL 脚本…"
+required = true
+
+[[tools.io.params]]
+id = "db_type"
+kind = "select"
+label = "数据库"
+default = "oracle"
+options = [
+  { value = "oracle", label = "Oracle" },
+  { value = "mysql", label = "MySQL" },
+  { value = "postgresql", label = "PostgreSQL" },
+  { value = "sqlserver", label = "SQL Server" },
+  { value = "sqlite", label = "SQLite" },
+  { value = "dameng", label = "达梦 DM" },
+  { value = "gaussdb", label = "GaussDB" },
+  { value = "kingbase", label = "KingBase" },
+  { value = "mariadb", label = "MariaDB" },
+  { value = "tidb", label = "TiDB" },
+  { value = "oceanbase", label = "OceanBase" },
+  { value = "opengauss", label = "openGauss" },
+]
+
+[tools.io.output]
+kind = "table"
+label = "检查结果"
+columns = ["级别", "位置", "规则", "说明"]

@@ -1,0 +1,97 @@
+# Duck Toolbox 插件：Cron 表达式（duck.text.cron-gen）。
+#
+# 一工具一插件（见 plugins/text-formatter/plugin.toml 的说明）。
+
+id = "duck.text.cron-gen"
+name = "Cron 生成"
+description = "常用调度模板一键生成，自定义表达式校验并翻译成人类可读描述"
+version = "0.2.0"
+category = "productivity"
+tags = ["文本", "生成", "cron", "调度"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.text.cron-gen"
+name = "Cron 生成"
+description = "常用调度模板一键生成，自定义表达式校验并翻译成人类可读描述"
+category = "productivity"
+group = "生成"
+icon = "timer"
+keywords = ["cron", "crontab", "schedule", "定时", "调度", "cron-gen"]
+
+[tools.io]
+
+[[tools.io.params]]
+id = "preset"
+kind = "select"
+label = "模板"
+default = "daily"
+options = [
+  { value = "every_minute", label = "每分钟" },
+  { value = "hourly", label = "每小时" },
+  { value = "daily", label = "每天指定时刻" },
+  { value = "weekly", label = "每周指定天" },
+  { value = "workday", label = "工作日指定时刻" },
+  { value = "monthly", label = "每月指定日" },
+  { value = "yearly", label = "每年指定月日" },
+  { value = "custom", label = "校验自定义表达式" },
+]
+
+[[tools.io.params]]
+id = "hour"
+kind = "number"
+label = "时刻（时）"
+default = "9"
+min = 0
+max = 23
+
+[[tools.io.params]]
+id = "minute"
+kind = "number"
+label = "时刻（分）"
+default = "0"
+min = 0
+max = 59
+
+[[tools.io.params]]
+id = "weekday"
+kind = "number"
+label = "星期几（1=周一 … 7=周日）"
+default = "1"
+min = 1
+max = 7
+
+# 日 / 月：参考页那排五格里就有（`grid-cols-5` 的分 时 日 月 周）。
+# 只有「每月指定日 / 每年指定月日」会用到，但 `visible_when` 只能表达「等于某一个值」，
+# 两个模板都要看 ⇒ 恒显，其余模板忽略即可（与参考页一致）。
+[[tools.io.params]]
+id = "day"
+kind = "number"
+label = "几号（1-31）"
+default = "1"
+min = 1
+max = 31
+
+[[tools.io.params]]
+id = "month"
+kind = "number"
+label = "几月（1-12）"
+default = "1"
+min = 1
+max = 12
+
+[[tools.io.fields]]
+id = "input"
+kind = "text"
+label = "自定义表达式"
+placeholder = "模板选「校验自定义表达式」时填写，如 0 9 * * 1-5"
+
+[tools.io.output]
+kind = "text"
+label = "表达式与说明"

@@ -1070,8 +1070,6 @@ impl Session {
     }
 }
 
-
-
 /// 一条被 [`Session::drain_commands`] 摘回来的已提交命令。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedCommand {
@@ -1162,7 +1160,11 @@ fn input_line_in(
         return None;
     }
     Some(InputLine {
-        text: capture_text(term, start, (cursor.line.0, u16::try_from(cursor.column.0).ok()?)),
+        text: capture_text(
+            term,
+            start,
+            (cursor.line.0, u16::try_from(cursor.column.0).ok()?),
+        ),
     })
 }
 
@@ -1170,11 +1172,7 @@ fn input_line_in(
 ///
 /// 找不到返回 `None`（宁可漏弹）。仅扫光标所在行 —— 折行的提示符极罕见，
 /// 而跨行启发式的误判率会失控。
-fn heuristic_start(
-    term: &Term<EventProxy>,
-    cursor: Point,
-    columns: usize,
-) -> Option<(i32, u16)> {
+fn heuristic_start(term: &Term<EventProxy>, cursor: Point, columns: usize) -> Option<(i32, u16)> {
     let screen = i32::try_from(term.screen_lines()).ok()?;
     // 输入行几乎总在屏幕底部：只认底部 4 行，其余一概不猜。
     if cursor.line.0 < screen - 4 {

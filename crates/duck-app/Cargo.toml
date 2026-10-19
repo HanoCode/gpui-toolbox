@@ -20,6 +20,7 @@ duck-tools.workspace = true
 duck-update.workspace = true
 duck-plugin.workspace = true
 duck-plugin-js.workspace = true
+duck-plugin-process.workspace = true
 duck-plugin-registry.workspace = true
 duck-db.workspace = true
 # 驱动管理（`pages/db/drivers.rs`：驱动商店 / 安装 / 更新 / 下载源）与连接选择器里

@@ -1,0 +1,172 @@
+# Duck Toolbox 插件：jar 比对（`duck.compare.jar-compare`）。
+#
+# **process 轨**：逻辑在 `crates/duck-compare-core/src/jar_compare/`，逐字复刻参考仓
+# `ifm_ai_tools/src-tauri/src/jar_compare/`（`scanner` + `compare_engine`）。
+# 二进制 = `crates/duck-compare-tool`（比对整族共用一个）。
+#
+# ## 与 class 比对的区别
+#
+# 比对单位是**整个 JAR**，不是单个类。JAR 的「版本」= 内部 `.class` 版本的众数
+# （生产包里绝大多数类由同一个 JDK 编出来，众数就是它）；变化判据还包括包内类数量。
+# 适合「现场只给了 jar 包、没有解压目录」的场景。
+#
+# ## 两条源仓口径（照抄）
+#
+# 1. **配对键是相对路径**，不是文件名 —— `server/a/lib/foo.jar` 与 `server/b/lib/foo.jar`
+#    是两个不同的包，同名不算同一个。
+# 2. 只在**基准**侧的 JAR 判「新增」并以空壳进列表（class 数 0、版本空）——那个包
+#    没被打开过，没必要为了一个「新增」结论去解压它。反过来，只在**对比**侧的 JAR
+#    不进结果（它们本来就在对比环境里，不属于本轮上线内容）；判定层留了一条
+#    `missing` 分支做兜底，报告里也有「缺失」组，但正常流程走不到。
+#
+# ## 扫描范围的坑（源仓原话保留）
+#
+# `compare_lib` 关掉时只看 `lcpt*` 服务目录与 `applib`，`lib/` 下的包会被整片跳过。
+# 参数名与参考页一致（`compareLib`），语义是「放开范围」而不是「只管 lib」。
+#
+# ## 与参考页逐件对齐（`JarCompare.vue`，509 行）
+#
+# | 参考页 | 这里 |
+# |---|---|
+# | 基准/对比环境下拉（上线包 / 生产包 / 测试包 / 下发包 / 自定义） | `env_a` / `env_b` + 两个 `*_custom` 文本框 |
+# | 「对比 lib JAR 包」勾选 | `compare_lib`（默认勾上，同源页） |
+# | 「JAR 排除」跳到设置页维护列表 | `jar_exclude` 直接填（本仓没有那个设置页） |
+# | 统计条（新增/升级/回退/异常/相同/总计） | 报告头部同一行（外加缺失） |
+# | 筛选按钮（+ 缺失） | `view` |
+# | 结果表 8 列 | 报告按组逐行给 5 列（服务/路径/两边版本/两边类数） |
+# | 导出 CSV / Excel | `csv_dir`（两个按钮在源页**都是 CSV**） |
+# | 日志 tab / 进度条 | `progress` 事件（宿主渲染） |
+#
+# 不迁的三件与 class 比对相同：源码级 diff（要 JRE）、分页（纯文本一次给全）、
+# 「重新对比（强制刷新缓存）」（本工具没有跨次缓存）。
+#
+# ## 输出
+#
+# 纯文本报告（`kind = "text"`），与「目录比对」「class 比对」一致 —— 结果表渲染器
+# 落地后改一行 `kind` 即可。
+#
+# `allow_files = "read_write"`：读两个目录里的 JAR；给了 `csv_dir` 时只往那个目录
+# 写一个 CSV。
+
+id = "duck.compare.jar-compare"
+name = "Jar 包代码比对"
+description = "两套应用目录里的同名 JAR 比版本与类数量：升级 / 回退 / 新增 / 缺失"
+version = "0.1.0"
+category = "compare"
+tags = ["compare", "比对", "jar", "版本", "上线", "部署", "依赖"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.compare.jar-compare"
+name = "Jar 包代码比对"
+description = "两套应用目录里的同名 JAR 比版本与类数量：升级 / 回退 / 新增 / 缺失"
+category = "compare"
+group = "比对"
+icon = "archive"
+keywords = ["jar", "比对", "版本", "回退", "升级", "依赖", "上线", "lib"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.params]]
+id = "dir_a"
+kind = "path"
+pick = "folder"
+label = "目录 A"
+placeholder = "选择基准目录（新版本一侧）"
+required = true
+
+[[tools.io.params]]
+id = "dir_b"
+kind = "path"
+pick = "folder"
+label = "目录 B"
+placeholder = "选择对比目录（现场一侧）"
+required = true
+
+[[tools.io.params]]
+id = "env_a"
+kind = "select"
+label = "基准环境"
+default = "上线包"
+options = [
+  { value = "上线包", label = "上线包" },
+  { value = "生产包", label = "生产包" },
+  { value = "测试包", label = "测试包" },
+  { value = "下发包", label = "下发包" },
+  { value = "custom", label = "自定义" },
+]
+
+[[tools.io.params]]
+id = "env_a_custom"
+kind = "text"
+label = "自定义基准环境名"
+placeholder = "例如 财务生产 / 2026 一季度上线"
+visible_when = { env_a = "custom" }
+
+[[tools.io.params]]
+id = "env_b"
+kind = "select"
+label = "对比环境"
+default = "生产包"
+options = [
+  { value = "上线包", label = "上线包" },
+  { value = "生产包", label = "生产包" },
+  { value = "测试包", label = "测试包" },
+  { value = "下发包", label = "下发包" },
+  { value = "custom", label = "自定义" },
+]
+
+[[tools.io.params]]
+id = "env_b_custom"
+kind = "text"
+label = "自定义对比环境名"
+placeholder = "例如 现场生产 / 客户 UAT"
+visible_when = { env_b = "custom" }
+
+[[tools.io.params]]
+id = "view"
+kind = "select"
+label = "显示"
+default = "all"
+options = [
+  { value = "all", label = "全部差异" },
+  { value = "abnormal", label = "仅异常" },
+  { value = "update", label = "升级" },
+  { value = "rollback", label = "回退" },
+  { value = "new", label = "新增" },
+  { value = "missing", label = "缺失" },
+  { value = "same", label = "相同" },
+]
+
+[[tools.io.params]]
+id = "compare_lib"
+kind = "switch"
+label = "对比 lib JAR 包"
+default = "true"
+
+[[tools.io.params]]
+id = "jar_exclude"
+kind = "text"
+label = "排除的 JAR"
+placeholder = "逗号分隔，支持 * 通配，例如 spring-*,*-sources.jar"
+
+[[tools.io.params]]
+id = "csv_dir"
+kind = "path"
+pick = "folder"
+label = "CSV 导出目录"
+placeholder = "留空 = 只出报告（不写盘）"
+
+[tools.io.output]
+kind = "text"
+label = "比对结果"

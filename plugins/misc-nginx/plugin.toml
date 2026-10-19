@@ -1,0 +1,80 @@
+# Duck Toolbox 插件：Nginx 配置生成（duck.misc.nginx）。
+#
+# **process 轨**：逻辑在 `crates/duck-misc-core/src/nginx/`，二进制 =
+# `crates/duck-misc-tool`。
+#
+# 参考仓 `NginxGenerator.vue` + `src-tauri/src/nginx/`（786 行 Rust）已被**逐字复刻**：
+# 配置结构体、默认值、五份预设、校验规则、`apply_rules` 的兜底补全都照抄。两处主动偏离：
+#
+# 1. **渲染器手写**，不引 `tera`：为一个 116 行固定模板背一套模板引擎（连带 `pest` /
+#    `globwalk` / `unic-segment`）不划算。输出结构逐行对齐，空行不再留缩进空格。
+# 2. **自定义配置改「预设 + JSON 覆盖」**：源仓的 custom 是几十个输入框的动态表单，
+#    而本仓执行页由 `[io]` 声明驱动、摆不下那种表单。所以这里用预设当底，用户只写
+#    想改的字段（对象递归合并、数组整体替换），拼错的键会当场报错。
+#
+# 校验不过时**不输出半截配置**，而是列出「哪一条规则没过」（句子走译文表）。
+# `allow_files = "none"`：产物是文本，落盘由用户自己决定（源仓的「下载」按钮在插件里
+# 没有对应动作，复制即可）。
+
+id = "duck.misc.nginx"
+name = "Nginx 配置生成"
+description = "按预设生成生产可用的 nginx.conf（反代/静态/Java 应用/混合），也可用一段 JSON 覆盖任意字段"
+version = "0.1.0"
+category = "development"
+tags = ["nginx", "config", "proxy", "upstream", "ssl", "配置", "运维"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.misc.nginx"
+name = "Nginx 配置生成"
+description = "按预设生成生产可用的 nginx.conf（反代/静态/Java 应用/混合），也可用一段 JSON 覆盖任意字段"
+category = "development"
+group = "开发"
+icon = "file-text"
+keywords = ["nginx", "conf", "proxy", "upstream", "ssl", "gzip", "配置", "运维", "反向代理"]
+
+[tools.io]
+allow_files = "none"
+
+[[tools.io.fields]]
+id = "config"
+kind = "textarea"
+label = "覆盖 JSON"
+placeholder = '自定义模式用，例如 {"server":{"listen_port":"8180"},"security":{"hsts":true}}'
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+label = "生成方式"
+default = "preset"
+options = [
+  { value = "preset", label = "直接用预设" },
+  { value = "custom", label = "预设 + JSON 覆盖" },
+]
+
+[[tools.io.params]]
+id = "preset"
+kind = "select"
+label = "预设"
+default = "basic"
+options = [
+  { value = "basic", label = "基础配置（静态托管 + 一条反代）" },
+  { value = "reverse-proxy", label = "反向代理（前后端分离）" },
+  { value = "static-site", label = "静态站点（无 upstream）" },
+  { value = "java-app", label = "Java 应用（Spring Boot / Tomcat）" },
+  { value = "split-view", label = "混合配置（前端 + API + 下载）" },
+]
+
+[tools.io.output]
+kind = "code"
+label = "nginx.conf"
+language = "nginx"

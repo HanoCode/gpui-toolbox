@@ -1,0 +1,74 @@
+# Duck Toolbox 插件：清单提取（duck.merge.manifest-extract）。
+#
+# **process 轨**：逻辑在 `crates/duck-merge-core/src/manifest_extract.rs`，那份代码
+# 逐字复刻参考仓 `ifm_ai_tools/src-tauri/src/extract_by_manifest.rs`（503 行）。
+# 二进制 = `crates/duck-merge-tool`（整族共用一个，按 `tool` 分派）。
+#
+# 参考页面 `ExtractByManifest.vue`（244 行）只有三个目录/文件输入 + 统计 + 未找到
+# 清单 + 日志，所以这里**不开输入字段**（`fields` 为空 = 纯参数工具，执行页只给
+# 参数条 + 结果/日志双区），视觉上就是设计稿原型 D 的 job 布局。
+#
+# `allow_files = "read_write"`：要读清单与源目录、往目标目录写复制出来的文件。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 从 `target/<profile>/duck-merge-tool`
+# 拷进来），不入库；缺失时执行页会提示先构建。
+
+id = "duck.merge.manifest-extract"
+name = "清单提取"
+description = "按清单文件从合并输出目录里提取对应文件：能找到的原样复制（保留相对路径），找不到的单独列出"
+version = "0.1.0"
+category = "merge"
+tags = ["merge", "manifest", "清单", "提取", "补包"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.merge.manifest-extract"
+name = "清单提取"
+description = "按清单文件从合并输出目录里提取对应文件：能找到的原样复制（保留相对路径），找不到的单独列出"
+category = "merge"
+group = "合并"
+icon = "archive"
+keywords = ["manifest", "清单", "提取", "补包", "sp", "合并"]
+
+[tools.io]
+allow_files = "read_write"
+layout = "job"
+run_label = "开始提取"
+log_hint = "选择清单文件后点击「开始提取」"
+
+[[tools.io.params]]
+id = "manifest_path"
+kind = "path"
+pick = "file"
+label = "清单文件"
+placeholder = "选择清单文件 (.txt)"
+required = true
+
+[[tools.io.params]]
+id = "src_dir"
+kind = "path"
+pick = "folder"
+label = "源目录"
+placeholder = "SP 合并输出目录"
+required = true
+
+[[tools.io.params]]
+id = "dst_dir"
+kind = "path"
+pick = "folder"
+label = "目标目录"
+placeholder = "提取结果输出目录"
+required = true
+
+[tools.io.output]
+kind = "text"
+label = "提取结果"

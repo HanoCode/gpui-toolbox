@@ -1,0 +1,107 @@
+# Duck Toolbox 插件：目录比对（duck.compare.dir-compare）。
+#
+# **process 轨**：逻辑在 `crates/duck-compare-core/src/dir_compare.rs`，逐字复刻参考仓
+# `ifm_ai_tools/src-tauri/src/file_ops.rs::compare_directories`。
+# 二进制 = `crates/duck-compare-tool`（比对整族共用一个，按 `tool` 分派）。
+#
+# 判定口径照抄源仓：同名文件只比**大小 + 修改时间**，不读内容。大目录逐文件读内容
+# 不可接受，真要逐字比对请用「文本差异」。
+#
+# 输出是 `kind = "table"` + `fallback = "text"`：`format = "table"` 的 Markdown 表
+# 由宿主解析成真表格（可导出 CSV）；清单 / HTML 形态解不出表格，退回文本渲染。
+#
+# 参考页 `DirCompare.vue` 是**三个会话类型**的合集（目录 / 文本 / 配置）。目录这一段
+# 已对齐（视图筛选 + 排除规则 + 三种导出形态）；文本那一段由 `text-diff` 插件承担；
+# 配置比较（properties / YAML / JSON 拍平后按键比对）尚未做，记在
+# `docs/ifm-plugin-gap-audit.md`。
+#
+# `allow_files = "read"`：只读用户选的两个目录，不写任何东西。
+
+id = "duck.compare.dir-compare"
+name = "文件比较"
+description = "比两个目录的文件清单：新增 / 删除 / 修改（大小与修改时间）"
+version = "0.1.0"
+category = "compare"
+tags = ["diff", "compare", "比对", "目录", "目录树"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.compare.dir-compare"
+name = "文件比较"
+description = "比两个目录的文件清单：新增 / 删除 / 修改（大小与修改时间）"
+category = "compare"
+group = "比对"
+icon = "folders"
+keywords = ["diff", "compare", "比对", "目录", "文件夹", "新增", "删除"]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.params]]
+id = "dir_a"
+kind = "path"
+pick = "folder"
+label = "目录 A"
+placeholder = "选择基准目录"
+required = true
+
+[[tools.io.params]]
+id = "dir_b"
+kind = "path"
+pick = "folder"
+label = "目录 B"
+placeholder = "选择对比目录"
+required = true
+
+# 参考页只硬编码跳过 `.` 开头的隐藏项（后端 `collect_dir_entries` 里那行
+# `if rel_str.starts_with('.')`），这里补一个可填的剪枝规则：真实目录里
+# `node_modules` / `target` / `dist` 不剪掉，清单一屏全是噪声。
+# 写法三种：`node_modules`（同名）、`.log`（扩展名）、`*.min.js`（后缀）。
+[[tools.io.params]]
+id = "exclude"
+kind = "text"
+label = "跳过"
+placeholder = "node_modules, target, .log"
+
+# 参考页顶部那三个按钮（全部 / 差异 / 相同）只筛树的显示；工具没有树，
+# 所以筛在输出上。默认「仅差异」——未变的几百条会把要看的那几行埋掉。
+[[tools.io.params]]
+id = "view"
+kind = "select"
+label = "显示"
+default = "diff"
+options = [
+  { value = "diff", label = "仅差异" },
+  { value = "all", label = "全部" },
+  { value = "same", label = "仅相同" },
+]
+
+# 参考页「导出报告 → HTML / 文本 / Unified Diff」。目录会话下它导的是**文本 diff
+# 的行记录**（空文件，参考仓的 bug），这里按它的意图补成清单 / 表格 / 报告三种。
+[[tools.io.params]]
+id = "format"
+kind = "select"
+label = "输出格式"
+default = "list"
+options = [
+  { value = "list", label = "清单" },
+  { value = "table", label = "表格（Markdown）" },
+  { value = "html", label = "HTML 报告" },
+]
+
+[tools.io.output]
+# `table` + Markdown 回退：`format = "table"` 时插件拼的就是 GFM 管道表，
+# 宿主 `TableDoc::from_markdown` 直接解析成真表格（可排序 / 可导出 CSV）；
+# `list` / `html` 形态解不出分隔行，按 `fallback` 退回文本渲染。
+kind = "table"
+fallback = "text"
+label = "差异清单"

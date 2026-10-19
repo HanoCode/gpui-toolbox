@@ -7,4 +7,5 @@ execution_model = "js"
 
 [capabilities]
 filesystem_read = ["data/*"]
+filesystem_write = ["report.txt"]
 notifications = true

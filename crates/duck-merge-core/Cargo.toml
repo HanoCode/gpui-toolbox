@@ -1,0 +1,36 @@
+[package]
+name = "duck-merge-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "上线包合并族（duck.merge.*）的核心逻辑：复刻自 ifm_ai_tools 后端，零 gpui / 零 tokio。"
+
+[dependencies]
+# 复刻件原样保留参考仓那套依赖：`walkdir` 走目录树，`serde` 给结果结构体，
+# `zip` 解包 / 打包，`chrono` 比较修改日期，`filetime` 把条目时间写回文件，
+# `encoding_rs` 解 GBK 条目名与 `.upd` 正文，`regex` 解包名。
+# 七个都在依赖图内（`duck-sql-core` / `duck-platform` 同款），零新增下载。
+chrono.workspace = true
+encoding_rs.workspace = true
+filetime.workspace = true
+# SEE 包合并的 `hash.txt`：参考仓 `md5` crate 换成同一实现的 `md-5`（见工作区注释）。
+md-5.workspace = true
+regex.workspace = true
+serde.workspace = true
+# `scc_merge` 要改客户包里的 `manifest.json`（`serde_json::Value` 就地改 version /
+# techStack 再写回），参考仓也是直接 `serde_json::from_str`。
+serde_json.workspace = true
+walkdir.workspace = true
+zip.workspace = true
+
+# `sp_merge` 的第 6 阶段直接调 SQL 族的 `merge_sql_tree`（参考仓也是
+# `crate::sql_merge`，同一份复刻件在这里已经是独立 crate）。
+duck-sql-core.workspace = true
+
+# `non_sp_merge` 判「同名 .class / jsp 留哪份」要读字节码常量池、比版本号
+# （参考仓调的是 `crate::class_compare`，那两个复刻件已独立成 `duck-classfile`，
+# class/jar 比对工具将来共用）。
+duck-classfile.workspace = true
+
+[lints]
+workspace = true

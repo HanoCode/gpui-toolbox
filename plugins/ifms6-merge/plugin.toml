@@ -1,0 +1,91 @@
+# Duck Toolbox 插件：IFMS6 合包（duck.merge.ifms6-merge）。
+#
+# **process 轨**：逻辑在 `crates/duck-merge-core/src/ifms6_merge.rs`，那份代码逐字
+# 复刻参考仓 `ifm_ai_tools/src-tauri/src/ifms6_merge.rs`（2,037 行），共用
+# `merge_common` / `duck-sql-core::sql_merge`。二进制与 `duck.merge.*` 全族同一个
+# （`crates/duck-merge-tool`，按 `tool` 分派）。
+#
+# 参考页面 `Ifms6Merge.vue`（约 380 行）是长任务页：目录 + 版本清单 + 进度 + 日志。
+#
+# ⚠️ 参考页面选完源目录会**自动扫描**版本并回填三个字段（起始版本 / 截止版本 /
+# 版本清单），那是一次 `ifms6_merge_scan_versions` 的反向调用——process 轨做不到。
+# 这里改成「`versions` 留空即按目录实际内容扫」，行为与页面点「重新扫描」一致；
+# 「起始 / 截止版本」两格内核从头到尾没读过，因此不声明（见 `ifms6_merge_run`）。
+#
+# `allow_files = "read_write"`：读版本包、往结果目录写合并产物。
+
+id = "duck.merge.ifms6-merge"
+name = "v6-see 合并"
+description = "把多个 IFMS6.0 版本包按顺序合成一份：前端、服务端、数据库包、ifmcounter、spconfig 分块合并后重新打包，并核对 .class 版本回退"
+version = "0.1.0"
+category = "merge"
+tags = ["merge", "ifms6", "合包", "上线包"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.merge.ifms6-merge"
+name = "v6-see 合并"
+description = "把多个 IFMS6.0 版本包按顺序合成一份：前端、服务端、数据库包、ifmcounter、spconfig 分块合并后重新打包，并核对 .class 版本回退"
+category = "merge"
+group = "合并"
+icon = "layers"
+keywords = ["merge", "ifms6", "合包", "上线包", "版本包"]
+
+[tools.io]
+allow_files = "read_write"
+layout = "job"
+run_label = "开始合并"
+log_hint = "选择包目录后点击「开始合并」"
+# 参考页面选完目录就 `scanVersions()` 回填清单；宿主以 `action = "scan"`
+# 复用 `ifms6_merge::scan_versions`，回填下面的只读 display 参数。
+# 执行路径不变：`versions` 留空 = 按目录实际版本合。
+scan = { src = "src_dir" }
+
+[[tools.io.params]]
+id = "src_dir"
+kind = "path"
+pick = "folder"
+label = "包目录"
+placeholder = "选择包含 IFMS6 版本子目录的目录"
+required = true
+
+[[tools.io.params]]
+id = "dst_dir"
+kind = "path"
+pick = "folder"
+label = "结果目录"
+placeholder = "选择合并结果输出位置"
+required = true
+
+# 留空 = 扫描源目录里所有 `IFMS6.0V*`（目录或 .zip）并按名称排序。
+[[tools.io.params]]
+id = "versions"
+kind = "text"
+label = "参与合并的版本"
+placeholder = "留空则自动扫描；也可手填，逗号分隔"
+
+# 只读展示（扫描回填）：对应参考页面的「待合并版本列表」。
+[[tools.io.params]]
+id = "merge_versions"
+kind = "display"
+label = "待合并版本列表"
+
+[[tools.io.params]]
+id = "include_sql_merge"
+kind = "switch"
+label = "合并 SQL 脚本"
+default = "false"
+
+group = "合并选项"
+[tools.io.output]
+kind = "text"
+label = "合并结果"

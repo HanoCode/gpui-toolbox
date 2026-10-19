@@ -24,8 +24,8 @@ use std::sync::{Mutex, OnceLock};
 
 use duck_components::DuckIcon;
 use duck_plugin::{
-    Capabilities, Capability, DEFAULT_SOURCE_TAG, DiscoveredPlugin, ExecutionModel, PluginIndex,
-    PluginLocales,
+    Capabilities, Capability, DEFAULT_SOURCE_TAG, DiscoveredPlugin, ExecutionModel, IoSpec,
+    PluginIndex, PluginLocales, PluginManifest,
 };
 use duck_plugin_js::JsToolOutcome;
 use duck_theme::{Lang, active_theme, t, tr, trf};
@@ -376,6 +376,77 @@ pub fn plugin_data_dir(plugin_id: &str) -> std::path::PathBuf {
         .join(plugin_id)
 }
 
+/// 插件 io 工具的一次运行上下文（通用执行页 [`crate::pages::tool_run`] 的输入）。
+///
+/// 渲染期由 [`run_context`] 现取现组装：目录、清单、授予、`[io]` 契约一次拿全，
+/// 执行页拿到即可独立工作，不必再回头翻全局索引。
+pub(crate) struct PluginRunContext {
+    /// 归属插件 id（审计与数据目录的键）。
+    pub plugin_id: String,
+    /// 被调用的工具 id（原样传给插件入口）。
+    pub tool_id: String,
+    /// 已译好的工具展示名（插件表 → 宿主表 → 源串）。
+    pub display_name: &'static str,
+    /// 插件目录（`main.js` 所在）。
+    pub dir: std::path::PathBuf,
+    /// 插件数据目录（能力 glob 的根）。
+    pub data_dir: std::path::PathBuf,
+    /// 清单全文（执行入口、能力上限都从它来）。
+    pub manifest: PluginManifest,
+    /// 生效授予（声明 ∩ 用户授予，可直接拿去仲裁）。
+    pub granted: Capabilities,
+    /// 该工具的声明式 IO 契约。
+    pub io: IoSpec,
+    /// process 轨的可执行文件（插件目录 + 清单 `[process] bin`）；js 轨为 `None`。
+    pub bin: Option<std::path::PathBuf>,
+}
+
+/// 取某个插件工具的运行上下文；非插件工具、清单无效或该工具未声明 `[io]` 时
+/// 返回 `None`（后者意味着它仍走旧的一条 toast 流程）。
+#[must_use]
+pub(crate) fn run_context(cx: &App, tool_id: &str) -> Option<PluginRunContext> {
+    let (dir, manifest) = index(cx)
+        .and_then(|plugin_index| plugin_index.plugin_for_tool(tool_id))
+        .and_then(|plugin| {
+            plugin
+                .manifest
+                .clone()
+                .map(|manifest| (plugin.dir.clone(), manifest))
+        })?;
+    let io = manifest
+        .tools
+        .iter()
+        .find(|tool| tool.id == tool_id)?
+        .io
+        .clone()?;
+    let name = ToolRegistry::get(cx, tool_id).map_or("工具", |tool| tool.meta().name());
+    let lang = active_theme(cx).lang();
+    let display_name = plugin_text_of_tool(cx, lang, tool_id, name);
+    let data_dir = plugin_data_dir(&manifest.id);
+    if let Err(error) = duck_platform::ensure_dir(&data_dir) {
+        tracing::warn!(%error, "failed to create plugin data dir {}", data_dir.display());
+    }
+    // process 轨的入口路径在**派发前**解析好：执行页只负责判断「有没有」，
+    // 不重复拼路径（拼法只有这一处，改约定只改这里）。
+    let bin = manifest
+        .process
+        .as_ref()
+        .map(|config| dir.join(config.bin.trim()));
+    let plugin_id = manifest.id.clone();
+    let granted = granted_capabilities(cx, &plugin_id);
+    Some(PluginRunContext {
+        plugin_id,
+        tool_id: tool_id.to_owned(),
+        display_name,
+        dir,
+        data_dir,
+        manifest,
+        granted,
+        io,
+        bin,
+    })
+}
+
 /// 插件工具的统一执行入口。
 ///
 /// - `js` 轨：QuickJS 沙箱执行 `main.js` 的 `handle(toolId, input)`，
@@ -432,6 +503,7 @@ fn run_plugin_tool(tool_id: &str, window: &mut Window, cx: &mut App) {
             &granted,
             &tool_id_for_run,
             "",
+            "",
             lang.tag(),
         )
     });
@@ -484,7 +556,10 @@ fn run_plugin_tool(tool_id: &str, window: &mut Window, cx: &mut App) {
 /// `display_name` 是**已译好的**工具展示名（插件表 → 宿主表 → 源串三档已在调用点
 /// 走完）。这里再 `tr` 一次会把插件自己提供的译文丢回宿主表重查，等于把插件的
 /// 翻译抹掉——所以入口只收成品。
-fn emit_outcome(
+///
+/// 通用执行页（`pages::tool_run`）拿到完整产出后也用它弹提示，两条执行路径的
+/// 反馈口径保持一致。
+pub(crate) fn emit_outcome(
     display_name: &'static str,
     outcome: JsToolOutcome,
     window: &mut Window,
@@ -496,20 +571,35 @@ fn emit_outcome(
     for log in &outcome.logs {
         tracing::info!(target: "duck_plugin", "{log}");
     }
-    if outcome.output.is_empty() {
-        if outcome.notifications.is_empty() {
-            duck_components::notify::info(trf(cx, "「{}」执行完成", &[display_name]), window, cx);
-        }
+    // 插件自己弹过通知就不再补一条「执行完成」——那句是给「什么都没说」的情况兜底。
+    if outcome.output.is_empty() && !outcome.notifications.is_empty() {
         return;
     }
-    // 输出按展示截断；完整产出留给后续的工作区画布（P2）。
-    let output: String = if outcome.output.chars().count() > 240 {
-        let truncated: String = outcome.output.chars().take(240).collect();
-        format!("{truncated}…")
+    emit_text(display_name, &outcome.output, window, cx);
+}
+
+/// 把一段产出投影成一条 toast（超过 240 字截断）。
+///
+/// 两条轨共用这一个出口：JS 轨的完整产出走 [`emit_outcome`]，process 轨只有
+/// 一段文本；截断与「空产出也回一句执行完成」的口径必须一致，否则同一个工具
+/// 换轨之后提示会变样。
+pub(crate) fn emit_text(
+    display_name: &'static str,
+    output: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if output.is_empty() {
+        duck_components::notify::info(trf(cx, "「{}」执行完成", &[display_name]), window, cx);
+        return;
+    }
+    let truncated: String = if output.chars().count() > 240 {
+        let head: String = output.chars().take(240).collect();
+        format!("{head}…")
     } else {
-        outcome.output
+        output.to_owned()
     };
-    duck_components::notify::success(output, window, cx);
+    duck_components::notify::success(truncated, window, cx);
 }
 
 /// 启动装配：发现插件并注册其工具贡献。
@@ -605,24 +695,29 @@ fn register_tools(cx: &mut App, plugin_index: &PluginIndex) -> usize {
                 // 注册表里已有同名工具：要么是上一次登记的结果，要么与内置工具撞名。
                 continue;
             }
-            ToolRegistry::register(
-                cx,
-                ToolMeta::builder(
-                    leak_str(&tool.id),
-                    leak_str(&tool.name),
-                    icon_of(tool.icon.as_deref()),
-                )
-                .description(leak_str(&tool.description))
-                .keywords(leak_keywords(&tool.keywords))
-                // 工具贡献未写分类时回落插件级分类，再回落「其他」。
-                .category(if tool.category.is_empty() {
-                    category_of(&manifest.category)
-                } else {
-                    category_of(&tool.category)
-                })
-                .run(run_plugin_tool)
-                .build(),
-            );
+            let mut meta = ToolMeta::builder(
+                leak_str(&tool.id),
+                leak_str(&tool.name),
+                icon_of(tool.icon.as_deref()),
+            )
+            .description(leak_str(&tool.description))
+            .keywords(leak_keywords(&tool.keywords))
+            // 二级分组：分类枚举只 7 档，领域细分走 group（api v2 起可声明）。
+            .group(tool.group.as_deref().map(leak_str))
+            // 工具贡献未写分类时回落插件级分类，再回落「其他」。
+            .category(if tool.category.is_empty() {
+                category_of(&manifest.category)
+            } else {
+                category_of(&tool.category)
+            })
+            .run(run_plugin_tool);
+            if tool.beta {
+                meta = meta.beta();
+            }
+            if tool.dev {
+                meta = meta.dev();
+            }
+            ToolRegistry::register(cx, meta.build());
             registered += 1;
         }
     }

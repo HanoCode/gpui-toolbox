@@ -1,0 +1,77 @@
+%% name VS Code
+%% category 工具
+%% content
+# VS Code 速查表
+
+## 通用快捷键
+
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+P | 快速打开文件 |
+| Ctrl+Shift+P | 命令面板 |
+| Ctrl+` | 打开终端 |
+| Ctrl+Shift+X | 扩展面板 |
+| Ctrl+, | 设置 |
+| Ctrl+K Ctrl+S | 快捷键设置 |
+
+## 编辑器
+
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+D | 选择下一个相同内容 |
+| Ctrl+Shift+K | 删除行 |
+| Alt+↑/↓ | 移动行 |
+| Ctrl+Enter | 上方插入行 |
+| Ctrl+Shift+Enter | 下方插入行 |
+| Ctrl+/ | 注释切换 |
+| Ctrl+Shift+I | 格式化文档 |
+| Alt+Shift+F | 格式化选中内容 |
+
+## 导航
+
+| 快捷键 | 功能 |
+|--------|------|
+| F12 | 跳转到定义 |
+| Alt+F12 | 预览定义 |
+| Shift+F12 | 查看引用 |
+| Ctrl+Shift+O | 跳转到符号 |
+| Ctrl+G | 跳转到行 |
+
+## 搜索替换
+
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+F | 搜索 |
+| Ctrl+H | 替换 |
+| Alt+Enter | 选择所有匹配 |
+| Ctrl+Shift+F | 跨文件搜索 |
+| Ctrl+Shift+J | 搜索选中文本 |
+
+## 多光标
+
+| 快捷键 | 功能 |
+|--------|------|
+| Alt+Click | 添加光标 |
+| Ctrl+Alt+↑/↓ | 上下添加光标 |
+| Ctrl+D | 选中下一个相同内容 |
+| Ctrl+Shift+L | 选中所有相同内容 |
+
+## 窗口管理
+
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+B | 切换侧栏 |
+| Ctrl+\ | 分屏 |
+| Ctrl+1/2/3 | 切换编辑器组 |
+| Ctrl+Tab | 切换标签 |
+| Ctrl+W | 关闭标签 |
+| Ctrl+Shift+T | 重新打开关闭的标签 |
+
+## Git 集成
+
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+Shift+G | 源代码管理 |
+| Ctrl+Enter | 提交 |
+| Ctrl+Shift+P | Git: Clone |
+|

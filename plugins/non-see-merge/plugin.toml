@@ -1,0 +1,79 @@
+# Duck Toolbox 插件：非 SEE 包合并（duck.merge.non-see-merge）。
+#
+# **process 轨**：逻辑在 `crates/duck-merge-core/src/ifms6_merge.rs::non_see_merge`
+# （源仓 `start_non_see_merge`），二进制与 `duck.merge.*` 全族共用一个。
+#
+# 这是什么：参考页面 `SpMerge.vue` 的「非 SEE 模式」——同一批版本包，但服务端里
+# 放的是**目录**（不是内层 ZIP），前端也不是 SEE 结构。合包流程与 IFMS6 合包不同，
+# 所以源仓给了独立入口 `ifms6_non_see_merge_start`，这里按 ADR-7 落成独立工具。
+#
+# 参考页面同样会先 `scan` 再回填版本清单，这里同样是「留空即自动扫」。
+#
+# `allow_files = "read_write"`：读版本包、往结果目录写合并产物。
+
+id = "duck.merge.non-see-merge"
+name = "非 SEE 包合并"
+description = "把一批非 SEE 结构的版本包（服务端是目录而非内层 ZIP）合并成一份：前端、服务端、数据库分块合并后打包"
+version = "0.1.0"
+category = "merge"
+tags = ["merge", "non-see", "合包", "上线包"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.merge.non-see-merge"
+name = "非 SEE 包合并"
+description = "把一批非 SEE 结构的版本包（服务端是目录而非内层 ZIP）合并成一份：前端、服务端、数据库分块合并后打包"
+category = "merge"
+group = "合并"
+icon = "archive"
+keywords = ["merge", "non-see", "合包", "上线包", "非SEE"]
+
+[tools.io]
+allow_files = "read_write"
+layout = "job"
+run_label = "开始合并"
+log_hint = "选择包目录后点击「开始合并」"
+# 同 `ifms6-merge`：扫描只回填展示，执行路径「留空 = 按目录实际版本合」不变。
+scan = { src = "src_dir" }
+
+[[tools.io.params]]
+id = "src_dir"
+kind = "path"
+pick = "folder"
+label = "包目录"
+placeholder = "选择包含版本子目录的目录"
+required = true
+
+[[tools.io.params]]
+id = "dst_dir"
+kind = "path"
+pick = "folder"
+label = "结果目录"
+placeholder = "选择合并结果输出位置"
+required = true
+
+# 留空 = 扫描源目录里所有 `IFMS6.0V*`（目录或 .zip）并按名称排序。
+[[tools.io.params]]
+id = "versions"
+kind = "text"
+label = "参与合并的版本"
+placeholder = "留空则自动扫描；也可手填，逗号分隔"
+
+# 只读展示（扫描回填）：对应参考页面的「待合并版本列表」。
+[[tools.io.params]]
+id = "merge_versions"
+kind = "display"
+label = "待合并版本列表"
+
+[tools.io.output]
+kind = "text"
+label = "合并结果"

@@ -1,0 +1,143 @@
+%% name Vue
+%% category 前端框架
+%% content
+# Vue 速查表
+
+## 组合式 API
+
+```vue
+<script setup>
+import { ref, computed, watch, onMounted } from 'vue'
+
+// 响应式数据
+const count = ref(0)
+const state = reactive({ name: '张三' })
+
+// 计算属性
+const doubled = computed(() => count.value * 2)
+
+// 方法
+function increment() {
+  count.value++
+}
+
+// 侦听器
+watch(count, (newVal, oldVal) => {
+  console.log(`count changed: ${oldVal} -> ${newVal}`)
+})
+
+// 生命周期
+onMounted(() => {
+  console.log('组件已挂载')
+})
+</script>
+```
+
+## 模板语法
+
+```vue
+<template>
+  <!-- 文本插值 -->
+  <p>{{ message }}</p>
+  
+  <!-- 原始 HTML -->
+  <p v-html="rawHtml"></p>
+  
+  <!-- 属性绑定 -->
+  <div :id="dynamicId" :class="classes"></div>
+  
+  <!-- 条件渲染 -->
+  <div v-if="show">v-if</div>
+  <div v-else>v-else</div>
+  <div v-show="visible">v-show</div>
+  
+  <!-- 列表渲染 -->
+  <ul>
+    <li v-for="(item, index) in items" :key="item.id">
+      {{ index }}: {{ item.name }}
+    </li>
+  </ul>
+  
+  <!-- 事件处理 -->
+  <button @click="increment">+</button>
+  <form @submit.prevent="onSubmit">
+    <input v-model="inputValue">
+  </form>
+</template>
+```
+
+## 组件
+
+```vue
+<!-- 父组件 -->
+<template>
+  <ChildComponent 
+    :title="title" 
+    @update="handleUpdate"
+  />
+</template>
+
+<script setup>
+import ChildComponent from './ChildComponent.vue'
+</script>
+
+<!-- 子组件 -->
+<script setup>
+defineProps({
+  title: String,
+  count: { type: Number, default: 0 }
+})
+
+const emit = defineEmits(['update'])
+</script>
+```
+
+## 状态管理 (Pinia)
+
+```javascript
+import { defineStore } from 'pinia'
+
+export const useUserStore = defineStore('user', {
+  state: () => ({
+    name: '',
+    isLoggedIn: false
+  }),
+  getters: {
+    displayName: (state) => state.name || '匿名'
+  },
+  actions: {
+    login(name) {
+      this.name = name
+      this.isLoggedIn = true
+    }
+  }
+})
+```
+
+## 组合式函数
+
+```javascript
+export function useCounter(initialValue = 0) {
+  const count = ref(initialValue)
+  
+  function increment() { count.value++ }
+  function decrement() { count.value-- }
+  
+  return { count, increment, decrement }
+}
+```
+
+## 路由
+
+```vue
+<script setup>
+import { useRouter, useRoute } from 'vue-router'
+
+const router = useRouter()
+const route = useRoute()
+
+// 导航
+router.push('/about')
+router.push({ name: 'user', params: { id: 123 } })
+</script>
+```

@@ -1,0 +1,125 @@
+%% name Bash
+%% category CLI/Shell
+%% content
+# Bash 速查表
+
+## 变量
+
+```bash
+NAME="张三"                       # 设置变量
+echo $NAME                        # 使用变量
+echo ${NAME:-默认值}              # 默认值
+echo ${NAME:=默认值}              # 设置默认值
+echo ${#NAME}                    # 字符串长度
+```
+
+## 字符串操作
+
+```bash
+str="Hello World"
+echo ${#str}                     # 长度: 11
+echo ${str:0:5}                  # 子串: Hello
+echo ${str/Hello/Hi}             # 替换: Hi World
+echo ${str,,}                    # 转小写
+echo ${str^^}                    # 转大写
+```
+
+## 数组
+
+```bash
+arr=(a b c d)                     # 创建数组
+echo ${arr[0]}                   # 第一个元素
+echo ${arr[@]}                   # 所有元素
+echo ${#arr[@]}                  # 长度
+arr+=(e)                          # 追加元素
+```
+
+## 条件语句
+
+```bash
+if [ condition ]; then
+  echo "条件为真"
+elif [ condition ]; then
+  echo "其他条件"
+else
+  echo "条件为假"
+fi
+
+# 常用条件测试
+[ -f file ]    # 文件存在
+[ -d dir ]     # 目录存在
+[ -z string ]  # 字符串为空
+[ -n string ]  # 字符串非空
+[ str1 = str2 ] # 字符串相等
+[ num1 -gt num2 ] # 大于
+```
+
+## 循环
+
+```bash
+# for 循环
+for i in {1..10}; do
+  echo $i
+done
+
+# for 循环（列表）
+for file in *.txt; do
+  echo $file
+done
+
+# while 循环
+count=0
+while [ $count -lt 5 ]; do
+  echo $count
+  ((count++))
+done
+
+# until 循环
+until [ $count -ge 5 ]; do
+  echo $count
+  ((count++))
+done
+```
+
+## 函数
+
+```bash
+# 定义函数
+greet() {
+  local name=$1
+  echo "你好, $name"
+}
+
+# 调用函数
+greet "张三"
+
+# 返回值
+add() {
+  echo $(( $1 + $2 ))
+}
+result=$(add 3 5)
+```
+
+## 重定向与管道
+
+```bash
+command > file                    # 标准输出重定向
+command >> file                   # 追加输出
+command 2> error.log              # 错误输出重定向
+command &> all.log                # 所有输出重定向
+command1 | command2               # 管道
+command | tee file                # 输出并保存
+```
+
+## 常用命令
+
+```bash
+grep "pattern" file               # 搜索文本
+find /path -name "*.txt"          # 查找文件
+sed 's/old/new/g' file            # 文本替换
+awk '{print $1}' file             # 列提取
+sort file | uniq                  # 排序去重
+wc -l file                        # 统计行数
+cut -d',' -f1 file                # 按分隔符切割
+tr 'a-z' 'A-Z' < file            # 字符转换
+```

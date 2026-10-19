@@ -70,12 +70,7 @@ const MAX_LIMIT: usize = 8;
 /// 计算建议。`input` 是输入区文本（**不含提示符**）；`paths` 由调用方现查
 /// （本地目录项等）后传入，引擎不碰文件系统；`limit` 钳到 `[1, 8]`。
 #[must_use]
-pub fn suggest(
-    input: &str,
-    history: &[String],
-    paths: &[String],
-    limit: usize,
-) -> Vec<Suggestion> {
+pub fn suggest(input: &str, history: &[String], paths: &[String], limit: usize) -> Vec<Suggestion> {
     let mut out: Vec<Suggestion> = Vec::new();
     if input.trim_end().is_empty() {
         return out;
@@ -154,17 +149,108 @@ fn last_token_start(input: &str) -> usize {
 ///
 /// 覆盖日常 shell + 本仓用户常见工具链；不求全，求「高频的都在」。
 pub const BUILTIN_COMMANDS: &[&str] = &[
-    "cd", "ls", "pwd", "cat", "less", "head", "tail", "touch", "mkdir", "rmdir", "rm", "cp",
-    "mv", "ln", "find", "grep", "rg", "sed", "awk", "sort", "uniq", "wc", "diff", "chmod",
-    "chown", "curl", "wget", "tar", "zip", "unzip", "gzip", "ssh", "scp", "rsync", "sftp",
-    "ping", "netstat", "lsof", "dig", "nslookup", "ifconfig", "ip", "ps", "top", "htop",
-    "kill", "killall", "df", "du", "free", "uname", "whoami", "which", "whereis", "man",
-    "history", "echo", "printf", "export", "env", "date", "sleep", "watch", "clear", "exit",
-    "git", "gh", "cargo", "rustc", "rustup", "python", "python3", "pip", "node", "npm",
-    "pnpm", "yarn", "make", "cmake", "docker", "docker-compose", "kubectl", "helm", "brew",
-    "sqlite3", "mysql",
-    "psql", "redis-cli", "open", "pbcopy", "pbpaste", "codesign", "systemctl", "journalctl",
-    "apt", "dnf", "yum", "vim", "vi", "nano", "code", "sudo",
+    "cd",
+    "ls",
+    "pwd",
+    "cat",
+    "less",
+    "head",
+    "tail",
+    "touch",
+    "mkdir",
+    "rmdir",
+    "rm",
+    "cp",
+    "mv",
+    "ln",
+    "find",
+    "grep",
+    "rg",
+    "sed",
+    "awk",
+    "sort",
+    "uniq",
+    "wc",
+    "diff",
+    "chmod",
+    "chown",
+    "curl",
+    "wget",
+    "tar",
+    "zip",
+    "unzip",
+    "gzip",
+    "ssh",
+    "scp",
+    "rsync",
+    "sftp",
+    "ping",
+    "netstat",
+    "lsof",
+    "dig",
+    "nslookup",
+    "ifconfig",
+    "ip",
+    "ps",
+    "top",
+    "htop",
+    "kill",
+    "killall",
+    "df",
+    "du",
+    "free",
+    "uname",
+    "whoami",
+    "which",
+    "whereis",
+    "man",
+    "history",
+    "echo",
+    "printf",
+    "export",
+    "env",
+    "date",
+    "sleep",
+    "watch",
+    "clear",
+    "exit",
+    "git",
+    "gh",
+    "cargo",
+    "rustc",
+    "rustup",
+    "python",
+    "python3",
+    "pip",
+    "node",
+    "npm",
+    "pnpm",
+    "yarn",
+    "make",
+    "cmake",
+    "docker",
+    "docker-compose",
+    "kubectl",
+    "helm",
+    "brew",
+    "sqlite3",
+    "mysql",
+    "psql",
+    "redis-cli",
+    "open",
+    "pbcopy",
+    "pbpaste",
+    "codesign",
+    "systemctl",
+    "journalctl",
+    "apt",
+    "dnf",
+    "yum",
+    "vim",
+    "vi",
+    "nano",
+    "code",
+    "sudo",
 ];
 
 #[cfg(test)]
@@ -242,9 +328,11 @@ mod tests {
         // 第二个 token 位置不再当命令名。
         assert!(suggest("sudo dock", &[], &[], 8).is_empty());
         // 完整打完的命令不再建议它自己。
-        assert!(suggest("docker", &[], &[], 8)
-            .iter()
-            .all(|s| s.text != "docker"));
+        assert!(
+            suggest("docker", &[], &[], 8)
+                .iter()
+                .all(|s| s.text != "docker")
+        );
     }
 
     #[test]

@@ -1,0 +1,59 @@
+# Duck Toolbox 插件：时间戳工具（duck.text.timestamp）。
+#
+# 一工具一插件（见 plugins/text-formatter/plugin.toml 的说明）。
+
+id = "duck.text.timestamp"
+name = "时间戳转换"
+description = "时间戳与日期互转，支持秒 / 毫秒与本地时区"
+version = "0.1.0"
+category = "productivity"
+tags = ["文本", "时间", "时间戳"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.text.timestamp"
+name = "时间戳转换"
+description = "时间戳与日期互转，支持秒 / 毫秒与本地时区"
+category = "productivity"
+group = "转换"
+icon = "clock"
+keywords = ["timestamp", "date", "time", "时间", "时间戳", "日期"]
+
+[tools.io]
+
+[[tools.io.fields]]
+id = "input"
+kind = "text"
+label = "输入"
+placeholder = "时间戳或日期，如 1735689600 / 2025-01-01 08:00:00"
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+label = "方向"
+default = "to_date"
+options = [
+  { value = "to_date", label = "时间戳 → 日期" },
+  { value = "to_unix", label = "日期 → 时间戳" },
+  { value = "now", label = "当前时间" },
+]
+
+[[tools.io.params]]
+id = "unit"
+kind = "select"
+label = "时间戳单位"
+default = "s"
+options = [
+  { value = "s", label = "秒" },
+  { value = "ms", label = "毫秒" },
+]
+
+[tools.io.output]
+kind = "text"
+label = "结果"

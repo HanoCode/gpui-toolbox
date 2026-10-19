@@ -1,0 +1,23 @@
+[package]
+name = "duck-sql-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SQL 插件的 process 轨入口：stdio JSONL，按 tool id 分派到 duck-sql-core（零 gpui）。"
+
+[[bin]]
+name = "duck-sql-tool"
+path = "src/main.rs"
+
+[dependencies]
+duck-plugin.workspace = true
+duck-plugin-process.workspace = true
+duck-sql-core.workspace = true
+# 分类抽取的备份表名要带当天日期（`…_bak_20261018`），与源页面 `new Date()` 同一口径
+# （本地时区，不是 UTC）。`walkdir` 走目录树，与 `sql_merge` 同一套遍历。
+chrono.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

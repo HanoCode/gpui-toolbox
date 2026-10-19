@@ -1,0 +1,14 @@
+[package]
+name = "duck-classfile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Java class 文件解析与版本号提取（复刻自 ifm_ai_tools），零 gpui / 零 IO。"
+
+[dependencies]
+# 与参考仓一致：`regex` 抽版本号、`serde` 给解析结果（反编译落地时要用）。
+regex.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

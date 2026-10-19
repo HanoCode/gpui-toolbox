@@ -1,0 +1,15 @@
+[package]
+name = "duck-finance-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "金融工具族（`duck.finance.*`）的 process 轨入口：PDM 阅读器 / 渠道网关模型生成。"
+
+[dependencies]
+duck-plugin.workspace = true
+duck-plugin-process.workspace = true
+duck-finance-core.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

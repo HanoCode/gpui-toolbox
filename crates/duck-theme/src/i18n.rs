@@ -509,6 +509,12 @@ mod tests {
     ///   `classify` / `parse_relative_day` 里的中文（`"发件人"`、`"未读"`、`"上周"` …）
     ///   是拿去和**用户敲进的查询串**做比对的输入侧字面量，同样一个字节都不渲染；
     ///   渲染出来的说法在 `duck-app/src/pages/mail.rs` 的搜索帮助表里，那里照常登记。
+    /// - `duck-files-core/src/datagen_tables.rs` 的**随机数据素材词表**。那里的中文
+    ///   （`"王"`、`"北京市"`、`"存款账户"`、`"护照"` …）是**生成结果本身**：生成的
+    ///   姓名就叫「王伟」、地址就叫「北京市…」、账户类型就叫「存款账户」。翻成英文
+    ///   之后，这工具就造不出能填进中文被测系统的测试数据了。界面上那些**标签**
+    ///   （「账户持有人类型」`"Account holder type"`）全在
+    ///   `plugins/text-random-gen/locales/en.toml` 里逐条登记，一个没漏。
     /// - `duck-app/src/pages/projects/import_aliases.rs` 的**输入侧列名 / 取值别名表**。
     ///   那里的中文（`"任务标题"`、`"进行中"`、`"紧急重要"` …）是拿去和**用户文件里的
     ///   表头、单元格内容**做比对的，一个字节都不会渲染；能渲染出来的说法是
@@ -519,7 +525,57 @@ mod tests {
     const NON_UI_SOURCES: &[&str] = &[
         "duck-mail/src/models.rs",
         "duck-mail/src/db/repo/search.rs",
+        "duck-files-core/src/datagen_tables.rs",
         "duck-app/src/pages/projects/import_aliases.rs",
+        // 渠道网关 Excel 解析的**表头关键词表**：`"金额"`、`"交易码"`、`"请求"`
+        // 这些是拿去和用户工作簿里的表头单元格做 `contains` 比对的匹配数据，
+        // 一个字节都不会渲染。能渲染出来的是解析结果的字段名、报表标签，
+        // 它们在 `duck-finance-core` 的其余文件里，按插件表判定。
+        "duck-finance-core/src/channel_gateway/keywords.rs",
+    ];
+
+    /// 文案**登记在插件自己的译文表里**的源文件（相对 `crates/` 的后缀）。
+    ///
+    /// `process` 轨插件（`plugins/<family>-<tool>/`）的文案按项目约定是**数据不是代码**：
+    /// 键 = 中文源串，译文在 `<插件目录>/locales/<tag>.toml`，运行时由插件二进制经
+    /// `DUCK_LOCALES_DIR` 读入，三档降级「插件表 → 宿主表 → 源串」。所以这些源文件里的
+    /// 中文字面量**应当**登记在插件表里，而不是塞进宿主 `locales/en.toml` ——
+    /// 塞进去等于把插件文案复制一份到宿主表，改一边忘一边就静默显示中文。
+    ///
+    /// 这类文件的字面量按「宿主表 ∪ **任意**插件 en 表」判定，闸门照常生效
+    /// （漏翻仍然报错，只是可用的登记处多了一处）。名单只收 process 轨那一侧
+    /// （`duck-sql-core` 的规则消息 + `duck-sql-tool` 的拼版文案 +
+    /// `duck-merge-core` / `duck-merge-tool` / `duck-classfile` 同一套复刻件——最后那个是
+    /// 参考仓 `decompiler.rs` + `class_compare` 的解析器，错误消息由**消费它的插件**
+    /// 登记，例如 `plugins/non-sp-merge`；`duck-files-core` / `duck-files-tool` 是文件族，
+    /// 内核只给稳定码、整句由工具层拼，登记在 `plugins/files-*`），
+    /// 不按「翻译不了」放宽：GUI 代码必须走宿主表。
+    ///
+    /// 匹配用 `contains`（目录前缀）而不是 `ends_with`：这里指的是**整个目录**，
+    /// 不是某个文件——写成文件后缀的话，加一个 `src/i18n.rs` 就会漏。
+    const PLUGIN_TEXT_SOURCES: &[&str] = &[
+        "duck-classfile/src/",
+        "duck-sql-core/src/",
+        "duck-sql-tool/src/",
+        "duck-merge-core/src/",
+        "duck-merge-tool/src/",
+        "duck-compare-core/src/",
+        "duck-compare-tool/src/",
+        "duck-files-core/src/",
+        "duck-files-tool/src/",
+        "duck-net-core/src/",
+        "duck-net-tool/src/",
+        "duck-misc-core/src/",
+        "duck-misc-tool/src/",
+        // 加解密族：恒生 LCPT 是参考仓后端复刻件（错误串直接进结果区），
+        // 其余七个标签页按同一口径落中文，登记在 `plugins/codec-crypto-bundle`。
+        "duck-codec-core/src/",
+        "duck-codec-tool/src/",
+        // 金融族：PDM 解析 / SQL 生成 / 三种导出与渠道网关的 Excel 解析、ESB 代码生成
+        // 都是参考仓后端的逐字复刻件，报错串与报表抬头直接进结果区，登记在
+        // `plugins/finance-pdm-reader` 与 `plugins/finance-channel-gateway`。
+        "duck-finance-core/src/",
+        "duck-finance-tool/src/",
     ];
 
     /// 迁移收口断言：`static EN` 表不得回来。
@@ -722,6 +778,7 @@ mod tests {
     #[test]
     fn every_chinese_literal_is_translated() {
         let mut missing: Vec<String> = Vec::new();
+        let plugin_keys = plugin_locale_keys();
         for file in rust_sources() {
             // 含中文但**不是界面文案**的源文件先跳过——判据是「这个字面量会不会被渲染
             // 到屏幕上」，不是「它是不是中文」。名单与理由见 [`NON_UI_SOURCES`]。
@@ -731,6 +788,10 @@ mod tests {
             {
                 continue;
             }
+            // process 轨工具二进制：文案归插件自己的译文表，见 [`PLUGIN_TEXT_SOURCES`]。
+            let plugin_text = PLUGIN_TEXT_SOURCES
+                .iter()
+                .any(|prefix| file.to_string_lossy().contains(prefix));
             let text = std::fs::read_to_string(&file).expect("读取源码");
             for (line_index, line) in text.lines().enumerate() {
                 let trimmed = line.trim_start();
@@ -744,7 +805,18 @@ mod tests {
                     if !contains_cjk(literal) {
                         continue;
                     }
-                    if translate_en(literal).is_none() {
+                    // 含转义序列（`\n` / `\t`）的字面量是**写进文件的内容**，不是界面
+                    // 文案：合并族把 `merge_upd.xml` 的注释头、回退清单的表头直接写在
+                    // 源码里（`"<!-- 合并文件数: {} -->\n"`）。它们渲染不到屏幕上，
+                    // 而且**无法**成为 TOML 键——键必须单行纯文本，`\n` 在 TOML 里是
+                    // 真换行，与源码里那两个字符并不相等。纳进来只会得到一条永远消不掉
+                    // 的红，所以这类字面量一律不参与判据。
+                    if literal.contains('\\') {
+                        continue;
+                    }
+                    let host = translate_en(literal).is_some();
+                    let plugin = plugin_text && plugin_keys.iter().any(|key| key == literal);
+                    if !host && !plugin {
                         missing.push(format!("{}:{} → {literal}", file.display(), line_index + 1));
                     }
                 }
@@ -755,6 +827,43 @@ mod tests {
             "以下文案缺少英译：\n{}",
             missing.join("\n")
         );
+    }
+
+    /// 所有 `plugins/*/locales/en.toml` 的键（= 中文源串）。
+    ///
+    /// 只为上面那条闸门服务：插件表是运行时由进程自己读的（`DUCK_LOCALES_DIR`），
+    /// 宿主这边**故意不编译进来**，所以测试期才现场解析。键侧按 `"…" = ` 前缀取，
+    /// 与本仓「中文源串不得含转义引号」的约定自洽（含转义引号的键本来就登记不进来）。
+    fn plugin_locale_keys() -> Vec<String> {
+        let root = workspace_crates().parent().expect("仓库根").join("plugins");
+        let mut keys = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return keys;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path().join("locales").join("en.toml");
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in text.lines() {
+                let line = line.trim_start();
+                if !line.starts_with('"') {
+                    continue;
+                }
+                // `"键" = "译文"`：取第一个 `" = ` 之前的键体。
+                //
+                // `end > 0` 是必要的防御：键以空格开头时（`" = x" = "y"`），
+                // `find` 会命中行首，`line[1..0]` 直接 panic —— 门禁崩了，
+                // 报出来的却是「byte range starts at 1 but ends at 0」这种
+                // 跟译文毫无关系的消息。这类键本来也登记不进来，跳过即可。
+                if let Some(end) = line.find("\" = ") {
+                    if end > 0 {
+                        keys.push(line[1..end].to_string());
+                    }
+                }
+            }
+        }
+        keys
     }
 
     fn workspace_crates() -> PathBuf {

@@ -1,0 +1,106 @@
+%% name Redis
+%% category 数据库
+%% content
+# Redis 速查表
+
+## 连接
+
+```bash
+redis-cli                              # 连接本地 Redis
+redis-cli -h host -p port -a password  # 连接远程 Redis
+```
+
+## 字符串操作
+
+```bash
+SET key value                     # 设置键值
+SET key value EX 3600             # 设置带过期时间
+GET key                           # 获取值
+MSET key1 val1 key2 val2          # 批量设置
+MGET key1 key2                    # 批量获取
+INCR key                          # 自增
+INCRBY key 10                     # 增加指定值
+DECR key                          # 自减
+APPEND key value                  # 追加字符串
+STRLEN key                        # 获取长度
+```
+
+## 哈希操作
+
+```bash
+HSET user:1 name "张三" age 25    # 设置哈希字段
+HGET user:1 name                  # 获取哈希字段
+HGETALL user:1                    # 获取所有字段
+HMGET user:1 name age             # 批量获取
+HDEL user:1 age                   # 删除字段
+HINCRBY user:1 age 1              # 增加字段值
+HEXISTS user:1 name               # 检查字段是否存在
+HLEN user:1                       # 获取字段数量
+```
+
+## 列表操作
+
+```bash
+LPUSH queue item1 item2           # 左侧插入
+RPUSH queue item3                 # 右侧插入
+LPOP queue                        # 左侧弹出
+RPOP queue                        # 右侧弹出
+LRANGE queue 0 -1                 # 查看所有元素
+LLEN queue                        # 获取长度
+LINDEX queue 0                    # 获取指定索引元素
+LREM queue 2 item                 # 删除指定元素
+```
+
+## 集合操作
+
+```bash
+SADD tags "python" "redis" "go"   # 添加元素
+SMEMBERS tags                     # 获取所有元素
+SISMEMBER tags "python"           # 判断是否存在
+SCARD tags                        # 获取元素数量
+SREM tags "python"                # 删除元素
+SINTER set1 set2                  # 交集
+SUNION set1 set2                  # 并集
+SDIFF set1 set2                   # 差集
+```
+
+## 有序集合
+
+```bash
+ZADD leaderboard 100 "player1" 200 "player2"  # 添加
+ZRANGE leaderboard 0 -1 WITHSCORES            # 按分数排序
+ZSCORE leaderboard "player1"                  # 获取分数
+ZRANK leaderboard "player1"                   # 获取排名
+ZREM leaderboard "player1"                    # 删除元素
+```
+
+## 键管理
+
+```bash
+KEYS pattern                      # 查找键
+EXISTS key                        # 判断键是否存在
+TYPE key                          # 获取键类型
+TTL key                           # 获取过期时间（秒）
+PTTL key                          # 获取过期时间（毫秒）
+EXPIRE key 3600                   # 设置过期时间
+PERSIST key                       # 取消过期时间
+DEL key                           # 删除键
+RENAME key newkey                 # 重命名键
+```
+
+## 发布订阅
+
+```bash
+SUBSCRIBE channel                 # 订阅频道
+PUBLISH channel message           # 发布消息
+UNSUBSCRIBE channel               # 取消订阅
+```
+
+## 事务
+
+```bash
+MULTI                             # 开始事务
+EXEC                              # 执行事务
+DISCARD                           # 取消事务
+WATCH key                         # 监视键
+```

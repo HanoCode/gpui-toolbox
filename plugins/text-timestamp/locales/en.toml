@@ -1,0 +1,20 @@
+# duck.text.timestamp 英文译文。键 = 中文源串。
+
+"时间戳转换" = "Timestamp Tool"
+"时间戳与日期互转，支持秒 / 毫秒与本地时区" = "Convert between timestamps and dates, seconds or milliseconds, local timezone"
+
+"输入" = "Input"
+"时间戳或日期，如 1735689600 / 2025-01-01 08:00:00" = "Timestamp or date, e.g. 1735689600 / 2025-01-01 08:00:00"
+"方向" = "Direction"
+"时间戳 → 日期" = "Timestamp → date"
+"日期 → 时间戳" = "Date → timestamp"
+"当前时间" = "Current time"
+"时间戳单位" = "Timestamp unit"
+"秒" = "Seconds"
+"毫秒" = "Milliseconds"
+"结果" = "Result"
+
+"请填写时间戳或日期" = "Enter a timestamp or a date"
+"无法识别的时间戳：{}" = "Unrecognized timestamp: {}"
+"无法识别的日期：{}" = "Unrecognized date: {}"
+"{}年{}月{}日 {}:{}:{}（本地时区）" = "{:04}-{:02}-{:02} {:02}:{:02}:{:02} (local time)"

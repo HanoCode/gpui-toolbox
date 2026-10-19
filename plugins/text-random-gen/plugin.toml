@@ -1,0 +1,243 @@
+# Duck Toolbox 插件：随机文本生成（duck.text.random-gen）。
+#
+# 逐条复刻参考仓 `src/tools/RandomTextGenerator.vue`（1,417 行，纯前端）的**六类**
+# 字段：姓名 / 地址 / 网络 / 日期时间 / 数字 / 客户信息。
+#
+# 参考页是六个标签页 + 每页一组单选/勾选 + 「生成」「批量生成」两个按钮；这里表达为
+# `category` + `visible_when`（切到哪类就只看见那类旋钮）+ 一个 `count`
+# （`count = 1` 走参考页「生成」的单次口径，`count > 1` 走「批量生成」的随机口径）。
+#
+# 客户信息那一段是 **CRS / 反洗钱报送口径**的结构化数据：个人或机构、税收居民身份、
+# TIN、账户与财务四段，机构还会带控制人 / 股东 / 受益人三棵子树。参考页是「生成 +
+# 一键复制整份报告」，这里直接输出同样版面的文本，可以整段贴进报送模板。
+#
+# 逻辑在 `crates/duck-files-core/src/datagen.rs`（生成）与
+# `crates/duck-files-tool/src/report.rs`（报告排版），二进制 = `crates/duck-files-tool`。
+
+id = "duck.text.random-gen"
+name = "随机文本生成"
+description = "姓名、地址、网络、日期时间、数字、客户信息六类测试数据（含 CRS/反洗钱口径）"
+version = "0.2.0"
+category = "productivity"
+tags = ["随机", "生成", "测试数据", "姓名", "地址", "邮箱", "手机号", "身份证", "客户信息", "crs"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.text.random-gen"
+name = "随机文本生成"
+description = "姓名、地址、网络、日期时间、数字、客户信息六类测试数据（含 CRS/反洗钱口径）"
+category = "productivity"
+group = "生成"
+icon = "dices"
+keywords = ["随机", "生成", "文本", "姓名", "地址", "邮箱", "URL", "IP", "日期", "时间", "手机号", "身份证", "银行卡", "mock", "测试数据", "crs", "反洗钱", "客户信息", "金融", "非居民"]
+
+[tools.io]
+
+[[tools.io.params]]
+id = "category"
+kind = "select"
+style = "tabs"
+label = "类别"
+default = "name"
+options = [
+  { value = "name", label = "姓名" },
+  { value = "address", label = "地址" },
+  { value = "internet", label = "网络" },
+  { value = "datetime", label = "日期时间" },
+  { value = "number", label = "数字" },
+  { value = "customer", label = "客户信息" },
+]
+
+[[tools.io.params]]
+id = "count"
+kind = "number"
+label = "生成条数"
+default = "10"
+min = 1
+max = 500
+
+# ── 姓名 ──────────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "name_lang"
+kind = "select"
+label = "语种"
+default = "zh"
+options = [
+  { value = "zh", label = "中文" },
+  { value = "en", label = "英文" },
+  { value = "ja", label = "日文" },
+]
+visible_when = { category = "name" }
+
+[[tools.io.params]]
+id = "name_gender"
+kind = "select"
+label = "性别倾向"
+default = "any"
+options = [
+  { value = "any", label = "不限" },
+  { value = "male", label = "男" },
+  { value = "female", label = "女" },
+]
+visible_when = { category = "name" }
+
+[[tools.io.params]]
+id = "name_company"
+kind = "switch"
+label = "同时生成公司名"
+default = "false"
+visible_when = { category = "name" }
+
+# ── 地址 ──────────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "address_country"
+kind = "select"
+label = "国家"
+default = "zh"
+options = [
+  { value = "zh", label = "中国" },
+  { value = "us", label = "美国" },
+]
+visible_when = { category = "address" }
+
+[[tools.io.params]]
+id = "address_postcode"
+kind = "switch"
+label = "带邮编"
+default = "true"
+visible_when = { category = "address" }
+
+[[tools.io.params]]
+id = "address_coordinate"
+kind = "switch"
+label = "带经纬度"
+default = "false"
+visible_when = { category = "address" }
+
+# ── 网络 ──────────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "internet_type"
+kind = "select"
+label = "类型"
+default = "email"
+options = [
+  { value = "email", label = "邮箱" },
+  { value = "url", label = "URL" },
+  { value = "ipv4", label = "IPv4" },
+  { value = "ipv6", label = "IPv6" },
+  { value = "mac", label = "MAC 地址" },
+  { value = "username", label = "用户名" },
+  { value = "password", label = "密码" },
+  { value = "domain", label = "域名" },
+  { value = "uuid", label = "UUID" },
+]
+visible_when = { category = "internet" }
+
+# ── 日期时间 ──────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "datetime_type"
+kind = "select"
+label = "类型"
+default = "date"
+options = [
+  { value = "date", label = "日期" },
+  { value = "time", label = "时间" },
+  { value = "datetime", label = "日期时间" },
+  { value = "timestamp", label = "时间戳" },
+  { value = "weekday", label = "星期" },
+  { value = "birthday", label = "生日" },
+  { value = "birthdate", label = "出生日期" },
+]
+visible_when = { category = "datetime" }
+
+# ── 数字 ──────────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "number_type"
+kind = "select"
+label = "类型"
+default = "phone"
+options = [
+  { value = "phone", label = "手机号" },
+  { value = "idcard", label = "身份证" },
+  { value = "bankcard", label = "银行卡" },
+  { value = "age", label = "年龄" },
+  { value = "adult_age", label = "成人年龄" },
+  { value = "integer", label = "整数" },
+  { value = "float", label = "浮点数" },
+  { value = "price", label = "价格" },
+  { value = "percentage", label = "百分比" },
+]
+visible_when = { category = "number" }
+
+# ── 客户信息 ──────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "customer_country"
+kind = "select"
+label = "国家/地区"
+default = "CN"
+options = [
+  { value = "CN", label = "中国" },
+  { value = "US", label = "美国" },
+  { value = "HK", label = "中国香港" },
+  { value = "SG", label = "新加坡" },
+  { value = "JP", label = "日本" },
+  { value = "CA", label = "加拿大" },
+  { value = "GB", label = "英国" },
+  { value = "DE", label = "德国" },
+  { value = "AU", label = "澳大利亚" },
+  { value = "FR", label = "法国" },
+  { value = "MC", label = "摩纳哥" },
+  { value = "CH", label = "瑞士" },
+  { value = "LU", label = "卢森堡" },
+  { value = "NL", label = "荷兰" },
+  { value = "SE", label = "瑞典" },
+  { value = "NO", label = "挪威" },
+  { value = "DK", label = "丹麦" },
+  { value = "FI", label = "芬兰" },
+  { value = "IT", label = "意大利" },
+  { value = "ES", label = "西班牙" },
+  { value = "PT", label = "葡萄牙" },
+  { value = "BE", label = "比利时" },
+  { value = "AT", label = "奥地利" },
+  { value = "IE", label = "爱尔兰" },
+  { value = "NZ", label = "新西兰" },
+]
+visible_when = { category = "customer" }
+
+[[tools.io.params]]
+id = "customer_holder"
+kind = "select"
+label = "持有人类型"
+default = "random"
+options = [
+  { value = "random", label = "随机" },
+  { value = "personal", label = "个人" },
+  { value = "institution", label = "机构" },
+]
+visible_when = { category = "customer" }
+
+[[tools.io.params]]
+id = "customer_non_resident"
+kind = "switch"
+label = "强制非居民"
+default = "false"
+visible_when = { category = "customer" }
+
+[tools.io.output]
+kind = "text"
+label = "生成结果"

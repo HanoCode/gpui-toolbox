@@ -1,0 +1,122 @@
+# Duck Toolbox 插件：SCC 客户包合并（duck.merge.scc-merge）。
+#
+# **process 轨**：逻辑在 `crates/duck-merge-core/src/scc_merge.rs`（555 行，逐字复刻
+# 参考仓同名文件），二进制与 `duck.merge.*` 全族共用一个。
+#
+# 参考页面 `SccMerge.vue`：目录 + 版本 + 客户号 + 数据库类型 + 行业/增值 + 微服务
+# 列表 + 两个勾选框。这里按同样的字段声明；`tech_services` 由微服务列表**派生**
+# （名字里含 `hswealth` 的那些，`SccMerge.vue:117`），不是独立输入。
+#
+# `allow_files = "read_write"`：读 SCC ZIP 包、往结果目录写合并产物。
+
+id = "duck.merge.scc-merge"
+name = "SCC 包合并"
+description = "按客户号裁剪标准包并合成客户包：脚本按版本校验、微服务过滤、Stack JSON 改写，支持跨大版本合包"
+version = "0.1.0"
+category = "merge"
+tags = ["merge", "scc", "客户包", "合并"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.merge.scc-merge"
+name = "SCC 包合并"
+description = "按客户号裁剪标准包并合成客户包：脚本按版本校验、微服务过滤、Stack JSON 改写，支持跨大版本合包"
+category = "merge"
+group = "合并"
+icon = "box"
+keywords = ["merge", "scc", "客户包", "合并", "合包"]
+
+[tools.io]
+allow_files = "read_write"
+layout = "job"
+run_label = "开始合并"
+log_hint = "选择包目录后点击「开始合并」"
+
+[[tools.io.params]]
+id = "src_dir"
+kind = "path"
+pick = "folder"
+label = "包目录"
+placeholder = "选择 SCC ZIP 包目录"
+required = true
+
+[[tools.io.params]]
+id = "dst_dir"
+kind = "path"
+pick = "folder"
+label = "结果目录"
+placeholder = "选择输出位置"
+required = true
+
+[[tools.io.params]]
+id = "customer_no"
+kind = "text"
+label = "客户编号"
+placeholder = "客户编号"
+required = true
+
+[[tools.io.params]]
+id = "current_version"
+kind = "text"
+label = "当前版本"
+placeholder = "如 SCC10V202201.04.001"
+
+[[tools.io.params]]
+id = "target_version"
+kind = "text"
+label = "目标版本"
+placeholder = "如 SCC10V202201.05.000"
+
+# 参考页面是自由文本、缺省 `oracle`（`SccMerge.vue:120`）；这里保持文本，避免
+# 把「客户包里出现的其它方言」挡在选项之外。
+[[tools.io.params]]
+id = "db_type"
+kind = "text"
+label = "数据库类型"
+default = "oracle"
+placeholder = "oracle / mysql"
+
+[[tools.io.params]]
+id = "industry"
+kind = "text"
+label = "行业"
+placeholder = "可选"
+
+[[tools.io.params]]
+id = "value_added"
+kind = "text"
+label = "增值类型"
+placeholder = "可选"
+
+[[tools.io.params]]
+id = "services"
+kind = "text"
+label = "微服务列表"
+placeholder = "逗号分隔，如 hswealth-scc-svr,hswealth-scc-web"
+
+[[tools.io.params]]
+id = "stack_enabled"
+kind = "switch"
+label = "栈包模式"
+default = "false"
+
+group = "合并选项"
+[[tools.io.params]]
+id = "is_new_customer"
+kind = "switch"
+label = "新客户"
+default = "false"
+
+group = "合并选项"
+[tools.io.output]
+kind = "text"
+label = "合并结果"

@@ -1,0 +1,63 @@
+# Duck Toolbox 插件：SQL 分类抽取（duck.sql.sql-classifier）。
+#
+# **process 轨**：分类算法在 `crates/duck-sql-core/src/sql_classifier.rs`，那份代码
+# 移植自参考仓**前端** `src/services/sqlClassifier.ts`（389 行，没有 Rust 后端），
+# 逐函数翻译。落盘编排（递归取 *.sql、写六个输出文件）在 `duck-sql-tool`。
+#
+# 为什么不是 js 轨：执行页给 JS 插件的文件能力只到插件自己的数据目录
+# （`duck.readFile` / `duck.writeFile` 是相对的），而这里要读用户选的目录、
+# 往用户的目录写六个文件——那属于 process 轨的 `[io] allow_files` 授权范围。
+#
+# `allow_files = "read_write"`：读源目录 + 写输出目录（默认 `<源目录>/exec`）。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 投放），不入库。
+
+id = "duck.sql.sql-classifier"
+name = "SQL 分类抽取"
+description = "把一批发布脚本拆成建表 / 改表 / 数据三类，并生成备份与回滚 SQL"
+version = "0.1.0"
+category = "productivity"
+tags = ["sql", "classify", "分类", "拆分", "回滚", "备份"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+# 不申请任何额外能力：文件访问只走本次运行的路径授权，插件数据目录与网络都不碰。
+
+[[tools]]
+id = "duck.sql.sql-classifier"
+name = "SQL 分类抽取"
+description = "把一批发布脚本拆成建表 / 改表 / 数据三类，并生成备份与回滚 SQL"
+category = "productivity"
+group = "SQL"
+icon = "folders"
+keywords = ["sql", "classify", "split", "ddl", "dml", "rollback", "backup", "分类", "拆分", "回滚"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.params]]
+id = "root_dir"
+kind = "path"
+pick = "folder"
+label = "源目录"
+placeholder = "选择版本包目录（含 pub / trans 时只处理这两个子目录）"
+required = true
+
+[[tools.io.params]]
+id = "output_dir"
+kind = "path"
+pick = "folder"
+label = "输出目录"
+placeholder = "留空 = <源目录>/exec"
+
+[tools.io.output]
+kind = "text"
+label = "分类结果"

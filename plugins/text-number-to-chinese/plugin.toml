@@ -1,0 +1,40 @@
+# Duck Toolbox 插件：数字转中文（duck.text.number-to-chinese）。
+#
+# 一工具一插件（见 plugins/text-formatter/plugin.toml 的说明）。
+
+id = "duck.text.number-to-chinese"
+name = "数字转中文大写"
+description = "金额转人民币大写（票据用）与纯数字中文读法（报表用）"
+version = "0.1.0"
+category = "productivity"
+tags = ["文本", "金融", "人民币", "大写"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.text.number-to-chinese"
+name = "数字转中文大写"
+description = "金额转人民币大写（票据用）与纯数字中文读法（报表用）"
+category = "productivity"
+group = "转换"
+icon = "banknote"
+keywords = ["人民币", "大写", "金额", "中文数字", "number-to-chinese"]
+
+[tools.io]
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "输入数字"
+placeholder = "如 123456.78，支持每行一个"
+required = true
+
+[tools.io.output]
+kind = "table"
+label = "两种读法"
+columns = ["数字", "人民币大写", "中文读法"]

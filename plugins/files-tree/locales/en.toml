@@ -1,0 +1,38 @@
+# duck.files.tree 英文译文。键 = 中文源串。
+#
+# 同族共用的错误串各写一份（运行时每个插件只读自己的 `locales/`），理由见
+# `plugins/files-search/locales/en.toml` 的表头。
+
+# ── 清单 ──
+"目录树生成" = "Directory Tree"
+"把目录结构渲染成等宽树：深度、隐藏项、只列目录、显示大小，可输出 markdown" = "Render a directory as a monospace tree: depth, hidden entries, directories only, sizes, optional markdown fence"
+"文件" = "Files"
+"目录" = "Directory"
+"选择要展开的目录" = "Pick the directory to expand"
+"输出格式" = "Output format"
+"纯文本树" = "Plain text tree"
+"Markdown 代码块" = "Markdown code block"
+"最大深度" = "Max depth"
+"显示文件大小" = "Show file sizes"
+"只列目录" = "Directories only"
+"包含隐藏项" = "Include hidden entries"
+
+# ── 报告 ──
+"目录读取完成" = "Directory read"
+"{} 个目录 · {} 个文件 · 共 {}" = "dirs {} · files {} · {} total"
+"已截断（深度上限 {}，或条目超过 {}）" = "Truncated (depth limit {}, or more than {} entries)"
+
+# ── 内核错误 ──
+"路径不存在" = "Path not found"
+"路径不是目录" = "Not a directory"
+"路径不是文件" = "Not a file"
+"路径包含非法字符 '..'，拒绝访问" = "Path contains '..'; access denied"
+"拒绝访问系统路径" = "System paths are off limits"
+"文件不是 UTF-8 编码，无法处理" = "File is not UTF-8 text and cannot be processed"
+"正则表达式写错了" = "Invalid regular expression"
+"输入是空的，没有可处理的内容" = "Nothing to work with: the input is empty"
+"这种格式不支持" = "This format is not supported"
+"文件太大" = "File too large"
+"目标已存在，改名会覆盖" = "Target already exists; the rename would overwrite it"
+"没有可撤销的记录" = "Nothing to undo"
+"读写文件失败" = "File I/O failed"

@@ -1,0 +1,166 @@
+# Duck Toolbox 插件：CSV 工具（duck.files.csv-tools）。
+#
+# **process 轨**：逻辑在 `crates/duck-files-core/src/csv_tools.rs`，移植参考仓
+# `ifm_ai_tools` 的 CSV 预览页三件事（`copyAsMarkdown` / `copyAsJson` / `copyAsInsert`），
+# 加一组「把表画成 SVG 图」。二进制 = `crates/duck-files-tool`（整族共用一个）。
+#
+# 与参考仓的一处主动差异：**图不需要浏览器**。源仓用 Chart.js 画在前端，插件进程里
+# 没有 DOM 也没有 canvas，所以这里直接拼 SVG 文本——既是能双击打开的文件，也能贴进
+# 文档（Chart.js 的 canvas 两者都做不到）。配色照抄参考仓四套 palette。
+#
+# 两项输入二选一：选了文件就读文件，没选就把输入框（或拖进来的文件）当 CSV 内容。
+# 分隔符默认「自动识别」（按首行出现的 `,` `\t` `;` `|` 计数取最多者）。
+#
+# `allow_files = "read_write"`：读 CSV + 把 SVG 写出去（图表输出目录可留空，
+# 留空就写 CSV 同目录 / 插件数据目录）。
+#
+# `bin/run` 是构建产物，不入库（`sbin/plugins.sh` 投放）。
+
+id = "duck.files.csv-tools"
+name = "CSV 工具"
+description = "CSV/TSV 转 Markdown、JSON、INSERT 语句，或直接画成 SVG 图（柱/折/饼/环）"
+version = "0.1.0"
+category = "data"
+tags = ["csv", "tsv", "markdown", "json", "insert", "chart", "表格", "图表"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.files.csv-tools"
+name = "CSV 工具"
+description = "CSV/TSV 转 Markdown、JSON、INSERT 语句，或直接画成 SVG 图（柱/折/饼/环）"
+category = "data"
+group = "文件"
+icon = "table"
+keywords = ["csv", "tsv", "markdown", "json", "insert", "sql", "chart", "图表", "表格"]
+
+[tools.io]
+allow_files = "read_write"
+
+[[tools.io.fields]]
+id = "data"
+kind = "textarea"
+label = "CSV 内容"
+placeholder = "直接粘贴 CSV（选了上面的文件就忽略这里）"
+
+[[tools.io.params]]
+id = "file"
+kind = "path"
+pick = "file"
+label = "CSV 文件"
+placeholder = "选择 .csv / .tsv"
+
+[[tools.io.params]]
+id = "delimiter"
+kind = "select"
+label = "分隔符"
+default = "auto"
+options = [
+  { value = "auto", label = "自动识别" },
+  { value = "comma", label = "逗号 ," },
+  { value = "tab", label = "制表符 Tab" },
+  { value = "semicolon", label = "分号 ;" },
+  { value = "pipe", label = "竖线 |" },
+]
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+style = "tabs"
+label = "做什么"
+default = "export"
+options = [
+  { value = "export", label = "导出文本" },
+  { value = "chart", label = "生成图表" },
+]
+
+[[tools.io.params]]
+id = "format"
+kind = "select"
+label = "导出格式"
+default = "markdown"
+options = [
+  { value = "markdown", label = "Markdown 表格" },
+  { value = "json", label = "JSON 数组" },
+  { value = "insert", label = "SQL INSERT" },
+]
+visible_when = { mode = "export" }
+
+[[tools.io.params]]
+id = "table_name"
+kind = "text"
+label = "表名"
+default = "t_data"
+placeholder = "INSERT 语句用的表名"
+visible_when = { mode = "export", format = "insert" }
+
+[[tools.io.params]]
+id = "chart"
+kind = "select"
+label = "图型"
+default = "bar"
+options = [
+  { value = "bar", label = "柱状图" },
+  { value = "line", label = "折线图" },
+  { value = "pie", label = "饼图" },
+  { value = "doughnut", label = "环形图" },
+]
+visible_when = { mode = "chart" }
+
+[[tools.io.params]]
+id = "palette"
+kind = "select"
+label = "配色"
+default = "default"
+options = [
+  { value = "default", label = "标准" },
+  { value = "soft", label = "柔和" },
+  { value = "vivid", label = "鲜艳" },
+  { value = "mono", label = "单色" },
+]
+visible_when = { mode = "chart" }
+
+[[tools.io.params]]
+id = "value_columns"
+kind = "text"
+label = "数值列"
+placeholder = "如 2,3（从 1 开始），留空 = 所有数值列"
+visible_when = { mode = "chart" }
+
+[[tools.io.params]]
+id = "hide_legend"
+kind = "switch"
+label = "不显示图例"
+default = "false"
+visible_when = { mode = "chart" }
+
+[[tools.io.params]]
+id = "hide_grid"
+kind = "switch"
+label = "不显示网格"
+default = "false"
+visible_when = { mode = "chart" }
+
+[[tools.io.params]]
+id = "output_dir"
+kind = "path"
+pick = "folder"
+label = "图表输出目录"
+placeholder = "留空 = CSV 同目录（粘贴数据时写插件数据目录）"
+visible_when = { mode = "chart" }
+
+[tools.io.output]
+# `preview` + 文本回退：chart 模式插件发 body `{"preview": "<svg 路径>"}`，
+# 宿主用 GPUI 图片管线全彩内联（原版右栏直接画图）；table 模式没有预览载荷，
+# 按 fallback 退回文本渲染（导出的 MD / JSON / INSERT 本来就是文本）。
+kind = "preview"
+fallback = "text"
+label = "转换结果"

@@ -25,9 +25,16 @@ use serde::Deserialize;
 
 use crate::PluginError;
 
-/// 当前支持的清单 API 版本。清单的 `api_version` 必须精确匹配才可加载；
-/// 未来不兼容演进时抬升此值并保留旧版本加载轨道（参考 zed 的 WIT 快照方案）。
-pub const SUPPORTED_API_VERSION: u32 = 1;
+/// 当前支持的清单 API 版本（最新）。清单的 `api_version` 必须在
+/// [`SUPPORTED_API_VERSIONS`] 列表内才可加载；未来不兼容演进时抬升此值并
+/// 保留旧版本加载轨道（参考 zed 的 WIT 快照方案）。
+pub const SUPPORTED_API_VERSION: u32 = 2;
+
+/// 全部受支持的清单 API 版本。
+///
+/// - `1`：无 `[io]` 段（历史清单，零改动继续加载）；
+/// - `2`：新增 `[io]` 与工具级 `group` / `beta` / `dev`。
+pub const SUPPORTED_API_VERSIONS: [u32; 2] = [1, 2];
 
 /// 执行模型：决定宿主把插件装进哪条加载轨道。
 ///
@@ -193,6 +200,62 @@ pub struct ToolContribution {
     /// 附加搜索词（中英），可省略。
     #[serde(default)]
     pub keywords: Vec<String>,
+    /// 二级分组（中文源串，可省略）：同分类内再分节。
+    ///
+    /// 分类枚举只有 7 档（见 `duck-tools::ToolCategory`），ifm 迁移的 15 个
+    /// 领域全靠这一层承载，不动枚举。
+    #[serde(default)]
+    pub group: Option<String>,
+    /// 试验功能（界面显示 BETA 徽标）；缺省 `false`。
+    #[serde(default)]
+    pub beta: bool,
+    /// 开发者工具（仅开发者模式可见）；缺省 `false`。
+    #[serde(default)]
+    pub dev: bool,
+    /// 声明式 IO 契约（`[tools.io]`，API 版本 2 起支持），可省略。
+    #[serde(default)]
+    pub io: Option<crate::io::IoSpec>,
+}
+
+/// process 轨的入口声明（清单 `[process]` 段）。
+///
+/// 只有 `execution_model = "process"` 的插件需要它；其余模型写了会被拒绝——
+/// 让「模型与入口」不一致在安装期就暴露，而不是执行时才发现没得跑。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessConfig {
+    /// 可执行文件**相对插件目录**的路径（如 `"bin/run"`）。
+    ///
+    /// 只许相对路径且不许 `..`：插件目录是安装边界的根，绝对路径等于让清单
+    /// 指向任意系统程序，这是 `plugin.toml` 唯一的越界口子。
+    pub bin: String,
+}
+
+impl ProcessConfig {
+    /// 校验入口路径的形态（相对、无 `..`、无空段）。
+    fn validate(&self) -> Result<(), PluginError> {
+        let bin = self.bin.trim();
+        if bin.is_empty() {
+            return Err(PluginError::Invalid(
+                "[process] bin must not be empty".into(),
+            ));
+        }
+        let path = std::path::Path::new(bin);
+        if path.is_absolute() {
+            return Err(PluginError::Invalid(format!(
+                "[process] bin {bin:?} must be relative to the plugin directory"
+            )));
+        }
+        if path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(PluginError::Invalid(format!(
+                "[process] bin {bin:?} must not escape the plugin directory"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// 插件清单（`plugin.toml`）。
@@ -228,6 +291,9 @@ pub struct PluginManifest {
     pub api_version: u32,
     /// 执行模型。
     pub execution_model: ExecutionModel,
+    /// process 轨入口（`[process]`，仅 `execution_model = "process"` 时允许），可省略。
+    #[serde(default)]
+    pub process: Option<ProcessConfig>,
     /// 能力声明，可省略（缺省即不请求任何能力）。
     #[serde(default)]
     pub capabilities: Capabilities,
@@ -263,14 +329,32 @@ impl PluginManifest {
         if self.version.trim().is_empty() {
             return Err(PluginError::Invalid("version must not be empty".into()));
         }
-        if self.api_version != SUPPORTED_API_VERSION {
+        if self.api_version != SUPPORTED_API_VERSION
+            && !SUPPORTED_API_VERSIONS.contains(&self.api_version)
+        {
             return Err(PluginError::Invalid(format!(
-                "unsupported api_version {} (supported: {SUPPORTED_API_VERSION})",
+                "unsupported api_version {} (supported: {SUPPORTED_API_VERSIONS:?})",
                 self.api_version
             )));
         }
         if self.name.trim().is_empty() {
             return Err(PluginError::Invalid("name must not be empty".into()));
+        }
+        // 执行模型与入口必须成对：process 没入口跑不起来，非 process 写了入口
+        // 说明作者以为它会生效（实际永远走不到），两种都在安装期报错。
+        match (self.execution_model, &self.process) {
+            (ExecutionModel::Process, Some(config)) => config.validate()?,
+            (ExecutionModel::Process, None) => {
+                return Err(PluginError::Invalid(
+                    "execution_model = \"process\" requires a [process] section with `bin`".into(),
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(PluginError::Invalid(
+                    "[process] is only valid with execution_model = \"process\"".into(),
+                ));
+            }
+            (_, None) => {}
         }
         let prefix = format!("{}.", self.id);
         let mut seen = std::collections::HashSet::new();
@@ -278,10 +362,13 @@ impl PluginManifest {
             if tool.id.trim().is_empty() {
                 return Err(PluginError::Invalid("tool id must not be empty".into()));
             }
-            if !tool.id.starts_with(&prefix) {
+            // 命名空间规则：工具要么用插件 id 本身（**一工具一插件**的写法，
+            // 让安装 / 授权 / 译文 / 数据目录的边界与工具边界完全重合），
+            // 要么挂在插件 id 之下（一个插件声明多个工具）。
+            if tool.id != self.id && !tool.id.starts_with(&prefix) {
                 return Err(PluginError::Invalid(format!(
-                    "tool id {:?} must start with {:?} (plugin namespace)",
-                    tool.id, prefix
+                    "tool id {:?} must be {:?} or start with {:?} (plugin namespace)",
+                    tool.id, self.id, prefix
                 )));
             }
             if tool.name.trim().is_empty() {
@@ -295,6 +382,9 @@ impl PluginManifest {
                     "duplicate tool id {:?}",
                     tool.id
                 )));
+            }
+            if let Some(io) = &tool.io {
+                io.validate(self.api_version)?;
             }
         }
         Ok(())
@@ -443,9 +533,103 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_api_version() {
-        let err = PluginManifest::parse(&MINIMAL.replace("api_version = 1", "api_version = 2"))
+        let err = PluginManifest::parse(&MINIMAL.replace("api_version = 1", "api_version = 99"))
             .expect_err("future api_version must be rejected");
         assert!(matches!(err, PluginError::Invalid(_)));
+    }
+
+    #[test]
+    fn api_v2_loads() {
+        // v2 与 v1 同受支持；v2 只是多了 [io] / group / beta / dev。
+        PluginManifest::parse(&MINIMAL.replace("api_version = 1", "api_version = 2"))
+            .expect("api_version 2 must load");
+    }
+
+    /// 一工具一插件：`tool.id` 直接等于插件 id。
+    ///
+    /// 这是目录粒度的推荐写法——插件边界 = 工具边界，卸载一个工具不影响别的工具。
+    /// 命名空间安全性与「挂在插件 id 之下」等价：插件 id 全局唯一，工具 id 也就唯一。
+    #[test]
+    fn single_tool_plugin_may_reuse_the_plugin_id() {
+        PluginManifest::parse(
+            r#"
+            id = "duck.text.case-convert"
+            name = "大小写转换"
+            version = "0.1.0"
+            api_version = 2
+            execution_model = "js"
+
+            [[tools]]
+            id = "duck.text.case-convert"
+            name = "大小写转换"
+            "#,
+        )
+        .expect("tool id equal to plugin id must load");
+    }
+
+    /// process 轨：必须声明入口，且入口只能是插件目录内的相对路径。
+    #[test]
+    fn process_track_requires_a_relative_bin() {
+        let load = |extra: &str| {
+            PluginManifest::parse(&format!(
+                r#"
+                id = "duck.sql.ddl-generator"
+                name = "DDL 生成"
+                version = "0.1.0"
+                api_version = 2
+                execution_model = "process"
+                {extra}
+
+                [[tools]]
+                id = "duck.sql.ddl-generator"
+                name = "DDL 生成"
+                "#
+            ))
+        };
+
+        let manifest = load("[process]\nbin = \"bin/run\"").expect("relative bin must load");
+        assert_eq!(
+            manifest.process.as_ref().map(|config| config.bin.as_str()),
+            Some("bin/run")
+        );
+
+        for (extra, needle) in [
+            ("", "requires a [process] section"),
+            ("[process]\nbin = \"\"", "must not be empty"),
+            ("[process]\nbin = \"/usr/bin/env\"", "must be relative"),
+            ("[process]\nbin = \"../escape\"", "must not escape"),
+        ] {
+            let error = load(extra).expect_err(extra);
+            assert!(error.to_string().contains(needle), "{extra}: {error}");
+        }
+    }
+
+    /// 非 process 模型写了 `[process]` 说明作者以为它会生效，必须在安装期报错。
+    #[test]
+    fn process_section_is_rejected_for_the_js_track() {
+        let error = PluginManifest::parse(
+            r#"
+            id = "duck.text.case-convert"
+            name = "大小写转换"
+            version = "0.1.0"
+            api_version = 2
+            execution_model = "js"
+
+            [process]
+            bin = "bin/run"
+
+            [[tools]]
+            id = "duck.text.case-convert"
+            name = "大小写转换"
+            "#,
+        )
+        .expect_err("js plugin must not declare [process]");
+        assert!(
+            error
+                .to_string()
+                .contains("only valid with execution_model"),
+            "{error}"
+        );
     }
 
     #[test]

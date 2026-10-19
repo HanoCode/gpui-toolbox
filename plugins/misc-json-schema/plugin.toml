@@ -1,0 +1,62 @@
+# Duck Toolbox 插件：JSON Schema 校验（duck.misc.json-schema）。
+#
+# **process 轨**：逻辑在 `crates/duck-misc-core/src/json_schema.rs`，二进制 =
+# `crates/duck-misc-tool`（零散族共用一个，按 `tool` 分派）。
+#
+# 参考仓 `JsonSchemaValidator.vue` 把校验交给前端 `ajv` + `ajv-formats`。那是 JS 库，
+# 没有可以整段复制的 Rust 后端，所以内核按 Draft-07 规范实现了一个够用子集
+# （type / enum / const / properties / patternProperties / additionalProperties /
+# required / min-max / items / contains / pattern / format / 组合关键字 / $ref）。
+# **报错文案逐句照抄 ajv**，同一份 Schema 在两个工具里给出的句子完全一致。
+#
+# 两个输入都是多行文本，所以按布局铁律左右分栏摆：Schema 在上、实例在下，
+# 都属于执行页的「输入区」（`[io.fields]`），结果走文本渲染器。
+#
+# `allow_files = "none"`：不读写任何用户文件。
+
+id = "duck.misc.json-schema"
+name = "JSON Schema 校验"
+description = "按 Draft-07 Schema 校验 JSON，按 ajv 的口径逐条列出错误位置与原因"
+version = "0.1.0"
+category = "development"
+tags = ["json", "schema", "draft-07", "ajv", "validate", "校验", "格式"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.misc.json-schema"
+name = "JSON Schema 校验"
+description = "按 Draft-07 Schema 校验 JSON，按 ajv 的口径逐条列出错误位置与原因"
+category = "development"
+group = "开发"
+icon = "shield-check"
+keywords = ["json", "schema", "draft-07", "validate", "ajv", "校验", "接口", "格式"]
+
+[tools.io]
+fields_layout = "row"
+swap_fields = true
+allow_files = "none"
+
+[[tools.io.fields]]
+id = "schema"
+kind = "textarea"
+label = "JSON Schema"
+placeholder = '贴一份 Draft-07 Schema，例如 {"type":"object","required":["name"]}'
+
+[[tools.io.fields]]
+id = "instance"
+kind = "textarea"
+label = "JSON 实例"
+placeholder = "贴要校验的 JSON"
+
+[tools.io.output]
+kind = "text"
+label = "校验结果"

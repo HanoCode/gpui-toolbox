@@ -1,0 +1,89 @@
+# Duck Toolbox 插件：需求单合并（duck.merge.non-sp-merge）。
+#
+# **process 轨**：逻辑在 `crates/duck-merge-core/src/non_sp_merge.rs`，那份代码逐字
+# 复刻参考仓 `ifm_ai_tools/src-tauri/src/non_sp_merge.rs`（1,936 行），共用
+# `merge_common` / `upd_merge` / `duck-sql-core::sql_merge`，判同名文件留哪份时用
+# `duck-classfile`（参考仓的 `class_compare`）。二进制与 `duck.merge.*` 全族同一个
+# （`crates/duck-merge-tool`，按 `tool` 分派）。
+#
+# 参考页面 `NonSpMerge.vue`（617 行）是设计稿原型 D（长任务页）：两个目录 + 两个
+# 勾选框 + 进度 + 日志 + 统计。`layout = "job"` 让宿主按这个形态渲染。
+#
+# 参考页面还有「起始需求单号 / 截止需求单号 / 待合并包列表」三格：它们只是页面
+# 自己扫描后回填的展示值（`scanPackages()` 的结果），后端 `non_sp_merge_start`
+# 一个都没收——`run_merge` 自己重新 `read_dir` + 排序。内核没有扫描入口
+# （`scan_versions` 只在 `sp_merge` 里有），做不出来就不硬做；做成了输入框反而
+# 让人以为能过滤。
+#
+# `allow_files = "read_write"`：读包目录里的 ZIP、往结果目录写合并产物。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 从 `target/<profile>/duck-merge-tool`
+# 拷进来），不入库；缺失时执行页会提示先构建。
+
+id = "duck.merge.non-sp-merge"
+name = "需求单合并"
+description = "把一批需求单包（T* 目录结构）按服务名合并成一个输出目录：同名文件按「版本号优先、修改日期兜底」裁决，ifmpub 公库分发到各服务的 WEB-INF/lib，并出冲突报告"
+version = "0.1.0"
+category = "merge"
+tags = ["merge", "non-sp", "需求单", "合并"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.merge.non-sp-merge"
+name = "需求单合并"
+description = "把一批需求单包（T* 目录结构）按服务名合并成一个输出目录：同名文件按「版本号优先、修改日期兜底」裁决，ifmpub 公库分发到各服务的 WEB-INF/lib，并出冲突报告"
+category = "merge"
+group = "合并"
+icon = "layers"
+keywords = ["merge", "non-sp", "需求单", "合并", "包合并"]
+
+[tools.io]
+allow_files = "read_write"
+layout = "job"
+run_label = "开始合并"
+log_hint = "选择包目录后点击「开始合并」"
+
+[[tools.io.params]]
+id = "src_dir"
+kind = "path"
+pick = "folder"
+label = "包目录"
+placeholder = "选择包含 ZIP 包的目录"
+required = true
+
+[[tools.io.params]]
+id = "dst_dir"
+kind = "path"
+pick = "folder"
+label = "结果目录"
+placeholder = "选择合并后输出位置"
+required = true
+
+# 参考页面的两个勾选框初值都是**不勾**（`NonSpMerge.vue` 里 `ref(false)`），内核也是
+# `unwrap_or(false)`：默认值跟源仓走，老用户的操作路径不变。
+[[tools.io.params]]
+id = "include_sql_merge"
+kind = "switch"
+label = "合并 SQL 文件（扫描 database/spsql/sql 目录）"
+default = "false"
+group = "合并选项"
+
+[[tools.io.params]]
+id = "include_upd_merge"
+kind = "switch"
+label = "合并 UPD 说明文件（reqsql 下 *.upd → merge_upd.xml，按包顺序追加）"
+default = "false"
+group = "合并选项"
+
+[tools.io.output]
+kind = "text"
+label = "合并结果"

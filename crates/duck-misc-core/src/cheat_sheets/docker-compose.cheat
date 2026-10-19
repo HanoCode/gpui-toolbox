@@ -1,0 +1,96 @@
+%% name Docker Compose
+%% category 容器/云
+%% content
+# Docker Compose 速查表
+
+## 基本配置
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "80:80"
+    volumes:
+      - ./html:/usr/share/nginx/html
+    depends_on:
+      - api
+    
+  api:
+    build: ./api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=db
+    
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: mydb
+    volumes:
+      - db_data:/var/lib/mysql
+
+volumes:
+  db_data:
+```
+
+## 常用命令
+
+```bash
+docker compose up -d          # 启动所有服务
+docker compose down           # 停止并删除
+docker compose ps             # 查看状态
+docker compose logs -f        # 查看日志
+docker compose exec web bash  # 进入容器
+docker compose build          # 构建镜像
+docker compose pull           # 拉取镜像
+docker compose restart        # 重启服务
+```
+
+## 网络配置
+
+```yaml
+services:
+  web:
+    networks:
+      - frontend
+  api:
+    networks:
+      - frontend
+      - backend
+  db:
+    networks:
+      - backend
+
+networks:
+  frontend:
+  backend:
+```
+
+## 环境变量
+
+```yaml
+services:
+  api:
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=${DB_HOST}
+```
+
+## 健康检查
+
+```yaml
+services:
+  web:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```

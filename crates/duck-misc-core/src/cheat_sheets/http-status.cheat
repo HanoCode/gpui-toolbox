@@ -1,0 +1,54 @@
+%% name HTTP 状态码
+%% category 网络/Web
+%% content
+# HTTP 状态码速查表
+
+## 1xx 信息
+
+| 状态码 | 名称 | 说明 |
+|--------|------|------|
+| 100 | Continue | 继续请求 |
+| 101 | Switching Protocols | 协议切换 |
+
+## 2xx 成功
+
+| 状态码 | 名称 | 说明 |
+|--------|------|------|
+| 200 | OK | 请求成功 |
+| 201 | Created | 已创建新资源 |
+| 202 | Accepted | 已接受，待处理 |
+| 204 | No Content | 成功，无返回内容 |
+| 206 | Partial Content | 部分内容（范围请求） |
+
+## 3xx 重定向
+
+| 状态码 | 名称 | 说明 |
+|--------|------|------|
+| 301 | Moved Permanently | 永久移动 |
+| 302 | Found | 临时移动 |
+| 304 | Not Modified | 未修改（缓存） |
+| 307 | Temporary Redirect | 临时重定向 |
+| 308 | Permanent Redirect | 永久重定向 |
+
+## 4xx 客户端错误
+
+| 状态码 | 名称 | 说明 |
+|--------|------|------|
+| 400 | Bad Request | 请求格式错误 |
+| 401 | Unauthorized | 未授权 |
+| 403 | Forbidden | 禁止访问 |
+| 404 | Not Found | 资源不存在 |
+| 405 | Method Not Allowed | 方法不允许 |
+| 409 | Conflict | 冲突 |
+| 422 | Unprocessable Entity | 无法处理的实体 |
+| 429 | Too Many Requests | 请求过多 |
+
+## 5xx 服务端错误
+
+| 状态码 | 名称 | 说明 |
+|--------|------|------|
+| 500 | Internal Server Error | 服务器内部错误 |
+| 502 | Bad Gateway | 网关错误 |
+| 503 | Service Unavailable | 服务不可用 |
+| 504 | Gateway Timeout | 网关超时 |
+|

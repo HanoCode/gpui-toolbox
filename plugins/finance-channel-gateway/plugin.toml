@@ -1,0 +1,289 @@
+# Duck Toolbox 插件：渠道网关模型生成（duck.finance.channel-gateway）。
+#
+# **process 轨**：内核在 `crates/duck-finance-core/src/channel_gateway/`，二进制与
+# PDM 阅读器共用 `crates/duck-finance-tool`。
+#
+# 移植参考仓 `src-tauri/src/channel_gateway/`（2,360 行）：`excel_parser.rs` 逐字复制
+# （只把 `calamine::DataType` 机械改名成 `Data`——0.26 起枚举改名）、`code_gen.rs` 的
+# 上下文构造照抄，两份 Java 模板**逐字节**复制到 `duck-finance-core` 的
+# `channel_gateway/templates/`。参考仓用 `tera` 渲染，这里用 200 行的 tera 子集
+# （`{{ }}` / `{% if %}` / `{% for %}`），产物逐字节一致；不为两份模板引一套模板引擎。
+#
+# ## 六个 Tab 都在这儿
+#
+# 参考仓是一个页面六个 Tab（`接口解析 / 接口管理 / 变更记录 / 报文生成 / 代码生成 /
+# 模板管理`，1,088 行模板）。本仓执行页只有「参数条 + 结果区」，于是把每个 Tab 里的
+# 按钮摊平成**动作**，一个动作一次运行——分组顺序与 Tab 顺序一致，方便对着看。
+#
+# `channel_gateway/db.rs`（710 行）原来那套 SQLite（接口库 / 版本快照 / 变更记录 /
+# 自定义模板）没有丢：换成「插件私有数据目录 + 几个 JSON 文件」，读写语义逐条对齐
+# （见 `duck-finance-core/src/channel_gateway/store.rs` 的文档头）。
+# 唯一没迁的是 `generate_template_excel`（按模板造一份空白 Excel），它要写用户文件，
+# 与本族「产物只落结果区」的口径冲突。
+#
+# ## 列映射为什么用五个数字
+#
+# 参考仓靠界面上的「列选择器」（下拉逐列选）建立映射。本仓执行页只有声明式控件，
+# 所以摊平成「第几列」：**1 起**（人读的列号，代码里再减一）。触发条件是「字段名列」
+# 有值——填了它才进映射模式，那时 sheet 名直接当交易码（参考仓同款语义）。
+#
+# ## 模板怎么编辑
+#
+# 参考仓在界面上直接改模板文本再保存。本仓没有多行输入框（`[io.fields]` 是全动作共用
+# 的，为一个动作加会挤掉所有动作的版面），所以走「文件」：在编辑器里改 `.tera`，
+# 用「导入模板」把它存进库，之后「生成代码」填模板名即可用它渲染。
+#
+# ## `allow_files = "read"`
+#
+# 只读接口 Excel 与模板源文件；生成的代码 / 报文 / 字典都不落盘（复制走人）。
+# 接口库存的是插件自己的数据目录，与 `allow_files` 无关。
+
+id = "duck.finance.channel-gateway"
+name = "渠道网关模型生成"
+description = "解析银行接口 Excel，生成渠道网关的 Bank / Host 报文转换实现与 XML 报文骨架；带接口库、版本快照与自定义模板"
+version = "0.2.0"
+category = "productivity"
+tags = ["渠道", "网关", "bank", "host", "报文", "java", "代码生成", "excel", "esb", "接口库", "版本"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.finance.channel-gateway"
+name = "渠道网关模型生成"
+description = "解析银行接口 Excel，生成渠道网关的 Bank / Host 报文转换实现与 XML 报文骨架；带接口库、版本快照与自定义模板"
+category = "productivity"
+group = "效率工具"
+icon = "code"
+keywords = ["渠道", "网关", "bank", "host", "报文", "java", "代码生成", "excel", "esb", "接口库", "版本"]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.params]]
+id = "action"
+kind = "select"
+label = "动作"
+default = "parse"
+options = [
+  # ── 接口解析（参考仓第一个 Tab） ──
+  { value = "parse", label = "接口总览" },
+  { value = "fields", label = "字段明细" },
+  { value = "headers", label = "列头预览" },
+  { value = "xml", label = "报文骨架" },
+  { value = "code", label = "生成代码" },
+  # ── 接口库（第二个 Tab） ──
+  { value = "bank-save", label = "存入接口库" },
+  { value = "field-edit", label = "改字段" },
+  { value = "banks", label = "接口库清单" },
+  { value = "bank-load", label = "读回接口清单" },
+  { value = "bank-delete", label = "删除银行" },
+  # ── 变更记录（第三个 Tab） ──
+  { value = "version-create", label = "存为版本" },
+  { value = "versions", label = "版本列表" },
+  { value = "version-compare", label = "版本对比" },
+  { value = "interface-diff", label = "单接口差异" },
+  # ── 模板管理（第六个 Tab） ──
+  { value = "templates", label = "模板列表" },
+  { value = "template-show", label = "查看模板" },
+  { value = "template-import", label = "导入模板" },
+  { value = "template-delete", label = "删除模板" },
+]
+
+[[tools.io.params]]
+id = "path"
+kind = "path"
+pick = "file"
+label = "接口 Excel / 模板文件"
+# 解析类动作要 Excel，「导入模板」要模板源文件；库类动作不读文件，留空即可。
+# 不写 `required`：它会渲染成必填星号，而三分之二的动作用不到这个路径。
+placeholder = "解析类选接口 Excel（留空 = 读下方银行代码对应的接口库）；「导入模板」选 .tera 源文件；其余动作留空"
+
+[[tools.io.params]]
+id = "esb_side"
+kind = "select"
+label = "ESB 列在"
+default = "right"
+options = [
+  { value = "right", label = "右侧（内部字段在前）" },
+  { value = "left", label = "左侧（内部字段在后）" },
+]
+
+[[tools.io.params]]
+id = "function"
+kind = "text"
+label = "交易码"
+placeholder = "留空 = 全部；「字段明细」必填，也可以是描述的一部分"
+
+[[tools.io.params]]
+id = "mapping"
+kind = "switch"
+label = "手动指定列"
+default = "false"
+
+[[tools.io.params]]
+id = "field_col"
+kind = "number"
+label = "字段名列"
+min = 1
+max = 60
+placeholder = "1 起；填了它才进映射模式"
+visible_when = { mapping = "true" }
+
+[[tools.io.params]]
+id = "esb_col"
+kind = "number"
+label = "ESB 字段列"
+min = 1
+max = 60
+visible_when = { mapping = "true" }
+
+[[tools.io.params]]
+id = "type_col"
+kind = "number"
+label = "类型列"
+min = 1
+max = 60
+visible_when = { mapping = "true" }
+
+[[tools.io.params]]
+id = "required_col"
+kind = "number"
+label = "必填列"
+min = 1
+max = 60
+visible_when = { mapping = "true" }
+
+[[tools.io.params]]
+id = "meaning_col"
+kind = "number"
+label = "含义列"
+min = 1
+max = 60
+visible_when = { mapping = "true" }
+
+[[tools.io.params]]
+id = "side"
+kind = "select"
+label = "生成哪一侧"
+default = "bank"
+options = [
+  { value = "bank", label = "Bank（渠道 → 主机）" },
+  { value = "host", label = "Host（主机 → ESB）" },
+]
+visible_when = { action = "code" }
+
+# ⚠️ 下面三个参数是**恒显**的：`bank_code` 与 `package_base` 被「生成代码」和
+# 「存入接口库」共用，`template` 被「生成代码 / 查看 / 导入 / 删除模板」共用，
+# 而 `visible_when` 只能表达「等于某一个值」——一个参数只挂得上一个动作。
+# 与其拆成两套同义参数（插件侧再判断「这次该读哪个」），不如让它们常驻并在
+# 占位说明里写清「哪些动作用得上」。
+
+[[tools.io.params]]
+id = "bank_code"
+kind = "text"
+label = "银行代码"
+placeholder = "接口库的键；也拼进包名与抽象基类，如 hzcb。填了它就能不选 Excel 直接生成"
+
+[[tools.io.params]]
+id = "package_base"
+kind = "text"
+label = "包名基路径"
+placeholder = "留空 = com.hundsun.lcpt.gateway"
+
+[[tools.io.params]]
+id = "template"
+kind = "text"
+label = "模板名"
+placeholder = "生成代码时用它渲染；查看 / 删除时填名字；导入时留空 = 用文件名"
+
+[[tools.io.params]]
+id = "bank_name"
+kind = "text"
+label = "银行名称"
+placeholder = "留空 = 用 Excel 里猜出来的那个"
+visible_when = { action = "bank-save" }
+
+[[tools.io.params]]
+id = "field"
+kind = "text"
+label = "字段名"
+placeholder = "改哪个字段（field_name，不是 ESB 名）"
+visible_when = { action = "field-edit" }
+
+[[tools.io.params]]
+id = "field_type"
+kind = "text"
+label = "新类型"
+placeholder = "留空 = 不改，如 string / number / amount"
+visible_when = { action = "field-edit" }
+
+[[tools.io.params]]
+id = "field_meaning"
+kind = "text"
+label = "新含义"
+placeholder = "留空 = 不改"
+visible_when = { action = "field-edit" }
+
+[[tools.io.params]]
+id = "version_label"
+kind = "text"
+label = "版本标签"
+placeholder = "留空 = 当前时间戳"
+visible_when = { action = "version-create" }
+
+[[tools.io.params]]
+id = "version_description"
+kind = "text"
+label = "版本说明"
+placeholder = "这次存版本是为了什么"
+visible_when = { action = "version-create" }
+
+[[tools.io.params]]
+id = "version_a"
+kind = "number"
+label = "旧版本号"
+min = 0
+placeholder = "留空 = 次新那一版"
+visible_when = { action = "version-compare" }
+
+[[tools.io.params]]
+id = "version_b"
+kind = "number"
+label = "新版本号"
+min = 0
+placeholder = "留空 = 最新那一版"
+visible_when = { action = "version-compare" }
+
+[tools.io.output]
+# 声明成 `table`：接口总览与「读回接口清单」要画成**可就地改字段**的真表格
+# （参考页 `ChannelGatewayFieldTable.vue` 的用法）。其余动作（生成的 Java、
+# 报文骨架、模板、变更清单）发的都是纯文本，表格解不出来 ⇒ 按 `fallback = "code"`
+# 渲染，等宽字体照旧——一个 kind 声明同时管住两种输出。
+kind = "table"
+fallback = "code"
+label = "结果"
+# 插件自己在 body 里给表头，这里只是「只给了 rows」时的兜底。
+columns = ["交易码", "方向", "字段", "类型", "必填", "含义"]
+
+# 可就地编辑的两列。只有带了 `row_ids` 的输出才真的出输入框（`parse` / `bank-load`）。
+[[tools.io.output.cells]]
+column = "类型"
+kind = "select"
+# 就是 `normalize_data_type` 的三个出口：库里存的类型不可能是别的值。
+options = [
+  { value = "string", label = "string" },
+  { value = "number", label = "number" },
+  { value = "amount", label = "amount" },
+]
+
+[[tools.io.output.cells]]
+column = "含义"
+kind = "text"

@@ -1,0 +1,23 @@
+# duck.text.regex-plus 英文译文。键 = 中文源串。
+
+"正则增强" = "Regex Tester"
+"实时匹配、分组捕获与替换预览" = "Live matching, group captures and replacement preview"
+
+"测试文本" = "Test text"
+"粘贴要匹配的文本…" = "Paste the text to match…"
+"正则表达式" = "Pattern"
+"如 (\\w+)@(\\w+)\\.com" = "e.g. (\\w+)@(\\w+)\\.com"
+"标志" = "Flags"
+"g / i / m 组合，默认 g" = "Combination of g / i / m, default g"
+"替换为（可选）" = "Replace with (optional)"
+"$1 … 引用分组；留空只测匹配" = "$1 … group references; leave empty to test matches only"
+"匹配结果" = "Match result"
+
+"请先填写测试文本" = "Enter the text to test first"
+"请填写正则表达式" = "Enter a pattern"
+"正则无效：{}" = "Invalid pattern: {}"
+"替换预览：" = "Replacement preview:"
+"组{}={}" = "group {} = {}"
+"…（超过 500 条已截断）" = "… (truncated after 500 matches)"
+"无匹配" = "No matches"
+"匹配 {} 处" = "{} match(es)"

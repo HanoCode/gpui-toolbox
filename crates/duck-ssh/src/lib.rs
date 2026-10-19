@@ -45,8 +45,8 @@ mod target;
 pub use known_hosts::{HostKeyStatus, known_hosts_path, status as host_key_status};
 pub use remote::{
     Output, RemoteEntry, RemoteListing, TransferHandle, close_master, download, download_spawn,
-    exec, list_dir, local_size, mkdir, path_size, remove, rename, test_connection, upload,
-    upload_spawn,
+    exec, list_dir, local_size, mkdir, path_size, remove, rename, shell_quote, test_connection,
+    upload, upload_spawn,
 };
 pub use target::{
     AuthMethod, Availability, ForwardKind, PortForward, Target, askpass_script, control_path,

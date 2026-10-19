@@ -1,0 +1,170 @@
+# duck.codec.crypto-bundle 英文译文。键 = 中文源串。
+#
+# 这份表有两个来源，都要覆盖：
+#   1. `plugin.toml` 里的界面文案（标签 / 选项 / 占位）；
+#   2. 内核与工具进程产出的消息（`duck-codec-core` + `duck-codec-tool` 收进
+#      `PLUGIN_TEXT_SOURCES`，由 `cargo test -p duck-theme` 的漏译闸门逐条核对）。
+#      这些消息多是 `format!` 的模板，宿主渲染后由 `Renderer` 按 `{}` 反查回填。
+
+# ── 清单与工具元信息 ────────────────────────────────────────────────────
+"加解密工具包" = "Crypto Toolkit"
+"Base64 / URL / Hex 编解码、SHA 哈希、AES-CBC、JWT 解析、随机密码、恒生 LCPT 与柜员密码" = "Base64 / URL / Hex codecs, SHA hashing, AES-CBC, JWT decoding, random passwords, Hundsun LCPT and teller passwords"
+
+# ── 输入区与参数标签 ────────────────────────────────────────────────────
+"输入" = "Input"
+"粘贴要处理的文本 / 密文 / JWT（「密码生成」「恒生柜员」两块不需要输入）" = "Paste the text / ciphertext / JWT to process (the Password and Hundsun Teller modes need no input)"
+"功能" = "Function"
+"动作" = "Action"
+"结果" = "Result"
+
+"编码 Base64" = "Encode Base64"
+"解码" = "Decode"
+"URL 编码" = "URL encode"
+"URL 解码" = "URL decode"
+"文本 → Hex" = "Text → Hex"
+"Hex → 文本" = "Hex → Text"
+
+"对什么求哈希" = "Hash target"
+"文本（SHA-1 / 256 / 384 / 512）" = "Text (SHA-1 / 256 / 384 / 512)"
+"文件（MD5 + SHA 全族）" = "File (MD5 + all SHA variants)"
+"文件" = "File"
+"选择或拖入要计算哈希的文件" = "Pick or drop the file to hash"
+
+"AES 模式" = "AES mode"
+"AES-128-CBC（密钥 16 字节）" = "AES-128-CBC (16-byte key)"
+"AES-192-CBC（密钥 24 字节）" = "AES-192-CBC (24-byte key)"
+"AES-256-CBC（密钥 32 字节）" = "AES-256-CBC (32-byte key)"
+"密钥" = "Key"
+"按所选模式填 16 / 24 / 32 个字符" = "16 / 24 / 32 characters, matching the selected mode"
+"初始向量" = "IV"
+"16 个字符" = "16 characters"
+"加密（输出 Base64）" = "Encrypt (Base64 output)"
+"解密（输入 Base64）" = "Decrypt (Base64 input)"
+
+"长度" = "Length"
+"数量" = "Count"
+"大写 A-Z" = "Uppercase A-Z"
+"小写 a-z" = "Lowercase a-z"
+"数字 0-9" = "Digits 0-9"
+"符号 !@#…" = "Symbols !@#…"
+
+"算法" = "Algorithm"
+"DES（jar 内 deskey，输出 Base64）" = "DES (deskey from the jar, Base64 output)"
+"DES(HsAndMoe)（零填充，输出 hex 大写）" = "DES(HsAndMoe) (zero padding, uppercase hex)"
+"3DES（ECB / CBC，输出 hex 大写）" = "3DES (ECB / CBC, uppercase hex)"
+"SM4（ECB / CBC，输出 hex 小写）" = "SM4 (ECB / CBC, lowercase hex)"
+"分组模式" = "Block mode"
+"CBC（仅 3DES / SM4；DES 恒为 ECB）" = "CBC (3DES / SM4 only; DES is always ECB)"
+"留空 = 算法默认密钥（DES 为 16 位 hex，其余为 ASCII 原文）" = "Leave blank for the algorithm's default key (16 hex digits for DES, ASCII literals otherwise)"
+"加密" = "Encrypt"
+
+"加密模式" = "Encryption mode"
+"MD5（smWay 兜底默认）" = "MD5 (smWay fallback default)"
+"SM3（smWay = sm3）" = "SM3 (smWay = sm3)"
+"SM4（smWay = sm4）" = "SM4 (smWay = sm4)"
+"Spring DES（smWay = spring）" = "Spring DES (smWay = spring)"
+"SM2（不可离线复现）" = "SM2 (not reproducible offline)"
+"加密机 smE140（不可离线复现）" = "HSM smE140 (not reproducible offline)"
+"SHA1（扩展）" = "SHA1 (extended)"
+"SHA256（扩展）" = "SHA256 (extended)"
+"SHA512（扩展）" = "SHA512 (extended)"
+"柜员号" = "Teller ID"
+"userId，如 admin" = "userId, e.g. admin"
+"密码" = "Password"
+"柜员密码（明文，落库前拼接：柜员号 + 密码）" = "Teller password (plaintext; joined as teller ID + password before storage)"
+
+# ── 工具进程的消息 ──────────────────────────────────────────────────────
+"输入是空的" = "Input is empty"
+"未知的功能：{}" = "Unknown function: {}"
+"请先选择要计算哈希的文件" = "Pick a file to hash first"
+"AES 需要密钥（16 / 24 / 32 字节）" = "AES needs a key (16 / 24 / 32 bytes)"
+"柜员号与密码不能都为空" = "Teller ID and password must not both be empty"
+"（签名段未校验，本工具只解析内容）" = "(signature not verified; this tool only decodes the content)"
+
+# ── Base64 / URL / Hex ─────────────────────────────────────────────────
+"Base64 解码失败：{}" = "Base64 decode failed: {}"
+"URL 解码失败：% 后面不是 ASCII 字符" = "URL decode failed: % is not followed by ASCII characters"
+"URL 解码失败：% 后面不足两位十六进制" = "URL decode failed: % is not followed by two hex digits"
+"URL 解码失败：%{} 不是合法的十六进制" = "URL decode failed: %{} is not valid hex"
+"Hex 解码失败：{}" = "Hex decode failed: {}"
+"Hex 解码失败：{:?} 不是十六进制字符" = "Hex decode failed: {:?} is not a hex digit"
+"Hex 解码失败：字符数必须是偶数，实际 {} 位" = "Hex decode failed: the character count must be even, got {}"
+
+# ── 哈希（文件）───────────────────────────────────────────────────────
+"打开文件失败: {}" = "Failed to open file: {}"
+"读取文件失败: {}" = "Failed to read file: {}"
+
+# ── AES-CBC ────────────────────────────────────────────────────────────
+"未知的 AES 模式：{}（可选 AES-128-CBC / AES-192-CBC / AES-256-CBC）" = "Unknown AES mode: {} (expected AES-128-CBC / AES-192-CBC / AES-256-CBC)"
+"AES 密钥长度必须是 {} 字节，实际 {} 字节" = "The AES key must be {} bytes, got {}"
+"AES 初始向量必须是 16 字节，实际 {} 字节" = "The AES IV must be 16 bytes, got {}"
+"AES 加密失败：{}" = "AES encryption failed: {}"
+"AES 解密失败：{}" = "AES decryption failed: {}"
+"密文不是合法的 Base64：{}" = "The ciphertext is not valid Base64: {}"
+"AES 解密失败：密钥 / 初始向量不对，或密文被改动过" = "AES decryption failed: wrong key / IV, or the ciphertext was modified"
+
+# ── JWT ────────────────────────────────────────────────────────────────
+"无效的 JWT 格式（应为 header.payload.signature 三段）" = "Invalid JWT (expected header.payload.signature)"
+"Base64URL 解码失败：{}" = "Base64URL decode failed: {}"
+"{} 不是合法 JSON：{}" = "{} is not valid JSON: {}"
+"{} 无法格式化：{}" = "{} could not be formatted: {}"
+
+# ── 随机密码 ───────────────────────────────────────────────────────────
+"请至少选择一种字符类型" = "Select at least one character class"
+"长度必须在 {} 到 {} 之间，实际 {}" = "Length must be between {} and {}, got {}"
+"数量必须在 1 到 {} 之间，实际 {}" = "Count must be between 1 and {}, got {}"
+"取系统随机数失败：{}" = "Failed to read OS randomness: {}"
+"弱" = "Weak"
+"中" = "Medium"
+"强" = "Strong"
+
+# ── 恒生 LCPT（specs 展示名 / 说明 / 错误）──────────────────────────────
+"DES（默认）" = "DES (default)"
+"DES/ECB/PKCS5Padding → Base64；密钥取自 jar 内 deskey" = "DES/ECB/PKCS5Padding → Base64; the key comes from the jar's deskey"
+"恒生自研 DES/ECB，零填充（整除 8 不补块）→ hex(大写)；密钥默认字面量 HsAndMoe" = "Hundsun's own DES/ECB with zero padding (no extra block when the length is a multiple of 8) → hex (uppercase); default key literal HsAndMoe"
+"DESede/ECB|CBC/PKCS5Padding → hex(大写)；CBC IV 固定 12345678" = "DESede/ECB|CBC/PKCS5Padding → hex (uppercase); CBC IV fixed to 12345678"
+"标准 SM4，ECB|CBC，0x80 补位 → hex(小写)；CBC IV 固定 0123456789ABCDEF" = "Standard SM4, ECB|CBC, 0x80 padding → hex (lowercase); CBC IV fixed to 0123456789ABCDEF"
+"不支持的算法: {other}（可选 DES / HSDES / DES3 / SM4）" = "Unsupported algorithm: {other} (expected DES / HSDES / DES3 / SM4)"
+"DES 初始化失败: {e:?}" = "DES init failed: {e:?}"
+"DES(HsAndMoe) 初始化失败: {e:?}" = "DES(HsAndMoe) init failed: {e:?}"
+"3DES 初始化失败: {e:?}" = "3DES init failed: {e:?}"
+"SM4 初始化失败: {e:?}" = "SM4 init failed: {e:?}"
+"DES 密钥 Hex 解析失败: {e}" = "Failed to parse the DES key as hex: {e}"
+"DES 密钥长度错误: 需要 8 字节 (16 位 hex)，实际 {} 字节" = "Bad DES key length: need 8 bytes (16 hex digits), got {}"
+"{algo} 密钥长度错误: 需要 {expected} 字节，实际 {} 字节（按 ASCII 原文计长）" = "Bad {algo} key length: need {expected} bytes, got {} (counted as raw ASCII)"
+"Base64 解码失败: {e}" = "Base64 decode failed: {e}"
+"Base64 解码后长度 {} 非法（应为 8 的倍数）" = "Decoded Base64 length {} is invalid (must be a multiple of 8)"
+"Hex 解码失败: {e}" = "Hex decode failed: {e}"
+"密文长度 {} 非法（应为 8 的倍数）" = "Ciphertext length {} is invalid (must be a multiple of 8)"
+"密文长度 {} 非法（应为 16 的倍数）" = "Ciphertext length {} is invalid (must be a multiple of 16)"
+"非法填充字节 {pad}（通常是密钥不匹配）" = "Illegal padding byte {pad} (usually a key mismatch)"
+"填充字节不一致（通常是密钥错误或密文被截断）" = "Padding bytes are inconsistent (usually a wrong key or a truncated ciphertext)"
+"解密结果补位异常（0x80 未字节对齐）" = "Unexpected padding in the decrypted result (0x80 is not byte-aligned)"
+"补位截断失败: {e}" = "Padding trim failed: {e}"
+
+# ── 恒生柜员（specs 展示名 / 说明 / 错误）──────────────────────────────
+"MD5（兜底默认）" = "MD5 (fallback default)"
+"SM2（不可复现）" = "SM2 (not reproducible)"
+"加密机 smE140（不可复现）" = "HSM smE140 (not reproducible)"
+"(兜底)" = "(fallback)"
+"smWay 不等于以下任一值时（含未配置）走此分支" = "used when smWay matches none of the values below (including when unset)"
+"非 smWay 可选值；EncryptUtils.shaEncrypt 的能力" = "Not a smWay value; the capability of EncryptUtils.shaEncrypt"
+"非 smWay 可选值；EncryptUtils.sha256Encrypt 的能力" = "Not a smWay value; the capability of EncryptUtils.sha256Encrypt"
+"非 smWay 可选值；EncryptUtils.sha512Encrypt 的能力" = "Not a smWay value; the capability of EncryptUtils.sha512Encrypt"
+"32 位小写 hex" = "32 hex chars, lowercase"
+"64 位小写 hex" = "64 hex chars, lowercase"
+"40 位小写 hex" = "40 hex chars, lowercase"
+"128 位小写 hex" = "128 hex chars, lowercase"
+"变长 Base64" = "variable-length Base64"
+"变长小写 hex" = "variable-length lowercase hex"
+"EncryptUtils.shaEncrypt：UTF-16LE 无 BOM + 小写 hex" = "EncryptUtils.shaEncrypt: UTF-16LE without BOM + lowercase hex"
+"EncryptUtils.sha256Encrypt：UTF-16LE 无 BOM + 小写 hex" = "EncryptUtils.sha256Encrypt: UTF-16LE without BOM + lowercase hex"
+"EncryptUtils.sha512Encrypt：UTF-16LE 无 BOM + 小写 hex" = "EncryptUtils.sha512Encrypt: UTF-16LE without BOM + lowercase hex"
+"PwdSm3EncryptUtil.sm3Encrypt：输入平台默认编码（UTF-8），输出小写 hex" = "PwdSm3EncryptUtil.sm3Encrypt: the platform default charset (UTF-8) is used for input, lowercase hex for output"
+"SM4EncryptImpl.enc（ECB，0x80 补位）；SM4SecretKey.privateKey 为空时用内置密钥 HsAndMoeHsAndMoe" = "SM4EncryptImpl.enc (ECB, 0x80 padding); falls back to the built-in key HsAndMoeHsAndMoe when SM4SecretKey.privateKey is empty"
+"Spring Bean「Encrypt」→ LCPT DesEncrypt（deskey + PKCS#5 + Base64），等价于本工具「恒生密码」的 DES-ECB" = "Spring bean Encrypt → LCPT DesEncrypt (deskey + PKCS#5 + Base64), identical to DES-ECB in the Hundsun tab"
+"每次 SM2Utils.generateKeyPair() 随机生成密钥对后加密，落库密文无法离线复现" = "A random key pair is generated by SM2Utils.generateKeyPair() on every call, so the stored ciphertext cannot be reproduced offline"
+"由行内硬件加密机 IEncryptService.encrypt 完成，依赖 smE140isDigit / accNo / mode / format / keyName 参数" = "Performed by the bank's HSM through IEncryptService.encrypt, using smE140isDigit / accNo / mode / format / keyName"
+"不支持的算法/模式: {other}（smWay 模式：MD5 / SM3 / SM4 / SPRING / SM2 / SME140；扩展算法：SHA / SHA256 / SHA512）" = "Unsupported algorithm / mode: {other} (smWay modes: MD5 / SM3 / SM4 / SPRING / SM2 / SME140; extended: SHA / SHA256 / SHA512)"
+"SM2 模式每次随机生成密钥对（SM2Utils.generateKeyPair），密文不可复现，本工具无法离线计算" = "SM2 generates a fresh key pair on every call (SM2Utils.generateKeyPair); the ciphertext cannot be reproduced and cannot be computed offline"
+"smE140 模式由行内硬件加密机（IEncryptService）完成，本工具无法离线计算" = "smE140 runs on the bank's HSM (IEncryptService) and cannot be computed offline"

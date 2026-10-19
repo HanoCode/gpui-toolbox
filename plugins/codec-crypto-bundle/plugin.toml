@@ -1,0 +1,313 @@
+# Duck Toolbox 插件：加解密工具包（duck.codec.crypto-bundle）。
+#
+# 来源：ifm_ai_tools 的 `src/tools/CryptoBundle.vue`（9 个 `AppSegmented` 标签页）。
+# **process 轨**——不是 JS 轨，原因有两条硬事实：
+#   1. 恒生 LCPT 那两块（DES / DES(HsAndMoe) / 3DES / SM4 + 柜员密码）在参考仓
+#      是**后端 Rust 实现**（`src-tauri/src/hundsun_crypt.rs`，1,222 行含 JVM 向量），
+#      不是前端 JS；照「复刻不复研」的口径必须整段复制进 `crates/duck-codec-core`。
+#   2. 本仓 JS 沙箱没有 `crypto.subtle`，AES / SHA 在 JS 里要手写实现（原 main.js
+#      那 673 行就是这么来的）；内核侧有 RustCrypto，没必要再养一份。
+#
+# 九个标签页 → 一个 `mode` 选择器 + `visible_when` 条件显隐。宿主不认「标签页」，
+# 只认参数可见性；效果一致：当前模式下只看得见该模式用得上的旋钮。
+#
+#   Base64 / URL / Hex  → 动作开关（编码 / 解码）+ 输入框
+#   哈希                → 文本（4 种 SHA）或文件（5 种摘要，含 MD5）
+#   AES                 → AES-128/192/256-CBC，密钥 + IV，密文 Base64
+#   JWT                 → 拆 Header / Payload，不验签
+#   密码生成            → 长度 / 数量 / 四类字符勾选，带强度档位
+#   恒生密码            → LCPT 四算法，ECB/CBC
+#   恒生柜员            → Encrypt(算法, userId + 密码)，落库口径
+#
+# 与参考仓的三处差异，都是「源仓做不到」的：
+#   • 恒生算法的默认密钥用**清空输入框**回落，省掉「重置默认」按钮（同一个效果，
+#     少一个要记的按钮）；
+#   • 哈希的文件模式走 `path` 参数（原生面板 + 运行时授权），不靠拖拽——拖拽在
+#     gpui 里是另一套事件，源仓那边也只是「拖拽 → 打开面板」；
+#   • 结果是一段可复制的对齐文本（源仓是每行一个复制按钮），因为宿主的结果区
+#     统一提供「复制全部」。
+#
+# `hash_file` 是 `path` 参数 ⇒ 必须声明 `allow_files = "read"`（装载期会校验）。
+
+id = "duck.codec.crypto-bundle"
+name = "加解密工具包"
+description = "Base64 / URL / Hex 编解码、SHA 哈希、AES-CBC、JWT 解析、随机密码、恒生 LCPT 与柜员密码"
+version = "0.2.0"
+category = "files"
+tags = ["加密", "解密", "base64", "hash", "aes", "jwt", "密码", "恒生", "des", "sm4"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+# 不申请任何能力：算法全在本机算，密钥只在本次运行的参数里过一遍，不落盘。
+
+[[tools]]
+id = "duck.codec.crypto-bundle"
+name = "加解密工具包"
+description = "Base64 / URL / Hex 编解码、SHA 哈希、AES-CBC、JWT 解析、随机密码、恒生 LCPT 与柜员密码"
+category = "files"
+group = "加密"
+icon = "shield-check"
+keywords = [
+  "crypto", "base64", "url", "hex", "hash", "sha", "sha256", "aes", "jwt", "password",
+  "加密", "解密", "哈希", "摘要", "密码", "恒生", "柜员", "des", "3des", "sm4", "sm3",
+]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "输入"
+placeholder = "粘贴要处理的文本 / 密文 / JWT（「密码生成」「恒生柜员」两块不需要输入）"
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+style = "tabs"
+label = "功能"
+default = "base64"
+options = [
+  { value = "base64", label = "Base64" },
+  { value = "url", label = "URL" },
+  { value = "hex", label = "Hex" },
+  { value = "hash", label = "哈希" },
+  { value = "aes", label = "AES" },
+  { value = "jwt", label = "JWT" },
+  { value = "password", label = "密码生成" },
+  { value = "hundsun", label = "恒生密码" },
+  { value = "hundsun-teller", label = "恒生柜员" },
+]
+
+# ── Base64 / URL / Hex：各一个动作开关（只有当前功能的那个会出现）─────────────
+
+[[tools.io.params]]
+id = "b64_action"
+kind = "select"
+label = "动作"
+default = "encode"
+visible_when = { mode = "base64" }
+options = [
+  { value = "encode", label = "编码 Base64" },
+  { value = "decode", label = "解码" },
+]
+
+[[tools.io.params]]
+id = "url_action"
+kind = "select"
+label = "动作"
+default = "encode"
+visible_when = { mode = "url" }
+options = [
+  { value = "encode", label = "URL 编码" },
+  { value = "decode", label = "URL 解码" },
+]
+
+[[tools.io.params]]
+id = "hex_action"
+kind = "select"
+label = "动作"
+default = "encode"
+visible_when = { mode = "hex" }
+options = [
+  { value = "encode", label = "文本 → Hex" },
+  { value = "decode", label = "Hex → 文本" },
+]
+
+# ── 哈希：文本 or 文件 ────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "hash_target"
+kind = "select"
+label = "对什么求哈希"
+default = "text"
+visible_when = { mode = "hash" }
+options = [
+  { value = "text", label = "文本（SHA-1 / 256 / 384 / 512）" },
+  { value = "file", label = "文件（MD5 + SHA 全族）" },
+]
+
+[[tools.io.params]]
+id = "hash_file"
+kind = "path"
+label = "文件"
+placeholder = "选择或拖入要计算哈希的文件"
+pick = "file"
+visible_when = { mode = "hash", hash_target = "file" }
+
+# ── AES：密钥 + IV + 动作 ────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "aes_mode"
+kind = "select"
+label = "AES 模式"
+default = "AES-128-CBC"
+visible_when = { mode = "aes" }
+options = [
+  { value = "AES-128-CBC", label = "AES-128-CBC（密钥 16 字节）" },
+  { value = "AES-192-CBC", label = "AES-192-CBC（密钥 24 字节）" },
+  { value = "AES-256-CBC", label = "AES-256-CBC（密钥 32 字节）" },
+]
+
+[[tools.io.params]]
+id = "aes_key"
+kind = "text"
+label = "密钥"
+placeholder = "按所选模式填 16 / 24 / 32 个字符"
+visible_when = { mode = "aes" }
+
+[[tools.io.params]]
+id = "aes_iv"
+kind = "text"
+label = "初始向量"
+placeholder = "16 个字符"
+visible_when = { mode = "aes" }
+
+[[tools.io.params]]
+id = "aes_action"
+kind = "select"
+label = "动作"
+default = "encrypt"
+visible_when = { mode = "aes" }
+options = [
+  { value = "encrypt", label = "加密（输出 Base64）" },
+  { value = "decrypt", label = "解密（输入 Base64）" },
+]
+
+# ── 密码生成 ─────────────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "pwd_length"
+kind = "number"
+label = "长度"
+default = "16"
+min = 4
+max = 128
+visible_when = { mode = "password" }
+
+[[tools.io.params]]
+id = "pwd_count"
+kind = "number"
+label = "数量"
+default = "5"
+min = 1
+max = 50
+visible_when = { mode = "password" }
+
+[[tools.io.params]]
+id = "pwd_upper"
+kind = "switch"
+label = "大写 A-Z"
+default = "true"
+visible_when = { mode = "password" }
+
+[[tools.io.params]]
+id = "pwd_lower"
+kind = "switch"
+label = "小写 a-z"
+default = "true"
+visible_when = { mode = "password" }
+
+[[tools.io.params]]
+id = "pwd_digits"
+kind = "switch"
+label = "数字 0-9"
+default = "true"
+visible_when = { mode = "password" }
+
+[[tools.io.params]]
+id = "pwd_symbols"
+kind = "switch"
+label = "符号 !@#…"
+default = "true"
+visible_when = { mode = "password" }
+
+# ── 恒生密码（LCPT）─────────────────────────────────────────────────────
+
+[[tools.io.params]]
+id = "hs_algorithm"
+kind = "select"
+label = "算法"
+default = "DES"
+visible_when = { mode = "hundsun" }
+options = [
+  { value = "DES", label = "DES（jar 内 deskey，输出 Base64）" },
+  { value = "HSDES", label = "DES(HsAndMoe)（零填充，输出 hex 大写）" },
+  { value = "DES3", label = "3DES（ECB / CBC，输出 hex 大写）" },
+  { value = "SM4", label = "SM4（ECB / CBC，输出 hex 小写）" },
+]
+
+[[tools.io.params]]
+id = "hs_mode"
+kind = "select"
+label = "分组模式"
+default = "ECB"
+visible_when = { mode = "hundsun" }
+options = [
+  { value = "ECB", label = "ECB" },
+  { value = "CBC", label = "CBC（仅 3DES / SM4；DES 恒为 ECB）" },
+]
+
+[[tools.io.params]]
+id = "hs_key"
+kind = "text"
+label = "密钥"
+placeholder = "留空 = 算法默认密钥（DES 为 16 位 hex，其余为 ASCII 原文）"
+visible_when = { mode = "hundsun" }
+
+[[tools.io.params]]
+id = "hs_action"
+kind = "select"
+label = "动作"
+default = "encrypt"
+visible_when = { mode = "hundsun" }
+options = [
+  { value = "encrypt", label = "加密" },
+  { value = "decrypt", label = "解密" },
+]
+
+# ── 恒生柜员密码（tsys_user.user_pwd）─────────────────────────────────────
+
+[[tools.io.params]]
+id = "tl_algorithm"
+kind = "select"
+label = "加密模式"
+default = "MD5"
+visible_when = { mode = "hundsun-teller" }
+options = [
+  { value = "MD5", label = "MD5（smWay 兜底默认）" },
+  { value = "SM3", label = "SM3（smWay = sm3）" },
+  { value = "SM4", label = "SM4（smWay = sm4）" },
+  { value = "SPRING", label = "Spring DES（smWay = spring）" },
+  { value = "SM2", label = "SM2（不可离线复现）" },
+  { value = "SME140", label = "加密机 smE140（不可离线复现）" },
+  { value = "SHA", label = "SHA1（扩展）" },
+  { value = "SHA256", label = "SHA256（扩展）" },
+  { value = "SHA512", label = "SHA512（扩展）" },
+]
+
+[[tools.io.params]]
+id = "tl_user_id"
+kind = "text"
+label = "柜员号"
+placeholder = "userId，如 admin"
+visible_when = { mode = "hundsun-teller" }
+
+[[tools.io.params]]
+id = "tl_password"
+kind = "text"
+label = "密码"
+placeholder = "柜员密码（明文，落库前拼接：柜员号 + 密码）"
+visible_when = { mode = "hundsun-teller" }
+
+[tools.io.output]
+kind = "code"
+label = "结果"

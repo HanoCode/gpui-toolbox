@@ -1,0 +1,88 @@
+# Duck Toolbox 插件：配置比较（duck.compare.config-compare）。
+#
+# **process 轨**：逻辑在 `crates/duck-compare-core/src/config_diff.rs`，复刻参考仓
+# `DirCompare.vue` 的 **config 会话**（那个页面其实是三个会话类型的合集：
+# 目录 / 文本 / 配置；目录归 `dir-compare`、文本归 `text-diff`，这一份是第三段）。
+#
+# 算法照参考页走「先归一、再拍平、再按键比」：properties / YAML / JSON 三路输入
+# 都先变成同一棵树，用 `.` 拍平成键值，然后按键取并集判四档
+# （同 / 改 / 仅左 / 仅右）。所以同一份配置写成 properties 还是 YAML，结果一样。
+#
+# ⚠️ 与参考实现的两处**有意**偏离（都写在 `config_diff.rs` 模块头）：
+# ① YAML 认缩进（参考仓逐行正则，两个不同段里的同名子键会被压成一个）；
+# ② `[section]` 参与键路径（参考仓跳过段名，`[db]` 与 `[mq]` 的同名键会撞车）。
+#
+# `allow_files = "none"`：两段配置都在输入框里，不读盘、不出网。
+
+id = "duck.compare.config-compare"
+name = "配置比较"
+description = "比两份配置（properties / YAML / JSON）：归一后按键显示修改、单侧新增与删除"
+version = "0.1.0"
+category = "compare"
+tags = ["diff", "compare", "比对", "配置", "properties", "yaml", "json"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.compare.config-compare"
+name = "配置比较"
+description = "比两份配置（properties / YAML / JSON）：归一后按键显示修改、单侧新增与删除"
+category = "compare"
+group = "比对"
+icon = "settings"
+keywords = ["diff", "compare", "比对", "配置", "properties", "yaml", "yml", "json", "改了什么"]
+
+[tools.io]
+fields_layout = "row"
+swap_fields = true
+allow_files = "none"
+
+[[tools.io.fields]]
+id = "config_a"
+kind = "textarea"
+label = "配置 A"
+placeholder = "粘贴左侧（基准）配置，支持 properties / YAML / JSON"
+
+[[tools.io.fields]]
+id = "config_b"
+kind = "textarea"
+label = "配置 B"
+placeholder = "粘贴右侧（对比）配置，支持 properties / YAML / JSON"
+
+# 参考页这一段只有「仅差异 / 全部」两档（没有「仅相同」——配置项动辄几百条，
+# 「只看一样」没有场景）。
+[[tools.io.params]]
+id = "view"
+kind = "select"
+label = "显示"
+default = "diff"
+options = [
+  { value = "diff", label = "仅差异" },
+  { value = "all", label = "全部" },
+]
+
+# 参考页这一段**没有**导出按钮（只有屏上的表格）。两种形态是为「复制出去贴进
+# 缺陷单 / 交接文档」补的，不是照抄。
+[[tools.io.params]]
+id = "format"
+kind = "select"
+label = "输出格式"
+default = "list"
+options = [
+  { value = "list", label = "清单" },
+  { value = "table", label = "表格（Markdown）" },
+]
+
+[tools.io.output]
+# 同 `dir-compare`：表格形态走 Markdown 解析成真表格，清单形态退回文本。
+kind = "table"
+fallback = "text"
+label = "配置差异"

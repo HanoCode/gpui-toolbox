@@ -1,0 +1,137 @@
+%% name Git
+%% category 版本控制
+%% content
+# Git 速查表
+
+## 创建存储库
+
+```bash
+git init [项目名称]           # 创建新仓库
+git clone <url>               # 克隆远程仓库
+git clone <url> 指定目录       # 克隆到指定目录
+git clone -b <分支> <url>     # 克隆指定分支
+```
+
+## 做出改变
+
+```bash
+git status                    # 查看工作目录状态
+git add [file]                # 暂存指定文件
+git add .                     # 暂存所有更改
+git commit -m "消息"          # 提交暂存的更改
+git commit -am "消息"         # 提交所有已跟踪文件的更改
+git reset [file]              # 取消暂存文件
+git reset --hard              # 恢复到最后一次提交
+git diff                      # 查看未暂存的更改
+git diff --staged             # 查看已暂存的更改
+git rebase [branch]           # 变基到指定分支
+```
+
+## 分支操作
+
+```bash
+git branch                    # 列出本地分支
+git branch -av                # 列出所有分支（含远程）
+git branch <name>             # 创建新分支
+git checkout <name>           # 切换分支
+git checkout -b <name>        # 创建并切换分支
+git merge <branch>            # 合并指定分支到当前分支
+git branch -d <name>          # 删除已合并的分支
+git branch -D <name>          # 强制删除分支
+git branch -m <old> <new>     # 重命名分支
+```
+
+## 临时提交 (Stash)
+
+```bash
+git stash                     # 暂存当前更改
+git stash list                # 查看暂存列表
+git stash pop                 # 恢复最近一次暂存
+git stash apply <stash@{n}>   # 恢复指定暂存
+git stash drop                # 删除最近一次暂存
+git stash clear               # 清空所有暂存
+```
+
+## 查看历史
+
+```bash
+git log                       # 查看提交历史
+git log --oneline             # 简洁模式
+git log --graph --all         # 图形化显示
+git log -S "关键字"           # 搜索提交内容
+git log -p [file]             # 查看文件修改历史
+git show [SHA]                # 查看指定提交
+git blame [file]              # 查看文件修改人
+```
+
+## 远程操作
+
+```bash
+git remote add [alias] [url]  # 添加远程仓库
+git remote -v                 # 查看远程仓库
+git remote rm [name]          # 删除远程仓库
+git fetch [alias]             # 获取远程更新
+git pull                      # 拉取并合并
+git push [alias] [branch]     # 推送到远程
+git push -u origin main       # 推送并设置上游分支
+```
+
+## 撤销操作
+
+```bash
+git commit --amend -m "新消息" # 修改最近一次提交
+git revert [commit]           # 撤销指定提交
+git reset --hard HEAD~1       # 回退一个提交
+git reset --hard origin/main  # 重置到远程状态
+```
+
+## .gitignore 规则
+
+| 模式 | 说明 |
+|------|------|
+| #注释 | 行注释 |
+| !取反 | 否定模式 |
+| ** | 匹配任意路径 |
+| * | 匹配任意字符 |
+| ? | 匹配单个字符 |
+| / | 路径分隔符 |
+| / 结尾 | 仅匹配文件夹 |
+
+```gitignore
+# 示例
+/logs/
+node_modules/
+*.log
+!important.log
+```
+
+## 统计查询
+
+```bash
+# 查看个人代码量
+git log --author="username" --pretty=tformat: --numstat | awk '{ add += $1; subs += $2; loc += $1 - $2 } END { printf "added: %s, removed: %s, total: %s\n", add, subs, loc }'
+
+# 查看提交者排名
+git log --pretty='%aN' | sort | uniq -c | sort -k1 -n -r | head -n 10
+
+# 统计提交数
+git log --oneline | wc -l
+```
+%% commands
+% git
+# 创建并切换到新分支
+git checkout -b <branch>
+$ branch: git branch --format '%(refname:short)'
+
+# 暂存并提交
+git add <file> && git commit -m "<message>"
+$ file: git status --porcelain | awk '{print $2}'
+$ message: =修复bug|新增功能|重构代码
+
+# 查看某文件修改历史
+git log --oneline -- <file>
+$ file: git ls-files
+
+# 回退到指定提交
+git reset --hard <commit>
+$ commit: git log --oneline -10 | awk '{print $1}'

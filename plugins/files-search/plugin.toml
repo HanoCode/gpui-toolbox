@@ -1,0 +1,135 @@
+# Duck Toolbox 插件：文件搜索（duck.files.search）。
+#
+# **process 轨**：逻辑在 `crates/duck-files-core/src/search.rs` + `walk.rs`，移植参考仓
+# `ifm_ai_tools` 的「文件搜索」页（按文件名 / 按内容两种模式，内容模式带行列号）。
+# 二进制 = `crates/duck-files-tool`（文件族共用一个，按 `tool` 分派）。
+#
+# 参考仓有三个工具各自实现了一遍「遍历目录」（搜索、目录树、批量改写），隐藏项与
+# 深度口径**各说各话**；本仓把它们合成 `walk.rs` 一份，三个工具的遍历行为因此一致。
+# 这是本族唯一的架构性改动（其余都是复刻）。
+#
+# 布局按本仓铁律：操作区（目录、模式、过滤、上限）置顶 → 结果居中 →
+# 输入框（关键词）沉底，所以关键词是 `[io.fields]` 而不是普通参数。
+# 字段值除拼进 `input` 外**还会按 id 放一份进参数**（见 `tool_run.rs::params_json`），
+# 插件按 `pattern` 取值。
+#
+# `allow_files = "read"`：只读用户选的目录，不改任何文件。
+#
+# `bin/run` 是构建产物（`sbin/plugins.sh` 从 `target/<profile>/duck-files-tool`
+# 拷进来），不入库；缺失时执行页会提示先构建。
+
+id = "duck.files.search"
+name = "文件内容搜索"
+description = "按文件名或内容搜索目录：命中带行列号，支持正则、包含/排除通配、深度与结果上限"
+version = "0.2.0"
+category = "files"
+tags = ["search", "grep", "find", "搜索", "文件", "内容"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "process"
+
+[process]
+bin = "bin/run"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+[[tools]]
+id = "duck.files.search"
+name = "文件内容搜索"
+description = "按文件名或内容搜索目录：命中带行列号，支持正则、包含/排除通配、深度与结果上限"
+category = "files"
+group = "文件"
+icon = "search"
+keywords = ["search", "grep", "find", "搜索", "查找", "内容", "文件名", "正则"]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.fields]]
+id = "pattern"
+kind = "text"
+label = "关键词"
+placeholder = "文件名片段或要搜索的文本；勾选「按正则解析」后按正则处理"
+required = true
+
+[[tools.io.params]]
+id = "dir"
+kind = "path"
+pick = "folder"
+label = "搜索目录"
+placeholder = "选择要搜索的目录"
+required = true
+
+[[tools.io.params]]
+id = "mode"
+kind = "select"
+style = "tabs"
+label = "搜索方式"
+default = "content"
+options = [
+  { value = "content", label = "按内容" },
+  { value = "filename", label = "按文件名" },
+]
+
+[[tools.io.params]]
+id = "is_regex"
+kind = "switch"
+label = "按正则解析"
+default = "false"
+
+[[tools.io.params]]
+id = "case_sensitive"
+kind = "switch"
+label = "区分大小写"
+default = "false"
+
+# 参考页 `FileSearch.vue:46` 的「全词匹配」：后端套一层 `\b(?:…)\b`，
+# 所以 `token` 不会命中 `tokens` / `mytoken`。只对内容搜索有意义。
+[[tools.io.params]]
+id = "whole_word"
+kind = "switch"
+label = "全词匹配"
+default = "false"
+visible_when = { mode = "content" }
+
+[[tools.io.params]]
+id = "include"
+kind = "text"
+label = "只查这些文件"
+placeholder = "*.rs,*.md，逗号分隔，留空 = 全部"
+visible_when = { mode = "content" }
+
+[[tools.io.params]]
+id = "exclude"
+kind = "text"
+label = "跳过这些"
+placeholder = "target,node_modules,*.log"
+visible_when = { mode = "content" }
+
+[[tools.io.params]]
+id = "max_depth"
+kind = "number"
+label = "最大深度"
+default = "0"
+min = 0
+max = 64
+
+[[tools.io.params]]
+id = "max_results"
+kind = "number"
+label = "最多命中"
+default = "500"
+min = 1
+max = 5000
+
+[[tools.io.params]]
+id = "show_hidden"
+kind = "switch"
+label = "包含隐藏项"
+default = "false"
+
+[tools.io.output]
+kind = "text"
+label = "搜索结果"

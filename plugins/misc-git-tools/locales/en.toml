@@ -1,0 +1,39 @@
+# `duck.misc.git-tools` 的英译表（中文源串即键）。
+#
+# 产物里的模板（bash / node 脚本、`.gitignore` 各段）**不翻译**：它们是给 git 读的
+# 文件内容，翻成中文就跑了不起来了。
+
+"Git 文本生成" = "Git Text Generators"
+"从 git diff 生成 Conventional Commits 提交信息、常见钩子脚本，或按时选语言拼 .gitignore" = "Turn a git diff into a Conventional Commits message, generate common hook scripts, or assemble a .gitignore"
+
+"git diff 原文" = "git diff output"
+"粘贴 `git diff`（或 `git diff --cached`）的输出；只有提交信息模式用得到" = "Paste the output of `git diff` (or `git diff --cached`); only the commit-message mode uses it"
+
+"做什么" = "What to make"
+"提交信息" = "Commit message"
+"钩子脚本" = "Hook script"
+".gitignore" = ".gitignore"
+
+"提交类型" = "Commit type"
+"feat: 新功能" = "feat: new feature"
+"fix: 修复" = "fix: bug fix"
+"refactor: 重构" = "refactor: refactoring"
+"chore: 杂项" = "chore: chores"
+"docs: 文档" = "docs: documentation"
+"style: 格式" = "style: formatting"
+"test: 测试" = "test: tests"
+
+"钩子" = "Hook"
+"脚本语言" = "Script language"
+"语言 / 平台" = "Language / platform"
+"逗号或空格分隔，例如 Node,Python,Rust" = "Comma or space separated, e.g. Node,Python,Rust"
+"生成结果" = "Result"
+
+"：" = ": "
+"先粘贴 git diff 的输出" = "Paste the git diff output first"
+"识别到 {} 个文件" = "{} changed file(s) recognised"
+"变更文件:" = "Changed files:"
+"diff 里没有 `diff --git` 行，认不出变更文件" = "No `diff --git` line in the diff, so no changed file could be recognised"
+"已生成 {}（{}）" = "Generated {} ({})"
+"至少要选一个语言或平台" = "Pick at least one language or platform"
+"{} 段模板（{} 段有内置模板）" = "{} section(s), {} with a built-in template"

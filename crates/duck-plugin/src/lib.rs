@@ -24,19 +24,29 @@
 use std::fmt;
 
 mod capability;
+pub mod diff;
 pub mod i18n;
+mod io;
 mod manifest;
 mod registry;
+pub mod table;
 
 pub use capability::{Capability, CapabilityGranter};
+pub use diff::{DiffDoc, DiffFile, DiffRow, DiffRowKind, DiffSpan, DiffStats};
 pub use i18n::{
     DEFAULT_SOURCE_TAG, ENV_LOCALE, ENV_LOCALES_DIR, PluginLocales, locale_env, locales_dir,
 };
+pub use io::{
+    CellKind, CellSpec, ENV_DATA_DIR, FieldKind, FieldSpec, FieldsLayout, FileAccess,
+    IO_MIN_API_VERSION, IoLayout, IoSpec, OutputKind, OutputSpec, ParamKind, ParamOption,
+    ParamSpec, ParamStyle, PathPick, ScanSpec, WorkbenchSpec,
+};
 pub use manifest::{
-    Capabilities, ExecutionModel, I18nConfig, PluginManifest, SUPPORTED_API_VERSION,
-    ToolContribution,
+    Capabilities, ExecutionModel, I18nConfig, PluginManifest, ProcessConfig, SUPPORTED_API_VERSION,
+    SUPPORTED_API_VERSIONS, ToolContribution,
 };
 pub use registry::{DiscoveredPlugin, MANIFEST_FILE, PluginIndex};
+pub use table::{CellEdit, EDIT_PARAM, TableDoc};
 
 /// 插件框架错误。
 ///

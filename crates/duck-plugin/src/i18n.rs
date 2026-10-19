@@ -110,8 +110,26 @@ impl PluginLocales {
     /// 这种写法把宿主的任意文件当翻译读。
     #[must_use]
     pub fn load(dir: &Path, source_tag: &str, declared: Option<&[String]>) -> Self {
+        Self::from_files(Self::locale_files(dir, declared), source_tag)
+    }
+
+    /// 从**翻译目录本身**装载（`<plugin_dir>/locales`）。
+    ///
+    /// process 轨的插件进程唯一的入口：宿主经 [`ENV_LOCALES_DIR`] 交给它的是
+    /// `locales/` 这一级（见 [`locale_env`]），而不是插件目录。走 [`Self::load`]
+    /// 会把 `locales` **再拼一次**（`locales/locales`）——读不到任何文件，
+    /// 于是英文界面静默显示中文，schema 与守卫全绿。
+    ///
+    /// 这里不做清单声明过滤：进程手里没有清单，且目录内容由宿主在启动前定好。
+    #[must_use]
+    pub fn load_locales_dir(locales_dir: &Path, source_tag: &str) -> Self {
+        Self::from_files(scan_locales(locales_dir), source_tag)
+    }
+
+    /// 装载的公共尾部：逐个读表，坏的只告警、不影响其它语言。
+    fn from_files(files: Vec<(String, PathBuf)>, source_tag: &str) -> Self {
         let mut tables = BTreeMap::new();
-        for (tag, path) in Self::locale_files(dir, declared) {
+        for (tag, path) in files {
             match read_table(&path, &tag) {
                 Ok(table) if table.is_empty() => {
                     tracing::warn!("plugin locale {} has no usable entry", path.display());
@@ -173,6 +191,21 @@ impl PluginLocales {
         self.tables.keys().map(String::as_str).collect()
     }
 
+    /// 某个语言的整张表（`源串 → 译文`，按源串升序）。
+    ///
+    /// 给需要**按模板反查**的调用方用：process 轨工具拿到的往往已经是**插值后**的
+    /// 串（`表 '{}' 建议…` 变成 `表 'T_ORDER' 建议…`），精确查表必然 miss，只能
+    /// 拿模板去匹配。GUI 侧不需要这个入口——那边从头到尾都是 key。
+    ///
+    /// 源串 tag 自己也有一张表（`locales/zh-Hans.toml`），但通常为空：源串即中文。
+    pub fn entries<'a>(&'a self, tag: &'a str) -> impl Iterator<Item = (&'a str, &'a str)> + 'a {
+        self.tables
+            .get(tag)
+            .into_iter()
+            .flat_map(|table| table.iter())
+            .map(|(source, text)| (source.as_str(), text.as_str()))
+    }
+
     /// 一条译文都没有（老插件，或全部装载失败）。
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -194,7 +227,7 @@ impl PluginLocales {
                     }
                 })
                 .collect(),
-            None => discover(dir),
+            None => scan_locales(&locales_dir(dir)),
         };
         files.sort();
         files.dedup_by(|a, b| a.0 == b.0);
@@ -269,12 +302,14 @@ fn resolve_declared(dir: &Path, raw: &str) -> Result<(String, PathBuf), String> 
     Ok((tag, dir.join(relative)))
 }
 
-/// 自动发现：`<dir>/locales/*.toml`（**不递归**）。
+/// 自动发现：翻译目录下的 `*.toml`（**不递归**）。
 ///
-/// 目录不存在（老插件只留 `plugin.toml` 与入口）是正常分支，返回空。
-fn discover(dir: &Path) -> Vec<(String, PathBuf)> {
-    let path = locales_dir(dir);
-    let entries = match std::fs::read_dir(&path) {
+/// 参数已经是 `locales/` 这一级：宿主的 [`Self::load`] 用 [`locales_dir`] 拼出来，
+/// process 轨的进程直接拿 [`ENV_LOCALES_DIR`]。目录不存在（老插件只留
+/// `plugin.toml` 与入口）是正常分支，返回空。
+fn scan_locales(locales_dir: &Path) -> Vec<(String, PathBuf)> {
+    let path = locales_dir;
+    let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(err) => {
@@ -509,5 +544,43 @@ mod tests {
         // 一条译文都没有的老插件：原样返回。
         let legacy = PluginLocales::load(&fixture("no-locales"), DEFAULT_SOURCE_TAG, None);
         assert_eq!(legacy.text("en", "文本统计"), "文本统计");
+    }
+
+    /// `entries`：整张表按源串升序吐出，**只含可用的译文**（空译文在装载期就丢了）。
+    ///
+    /// process 轨靠它做「按模板反查插值后的串」，所以顺序必须稳定、且不能把
+    /// 源串 tag 自己的那张表（`zh-Hans`）混进 `en` 的结果里。
+    #[test]
+    fn entries_expose_one_language_at_a_time() {
+        let locales = PluginLocales::load(&fixture("full"), DEFAULT_SOURCE_TAG, None);
+        let en: Vec<(&str, &str)> = locales.entries("en").collect();
+        assert!(en.contains(&("文本统计", "Text stats")), "{en:?}");
+        assert!(en.is_sorted_by_key(|(source, _)| *source), "{en:?}");
+        assert!(
+            en.iter().all(|(_, text)| !text.is_empty()),
+            "空译文应当在装载期被丢掉：{en:?}"
+        );
+
+        // 没装载的语言 = 空迭代器，不是 panic。
+        assert_eq!(locales.entries("ja").count(), 0);
+    }
+
+    /// [`PluginLocales::load_locales_dir`] 与 [`PluginLocales::load`] 的分工。
+    ///
+    /// 回归钉子：process 轨拿到的 `DUCK_LOCALES_DIR` **就是** `locales/` 这一级。
+    /// 如果插件侧误用 `load`（它自己会再拼一次 `locales`），读到的目录不存在，
+    /// 于是**一条译文都装不上**、英文界面静默显示中文，而所有 schema 校验全绿。
+    #[test]
+    fn locales_dir_entry_point_does_not_double_join_the_locales_folder() {
+        let plugin_dir = fixture("full");
+        let direct = PluginLocales::load_locales_dir(&locales_dir(&plugin_dir), DEFAULT_SOURCE_TAG);
+        assert_eq!(direct.lookup("en", "文本统计"), Some("Text stats"));
+
+        // 反证：把 `locales/` 当成插件目录喂给 `load`，就是那条会静默失灵的写法。
+        let wrong = PluginLocales::load(&locales_dir(&plugin_dir), DEFAULT_SOURCE_TAG, None);
+        assert!(
+            wrong.is_empty(),
+            "`load` 期望的是插件目录，不是 locales 目录"
+        );
     }
 }

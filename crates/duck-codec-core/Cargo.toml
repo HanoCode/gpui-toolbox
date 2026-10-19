@@ -1,0 +1,37 @@
+[package]
+name = "duck-codec-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "加解密工具包（duck.codec.crypto-bundle）的核心逻辑：复刻自 ifm_ai_tools 后端，零 gpui / 零 tokio。"
+
+[dependencies]
+# 复刻件原样保留参考仓那套依赖。base64 / serde / sha2 / hex / md-5 都已在
+# 依赖图内（工作区表），零新增下载；des / sm3 / sm4 是本次为了恒生算法
+# **新增**的三个 RustCrypto crate（参考仓 `hundsun_crypt.rs` 用的就是它们，
+# 版本一致：des 0.8 / sm3 0.4 / sm4 0.5），许可见 THIRD_PARTY_LICENSES.md。
+base64.workspace = true
+# AES-CBC（AES 标签页）：RustCrypto `aes` + `cbc`，与 `des` 同族同许可。
+# `cbc` 0.1 是配 `cipher` 0.4（= `aes` 0.8）的那条线；0.2 起改用 `cipher` 0.5，
+# 与 `aes` 0.8 混用会得到两套 `Block` trait，编译期互相不认。
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+des = "0.8"
+# 随机密码生成要**系统熵**（对齐浏览器 `crypto.getRandomValues`），不要伪随机数
+# 发生器。`getrandom` 已在本仓 lock 文件里（0.3.4，由既有依赖带进来），
+# 只是把它显式声明出来，零新增下载。
+getrandom = "0.3"
+hex.workspace = true
+# 参考仓用 `md5` crate（0.7，已停止维护）；`md-5` 是同一作者的现役实现，
+# 导出同名 `md5::Md5`，代码零改动。
+md-5.workspace = true
+serde.workspace = true
+# JWT 两段要 `JSON.parse` + 缩进美化，内核里只有这一处用 serde_json。
+serde_json.workspace = true
+sha1 = "0.10"
+sha2.workspace = true
+sm3 = "0.4"
+sm4 = "0.5"
+
+[lints]
+workspace = true

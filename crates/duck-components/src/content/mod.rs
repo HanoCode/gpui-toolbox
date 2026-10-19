@@ -18,6 +18,7 @@
 //! [`DuckIcon`]: crate::DuckIcon
 
 pub mod data;
+pub mod diff;
 pub mod dock;
 pub mod feedback;
 pub mod nav;
@@ -26,6 +27,9 @@ pub mod table;
 pub use data::{
     accent_tag, badge_count, badge_dot, description_list, description_row, neutral_tag, pagination,
     status_bar, status_cell, tag,
+};
+pub use diff::{
+    DiffLine, DiffLineKind, DiffSection, DiffSegment, DiffSummary, diff_summary, diff_view,
 };
 pub use dock::{CONTENT_PANEL_NAME, ContentPanel, content_panel, dock_area};
 pub use feedback::{

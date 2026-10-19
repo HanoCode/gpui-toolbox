@@ -1,0 +1,46 @@
+# duck.sql.sql-rewrite 英文译文。键 = 中文源串。
+# 中文源串分别来自 plugin.toml（清单里的 name / description / label / placeholder
+# / 选项名）与 main.js（`duck.t(...)`）。生成备份模式产出的**注释行**也在里面：
+# 那是会落进 .sql 文件的文案，跟着界面语言走。
+
+"SQL 改写" = "SQL Rewriter"
+"含参 SQL 日志还原成可执行语句；或把脚本改写成可重复执行 / 纯净版 / 带备份回滚" = "Turn parameterised SQL log lines back into runnable statements, or rewrite a script to be re-runnable, comment-free, or backed up with a rollback"
+
+"输入" = "Input"
+"粘贴 SQL 脚本，或应用日志里的含参 SQL 行" = "Paste a SQL script, or the parameterised SQL lines from an application log"
+
+"处理方式" = "Operation"
+"参数替换（日志 → 可执行 SQL）" = "Fill parameters (log → runnable SQL)"
+"可重复执行（补查询与删除）" = "Re-runnable (add lookup and delete)"
+"纯净版（去注释与空行）" = "Clean (strip comments and blank lines)"
+"生成备份与回滚 SQL" = "Generate backup and rollback SQL"
+
+"Schema（仅参数替换）" = "Schema (fill-parameters mode only)"
+"可选，如 app；填了就给表名加前缀" = "Optional, e.g. app; prefixes table names when set"
+
+"INSERT / UPDATE 前补查询" = "Add a lookup before INSERT / UPDATE"
+"INSERT 前补删除" = "Add a delete before INSERT"
+"把 DELETE 注释掉" = "Comment out the DELETE"
+
+"数据库类型（仅生成备份）" = "Database type (backup mode only)"
+
+"改写结果" = "Rewritten SQL"
+
+"请粘贴或输入 SQL 内容" = "Paste or type the SQL content"
+"未知的处理方式：{}" = "Unknown operation: {}"
+
+"未找到可替换的 SQL：检查日志格式，或 ? 占位符数量与参数个数是否一致" = "No SQL could be filled: check the log format, or whether the number of ? placeholders matches the number of parameters"
+
+"清理后没有剩下任何语句：输入里只有注释或空行" = "Nothing left after cleaning: the input held only comments or blank lines"
+
+"未检测到需要备份的表（脚本里没有 INSERT / UPDATE / DELETE / DROP 等改数据的语句）" = "No table needs a backup: the script has no INSERT / UPDATE / DELETE / DROP statement that changes data"
+
+"-- 数据库类型: {}" = "-- Database type: {}"
+"-- 备份方式：全表备份（CREATE TABLE 表_yyyymmdd AS SELECT * FROM 表）" = "-- Backup method: whole-table copy (CREATE TABLE table_yyyymmdd AS SELECT * FROM table)"
+"-- 回滚默认使用 delete，大表建议手动改为 truncate 以提升性能" = "-- Rollback uses DELETE by default; switch large tables to TRUNCATE by hand for speed"
+"-- 被 DROP 且脚本中未重建的表，回滚为从备份表重建（CREATE TABLE ... AS SELECT * FROM 备份表）" = "-- Tables that are dropped and never re-created are restored from the backup table instead (CREATE TABLE ... AS SELECT * FROM backup_table)"
+"-- 备份表清单" = "-- Tables backed up"
+"-- {}（全表备份）" = "-- {} (whole table)"
+"-- 备份 SQL（先执行）" = "-- Backup SQL (run first)"
+"-- 回滚 SQL（如需恢复数据时执行）" = "-- Rollback SQL (run when the data must be restored)"
+"-- {} 已被 DROP，回滚时从备份表重建" = "-- {} is dropped; rollback re-creates it from the backup table"

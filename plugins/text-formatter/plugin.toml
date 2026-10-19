@@ -1,0 +1,81 @@
+# Duck Toolbox 插件：格式化（duck.text.formatter）。
+#
+# 一工具一插件：目录名 = id 末段，`tool.id` 与插件 id 相同（单工具插件的
+# 简写写法，清单允许）。安装 / 授权 / 译文 / 数据目录四件事的边界与工具边界
+# 完全重合——卸载这个工具不会影响任何其他工具。
+#
+# 声明式 IO（api_version 2）：`[tools.io]` 描述输入字段 / 参数 / 输出形状，
+# 宿主据此渲染通用执行页；插件自身只做 `handle(toolId, input)` 的纯计算。
+# 文案：中文源串即键，译文在 locales/en.toml；[i18n] 必须在 [[tools]] 之前。
+
+id = "duck.text.formatter"
+name = "格式化"
+description = "JSON / SQL / XML 美化与压缩，支持语法错误定位"
+version = "0.1.0"
+category = "development"
+tags = ["文本", "格式化", "json", "sql", "xml"]
+author = "Duck Toolbox"
+api_version = 2
+execution_model = "js"
+
+[i18n]
+source = "zh-Hans"
+locales = ["locales/en.toml"]
+
+# 不申请任何能力：纯函数，不读文件、不出网、不发通知。
+
+[[tools]]
+id = "duck.text.formatter"
+name = "格式化"
+description = "JSON / SQL / XML 美化与压缩，支持语法错误定位"
+category = "development"
+group = "转换"
+icon = "code"
+keywords = ["format", "beautify", "minify", "json", "sql", "xml", "美化", "压缩"]
+
+[tools.io]
+allow_files = "read"
+
+[[tools.io.fields]]
+id = "input"
+kind = "textarea"
+label = "输入"
+placeholder = "粘贴代码或拖入文件…"
+required = true
+
+[[tools.io.params]]
+id = "lang"
+kind = "select"
+label = "语言"
+default = "auto"
+options = [
+  { value = "auto", label = "自动识别" },
+  { value = "json", label = "JSON" },
+  { value = "sql", label = "SQL" },
+  { value = "xml", label = "XML" },
+]
+
+[[tools.io.params]]
+id = "indent"
+kind = "select"
+label = "缩进"
+default = "2"
+options = [
+  { value = "2", label = "2 空格" },
+  { value = "4", label = "4 空格" },
+  { value = "tab", label = "制表符" },
+]
+
+[[tools.io.params]]
+id = "minify"
+kind = "switch"
+label = "压缩输出"
+
+[[tools.io.params]]
+id = "sort_keys"
+kind = "switch"
+label = "键名排序（JSON）"
+
+[tools.io.output]
+kind = "code"
+label = "格式化结果"

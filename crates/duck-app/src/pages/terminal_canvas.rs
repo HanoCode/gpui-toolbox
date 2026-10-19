@@ -59,7 +59,6 @@
 //!    shell。这条规则落在内核（[`duck_term::encode`] 的第 0 步）而不是这里：可单测，
 //!    且新增调用点时漏填 `platform` 会编译报错。
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -69,8 +68,8 @@ use duck_components::{
 use duck_term::{
     CellSize, Color, Column, CursorShape, Dimensions, Encoded, Encoding, Flags, KeyStroke, Line,
     MouseAction, MouseModifiers, Palette, Point as TermPoint, SelectionKind, SelectionRange,
-    Session, SessionEvent, Side, SpawnOptions, Suggestion, TermLink, TermMode, TermMouseButton,
-    encode, encode_focus, encode_mouse, prompt_bars, reports_motion, suggest as suggest_for,
+    Session, SessionEvent, Side, SpawnOptions, TermLink, TermMode, TermMouseButton, encode,
+    encode_focus, encode_mouse, prompt_bars, reports_motion, suggest as suggest_for,
 };
 use duck_theme::{ThemeMode, active_theme, tr, trf};
 use gpui::{
@@ -2104,7 +2103,10 @@ impl TerminalPage {
         live.shell_integration_sent = true;
         // 行首空格：bash 的 `HISTCONTROL=ignorespace` 与 zsh 的
         // `HIST_IGNORE_SPACE` 都会把带空格开头的命令踢出历史 —— 尽力而为。
-        session.write_str(&format!(" {}\r", super::terminal::suggest::SHELL_INTEGRATION_SCRIPT));
+        session.write_str(&format!(
+            " {}\r",
+            super::terminal::suggest::SHELL_INTEGRATION_SCRIPT
+        ));
     }
 
     /// 按行翻某个标签的视口（正数向上看历史，与 [`Session::scroll`] 同向）。
@@ -4233,10 +4235,12 @@ mod tests {
             tail,
             &["StrictHostKeyChecking=yes", "ServerAliveInterval=30"]
         );
-        // 结尾固定是 `-t <destination>`：目标串是 `user@host`，端口另走 `-p`。
-        assert_eq!(argv[argv.len() - 2], "-t");
-        assert_eq!(argv[argv.len() - 1], target.destination());
-        assert_eq!(argv[argv.len() - 1], "deploy@example.test");
+        // 结尾固定是 `-t <destination> <locale 引导>`：目标串是 `user@host`，
+        // 端口另走 `-p`；v4 起目标串后再追加一段远端 locale 引导命令
+        //（见 `duck-ssh` 的 `locale_bootstrap`），所以目标串在**倒数第二**。
+        assert_eq!(argv[argv.len() - 3], "-t");
+        assert_eq!(argv[argv.len() - 2], target.destination());
+        assert_eq!(argv[argv.len() - 2], "deploy@example.test");
     }
 
     /// 自动重连退避：2s 起、每次翻倍封顶 60s、最多 5 次后停。

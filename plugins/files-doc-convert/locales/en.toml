@@ -1,0 +1,51 @@
+# duck.files.doc-convert 英文译文。键 = 中文源串。
+#
+# 同族共用的错误串各写一份（运行时每个插件只读自己的 `locales/`），理由见
+# `plugins/files-search/locales/en.toml` 的表头。
+
+# ── 清单 ──
+"文档转换" = "Document Convert"
+"Markdown / HTML / TXT / JSON / CSV / YAML / TOML / docx / pptx / xlsx / pdf 互转" = "Convert between Markdown / HTML / TXT / JSON / CSV / YAML / TOML / docx / pptx / xlsx / pdf"
+"文件" = "Files"
+"范围" = "Scope"
+"单个文件" = "Single file"
+"整个目录" = "Whole directory"
+"输入文件" = "Input file"
+"选择要转换的文件" = "Pick the file to convert"
+"输入目录" = "Input directory"
+"目录下的文档会按原结构转换到输出目录" = "Documents under it are converted into the output directory, keeping the tree shape"
+"输出格式" = "Output format"
+"Markdown" = "Markdown"
+"HTML" = "HTML"
+"纯文本" = "Plain text"
+"JSON" = "JSON"
+"CSV" = "CSV"
+"输出目录" = "Output directory"
+"留空 = 只在结果区预览（批量模式必填）" = "Empty previews in the result pane only (required in batch mode)"
+"覆盖同名文件" = "Overwrite existing files"
+"转换结果" = "Conversion result"
+
+# ── 报告 ──
+"转换完成" = "Conversion finished"
+"已转换：{} → {}" = "Converted: {} → {}"
+"输出 {} 个字符 · {} 行" = "output {} characters · {} lines"
+"……（预览只显示前 12 行，完整内容见输出文件）" = "…(the preview shows only the first 12 lines; see the output file for the rest)"
+"正在转换 {}/{}" = "Converting {}/{}"
+"已存在，跳过" = "already exists, skipped"
+"共 {} 个文件 · 成功 {} 个 · 跳过 {} 个 · 失败 {} 个" = "files {} · succeeded {} · skipped {} · failed {}"
+"……其余 {} 个未显示" = "…{} more not shown"
+
+# ── 内核错误 ──
+"路径不存在" = "Path not found"
+"路径不是目录" = "Not a directory"
+"路径不是文件" = "Not a file"
+"路径包含非法字符 '..'，拒绝访问" = "Path contains '..'; access denied"
+"拒绝访问系统路径" = "System paths are off limits"
+"文件不是 UTF-8 编码，无法处理" = "File is not UTF-8 text and cannot be processed"
+"正则表达式写错了" = "Invalid regular expression"
+"输入是空的，没有可处理的内容" = "Nothing to work with: the input is empty"
+"这种格式不支持" = "This format is not supported"
+"文件太大" = "File too large"
+"目标已存在，改名会覆盖" = "Target already exists; the rename would overwrite it"
+"没有可撤销的记录" = "Nothing to undo"
+"读写文件失败" = "File I/O failed"

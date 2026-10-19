@@ -1,0 +1,23 @@
+[package]
+name = "duck-compare-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "比对族内核：文本逐行差异、目录比对、class / jar 包比对（零 gpui、零 tauri）。"
+
+[dependencies]
+serde.workspace = true
+# 配置比对要把三路输入（properties / YAML / JSON）归一成同一个 `Value` 再拍平。
+serde_json.workspace = true
+similar.workspace = true
+# 包比对要读 `.class` 里的版本号（与合并族共用同一份解析器）。
+duck-classfile.workspace = true
+# 走目录找 `.class` / `.jar`。
+walkdir.workspace = true
+# 反推 JAR 内部条目的包名与 class 名。
+zip.workspace = true
+# JAR 排除模式支持 `*` / `?`（源仓口径：把通配转成正则）。
+regex.workspace = true
+
+[lints]
+workspace = true

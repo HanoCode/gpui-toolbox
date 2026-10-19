@@ -1,0 +1,121 @@
+%% name MySQL
+%% category 数据库
+%% content
+# MySQL 速查表
+
+## 连接
+
+```bash
+mysql -u root -p                         # 连接本地数据库
+mysql -h host -P port -u user -p db      # 连接远程数据库
+```
+
+## 数据库操作
+
+```sql
+CREATE DATABASE mydb CHARACTER SET utf8mb4;  -- 创建数据库
+USE mydb;                                    -- 使用数据库
+SHOW DATABASES;                              -- 显示所有数据库
+DROP DATABASE mydb;                          -- 删除数据库
+```
+
+## 表操作
+
+```sql
+-- 创建表
+CREATE TABLE users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(255) UNIQUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 查看表结构
+DESCRIBE users;
+SHOW CREATE TABLE users;
+
+-- 修改表
+ALTER TABLE users ADD COLUMN age INT;        -- 添加列
+ALTER TABLE users DROP COLUMN age;           -- 删除列
+ALTER TABLE users MODIFY COLUMN name VARCHAR(200);  -- 修改列
+ALTER TABLE users RENAME TO members;        -- 重命名表
+```
+
+## 增删改查
+
+```sql
+-- 插入
+INSERT INTO users (name, email) VALUES ('张三', 'zhangsan@example.com');
+
+-- 查询
+SELECT * FROM users WHERE age > 18 ORDER BY name LIMIT 10;
+
+-- 更新
+UPDATE users SET age = 26 WHERE name = '张三';
+
+-- 删除
+DELETE FROM users WHERE id = 1;
+```
+
+## 聚合查询
+
+```sql
+SELECT
+  department,
+  COUNT(*) as 人数,
+  AVG(age) as 平均年龄,
+  MAX(age) as 最大年龄,
+  MIN(age) as 最小年龄
+FROM users
+GROUP BY department
+HAVING COUNT(*) > 5;
+```
+
+## 连接查询
+
+```sql
+-- 内连接
+SELECT u.name, o.order_date
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id;
+
+-- 左连接
+SELECT u.name, o.order_date
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id;
+
+-- 右连接
+SELECT u.name, o.order_date
+FROM users u
+RIGHT JOIN orders o ON u.id = o.user_id;
+```
+
+## 索引
+
+```sql
+CREATE INDEX idx_name ON users(name);           -- 创建索引
+CREATE UNIQUE INDEX idx_email ON users(email);  -- 唯一索引
+SHOW INDEX FROM users;                          -- 查看索引
+DROP INDEX idx_name ON users;                   -- 删除索引
+```
+
+## 备份与恢复
+
+```bash
+mysqldump -u root -p mydb > backup.sql       # 备份
+mysql -u root -p mydb < backup.sql           # 恢复
+```
+%% commands
+% mysql
+# 查询某表数据
+SELECT * FROM <table> WHERE <condition> LIMIT <limit>;
+$ table: =users|orders|products
+$ condition: =id = 1|name = '张三'|status = 'ACTIVE'
+$ limit: =10|50|100
+
+# 查看表结构
+DESCRIBE <table>;
+$ table: =users|orders|products
+
+# 查看慢查询
+SHOW VARIABLES LIKE 'slow_query_log';
